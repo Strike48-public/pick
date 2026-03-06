@@ -37,6 +37,12 @@ pub use desktop::{
     stop_current_capture,
 };
 
+/// Pcap is never available on non-desktop platforms
+#[cfg(not(feature = "desktop"))]
+pub fn is_pcap_available() -> bool {
+    false
+}
+
 /// Get the platform implementation for the current target
 #[cfg(feature = "desktop")]
 pub fn get_platform() -> impl PlatformProvider {

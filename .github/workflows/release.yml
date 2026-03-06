@@ -28,7 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev protobuf-compiler
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev protobuf-compiler libpcap-dev libxdo-dev
 
       - name: Build
         run: cargo build --package pentest-desktop --release
@@ -54,6 +54,13 @@ jobs:
 
       - name: Install protoc
         run: choco install protoc -y
+
+      - name: Install Npcap SDK
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-sdk-1.13.zip" -OutFile npcap-sdk.zip
+          Expand-Archive -Path npcap-sdk.zip -DestinationPath "${{ github.workspace }}\npcap-sdk"
+          echo "LIB=${{ github.workspace }}\npcap-sdk\Lib\x64;$env:LIB" >> $env:GITHUB_ENV
 
       - name: Build
         run: cargo build --package pentest-desktop --release
@@ -114,7 +121,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev protobuf-compiler
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev protobuf-compiler libpcap-dev
 
       - name: Build
         run: cargo build --package pentest-web --release
@@ -236,7 +243,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler libpcap-dev
 
       - name: Build
         run: cargo build --package pentest-headless --release
