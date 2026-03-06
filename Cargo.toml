@@ -16,7 +16,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Strike48"]
 license = "MIT"
-repository = "https://github.com/strike48/dioxus-connector"
+repository = "https://github.com/Strike48-public/pick"
 
 [workspace.dependencies]
 # Dioxus 0.7 - platforms via features
