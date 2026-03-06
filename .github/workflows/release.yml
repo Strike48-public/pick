@@ -1,0 +1,348 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.1.0)'
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ===========================================
+  # Desktop Builds
+  # ===========================================
+  build-desktop-linux:
+    name: Desktop (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: strike48/strike48-rs
+          path: ../strike48-rs
+          token: ${{ secrets.GH_PAT || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Build
+        run: cargo build --package pentest-desktop --release
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/release/pentest-connector dist/
+          cd dist && tar -czvf pentest-connector-linux-x86_64.tar.gz pentest-connector
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux-x86_64
+          path: dist/pentest-connector-linux-x86_64.tar.gz
+
+  build-desktop-windows:
+    name: Desktop (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: strike48/strike48-rs
+          path: ../strike48-rs
+          token: ${{ secrets.GH_PAT || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --package pentest-desktop --release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item target/release/pentest-connector.exe dist/
+          Compress-Archive -Path dist/pentest-connector.exe -DestinationPath dist/pentest-connector-windows-x86_64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-x86_64
+          path: dist/pentest-connector-windows-x86_64.zip
+
+  build-desktop-macos:
+    name: Desktop (macOS)
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: strike48/strike48-rs
+          path: ../strike48-rs
+          token: ${{ secrets.GH_PAT || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --package pentest-desktop --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/pentest-connector dist/
+          cd dist && tar -czvf pentest-connector-macos-${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }}.tar.gz pentest-connector
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos-${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }}
+          path: dist/pentest-connector-macos-*.tar.gz
+
+  # ===========================================
+  # Web Build
+  # ===========================================
+  build-web:
+    name: Web (WASM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: strike48/strike48-rs
+          path: ../strike48-rs
+          token: ${{ secrets.GH_PAT || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install trunk
+        run: cargo install trunk
+
+      - name: Build
+        working-directory: apps/web
+        run: trunk build --release
+
+      - name: Package
+        run: |
+          cd apps/web/dist
+          tar -czvf ../../../pentest-connector-web.tar.gz .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-wasm
+          path: pentest-connector-web.tar.gz
+
+  # ===========================================
+  # Android Build
+  # ===========================================
+  build-android:
+    name: Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: strike48/strike48-rs
+          path: ../strike48-rs
+          token: ${{ secrets.GH_PAT || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;26.1.10909125"
+
+      - name: Install Dioxus CLI
+        run: curl -sSLf https://dioxus.dev/install.sh | sh
+
+      - name: Build APK
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.1.10909125
+        run: |
+          export PATH="$HOME/.dx/bin:$PATH"
+          unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH
+          dx build --platform android --package pentest-mobile --release
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/dx/pentest-mobile/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk \
+             dist/pentest-connector-android.apk 2>/dev/null || \
+          cp target/dx/pentest-mobile/release/android/app/app/build/outputs/apk/debug/app-debug.apk \
+             dist/pentest-connector-android.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist/pentest-connector-android.apk
+
+  # ===========================================
+  # iOS Build (requires macOS + signing)
+  # ===========================================
+  build-ios:
+    name: iOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: strike48/strike48-rs
+          path: ../strike48-rs
+          token: ${{ secrets.GH_PAT || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Dioxus CLI
+        run: curl -sSLf https://dioxus.dev/install.sh | sh
+
+      - name: Build (Simulator)
+        run: |
+          export PATH="$HOME/.dx/bin:$PATH"
+          dx build --platform ios --package pentest-mobile --release || echo "iOS build requires signing"
+
+      # Note: Real iOS builds require Apple Developer signing
+      - name: Package (if built)
+        run: |
+          mkdir -p dist
+          if [ -d "target/dx/pentest-mobile/release/ios" ]; then
+            cd target/dx/pentest-mobile/release/ios
+            zip -r ../../../../../dist/pentest-connector-ios.zip .
+          else
+            echo "iOS build artifacts not found (signing required)"
+            touch dist/pentest-connector-ios-placeholder.txt
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-build
+          path: dist/pentest-connector-ios*
+
+  # ===========================================
+  # Create Release
+  # ===========================================
+  release:
+    name: Create Release
+    needs: [build-desktop-linux, build-desktop-windows, build-desktop-macos, build-web, build-android, build-ios]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.apk" \) -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate checksums
+        working-directory: release
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Pentest Connector v${{ steps.version.outputs.version }}
+          draft: true
+          files: |
+            release/*
+          body: |
+            ## Pentest Connector v${{ steps.version.outputs.version }}
+
+            ### Downloads
+
+            | Platform | Architecture | Download |
+            |----------|--------------|----------|
+            | Linux | x86_64 | `pentest-connector-linux-x86_64.tar.gz` |
+            | Windows | x86_64 | `pentest-connector-windows-x86_64.zip` |
+            | macOS | x86_64 | `pentest-connector-macos-x86_64.tar.gz` |
+            | macOS | Apple Silicon | `pentest-connector-macos-aarch64.tar.gz` |
+            | Web | WASM | `pentest-connector-web.tar.gz` |
+            | Android | APK | `pentest-connector-android.apk` |
+
+            ### Checksums
+
+            See `SHA256SUMS.txt` for file checksums.
+
+  # ===========================================
+  # Update Marketplace Manifest
+  # ===========================================
+  update-manifest:
+    name: Update Marketplace Manifest
+    needs: [release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update manifest version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DATE=$(date -u +"%Y-%m-%d")
+          REPO="${{ github.repository }}"
+
+          # Update version and release date in manifest
+          sed -i "s/^version = .*/version = \"$VERSION\"/" marketplace/pentest-connector.toml
+          sed -i "s/^release_date = .*/release_date = \"$DATE\"/" marketplace/pentest-connector.toml
+
+          # Update download URLs
+          sed -i "s|/releases/download/v[^/]*/|/releases/download/v$VERSION/|g" marketplace/pentest-connector.toml
+
+      - name: Commit manifest update
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update marketplace manifest to v${{ steps.version.outputs.version }}"
+          file_pattern: marketplace/*.toml

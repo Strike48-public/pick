@@ -1,0 +1,20 @@
+/* ==========================================================================
+   Interactive Shell  (always active — only rendered in shell tab)
+   ========================================================================== */
+
+.shell-container {
+    width: 100%;
+    flex: 1;
+    min-height: 0;
+    background: var(--background);
+    overflow: hidden;
+}
+
+.shell-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+}

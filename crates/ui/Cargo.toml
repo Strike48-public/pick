@@ -1,0 +1,82 @@
+[package]
+name = "pentest-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = []
+liveview = ["dep:dioxus-liveview", "dep:dioxus-ssr", "dep:axum", "dep:reqwest"]
+connector = [
+    "liveview",
+    "dep:strike48-connector",
+    "dep:strike48-proto",
+    "dep:tokio-tungstenite",
+    "dep:dashmap",
+    "dep:anyhow",
+    "dep:regex",
+    "dep:futures",
+    "dep:whoami",
+    "dep:tracing-subscriber",
+]
+shell-ws = ["liveview", "dep:pentest-platform", "dep:futures"]
+
+[lib]
+name = "pentest_ui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "file-browser-connector"
+path = "src/bin/file_browser_connector.rs"
+required-features = ["connector"]
+
+[dependencies]
+# Core
+pentest-core = { workspace = true }
+
+# Dioxus (renderer chosen by app)
+dioxus = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
+
+# Async
+tokio = { workspace = true }
+
+# Syntax highlighting & markdown (from core, re-exported)
+syntect = { workspace = true }
+pulldown-cmark = { workspace = true }
+
+# Base64 encoding for image preview
+base64 = { workspace = true }
+
+# Icons
+lucide-dioxus = { workspace = true }
+
+# Liveview/SSR dependencies (optional)
+dioxus-liveview = { workspace = true, optional = true }
+dioxus-ssr = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+
+# Connector dependencies (optional)
+strike48-connector = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+dashmap = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+regex = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+whoami = { version = "1", optional = true }
+strike48-proto = { workspace = true, optional = true }
+
+# Platform (optional, for shell-ws PTY bridge)
+pentest-platform = { workspace = true, optional = true }

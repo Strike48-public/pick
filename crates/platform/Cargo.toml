@@ -1,0 +1,73 @@
+[package]
+name = "pentest-platform"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = ["desktop"]
+desktop = ["sysinfo", "local-ip-address", "dns-lookup", "network-interface", "dep:lazy_static", "dep:uuid", "dep:image", "desktop-mdns", "desktop-pcap", "wifi_scan", "ssdp-client", "dep:reqwest", "dep:portable-pty"]
+desktop-all = ["desktop", "desktop-screenshots"]
+desktop-screenshots = ["desktop", "screenshots"]
+desktop-mdns = ["desktop", "mdns-sd"]
+desktop-pcap = ["desktop", "pcap"]
+android = ["dep:jni", "dep:ndk-context", "dep:reqwest", "dep:portable-pty", "dep:libc", "dep:tar", "dep:xz2", "dep:sha2"]
+ios = []
+
+[dependencies]
+# Core
+pentest-core = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+base64 = { workspace = true }
+lazy_static = { version = "1.4", optional = true }
+uuid = { workspace = true, optional = true }
+image = { version = "0.25", optional = true }
+
+# Desktop-specific
+sysinfo = { workspace = true, optional = true }
+pcap = { version = "2", optional = true }
+screenshots = { version = "0.8", optional = true, default-features = false }
+local-ip-address = { version = "0.6", optional = true }
+dns-lookup = { workspace = true, optional = true }
+mdns-sd = { version = "0.11", optional = true }
+network-interface = { version = "2", optional = true }
+wifi_scan = { version = "0.7", optional = true }
+ssdp-client = { version = "2.1", optional = true }
+
+# Sandbox dependencies (desktop)
+reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-features = false, optional = true }
+
+# PTY support (desktop + android)
+portable-pty = { version = "0.9", optional = true }
+
+# Archive extraction (Android + desktop WSL)
+tar = { workspace = true, optional = true }
+flate2 = { version = "1", optional = true }
+
+# Android-specific
+jni = { version = "0.21", optional = true }
+ndk-context = { version = "0.1", optional = true }
+libc = { version = "0.2", optional = true }
+xz2 = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"

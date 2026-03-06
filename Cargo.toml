@@ -1,0 +1,98 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/platform",
+    "crates/ui",
+    "crates/tools",
+    "apps/desktop",
+    "apps/web",
+    "apps/mobile",
+    "apps/headless",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Strike48"]
+license = "MIT"
+repository = "https://github.com/strike48/dioxus-connector"
+
+[workspace.dependencies]
+# Dioxus 0.7 - platforms via features
+dioxus = "0.7"
+dioxus-ssr = "0.7"
+
+# OpenSSL vendored for cross-compilation (Android/iOS)
+openssl = { version = "0.10", features = ["vendored"] }
+
+# Web server (for liveview - dioxus-liveview 0.7 requires axum 0.8)
+axum = { version = "0.8", features = ["ws"] }
+tower = "0.5"
+dioxus-liveview = { version = "0.7", features = ["axum"] }
+
+# WebSocket
+tokio-tungstenite = "0.26"
+
+# Concurrent collections
+dashmap = "6"
+
+# Regex
+regex = "1"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Networking
+reqwest = { version = "0.12", features = ["json", "cookies", "stream"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+dirs = "6"
+dns-lookup = "2"
+base64 = "0.22"
+tar = "0.4"
+xz2 = "0.1"
+rand = "0.8"
+open = "5"
+sha2 = "0.10"
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+
+# Icons
+lucide-dioxus = { version = "2", features = ["all-icons"] }
+
+# Platform-specific
+sysinfo = "0.32"
+
+# Strike48 Connector SDK
+strike48-connector = "0.2.7"
+strike48-proto = "0.2.7"
+
+# Internal crates
+pentest-core = { path = "crates/core" }
+pentest-platform = { path = "crates/platform", default-features = false }
+pentest-ui = { path = "crates/ui", default-features = false }
+pentest-tools = { path = "crates/tools", default-features = false }
+
+[profile.release]
+lto = true
+opt-level = "z"
+codegen-units = 1

@@ -1,0 +1,36 @@
+.status-bar {
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px;
+    background: var(--secondary);
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    flex-shrink: 0;
+}
+.status-bar-message {
+    color: var(--muted-foreground);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.status-bar-message.error {
+    color: var(--destructive);
+}
+.status-bar-hints {
+    display: flex;
+    gap: 16px;
+    color: var(--muted-foreground);
+}
+.status-bar-hint kbd {
+    display: inline-block;
+    padding: 0 4px;
+    background: var(--accent);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    margin-right: 4px;
+}

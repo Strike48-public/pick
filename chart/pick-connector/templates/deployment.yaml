@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pick-connector.fullname" . }}
+  labels:
+    {{- include "pick-connector.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "pick-connector.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "pick-connector.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "pick-connector.serviceAccountName" . }}
+      securityContext:
+        {{- include "pick-connector.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "pick-connector.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: HOME
+              value: /data/connector
+            - name: RUST_LOG
+              value: {{ .Values.pick.logLevel | quote }}
+            {{- if .Values.connector.strikeUrl }}
+            - name: STRIKE48_HOST
+              value: {{ .Values.connector.strikeUrl | quote }}
+            {{- end }}
+            {{- if .Values.connector.token }}
+            - name: STRIKE48_TOKEN
+              value: {{ .Values.connector.token | quote }}
+            {{- end }}
+            {{- if .Values.connector.tenantId }}
+            - name: STRIKE48_TENANT
+              value: {{ .Values.connector.tenantId | quote }}
+            {{- end }}
+            {{- if .Values.connector.instanceId }}
+            - name: STRIKE48_INSTANCE_ID
+              value: {{ .Values.connector.instanceId | quote }}
+            {{- end }}
+            {{- if .Values.connector.tls }}
+            - name: STRIKE48_TLS
+              value: "true"
+            {{- end }}
+            {{- if .Values.connector.tlsInsecure }}
+            - name: MATRIX_TLS_INSECURE
+              value: "true"
+            {{- end }}
+            {{- if .Values.connector.matrixApiUrl }}
+            - name: MATRIX_API_URL
+              value: {{ .Values.connector.matrixApiUrl | quote }}
+            {{- end }}
+            {{- if .Values.strikehub.socket }}
+            - name: STRIKEHUB_SOCKET
+              value: {{ .Values.strikehub.socket | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.persistence.enabled }}
+            - name: connector-data
+              mountPath: /data/connector
+            {{- end }}
+          livenessProbe:
+            exec:
+              command:
+                - test
+                - -e
+                - /proc/1/status
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - test
+                - -e
+                - /proc/1/status
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.persistence.enabled }}
+        - name: connector-data
+          persistentVolumeClaim:
+            claimName: {{ include "pick-connector.fullname" . }}-data
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

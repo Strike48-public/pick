@@ -1,0 +1,10 @@
+[application]
+name = "pentest-connector"
+default_platform = "android"
+
+[bundle]
+identifier = "com.strike48.pentest_connector"
+publisher = "Strike48"
+
+[web.app]
+title = "Pentest Connector"

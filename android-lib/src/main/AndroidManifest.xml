@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Permissions and service declarations for pentest connector native features.
+     Merged automatically into the app manifest by Android's manifest merger. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- WiFi scanning (bd-20) -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <!-- Foreground service (bd-19) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- Screen capture (bd-21) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+
+    <!-- VPN traffic capture (bd-25) -->
+    <uses-permission android:name="android.permission.BIND_VPN_SERVICE" />
+
+    <application>
+        <!-- OAuth callback handler for custom URI scheme (native app deep link) -->
+        <activity
+            android:name="com.strike48.pentest_connector.OAuthCallbackActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="com.strike48.pentest"
+                    android:host="oauth"
+                    android:path="/callback" />
+            </intent-filter>
+        </activity>
+
+        <!-- Screen capture consent helper (bd-21) -->
+        <activity
+            android:name="com.strike48.pentest_connector.ScreenCaptureConsentActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Foreground service for screen capture (bd-21) -->
+        <service
+            android:name="com.strike48.pentest_connector.ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <!-- Foreground service for background operation (bd-19) -->
+        <service
+            android:name="com.strike48.pentest_connector.ConnectorService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- VPN service for packet capture (bd-25) -->
+        <service
+            android:name="com.strike48.pentest_connector.PacketCaptureVpnService"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+    </application>
+
+</manifest>

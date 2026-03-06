@@ -1,0 +1,17 @@
+# Use system dynamic linker and C compiler instead of Nix's
+# Nix's GCC has its own glibc headers that conflict with system headers
+# when vendored C crates (libdbus-sys, etc.) compile with -static
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "-C", "link-arg=-Wl,--dynamic-linker=/lib64/ld-linux-x86-64.so.2",
+    "-C", "link-arg=-Wl,-rpath,/usr/lib/x86_64-linux-gnu",
+    "-C", "link-arg=-Wl,-rpath,/lib/x86_64-linux-gnu",
+    "-C", "link-arg=-L/usr/lib/x86_64-linux-gnu",
+    "-C", "link-arg=-L/lib/x86_64-linux-gnu",
+]
+# Global env for Linux desktop builds (does NOT apply to cross-compile targets)
+# Android NDK linker/CC/AR are auto-detected by dx from ANDROID_HOME,
+# and cc-rs env vars are set in the justfile build-android recipe.
+# CC/CXX removed from config.toml — Cargo's [env] is global (no per-platform support).
+# On Linux, set CC=/usr/bin/gcc CXX=/usr/bin/g++ in your shell environment (.bashrc, .envrc, etc.)
+# On Windows, cc-rs auto-detects cl.exe from Visual Studio Build Tools.

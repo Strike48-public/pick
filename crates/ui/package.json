@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "devDependencies": {
+    "@tailwindcss/cli": "^4"
+  },
+  "scripts": {
+    "build:css": "npx @tailwindcss/cli -i tailwind.css -o src/styles/tailwind-out.css --minify"
+  }
+}

@@ -1,0 +1,39 @@
+[package]
+name = "pentest-mobile"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pentest-mobile"
+path = "src/main.rs"
+
+[dependencies]
+# Crates
+pentest-core = { workspace = true, features = ["browser-auth"] }
+pentest-ui = { workspace = true, features = ["connector", "shell-ws"] }
+
+# Dioxus with mobile feature
+dioxus = { workspace = true, features = ["mobile"] }
+
+# Logging
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+pentest-platform = { workspace = true, default-features = false, features = ["android"] }
+pentest-tools = { workspace = true, default-features = false, features = ["android"] }
+android_logger = "0.14"
+log = "0.4"
+jni = "0.21"
+ndk-context = "0.1"
+openssl = { workspace = true }  # Vendored for cross-compilation
+
+[target.'cfg(target_os = "ios")'.dependencies]
+pentest-platform = { workspace = true, default-features = false, features = ["ios"] }
+pentest-tools = { workspace = true, default-features = false, features = ["ios"] }
+
+# Fallback for desktop development/testing
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+pentest-platform = { workspace = true, default-features = false, features = ["desktop"] }
+pentest-tools = { workspace = true, default-features = false, features = ["desktop"] }

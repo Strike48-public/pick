@@ -1,0 +1,184 @@
+# Connector Marketplace Manifest Template
+# Copy this file and fill in your app details
+# Filename should be: your-app-id.toml
+
+# =============================================================================
+# App Identity (required)
+# =============================================================================
+
+[app]
+# Reverse-domain identifier (e.g., com.company.app-name)
+id = "com.example.my-connector"
+
+# Display name
+name = "My Connector"
+
+# Short tagline (max 60 chars)
+tagline = "Brief description of what it does"
+
+# Full description (markdown supported)
+description = """
+A longer description of your connector.
+
+Features:
+- Feature 1
+- Feature 2
+"""
+
+# Semantic version
+version = "0.1.0"
+
+# Release date (YYYY-MM-DD, updated by CI)
+release_date = "2026-01-01"
+
+[app.author]
+name = "Your Name"
+email = "you@example.com"
+url = "https://example.com"  # optional
+
+[app.repository]
+type = "github"  # github | gitlab | bitbucket | other
+owner = "your-org"
+repo = "your-repo"
+url = "https://github.com/your-org/your-repo"
+
+[app.license]
+type = "MIT"  # SPDX identifier
+url = "https://github.com/your-org/your-repo/blob/main/LICENSE"
+
+[app.support]
+issues = "https://github.com/your-org/your-repo/issues"
+discussions = ""  # optional
+docs = ""  # optional
+
+# =============================================================================
+# Metadata (required)
+# =============================================================================
+
+[metadata]
+# Categories (pick 1-4 from: security, networking, tools, monitoring,
+#   automation, integration, data, utilities)
+categories = ["tools"]
+
+# Free-form tags for search
+tags = ["tag1", "tag2"]
+
+# Maturity level
+maturity = "alpha"  # alpha | beta | stable | deprecated
+
+# Target audience
+audience = ["developers"]
+
+# =============================================================================
+# Platforms (required)
+# =============================================================================
+
+[platforms]
+# List supported platform targets
+desktop = []  # linux-x86_64, windows-x86_64, macos-x86_64, macos-aarch64
+mobile = []   # android, ios
+web = []      # wasm
+
+# =============================================================================
+# Downloads (required for each platform listed above)
+# =============================================================================
+
+[downloads]
+# Base URL for releases (GitHub Releases recommended)
+base_url = "https://github.com/your-org/your-repo/releases/download"
+checksums_file = "SHA256SUMS.txt"
+
+# Example for Linux desktop:
+# [downloads.desktop.linux-x86_64]
+# filename = "my-app-linux-x86_64.tar.gz"
+# url = "https://github.com/your-org/your-repo/releases/download/v0.1.0/my-app-linux-x86_64.tar.gz"
+# size_bytes = 0  # Updated by CI
+# sha256 = ""     # Updated by CI
+# install_instructions = """
+# tar -xzvf my-app-linux-x86_64.tar.gz
+# ./my-app
+# """
+
+# Example for Android:
+# [downloads.mobile.android]
+# filename = "my-app.apk"
+# url = "https://github.com/your-org/your-repo/releases/download/v0.1.0/my-app.apk"
+# size_bytes = 0
+# sha256 = ""
+# min_sdk = 24
+# target_sdk = 34
+# install_instructions = "Download and install the APK"
+
+# Example for Web:
+# [downloads.web]
+# filename = "my-app-web.tar.gz"
+# url = "https://github.com/your-org/your-repo/releases/download/v0.1.0/my-app-web.tar.gz"
+# size_bytes = 0
+# sha256 = ""
+# demo_url = ""  # optional: hosted demo
+# install_instructions = "Extract and serve with any static file server"
+
+# =============================================================================
+# Media (optional but recommended)
+# =============================================================================
+
+[media]
+icon = "assets/icon.png"       # 256x256 PNG
+icon_svg = "assets/icon.svg"   # optional: vector version
+banner = "assets/banner.png"   # 1200x630 PNG for social sharing
+
+# Screenshots (add as many as needed)
+# [[media.screenshots]]
+# url = "assets/screenshots/main.png"
+# caption = "Main interface"
+# platform = "desktop"  # desktop | mobile | web
+
+# =============================================================================
+# Features (optional but recommended)
+# =============================================================================
+
+# List the key features/capabilities
+# [[features]]
+# id = "feature-id"
+# name = "Feature Name"
+# description = "What this feature does"
+# icon = "icon-name"  # From your icon set
+# platforms = ["desktop", "mobile"]  # Which platforms support this
+# requires_permissions = []  # optional: special permissions needed
+
+# =============================================================================
+# Requirements (optional)
+# =============================================================================
+
+# [requirements.desktop.linux]
+# min_glibc = "2.31"
+# dependencies = []
+
+# [requirements.desktop.windows]
+# min_version = "10"
+# dependencies = []
+
+# [requirements.desktop.macos]
+# min_version = "11.0"
+
+# [requirements.mobile.android]
+# min_sdk = 24
+# permissions = ["INTERNET"]
+
+# [requirements.mobile.ios]
+# min_version = "15.0"
+# permissions = []
+
+# [requirements.web]
+# browsers = ["chrome", "firefox", "safari", "edge"]
+
+# =============================================================================
+# Changelog (optional but recommended)
+# =============================================================================
+
+# [[changelog]]
+# version = "0.1.0"
+# date = "2026-01-01"
+# changes = [
+#     "Initial release",
+# ]

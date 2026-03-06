@@ -1,0 +1,392 @@
+/* ==========================================================================
+   Responsive Styles — Compact / Touch-Friendly
+   Loaded as an add-on to the base theme. Component styles are always active;
+   size/padding overrides live inside @media (max-width: 768px) so they apply
+   to *any* target (mobile, web, desktop) at narrow widths.
+   ========================================================================== */
+
+
+/* ==========================================================================
+   0. App Layout Container  (always active)
+   ========================================================================== */
+
+.app-layout {
+    display: flex;
+    flex-direction: row;
+    height: 100vh;
+    max-height: 100vh;
+    overflow: hidden;
+}
+
+
+/* --- Mobile header (hamburger + brand) --- */
+
+.mobile-header {
+    display: none; /* shown on mobile via media query */
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background-color: var(--secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.hamburger-btn {
+    background: none;
+    border: none;
+    color: var(--foreground);
+    cursor: pointer;
+    padding: 4px;
+    line-height: 0;
+    display: flex;
+    align-items: center;
+}
+
+.hamburger-btn svg {
+    width: 22px;
+    height: 22px;
+}
+
+.mobile-header-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.mobile-header-title {
+    font-family: var(--font-mono);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--foreground);
+}
+
+.mobile-header-info {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+.mobile-header-page-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--foreground);
+}
+
+.mobile-header-page-subtitle {
+    font-size: 11px;
+    color: var(--muted-foreground);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* --- Sidebar backdrop (mobile only) --- */
+
+.sidebar-backdrop {
+    display: none; /* shown on mobile */
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    z-index: 1999;
+}
+
+
+/* ==========================================================================
+   4. Connect Screen  (always active — only rendered when disconnected)
+   ========================================================================== */
+
+.connect-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: calc(100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    padding: 24px;
+    padding-top: env(safe-area-inset-top);
+    gap: 16px;
+}
+
+
+/* ==========================================================================
+   5. Tab Content Area  (always active — only rendered when connected)
+   ========================================================================== */
+
+.tab-content {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 0;
+}
+
+
+/* ==========================================================================
+   6. Safe Area Insets
+   ========================================================================== */
+
+.connect-screen {
+    padding-top: env(safe-area-inset-top);
+}
+
+
+/* ==========================================================================
+   7. Narrow-Viewport Overrides  (<=768px)
+   Applies to mobile, narrow desktop/web windows, tablet portrait, etc.
+   ========================================================================== */
+
+@media (max-width: 768px) {
+
+    .sidebar-backdrop {
+        display: block;
+    }
+
+    /* Content area gets mobile header offset */
+    .app-layout {
+        flex-direction: column;
+    }
+
+    /* -- Header ---------------------------------------------------------- */
+
+    .header {
+        padding: 8px 12px;
+    }
+
+    .header h1 {
+        font-size: 14px;
+        font-weight: 600;
+    }
+
+    /* -- Touch targets --------------------------------------------------- */
+
+    button,
+    .action-card,
+    .tab-item {
+        min-height: 48px;
+    }
+
+    input, select {
+        padding: 10px;
+        font-size: 16px;    /* prevents iOS auto-zoom */
+    }
+
+    /* -- Forms ----------------------------------------------------------- */
+
+    .config-form {
+        padding: 10px;
+        gap: 8px;
+    }
+
+    .config-form .form-row {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .config-form .controls {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .connect-screen h1 {
+        font-size: 18px;
+    }
+
+    /* -- Tab content ----------------------------------------------------- */
+
+    .tab-content .main-content {
+        padding: 8px;
+        gap: 8px;
+    }
+
+    /* -- Terminal -------------------------------------------------------- */
+
+    .tab-content .terminal {
+        border: none;
+        border-radius: 0;
+        padding: 6px 8px;
+        font-size: 12px;
+        line-height: 1.4;
+    }
+
+    /* -- File browser ---------------------------------------------------- */
+
+    .file-browser {
+        padding: 8px 10px;
+        min-height: auto;
+    }
+
+    .file-browser-header {
+        margin-bottom: 6px;
+    }
+
+    .file-browser-header h1 {
+        font-size: 0.95rem;
+        margin-bottom: 2px;
+    }
+
+    .breadcrumbs {
+        font-size: 0.8rem;
+    }
+
+    .parent-link {
+        margin-bottom: 6px;
+        font-size: 0.85rem;
+    }
+
+    /* Hide date column */
+    .directory-listing td.date,
+    .directory-listing th:nth-child(3) {
+        display: none;
+    }
+
+    .directory-listing td {
+        padding: 6px 8px;
+        font-size: 0.85rem;
+    }
+
+    .directory-listing thead th {
+        padding: 4px 8px;
+        font-size: 0.8rem;
+    }
+
+    /* -- File toolbar ---------------------------------------------------- */
+
+    .file-toolbar {
+        padding: 4px 8px;
+        gap: 6px;
+        font-size: 0.8rem;
+        min-height: 32px;
+    }
+
+    /* -- Markdown body --------------------------------------------------- */
+
+    .markdown-body {
+        padding: 10px 12px;
+        font-size: 0.85rem;
+        line-height: 1.5;
+    }
+
+    .markdown-body h1 {
+        font-size: 1.15rem;
+        margin: 0.8rem 0 0.4rem;
+        padding-bottom: 0.2rem;
+    }
+
+    .markdown-body h2 {
+        font-size: 1rem;
+        margin: 0.6rem 0 0.3rem;
+        padding-bottom: 0.15rem;
+    }
+
+    .markdown-body h3 {
+        font-size: 0.9rem;
+        margin: 0.5rem 0 0.25rem;
+    }
+
+    .markdown-body h4 {
+        font-size: 0.85rem;
+        margin: 0.4rem 0 0.2rem;
+    }
+
+    .markdown-body h5,
+    .markdown-body h6 {
+        font-size: 0.8rem;
+        margin: 0.3rem 0 0.15rem;
+    }
+
+    .markdown-body p {
+        margin: 0.4rem 0;
+    }
+
+    .markdown-body pre {
+        padding: 8px;
+        margin: 0.5rem 0;
+        font-size: 0.8rem;
+    }
+
+    .markdown-body blockquote {
+        padding: 0.2rem 0.75rem;
+        margin: 0.5rem 0;
+    }
+
+    .markdown-body ul,
+    .markdown-body ol {
+        padding-left: 1.25rem;
+        margin: 0.3rem 0;
+    }
+
+    .markdown-body table {
+        font-size: 0.8rem;
+        display: block;
+        overflow-x: auto;
+    }
+
+    .markdown-body th,
+    .markdown-body td {
+        padding: 0.3rem 0.5rem;
+    }
+
+    /* -- Code viewer ----------------------------------------------------- */
+
+    .code-table {
+        font-size: 0.75rem;
+        line-height: 1.4;
+    }
+
+    .code-table td {
+        padding: 0 6px;
+    }
+
+    /* -- Image preview --------------------------------------------------- */
+
+    .image-preview {
+        padding: 8px;
+    }
+}
+
+/* ==========================================================================
+   Desktop-only overrides  (>768px)
+   ========================================================================== */
+
+@media (min-width: 769px) {
+    .sidebar-backdrop {
+        display: none !important;
+    }
+}
+
+
+/* ==========================================================================
+   Global Polish
+   ========================================================================== */
+
+.content-area {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+}
+
+.content-area::-webkit-scrollbar {
+    width: 6px;
+}
+
+.content-area::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.content-area::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+}
+
+.content-area::-webkit-scrollbar-thumb:hover {
+    background: var(--muted-foreground);
+}
+
+.dashboard-card {
+    border-color: color-mix(in srgb, var(--border) 100%, var(--muted-foreground) 20%);
+}

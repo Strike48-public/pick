@@ -1,0 +1,23 @@
+[package]
+name = "pentest-desktop"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pentest-connector"
+path = "src/main.rs"
+
+[dependencies]
+# Crates
+pentest-core = { workspace = true, features = ["browser-auth"] }
+pentest-platform = { workspace = true, features = ["desktop-all"] }
+pentest-ui = { workspace = true, features = ["connector", "shell-ws"] }
+pentest-tools = { workspace = true, features = ["desktop"] }
+
+# Dioxus with desktop feature
+dioxus = { workspace = true, features = ["desktop"] }
+
+# Logging
+tracing = { workspace = true }

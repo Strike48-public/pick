@@ -1,0 +1,94 @@
+# Marketplace Index
+# Lists all known connector applications
+# The marketplace site reads this to discover available connectors
+
+[marketplace]
+name = "Strike48 Connector Marketplace"
+description = "Discover and download Strike48 connector applications"
+url = "https://strike48.github.io/strike48-marketplace"
+version = "1.0.0"
+
+# =============================================================================
+# Connectors
+# =============================================================================
+
+# Local connectors (manifest file in this directory)
+[[connectors]]
+id = "com.strike48.pentest-connector"
+manifest = "pentest-connector.toml"
+featured = true
+order = 1
+
+# External connectors (manifest hosted elsewhere)
+# [[connectors]]
+# id = "com.example.other-connector"
+# manifest_url = "https://raw.githubusercontent.com/example/other-connector/main/marketplace/manifest.toml"
+# featured = false
+
+# =============================================================================
+# Categories
+# =============================================================================
+
+[[categories]]
+id = "security"
+name = "Security"
+description = "Penetration testing, vulnerability scanning, and security tools"
+icon = "shield"
+
+[[categories]]
+id = "networking"
+name = "Networking"
+description = "Network discovery, monitoring, and analysis tools"
+icon = "network"
+
+[[categories]]
+id = "tools"
+name = "Tools"
+description = "General purpose utilities and helper tools"
+icon = "wrench"
+
+[[categories]]
+id = "monitoring"
+name = "Monitoring"
+description = "System and application monitoring connectors"
+icon = "activity"
+
+[[categories]]
+id = "automation"
+name = "Automation"
+description = "Task automation and orchestration connectors"
+icon = "zap"
+
+[[categories]]
+id = "integration"
+name = "Integration"
+description = "Third-party service integrations"
+icon = "link"
+
+[[categories]]
+id = "data"
+name = "Data"
+description = "Data collection, processing, and analysis"
+icon = "database"
+
+[[categories]]
+id = "utilities"
+name = "Utilities"
+description = "Miscellaneous utility connectors"
+icon = "box"
+
+# =============================================================================
+# Featured Collections
+# =============================================================================
+
+[[collections]]
+id = "getting-started"
+name = "Getting Started"
+description = "Essential connectors for new users"
+connectors = ["com.strike48.pentest-connector"]
+
+[[collections]]
+id = "security-toolkit"
+name = "Security Toolkit"
+description = "Complete penetration testing suite"
+connectors = ["com.strike48.pentest-connector"]

@@ -1,0 +1,52 @@
+/* ==========================================================================
+   Context Menu
+   ========================================================================== */
+
+.context-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+}
+
+.context-menu {
+    position: fixed;
+    background: var(--popover);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 4px;
+    min-width: 160px;
+    z-index: 41;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    animation: context-menu-in 120ms ease-out forwards;
+}
+
+@keyframes context-menu-in {
+    0% { opacity: 0; transform: scale(0.95) translateY(-2px); }
+    100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.context-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 8px 12px;
+    border-radius: calc(var(--radius) - 2px);
+    cursor: pointer;
+    font-size: 0.875rem;
+    color: var(--foreground);
+    transition: background-color 100ms ease-out;
+    user-select: none;
+}
+
+.context-menu-item:hover {
+    background: var(--accent);
+}
+
+.context-menu-item.destructive {
+    color: var(--destructive);
+}
+
+.context-menu-item.destructive:hover {
+    background: var(--destructive);
+    color: white;
+}

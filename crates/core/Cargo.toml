@@ -1,0 +1,54 @@
+[package]
+name = "pentest-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = []
+browser-auth = ["dep:axum", "dep:open"]
+
+[dependencies]
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+dirs = { workspace = true }
+
+# Syntax highlighting & markdown rendering
+syntect = { workspace = true }
+pulldown-cmark = { workspace = true }
+base64 = { workspace = true }
+
+# Strike48 Connector SDK
+strike48-connector = { workspace = true }
+
+# HTTP client for LiveView proxy and Matrix chat
+reqwest = { workspace = true }
+
+# Browser-based OAuth login (optional, desktop only)
+open = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+
+[dev-dependencies]
+pentest-tools = { path = "../tools" }
+pentest-platform = { path = "../platform", features = ["desktop"] }
+tempfile = "3"

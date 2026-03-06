@@ -1,0 +1,19 @@
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+.loading-spinner-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+.loading-spinner-circle {
+    border: 2px solid var(--border);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+}
+.loading-spinner-message {
+    font-size: 13px;
+    color: var(--muted-foreground);
+}

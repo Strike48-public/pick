@@ -1,0 +1,72 @@
+/* Tailwind CSS v4 input — strike48/ui design system
+ *
+ * Build:  npx @tailwindcss/cli -i tailwind.css -o src/styles/tailwind-out.css
+ *    or:  just tailwind
+ *
+ * The generated output is committed and include_str!()'d by theme.rs.
+ */
+
+@import "tailwindcss";
+
+/* Content paths — Tailwind scans these for class names */
+@source "./src/**/*.rs";
+
+/* -------------------------------------------------------
+   Design tokens (oklch)
+   Light mode = :root, dark mode = prefers-color-scheme
+   Mirrors the values in theme.rs so Tailwind utilities
+   (bg-primary, text-muted-foreground, etc.) resolve correctly.
+   ------------------------------------------------------- */
+
+@theme inline {
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-popover: var(--popover);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+
+    /* Extended tokens */
+    --color-success: var(--success);
+    --color-warning: var(--warning);
+    --color-info: var(--info);
+
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* -------------------------------------------------------
+   Animations (slide-in / slide-out for panels)
+   ------------------------------------------------------- */
+
+@keyframes slide-in-right {
+    from { transform: translateX(100%); }
+    to   { transform: translateX(0); }
+}
+
+@keyframes slide-out-right {
+    from { transform: translateX(0); }
+    to   { transform: translateX(100%); }
+}
+
+@keyframes fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+@keyframes fade-out {
+    from { opacity: 1; }
+    to   { opacity: 0; }
+}

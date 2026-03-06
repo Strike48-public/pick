@@ -1,0 +1,47 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+/dist/
+*.wasm
+*.js.map
+
+# Logs
+logs/
+*.log
+
+# Mobile
+/apps/mobile/android/
+/apps/mobile/ios/
+/apps/mobile/.cargo/
+
+# Trunk
+/apps/web/dist/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Temporary
+/tmp/
+*.tmp
+
+**/build/
+
+android-jniLibs
+
+.strike48

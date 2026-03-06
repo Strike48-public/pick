@@ -1,0 +1,29 @@
+[package]
+name = "pentest-headless"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pentest-agent"
+path = "src/main.rs"
+
+[dependencies]
+# Crates
+pentest-core = { workspace = true }
+pentest-platform = { workspace = true, features = ["desktop"] }
+pentest-ui = { workspace = true, features = ["connector", "shell-ws"] }
+pentest-tools = { workspace = true, features = ["desktop"] }
+
+# Async
+tokio = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }

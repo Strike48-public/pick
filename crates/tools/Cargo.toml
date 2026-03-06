@@ -1,0 +1,36 @@
+[package]
+name = "pentest-tools"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = ["desktop"]
+desktop = ["pentest-platform/desktop"]
+android = ["pentest-platform/android"]
+ios = ["pentest-platform/ios"]
+
+[dependencies]
+# Core
+pentest-core = { workspace = true }
+pentest-platform = { workspace = true, default-features = false }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+base64 = { workspace = true }
+lazy_static = "1.4"
+dns-lookup = { workspace = true }

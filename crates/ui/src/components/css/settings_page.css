@@ -1,0 +1,254 @@
+/* ==========================================================================
+   Settings Page
+   ========================================================================== */
+
+.settings-page {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+.settings-page-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--foreground);
+    margin: 0;
+}
+
+.settings-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.settings-card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.settings-card-header h2 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted-foreground);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 0;
+}
+
+.settings-card-icon {
+    display: flex;
+    align-items: center;
+    width: 18px;
+    height: 18px;
+    line-height: 0;
+    color: var(--muted-foreground);
+}
+
+.settings-card-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+.settings-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* dashboard-card styles (settings page renders these standalone) */
+.settings-page .dashboard-card {
+    background-color: var(--secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+/* setting-row / toggle-btn */
+.settings-page .setting-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.settings-page .setting-label {
+    flex: 1;
+}
+
+.settings-page .setting-name {
+    font-size: 13px;
+    color: var(--foreground);
+}
+
+.settings-page .setting-toggle {
+    display: flex;
+    flex-direction: row;
+    gap: 4px;
+    background-color: var(--background);
+    border-radius: 6px;
+    padding: 2px;
+}
+
+.settings-page .toggle-btn {
+    padding: 6px 12px;
+    border: none;
+    border-radius: 4px;
+    background-color: transparent;
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s;
+}
+
+.settings-page .toggle-btn:hover {
+    color: var(--foreground);
+}
+
+.settings-page .toggle-btn.active {
+    background-color: var(--primary);
+    color: var(--primary-foreground);
+}
+
+.settings-page .toggle-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.settings-page .toggle-btn:disabled:hover {
+    color: var(--muted-foreground);
+}
+
+/* download status row */
+.settings-page .sidebar-download-status {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--foreground);
+}
+
+.settings-page .sidebar-download-status.installed {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+}
+
+.settings-page .download-progress {
+    width: 100%;
+    height: 4px;
+    background-color: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.settings-page .download-progress-fill {
+    height: 100%;
+    background-color: var(--primary);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+
+.settings-page .download-progress-fill.indeterminate {
+    width: 40%;
+    animation: indeterminate-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes indeterminate-slide {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(350%); }
+}
+
+.settings-page .sidebar-download-btn {
+    background-color: var(--primary);
+    color: var(--primary-foreground);
+    border: none;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.settings-page .sidebar-download-btn:hover {
+    background-color: var(--ring);
+}
+
+/* i use arch btw */
+.settings-page .i-use-arch-btw {
+    display: inline-block;
+    font-size: 10px;
+    font-family: var(--font-mono);
+    font-style: italic;
+    color: var(--muted-foreground);
+    opacity: 0.6;
+    padding: 2px 8px;
+    border: 1px dashed var(--border);
+    border-radius: 4px;
+    width: fit-content;
+}
+
+/* setup error */
+.settings-page .sidebar-download-error {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.settings-page .setup-error-message {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--destructive, #ef4444);
+    line-height: 1.5;
+    padding: 8px;
+    background-color: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    border-radius: 4px;
+}
+
+/* save / discard actions */
+.settings-actions {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.settings-save-btn {
+    background-color: var(--primary);
+    color: var(--primary-foreground);
+    border: none;
+    border-radius: 4px;
+    padding: 8px 16px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.settings-save-btn:hover {
+    background-color: var(--ring);
+}
+
+.settings-discard-btn {
+    background-color: transparent;
+    color: var(--muted-foreground);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 16px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s;
+}
+
+.settings-discard-btn:hover {
+    color: var(--foreground);
+    border-color: var(--foreground);
+}

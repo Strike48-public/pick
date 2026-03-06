@@ -1,0 +1,68 @@
+# -- Security profile: restricted | pentest | full
+securityProfile: restricted
+
+image:
+  repository: pick-connector
+  tag: ""  # defaults to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Strike48 connector settings
+connector:
+  # gRPC endpoint, e.g. grpc://studio-app.default.svc:50061
+  strikeUrl: ""
+  token: ""
+  tenantId: ""
+  instanceId: ""
+  # Enable TLS for gRPC connection
+  tls: false
+  # Skip TLS certificate verification
+  tlsInsecure: false
+  # HTTP API URL for OTT registration (overrides server-provided URL)
+  # e.g. http://local-dev-studio-app.default.svc:4000
+  matrixApiUrl: ""
+
+# -- StrikeHub IPC settings
+strikehub:
+  # Optional Unix socket path for StrikeHub IPC
+  socket: ""
+
+# -- Persistence for credential / settings storage
+persistence:
+  enabled: false
+  storageClass: ""
+  size: 256Mi
+  accessModes:
+    - ReadWriteOnce
+
+# -- Service account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# -- RBAC
+rbac:
+  create: false
+  clusterRole: ""
+
+# -- Pick agent settings
+pick:
+  logLevel: info
+
+# -- Pod-level overrides
+replicaCount: 1
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}
+
+# -- Service (included for future TCP support / socket proxying)
+service:
+  type: ClusterIP
+  port: 8080

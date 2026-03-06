@@ -1,0 +1,101 @@
+/* ==========================================================================
+   Connecting Screen  (always active — only rendered during connect flow)
+   ========================================================================== */
+
+.connecting-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 24px;
+    gap: 32px;
+    background-color: var(--background);
+    color: var(--foreground);
+}
+
+.step-indicator {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0;
+}
+
+.step-dot {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    background-color: transparent;
+    transition: background-color 0.3s ease, border-color 0.3s ease, transform 0.3s ease;
+    flex-shrink: 0;
+}
+
+.step-dot.completed {
+    background-color: var(--primary);
+    border-color: var(--primary);
+}
+
+.step-dot.active {
+    background-color: var(--primary);
+    border-color: var(--primary);
+    animation: pulse-step 1.5s ease-in-out infinite;
+}
+
+.step-dot.pending {
+    background-color: transparent;
+    border-color: var(--muted-foreground);
+}
+
+.step-connector {
+    width: 40px;
+    height: 2px;
+    background-color: var(--border);
+    flex-shrink: 0;
+}
+
+.step-labels {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    width: 100%;
+    font-size: 12px;
+    color: var(--muted-foreground);
+    margin-top: 8px;
+    text-align: center;
+}
+
+.approval-instruction {
+    font-size: 1.25rem;
+    font-weight: 600;
+    text-align: center;
+    color: var(--foreground);
+    animation: pulse-attention 2s ease-in-out infinite;
+}
+
+.connecting-cancel-btn {
+    background-color: transparent;
+    color: var(--muted-foreground);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px 24px;
+    font-family: var(--font-mono);
+    font-size: 14px;
+    cursor: pointer;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.connecting-cancel-btn:hover {
+    background-color: var(--secondary);
+    color: var(--foreground);
+}
+
+@keyframes pulse-step {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.3); opacity: 0.7; }
+}
+
+@keyframes pulse-attention {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}

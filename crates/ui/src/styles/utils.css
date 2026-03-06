@@ -1,0 +1,200 @@
+/* ==========================================================================
+   Utility Classes (extracted from inline styles)
+   ========================================================================== */
+
+/* --- Display / Visibility --- */
+
+.hidden {
+    display: none;
+}
+
+.shell-pane-active {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.w-full {
+    width: 100%;
+}
+
+/* --- Flex Layout --- */
+
+.flex-col-full {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.flex-scroll {
+    flex: 1;
+    overflow-y: auto;
+}
+
+/* --- Spacing --- */
+
+.mb-4 {
+    margin-bottom: 4px;
+}
+
+.mb-8 {
+    margin-bottom: 8px;
+}
+
+.mb-16 {
+    margin-bottom: 16px;
+}
+
+/* --- Text Styles --- */
+
+.text-dim {
+    color: var(--muted-foreground);
+    font-size: 14px;
+}
+
+.text-dim-sm {
+    color: var(--muted-foreground);
+    font-size: 12px;
+}
+
+.text-dim-xs {
+    color: var(--muted-foreground);
+    font-size: 11px;
+}
+
+.text-success {
+    color: var(--success);
+}
+
+/* --- Empty State --- */
+
+.empty-state {
+    padding: 24px;
+    text-align: center;
+    color: var(--muted-foreground);
+}
+
+/* --- Settings Page --- */
+
+.settings-body {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.setting-name {
+    font-weight: 500;
+    font-size: 13px;
+}
+
+/* Unsaved changes badge in the page header */
+.settings-unsaved-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 15%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+    border-radius: 10px;
+    vertical-align: middle;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Save / Discard action bar */
+.settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 12px 0 0;
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+}
+
+.settings-discard-btn {
+    background: transparent;
+    color: var(--muted-foreground);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.settings-discard-btn:hover {
+    color: var(--foreground);
+    border-color: var(--foreground);
+}
+
+.settings-save-btn {
+    background: var(--primary);
+    color: var(--primary-foreground);
+    border: none;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.settings-save-btn:hover {
+    background: var(--ring);
+}
+
+/* --- Connecting Screen --- */
+
+.connecting-host {
+    color: var(--muted-foreground);
+    font-size: 13px;
+    margin-bottom: 8px;
+}
+
+.connecting-hint {
+    color: var(--muted-foreground);
+    text-align: center;
+    font-size: 14px;
+    max-width: 280px;
+}
+
+/* --- Connect Screen --- */
+
+.connect-subtitle {
+    color: var(--muted-foreground);
+    font-size: 12px;
+    margin-bottom: 16px;
+}
+
+/* --- Forms --- */
+
+.error-banner {
+    color: var(--destructive);
+    padding: 8px;
+    background: color-mix(in srgb, var(--destructive) 10%, transparent);
+    border-radius: 4px;
+}
+
+.form-hint {
+    font-size: 12px;
+    color: var(--muted-foreground);
+    margin-top: 4px;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}

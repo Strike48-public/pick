@@ -1,0 +1,299 @@
+/* ==========================================================================
+   Dashboard  (always active — only rendered in dashboard tab)
+   ========================================================================== */
+
+.dashboard {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.dashboard-card {
+    background-color: var(--secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.status-card {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+}
+
+.status-dot.connected {
+    background-color: var(--success);
+}
+
+.action-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+.action-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background-color: var(--secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 12px;
+    min-height: 48px;
+    cursor: pointer;
+    transition: background-color 0.15s, border-color 0.15s;
+    color: var(--foreground);
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.action-card:hover {
+    background-color: var(--background);
+    border-color: var(--primary);
+}
+
+.action-card:active {
+    background-color: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+
+/* Settings card */
+.settings-card h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted-foreground);
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.setting-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.setting-label {
+    flex: 1;
+}
+
+.setting-toggle {
+    display: flex;
+    flex-direction: row;
+    gap: 4px;
+    background-color: var(--background);
+    border-radius: 6px;
+    padding: 2px;
+}
+
+.toggle-btn {
+    padding: 6px 12px;
+    border: none;
+    border-radius: 4px;
+    background-color: transparent;
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s;
+}
+
+.toggle-btn:hover {
+    color: var(--foreground);
+}
+
+.toggle-btn.active {
+    background-color: var(--primary);
+    color: var(--primary-foreground);
+}
+
+.toggle-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.toggle-btn:disabled:hover {
+    color: var(--muted-foreground);
+}
+
+.recent-activity {
+    margin-top: 8px;
+}
+
+.recent-activity h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted-foreground);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.recent-line {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--muted-foreground);
+    padding: 4px 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border-bottom: 1px solid var(--border);
+}
+
+.recent-line:last-child {
+    border-bottom: none;
+}
+
+/* Dashboard redesign — remove padding from .dashboard, move to .dashboard-body */
+.dashboard {
+    padding: 0;
+    gap: 0;
+}
+
+.dashboard-body {
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.dashboard-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.dashboard-section-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted-foreground);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 0;
+}
+
+.action-card-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    color: var(--primary);
+    margin-bottom: 6px;
+}
+
+.action-card-icon svg {
+    width: 24px;
+    height: 24px;
+}
+
+.action-card-label {
+    font-size: 12px;
+    font-weight: 500;
+}
+
+/* Onboarding card — chat CTA */
+.onboarding-card {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 14px;
+    cursor: default;
+    border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
+    background: color-mix(in srgb, var(--primary) 5%, var(--secondary));
+}
+
+.onboarding-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    color: var(--primary);
+    flex-shrink: 0;
+}
+
+.onboarding-icon svg {
+    width: 32px;
+    height: 32px;
+}
+
+.onboarding-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.onboarding-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--foreground);
+    margin: 0 0 4px;
+}
+
+.onboarding-desc {
+    font-size: 12px;
+    color: var(--muted-foreground);
+    margin: 0;
+    line-height: 1.4;
+}
+
+.btn-disconnect {
+    background-color: transparent;
+    color: var(--muted-foreground);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 16px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s;
+}
+
+.btn-disconnect:hover {
+    color: var(--destructive);
+    border-color: var(--destructive);
+}
+
+/* --- Responsive overrides --- */
+
+@media (max-width: 768px) {
+    .dashboard {
+        padding: 12px;
+        gap: 12px;
+    }
+
+    .dashboard-card {
+        padding: 12px;
+    }
+
+    .action-grid {
+        gap: 10px;
+    }
+
+    .action-card {
+        padding: 12px 8px;
+    }
+
+    .recent-activity {
+        margin-top: 4px;
+    }
+
+    .recent-activity h3 {
+        font-size: 11px;
+        margin-bottom: 6px;
+    }
+
+    .recent-line {
+        font-size: 11px;
+        padding: 3px 0;
+    }
+}
