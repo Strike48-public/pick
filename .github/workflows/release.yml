@@ -22,11 +22,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: strike48/strike48-rs
-          path: ../strike48-rs
-          token: ${{ secrets.GH_PAT || github.token }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -54,11 +49,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: strike48/strike48-rs
-          path: ../strike48-rs
-          token: ${{ secrets.GH_PAT || github.token }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -85,11 +75,6 @@ jobs:
         target: [x86_64-apple-darwin, aarch64-apple-darwin]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: strike48/strike48-rs
-          path: ../strike48-rs
-          token: ${{ secrets.GH_PAT || github.token }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -117,11 +102,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: strike48/strike48-rs
-          path: ../strike48-rs
-          token: ${{ secrets.GH_PAT || github.token }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -152,11 +132,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: strike48/strike48-rs
-          path: ../strike48-rs
-          token: ${{ secrets.GH_PAT || github.token }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
@@ -206,11 +181,6 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: strike48/strike48-rs
-          path: ../strike48-rs
-          token: ${{ secrets.GH_PAT || github.token }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
@@ -242,11 +212,63 @@ jobs:
           path: dist/pentest-connector-ios*
 
   # ===========================================
+  # Headless (pentest-agent) Builds
+  # ===========================================
+  build-headless-linux:
+    name: Headless (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --package pentest-headless --release
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/release/pentest-agent dist/
+          cd dist && tar -czvf pentest-agent-linux-x86_64.tar.gz pentest-agent
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: headless-linux-x86_64
+          path: dist/pentest-agent-linux-x86_64.tar.gz
+
+  build-headless-macos:
+    name: Headless (macOS ${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }})
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --package pentest-headless --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/pentest-agent dist/
+          cd dist && tar -czvf pentest-agent-${{ matrix.target == 'aarch64-apple-darwin' && 'darwin-aarch64' || 'darwin-x86_64' }}.tar.gz pentest-agent
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: headless-macos-${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }}
+          path: dist/pentest-agent-*.tar.gz
+
+  # ===========================================
   # Create Release
   # ===========================================
   release:
     name: Create Release
-    needs: [build-desktop-linux, build-desktop-windows, build-desktop-macos, build-web, build-android, build-ios]
+    needs: [build-desktop-linux, build-desktop-windows, build-desktop-macos, build-web, build-android, build-ios, build-headless-linux, build-headless-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -300,6 +322,14 @@ jobs:
             | macOS | Apple Silicon | `pentest-connector-macos-aarch64.tar.gz` |
             | Web | WASM | `pentest-connector-web.tar.gz` |
             | Android | APK | `pentest-connector-android.apk` |
+
+            #### Headless (pentest-agent)
+
+            | Platform | Architecture | Download |
+            |----------|--------------|----------|
+            | Linux | x86_64 | `pentest-agent-linux-x86_64.tar.gz` |
+            | macOS | x86_64 | `pentest-agent-darwin-x86_64.tar.gz` |
+            | macOS | Apple Silicon | `pentest-agent-darwin-aarch64.tar.gz` |
 
             ### Checksums
 
