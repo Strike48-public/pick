@@ -249,7 +249,10 @@ pub fn load_connector_config(args: &[String]) -> ConfigLoadResult {
     // Env vars override saved settings.
     // Accept both pentest-agent names (STRIKE48_HOST) and StrikeHub names
     // (STRIKE48_URL, TENANT_ID) so the binary works standalone and under StrikeHub.
-    if let Ok(host) = std::env::var("STRIKE48_HOST").or_else(|_| std::env::var("STRIKE48_URL")) {
+    if let Ok(host) = std::env::var("STRIKE48_HOST")
+        .or_else(|_| std::env::var("STRIKE48_URL"))
+        .or_else(|_| std::env::var("STRIKE48_API_URL"))
+    {
         config.host = host;
     }
     if let Ok(token) = std::env::var("STRIKE48_TOKEN") {

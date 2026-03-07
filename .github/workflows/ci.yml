@@ -64,6 +64,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
 
+  check-macos:
+    name: Check (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install protobuf
+        run: brew install protobuf
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --package pentest-headless --package pentest-platform --package pentest-core
+      - run: cargo test --package pentest-platform --package pentest-core
+
   docker:
     name: Docker Build
     runs-on: ubuntu-latest

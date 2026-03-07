@@ -193,8 +193,13 @@ impl SandboxManager {
             tracing::error!("[detect_backend] Failed to download proot");
         }
 
+        #[cfg(target_os = "macos")]
         tracing::error!(
-            "[detect_backend] No sandbox backend available (bwrap, docker, proot, wsl, or download all failed)"
+            "[detect_backend] No sandbox backend available on macOS. Docker is required — install Docker Desktop, OrbStack, or colima and ensure the daemon is running."
+        );
+        #[cfg(not(target_os = "macos"))]
+        tracing::error!(
+            "[detect_backend] No sandbox backend available (tried bwrap, docker, proot, wsl)"
         );
         Err(SandboxError::NoBackendAvailable)
     }

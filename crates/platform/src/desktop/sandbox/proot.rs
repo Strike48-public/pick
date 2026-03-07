@@ -84,9 +84,9 @@ impl ProotExecutor {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = config;
-            return Err(SandboxError::Download(
+            Err(SandboxError::Download(
                 "proot download is only supported on Linux".to_string(),
-            ));
+            ))
         }
 
         #[cfg(target_os = "linux")]

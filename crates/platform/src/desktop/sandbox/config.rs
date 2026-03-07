@@ -6,9 +6,9 @@ use thiserror::Error;
 /// Sandbox execution errors
 #[derive(Debug, Error)]
 pub enum SandboxError {
-    /// Neither bwrap nor proot available
+    /// No sandbox backend available
     #[error(
-        "No sandbox backend available: bwrap requires Linux with user namespaces, proot not found"
+        "No sandbox backend available. Tried: bwrap (Linux only), Docker (not found or daemon not running), proot (Linux only). On macOS, install Docker Desktop, OrbStack, or colima."
     )]
     NoBackendAvailable,
 
