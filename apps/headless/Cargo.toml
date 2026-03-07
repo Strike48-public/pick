@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Crates
-pentest-core = { workspace = true, features = ["browser-auth"] }
+pentest-core = { workspace = true }
 pentest-platform = { workspace = true, features = ["desktop"] }
 pentest-ui = { workspace = true, features = ["connector", "shell-ws"] }
 pentest-tools = { workspace = true, features = ["desktop"] }
