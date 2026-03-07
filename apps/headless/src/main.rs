@@ -8,6 +8,7 @@
 //! Configuration via environment variables:
 //!   STRIKE48_HOST        - Server host:port (e.g. "connectors-studio.example.com:50061")
 //!   STRIKE48_URL         - Alias for STRIKE48_HOST (used by StrikeHub)
+//!   STRIKE48_API_URL     - Alias for STRIKE48_HOST
 //!   STRIKE48_TOKEN       - JWT auth token (optional — uses OTT approval flow if absent)
 //!   STRIKE48_TENANT      - Tenant ID (default: "default")
 //!   TENANT_ID            - Alias for STRIKE48_TENANT (used by StrikeHub)
@@ -199,6 +200,7 @@ fn print_usage() {
     eprintln!("Environment variables:");
     eprintln!("  STRIKE48_HOST        Server host:port");
     eprintln!("  STRIKE48_URL         Alias for STRIKE48_HOST (StrikeHub)");
+    eprintln!("  STRIKE48_API_URL     Alias for STRIKE48_HOST");
     eprintln!("  STRIKE48_TOKEN       JWT auth token");
     eprintln!("  STRIKE48_TENANT      Tenant ID");
     eprintln!("  STRIKE48_INSTANCE_ID Instance ID");
