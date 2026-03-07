@@ -14,7 +14,7 @@ mod render;
 
 use dioxus::prelude::*;
 use pentest_core::matrix::{
-    AgentInfo, ChatClient, ChatMessage, ConversationInfo, MatrixChatClient,
+    AgentInfo, ChatClient, ChatMessage, ConversationInfo, MatrixChatClient, UpdateAgentInput,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -197,10 +197,27 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         .cloned();
 
                     if let Some(agent) = auto {
-                        tracing::info!("ChatPanel: auto-selected agent: {}", agent.name);
-                        agents.set(list);
-                        agents_loaded.set(true);
-                        selected_agent.set(Some(agent));
+                        tracing::info!("ChatPanel: auto-selected agent: {}, updating tool configs", agent.name);
+                        // Update the existing agent's tool configs with current tools
+                        let fresh_input = default_pentest_agent_input(&tenant_id);
+                        let update_input = UpdateAgentInput {
+                            id: agent.id.clone(),
+                            tools: fresh_input.tools,
+                        };
+                        match client.update_agent(update_input).await {
+                            Ok(updated) => {
+                                tracing::info!("ChatPanel: updated agent tools for {}", updated.name);
+                                agents.set(list);
+                                agents_loaded.set(true);
+                                selected_agent.set(Some(updated));
+                            }
+                            Err(e) => {
+                                tracing::warn!("ChatPanel: failed to update agent tools: {}, using existing", e);
+                                agents.set(list);
+                                agents_loaded.set(true);
+                                selected_agent.set(Some(agent));
+                            }
+                        }
                     } else {
                         tracing::info!("ChatPanel: no pentest-connector agent found, creating one");
                         match client

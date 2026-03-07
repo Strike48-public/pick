@@ -46,6 +46,13 @@ fn build_tool_configs(names: &[String]) -> serde_json::Value {
 pub fn default_pentest_agent_input(tenant_id: &str) -> CreateAgentInput {
     let connector_key = format!("{}.pentest-connector.*", tenant_id);
     let tool_names = crate::session::get_tool_names();
+    tracing::info!(
+        "default_pentest_agent_input: tenant={}, connector_key={}, tool_names({})={:?}",
+        tenant_id,
+        connector_key,
+        tool_names.len(),
+        tool_names,
+    );
     let tool_configs = build_tool_configs(&tool_names);
 
     let mut connectors = serde_json::Map::new();
