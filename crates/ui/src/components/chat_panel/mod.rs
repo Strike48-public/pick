@@ -197,7 +197,10 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         .cloned();
 
                     if let Some(agent) = auto {
-                        tracing::info!("ChatPanel: auto-selected agent: {}, updating tool configs", agent.name);
+                        tracing::info!(
+                            "ChatPanel: auto-selected agent: {}, updating tool configs",
+                            agent.name
+                        );
                         // Update the existing agent's tool configs with current tools
                         let fresh_input = default_pentest_agent_input(&tenant_id);
                         let update_input = UpdateAgentInput {
@@ -206,13 +209,19 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         };
                         match client.update_agent(update_input).await {
                             Ok(updated) => {
-                                tracing::info!("ChatPanel: updated agent tools for {}", updated.name);
+                                tracing::info!(
+                                    "ChatPanel: updated agent tools for {}",
+                                    updated.name
+                                );
                                 agents.set(list);
                                 agents_loaded.set(true);
                                 selected_agent.set(Some(updated));
                             }
                             Err(e) => {
-                                tracing::warn!("ChatPanel: failed to update agent tools: {}, using existing", e);
+                                tracing::warn!(
+                                    "ChatPanel: failed to update agent tools: {}, using existing",
+                                    e
+                                );
                                 agents.set(list);
                                 agents_loaded.set(true);
                                 selected_agent.set(Some(agent));
