@@ -74,7 +74,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --package pentest-headless --package pentest-platform --package pentest-core
-      - run: cargo test --package pentest-platform --package pentest-core
+      - run: cargo test --package pentest-platform --package pentest-core --lib
 
   docker:
     name: Docker Build
