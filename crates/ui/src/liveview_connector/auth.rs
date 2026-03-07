@@ -102,7 +102,9 @@ impl LiveViewConnector {
                         tracing::info!("Removed stale credentials file: {}", stale);
                     }
                     if std::env::var("STRIKEHUB_SOCKET").is_ok() {
-                        tracing::info!("[RegisterResponse] StrikeHub mode: waiting for admin approval");
+                        tracing::info!(
+                            "[RegisterResponse] StrikeHub mode: waiting for admin approval"
+                        );
                         self.send_event(ConnectorEvent::Log(TerminalLine::info(
                             "Waiting for admin approval in Studio…",
                         )));
