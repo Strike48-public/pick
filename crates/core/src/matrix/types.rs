@@ -201,6 +201,28 @@ impl CreateAgentInput {
 }
 
 // ---------------------------------------------------------------------------
+// UpdateAgentInput
+// ---------------------------------------------------------------------------
+
+/// Input for updating an existing agent's configuration via the Matrix API.
+#[derive(Debug, Clone)]
+pub struct UpdateAgentInput {
+    pub id: String,
+    pub tools: Option<serde_json::Value>,
+}
+
+impl UpdateAgentInput {
+    pub(crate) fn to_gql_variables(&self) -> serde_json::Value {
+        let mut input = serde_json::Map::new();
+        input.insert("id".into(), serde_json::json!(self.id));
+        if let Some(ref t) = self.tools {
+            input.insert("tools".into(), serde_json::json!(t.to_string()));
+        }
+        serde_json::json!({ "input": input })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Trait
 // ---------------------------------------------------------------------------
 
@@ -211,6 +233,7 @@ pub trait ChatClient: Send + Sync {
     async fn list_agents(&self) -> crate::error::Result<Vec<AgentInfo>>;
     async fn find_agent_by_name(&self, name: &str) -> crate::error::Result<Option<AgentInfo>>;
     async fn create_agent(&self, input: CreateAgentInput) -> crate::error::Result<AgentInfo>;
+    async fn update_agent(&self, input: UpdateAgentInput) -> crate::error::Result<AgentInfo>;
     async fn create_conversation(&self, title: Option<&str>) -> crate::error::Result<String>;
     async fn send_message(
         &self,

@@ -195,6 +195,12 @@ struct CreateAgentData {
     create_agent: AgentNode,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateAgentData {
+    update_agent: AgentNode,
+}
+
 // -- Conversation --
 
 #[derive(Deserialize)]
@@ -367,6 +373,17 @@ const CREATE_AGENT_QUERY: &str = r#"
     }
 "#;
 
+const UPDATE_AGENT_QUERY: &str = r#"
+    mutation UpdateAgent($input: UpdateAgentInput!) {
+        updateAgent(input: $input) {
+            id
+            name
+            description
+            agentGreeting
+        }
+    }
+"#;
+
 const CREATE_CONVERSATION_QUERY: &str = r#"
     mutation CreateConversation($input: CreateConversationInput!) {
         createConversation(input: $input) { id }
@@ -470,6 +487,18 @@ impl ChatClient for MatrixChatClient {
             .await?;
 
         Ok(data.create_agent.into())
+    }
+
+    async fn update_agent(&self, input: UpdateAgentInput) -> crate::error::Result<AgentInfo> {
+        self.require_auth()?;
+
+        tracing::info!("Updating agent tools: id={}", input.id);
+
+        let data: UpdateAgentData = self
+            .execute_gql(UPDATE_AGENT_QUERY, input.to_gql_variables())
+            .await?;
+
+        Ok(data.update_agent.into())
     }
 
     async fn create_conversation(&self, title: Option<&str>) -> crate::error::Result<String> {
