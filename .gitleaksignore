@@ -1,2 +1,2 @@
-# Vendored/compiled JS asset — base64 data triggers false positive
-f5c1a6a7d524d3ef946f0bba2494f7b8afde624f:crates/ui/src/assets/restty.js:generic-api-key
+# Vendored/compiled JS asset — base64 data triggers false positive (square-access-token rule)
+f5c1a6a7d524d3ef946f0bba2494f7b8afde624f:crates/ui/src/assets/restty.js:square-access-token:11550
