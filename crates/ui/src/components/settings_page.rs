@@ -119,6 +119,38 @@ pub fn SettingsPage(
                             div { class: "setup-error-message", white_space: "pre-wrap",
                                 {err.as_str()}
                             }
+                            if err.contains("Docker") || err.contains("sandbox backend") {
+                                div { class: "setup-help-text",
+                                    p { "Docker is required to run the BlackArch sandbox on macOS." }
+                                    p { "Install one of the following:" }
+                                    ul {
+                                        li {
+                                            strong { "Colima" }
+                                            " (lightweight, recommended): "
+                                            code { "brew install colima docker && colima start" }
+                                        }
+                                        li {
+                                            strong { "Docker Desktop" }
+                                            ": "
+                                            a {
+                                                href: "https://docs.docker.com/desktop/install/mac-install/",
+                                                target: "_blank",
+                                                "docs.docker.com/desktop/install/mac-install"
+                                            }
+                                        }
+                                        li {
+                                            strong { "OrbStack" }
+                                            ": "
+                                            a {
+                                                href: "https://orbstack.dev",
+                                                target: "_blank",
+                                                "orbstack.dev"
+                                            }
+                                        }
+                                    }
+                                    p { class: "text-dim-xs", "After installing, make sure the Docker daemon is running, then retry." }
+                                }
+                            }
                             button {
                                 class: "sidebar-download-btn",
                                 onclick: move |_| on_start_download.call(()),

@@ -212,6 +212,51 @@
     border-radius: 4px;
 }
 
+/* Docker install help */
+.settings-page .setup-help-text {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--foreground);
+    line-height: 1.6;
+    padding: 12px;
+    background-color: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
+
+.settings-page .setup-help-text p {
+    margin: 0 0 6px 0;
+}
+
+.settings-page .setup-help-text p:last-child {
+    margin-bottom: 0;
+}
+
+.settings-page .setup-help-text ul {
+    margin: 4px 0 8px 0;
+    padding-left: 16px;
+}
+
+.settings-page .setup-help-text li {
+    margin-bottom: 4px;
+}
+
+.settings-page .setup-help-text code {
+    background-color: var(--secondary);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 11px;
+}
+
+.settings-page .setup-help-text a {
+    color: var(--primary);
+    text-decoration: underline;
+}
+
+.settings-page .setup-help-text a:hover {
+    color: var(--ring);
+}
+
 /* save / discard actions */
 .settings-actions {
     display: flex;

@@ -48,7 +48,21 @@ pub fn is_blackarch_ready() -> bool {
     #[cfg(not(target_os = "windows"))]
     let wsl_ready = false;
 
-    rootfs_ready || wsl_ready
+    // On macOS, Docker image existence counts as ready
+    let docker_ready = is_docker_image_ready();
+
+    rootfs_ready || wsl_ready || docker_ready
+}
+
+/// Check if the Docker pentest image exists (non-blocking best-effort).
+fn is_docker_image_ready() -> bool {
+    std::process::Command::new("docker")
+        .args(["image", "inspect", "pentest-blackarch:latest"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Resolve the sandbox data directory, matching `default_data_dir()` in the platform crate.
