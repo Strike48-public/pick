@@ -101,9 +101,31 @@ impl LiveViewConnector {
                     if std::fs::remove_file(&stale).is_ok() {
                         tracing::info!("Removed stale credentials file: {}", stale);
                     }
-                    self.try_fetch_matrix_token_fallback().await;
+                    if std::env::var("STRIKEHUB_SOCKET").is_ok() {
+                        tracing::info!("[RegisterResponse] StrikeHub mode: waiting for admin approval");
+                        self.send_event(ConnectorEvent::Log(TerminalLine::info(
+                            "Waiting for admin approval in Studio…",
+                        )));
+                        self.send_event(ConnectorEvent::StepChanged(
+                            ConnectingStep::WaitingForApproval,
+                        ));
+                    } else {
+                        self.try_fetch_matrix_token_fallback().await;
+                    }
                 }
             }
+        } else if std::env::var("STRIKEHUB_SOCKET").is_ok() {
+            // Running inside StrikeHub — don't open browser, wait for
+            // admin approval in Studio gateway UI.
+            tracing::info!(
+                "[RegisterResponse] StrikeHub mode: waiting for admin approval (no browser fallback)"
+            );
+            self.send_event(ConnectorEvent::Log(TerminalLine::info(
+                "Waiting for admin approval in Studio…",
+            )));
+            self.send_event(ConnectorEvent::StepChanged(
+                ConnectingStep::WaitingForApproval,
+            ));
         } else {
             tracing::info!(
                 "[RegisterResponse] No saved credentials found, trying browser login fallback"
