@@ -45,3 +45,6 @@ logs/
 android-jniLibs
 
 .strike48
+
+# Mise
+.mise.local.toml

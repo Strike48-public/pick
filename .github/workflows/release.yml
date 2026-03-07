@@ -10,6 +10,9 @@ on:
         description: 'Version to release (e.g., 0.1.0)'
         required: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -259,6 +262,39 @@ jobs:
           name: headless-linux-x86_64
           path: dist/pentest-agent-linux-x86_64.tar.gz
 
+  build-headless-windows:
+    name: Headless (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install protoc
+        run: choco install protoc -y
+
+      - name: Install Npcap SDK
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-sdk-1.13.zip" -OutFile npcap-sdk.zip
+          Expand-Archive -Path npcap-sdk.zip -DestinationPath "${{ github.workspace }}\npcap-sdk"
+          echo "LIB=${{ github.workspace }}\npcap-sdk\Lib\x64;$env:LIB" >> $env:GITHUB_ENV
+
+      - name: Build
+        run: cargo build --package pentest-headless --release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item target/release/pentest-agent.exe dist/
+          Compress-Archive -Path dist/pentest-agent.exe -DestinationPath dist/pentest-agent-windows-x86_64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: headless-windows-x86_64
+          path: dist/pentest-agent-windows-x86_64.zip
+
   build-headless-macos:
     name: Headless (macOS ${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }})
     runs-on: macos-latest
@@ -294,7 +330,7 @@ jobs:
   # ===========================================
   release:
     name: Create Release
-    needs: [build-desktop-linux, build-desktop-windows, build-desktop-macos, build-web, build-android, build-ios, build-headless-linux, build-headless-macos]
+    needs: [build-desktop-linux, build-desktop-windows, build-desktop-macos, build-web, build-android, build-ios, build-headless-linux, build-headless-windows, build-headless-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -353,6 +389,7 @@ jobs:
             | Platform | Architecture | Download |
             |----------|--------------|----------|
             | Linux | x86_64 | `pentest-agent-linux-x86_64.tar.gz` |
+            | Windows | x86_64 | `pentest-agent-windows-x86_64.zip` |
             | macOS | x86_64 | `pentest-agent-darwin-x86_64.tar.gz` |
             | macOS | Apple Silicon | `pentest-agent-darwin-aarch64.tar.gz` |
 
