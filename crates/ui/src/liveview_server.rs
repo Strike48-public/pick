@@ -313,8 +313,42 @@ pub async fn start_liveview_server(
     }
 
     #[cfg(not(unix))]
-    if std::env::var("STRIKEHUB_SOCKET").is_ok() {
-        tracing::warn!("STRIKEHUB_SOCKET is not supported on Windows, ignoring");
+    if let Ok(socket_env) = std::env::var("STRIKEHUB_SOCKET") {
+        let addr = IpcAddr::from_string(socket_env);
+        let listener = IpcListener::bind(&addr)?;
+        tracing::info!("LiveView server listening on {}", addr);
+
+        let addr_clone = addr.clone();
+        tokio::spawn(async move {
+            tracing::info!("LiveView server task started (IPC mode)");
+            let server = axum::serve(listener, router.into_make_service());
+
+            tokio::select! {
+                result = server => {
+                    tracing::warn!("LiveView server exited: {:?}", result);
+                    if let Err(e) = result {
+                        tracing::error!("LiveView server error: {}", e);
+                    }
+                }
+                _ = async {
+                    while !shutdown_clone.load(Ordering::SeqCst) {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                } => {
+                    tracing::info!("LiveView server shutting down");
+                }
+            }
+            addr_clone.cleanup();
+            tracing::warn!("LiveView server task ending");
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        return Ok(LiveViewHandle {
+            shutdown,
+            port,
+            ipc_addr: Some(addr),
+        });
     }
 
     // Standalone mode: PID-based IPC address (Unix socket or named pipe)

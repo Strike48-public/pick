@@ -40,6 +40,12 @@ impl IpcAddr {
         Self { inner: path }
     }
 
+    /// Create from a string (StrikeHub IPC mode on Windows — named pipe path).
+    #[cfg(windows)]
+    pub fn from_string(s: String) -> Self {
+        Self { inner: s }
+    }
+
     /// Remove the socket file (Unix) or no-op (Windows named pipes auto-cleanup).
     pub fn cleanup(&self) {
         #[cfg(unix)]
