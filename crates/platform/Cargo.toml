@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = ["desktop"]
-desktop = ["sysinfo", "local-ip-address", "dns-lookup", "network-interface", "dep:lazy_static", "dep:uuid", "dep:image", "desktop-mdns", "desktop-pcap", "wifi_scan", "ssdp-client", "dep:reqwest", "dep:portable-pty"]
+desktop = ["sysinfo", "local-ip-address", "dns-lookup", "network-interface", "dep:lazy_static", "dep:uuid", "dep:image", "desktop-mdns", "wifi_scan", "ssdp-client", "dep:reqwest", "dep:portable-pty"]
 desktop-all = ["desktop", "desktop-screenshots"]
 desktop-screenshots = ["desktop", "screenshots"]
 desktop-mdns = ["desktop", "mdns-sd"]

@@ -23,11 +23,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=planner /app/recipe.json recipe.json
 
 # Cook dependencies (cached as long as recipe.json is unchanged)
-RUN cargo chef cook --release --recipe-path recipe.json -p pentest-headless
+RUN cargo chef cook --release --recipe-path recipe.json -p pentest-headless --features pentest-platform/desktop-pcap
 
 COPY . .
 RUN test -f Cargo.lock || cargo generate-lockfile
-RUN cargo build --release -p pentest-headless
+RUN cargo build --release -p pentest-headless --features pentest-platform/desktop-pcap
 
 # ── Stage 4: Runtime ──────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
