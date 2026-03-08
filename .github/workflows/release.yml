@@ -58,13 +58,6 @@ jobs:
       - name: Install protoc
         run: choco install protoc -y
 
-      - name: Install Npcap SDK
-        shell: pwsh
-        run: |
-          Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-sdk-1.13.zip" -OutFile npcap-sdk.zip
-          Expand-Archive -Path npcap-sdk.zip -DestinationPath "${{ github.workspace }}\npcap-sdk"
-          echo "LIB=${{ github.workspace }}\npcap-sdk\Lib\x64;$env:LIB" >> $env:GITHUB_ENV
-
       - name: Build
         run: cargo build --package pentest-desktop --release
 
@@ -272,13 +265,6 @@ jobs:
 
       - name: Install protoc
         run: choco install protoc -y
-
-      - name: Install Npcap SDK
-        shell: pwsh
-        run: |
-          Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-sdk-1.13.zip" -OutFile npcap-sdk.zip
-          Expand-Archive -Path npcap-sdk.zip -DestinationPath "${{ github.workspace }}\npcap-sdk"
-          echo "LIB=${{ github.workspace }}\npcap-sdk\Lib\x64;$env:LIB" >> $env:GITHUB_ENV
 
       - name: Build
         run: cargo build --package pentest-headless --release
