@@ -39,6 +39,8 @@ pub fn SettingsPage(
     let mut local_wifi_adapter = use_signal(|| wifi_adapter.clone());
     let mut wifi_status = use_signal(|| None::<WifiConnectionStatus>);
     let mut wifi_loading = use_signal(|| false);
+    let mut wifi_test_result = use_signal(|| None::<Result<String, String>>);
+    let mut wifi_testing = use_signal(|| false);
 
     // Load WiFi adapters on mount
     use_effect(move || {
@@ -67,6 +69,21 @@ pub fn SettingsPage(
     let wifi_adapter_changed = local_wifi_adapter() != original_wifi_adapter;
     let has_changes = shell_mode_changed || wifi_adapter_changed;
 
+    // Check if save is safe (not selecting active connection)
+    let save_disabled = if wifi_adapter_changed {
+        if let Some(status) = wifi_status.read().as_ref() {
+            if let Some(ref selected) = local_wifi_adapter() {
+                status.active_interface.as_ref() == Some(selected) && status.connected_via_wifi
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
     // Handler: save — propagate to parent and update baseline
     let on_save = {
         let on_shell_mode_change = on_shell_mode_change;
@@ -76,6 +93,15 @@ pub fn SettingsPage(
                 on_shell_mode_change.call(local_shell_mode());
             }
             if wifi_adapter_changed {
+                // Validation: prevent saving if selecting active connection
+                if let Some(status) = wifi_status.read().as_ref() {
+                    if let Some(ref selected) = local_wifi_adapter() {
+                        if status.active_interface.as_ref() == Some(selected) && status.connected_via_wifi {
+                            tracing::warn!("Prevented saving: user tried to select active connection");
+                            return;
+                        }
+                    }
+                }
                 on_wifi_adapter_change.call(local_wifi_adapter());
             }
         }
@@ -85,6 +111,26 @@ pub fn SettingsPage(
     let on_discard = move |_| {
         local_shell_mode.set(original_shell_mode);
         local_wifi_adapter.set(original_wifi_adapter.clone());
+    };
+
+    // Handler: test WiFi adapter
+    let on_test_adapter = move |_| {
+        let adapter_to_test = local_wifi_adapter();
+        spawn(async move {
+            wifi_testing.set(true);
+            wifi_test_result.set(None);
+
+            match platform_helper::test_wifi_adapter(adapter_to_test.clone()).await {
+                Ok(msg) => {
+                    wifi_test_result.set(Some(Ok(msg)));
+                }
+                Err(e) => {
+                    wifi_test_result.set(Some(Err(e)));
+                }
+            }
+
+            wifi_testing.set(false);
+        });
     };
 
     rsx! {
@@ -272,11 +318,13 @@ pub fn SettingsPage(
                                         }
                                     }
                                 }
-                                div { class: "setting-select",
+                                div { class: "setting-select-with-test",
                                     select {
+                                        class: "setting-select",
                                         value: local_wifi_adapter().unwrap_or_default(),
                                         onchange: move |evt| {
                                             let value = evt.value();
+                                            wifi_test_result.set(None); // Clear test result on change
                                             if value.is_empty() {
                                                 local_wifi_adapter.set(None);
                                             } else {
@@ -296,6 +344,31 @@ pub fn SettingsPage(
                                             }
                                         }
                                     }
+                                    button {
+                                        class: "test-adapter-btn",
+                                        disabled: wifi_testing() || local_wifi_adapter().is_none(),
+                                        onclick: on_test_adapter,
+                                        title: if local_wifi_adapter().is_none() { "Select an adapter to test" } else { "Test this adapter" },
+                                        if wifi_testing() {
+                                            "Testing..."
+                                        } else {
+                                            "Test"
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Test result display - success
+                            if let Some(Ok(ref msg)) = wifi_test_result.read().as_ref() {
+                                div { class: "wifi-test-success",
+                                    "✓ {msg}"
+                                }
+                            }
+
+                            // Test result display - error
+                            if let Some(Err(ref err_msg)) = wifi_test_result.read().as_ref() {
+                                div { class: "wifi-test-error",
+                                    "✗ Test failed: {err_msg}"
                                 }
                             }
 
@@ -354,7 +427,9 @@ pub fn SettingsPage(
                     }
                     button {
                         class: "settings-save-btn",
+                        disabled: save_disabled,
                         onclick: on_save,
+                        title: if save_disabled { "Cannot save: selected adapter is your active connection" } else { "" },
                         "Save"
                     }
                 }
