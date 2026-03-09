@@ -335,6 +335,19 @@
     border-radius: 3px;
     font-size: 13px;
     color: #ff9800;
+    line-height: 1.5;
+}
+
+.wifi-adapter-danger {
+    margin-top: 12px;
+    padding: 10px 12px;
+    background: rgba(244, 67, 54, 0.1);
+    border-left: 4px solid #f44336;
+    border-radius: 3px;
+    font-size: 13px;
+    color: #f44336;
+    font-weight: 500;
+    line-height: 1.6;
 }
 
 .wifi-adapter-info {
@@ -354,4 +367,19 @@
 
 .wifi-adapter-info a:hover {
     text-decoration: underline;
+}
+
+/* Active WiFi connection indicator */
+.wifi-active-connection {
+    margin-top: 4px;
+    margin-bottom: 2px;
+    font-size: 12px;
+    color: var(--foreground);
+    font-weight: 500;
+}
+
+.active-adapter-name {
+    color: var(--primary);
+    font-weight: 600;
+    font-family: var(--font-mono);
 }
