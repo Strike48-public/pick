@@ -99,8 +99,11 @@ impl SystemInfo for DesktopPlatform {
         system::get_wifi_networks().await
     }
 
-    async fn check_wifi_connection_status(&self) -> Result<WifiConnectionStatus> {
-        system::check_wifi_connection_status().await
+    async fn check_wifi_connection_status(
+        &self,
+        selected_adapter: Option<String>,
+    ) -> Result<WifiConnectionStatus> {
+        system::check_wifi_connection_status(selected_adapter).await
     }
 }
 

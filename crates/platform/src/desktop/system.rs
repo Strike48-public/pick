@@ -184,7 +184,13 @@ pub async fn get_wifi_networks() -> Result<Vec<WifiNetwork>> {
 }
 
 /// Check WiFi connection status for scan safety assessment
-pub async fn check_wifi_connection_status() -> Result<WifiConnectionStatus> {
+///
+/// # Arguments
+/// * `selected_adapter` - User's chosen WiFi interface (e.g., "wlan1"). If provided,
+///   safety is assessed based on whether this adapter differs from the active connection.
+pub async fn check_wifi_connection_status(
+    selected_adapter: Option<String>,
+) -> Result<WifiConnectionStatus> {
     let interfaces = get_network_interfaces().await?;
 
     // WiFi interface name patterns (Linux, macOS, Windows)
@@ -213,13 +219,26 @@ pub async fn check_wifi_connection_status() -> Result<WifiConnectionStatus> {
 
     let connected_via_wifi = !active_wifi.is_empty();
     let total_adapters = all_wifi.len();
+    let active_interface = active_wifi.first().map(|i| i.name.clone());
 
-    // Safe if: not on WiFi OR has multiple adapters (external available)
-    let safe_to_scan = !connected_via_wifi || total_adapters > 1;
+    // Smart safety assessment based on selected adapter
+    let safe_to_scan = if let Some(ref selected) = selected_adapter {
+        // User explicitly chose an adapter
+        if let Some(ref active) = active_interface {
+            // Check if selected adapter differs from active connection
+            selected != active // Safe if different, unsafe if same
+        } else {
+            // Not connected via WiFi, always safe
+            true
+        }
+    } else {
+        // Auto-detect mode: Safe if not on WiFi OR has multiple adapters
+        !connected_via_wifi || total_adapters > 1
+    };
 
     Ok(WifiConnectionStatus {
         connected_via_wifi,
-        active_interface: active_wifi.first().map(|i| i.name.clone()),
+        active_interface,
         total_adapters,
         safe_to_scan,
         all_wifi_interfaces: all_wifi,

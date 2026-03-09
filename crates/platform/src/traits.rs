@@ -42,7 +42,13 @@ pub trait SystemInfo: Send + Sync {
     async fn get_wifi_networks(&self) -> Result<Vec<WifiNetwork>>;
 
     /// Check WiFi connection status for scan safety assessment
-    async fn check_wifi_connection_status(&self) -> Result<WifiConnectionStatus>;
+    ///
+    /// # Arguments
+    /// * `selected_adapter` - User's chosen WiFi interface (e.g., "wlan1")
+    async fn check_wifi_connection_status(
+        &self,
+        selected_adapter: Option<String>,
+    ) -> Result<WifiConnectionStatus>;
 }
 
 /// Capture operations trait
