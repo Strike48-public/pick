@@ -39,7 +39,10 @@ pub trait SystemInfo: Send + Sync {
     async fn get_network_interfaces(&self) -> Result<Vec<NetworkInterface>>;
 
     /// Get WiFi networks (if available)
-    async fn get_wifi_networks(&self) -> Result<Vec<WifiNetwork>>;
+    ///
+    /// # Arguments
+    /// * `interface` - Optional WiFi interface to scan (e.g., "wlan1"). If None, uses auto-detect.
+    async fn get_wifi_networks(&self, interface: Option<String>) -> Result<Vec<WifiNetwork>>;
 
     /// Check WiFi connection status for scan safety assessment
     ///

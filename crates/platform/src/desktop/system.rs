@@ -147,8 +147,125 @@ async fn get_network_interfaces_fallback() -> Result<Vec<NetworkInterface>> {
     }
 }
 
+/// Scan WiFi networks on a specific interface using `iw` command (Linux only)
+#[cfg(target_os = "linux")]
+async fn scan_specific_interface(interface: &str) -> Result<Vec<WifiNetwork>> {
+    use tokio::process::Command;
+
+    // First, verify the interface exists
+    let check_output = Command::new("ip")
+        .args(["link", "show", interface])
+        .output()
+        .await
+        .map_err(|e| Error::Network(format!("Failed to check interface: {}", e)))?;
+
+    if !check_output.status.success() {
+        return Err(Error::Network(format!(
+            "WiFi adapter '{}' not found. Please check Settings → WiFi Adapter.",
+            interface
+        )));
+    }
+
+    // Run iw scan
+    let output = Command::new("iw")
+        .args(["dev", interface, "scan"])
+        .output()
+        .await
+        .map_err(|e| Error::Network(format!("Failed to execute iw command: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Network(format!(
+            "WiFi scan failed on '{}': {}",
+            interface, stderr
+        )));
+    }
+
+    // Parse iw scan output
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut networks = Vec::new();
+    let mut current_bssid = String::new();
+    let mut current_ssid = String::new();
+    let mut current_signal = 0;
+    let mut current_channel = 0;
+    let mut current_security = Vec::new();
+
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("BSS ") {
+            // Save previous network if we have one
+            if !current_bssid.is_empty() && !current_ssid.is_empty() {
+                networks.push(WifiNetwork {
+                    ssid: current_ssid.clone(),
+                    bssid: current_bssid.clone(),
+                    signal_strength: current_signal,
+                    frequency: 0,
+                    channel: current_channel,
+                    security: current_security.join(","),
+                });
+            }
+
+            // Start new network
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            current_bssid = parts.get(1).unwrap_or(&"").trim_end_matches('(').to_string();
+            current_ssid = String::new();
+            current_signal = 0;
+            current_channel = 0;
+            current_security = Vec::new();
+        } else if trimmed.starts_with("SSID: ") {
+            current_ssid = trimmed.strip_prefix("SSID: ").unwrap_or("").to_string();
+        } else if trimmed.starts_with("signal: ") {
+            if let Some(signal_str) = trimmed.strip_prefix("signal: ") {
+                if let Some(value) = signal_str.split_whitespace().next() {
+                    current_signal = value.parse().unwrap_or(0);
+                }
+            }
+        } else if trimmed.starts_with("DS Parameter set: channel ") {
+            if let Some(channel_str) = trimmed.strip_prefix("DS Parameter set: channel ") {
+                current_channel = channel_str.parse().unwrap_or(0);
+            }
+        } else if trimmed.contains("WPA") || trimmed.contains("RSN") {
+            if trimmed.contains("WPA2") {
+                current_security.push("WPA2".to_string());
+            } else if trimmed.contains("WPA") {
+                current_security.push("WPA".to_string());
+            }
+            if trimmed.contains("PSK") {
+                current_security.push("PSK".to_string());
+            }
+        } else if trimmed.contains("Privacy") {
+            current_security.push("WEP".to_string());
+        }
+    }
+
+    // Save last network
+    if !current_bssid.is_empty() && !current_ssid.is_empty() {
+        networks.push(WifiNetwork {
+            ssid: current_ssid,
+            bssid: current_bssid,
+            signal_strength: current_signal,
+            frequency: 0,
+            channel: current_channel,
+            security: current_security.join(","),
+        });
+    }
+
+    Ok(networks)
+}
+
 /// Get WiFi networks
-pub async fn get_wifi_networks() -> Result<Vec<WifiNetwork>> {
+///
+/// # Arguments
+/// * `interface` - Optional WiFi interface to scan (e.g., "wlan1"). If None, uses auto-detect.
+pub async fn get_wifi_networks(interface: Option<String>) -> Result<Vec<WifiNetwork>> {
+    // If interface specified, use iw command (Linux only)
+    #[cfg(target_os = "linux")]
+    if let Some(iface) = interface {
+        return scan_specific_interface(&iface).await;
+    }
+
+    // Fallback to wifi_scan crate for auto-detect
     #[cfg(feature = "wifi_scan")]
     {
         let networks = tokio::task::spawn_blocking(wifi_scan::scan)
@@ -177,6 +294,7 @@ pub async fn get_wifi_networks() -> Result<Vec<WifiNetwork>> {
 
     #[cfg(not(feature = "wifi_scan"))]
     {
+        let _ = interface; // Suppress unused warning
         Err(Error::PlatformNotSupported(
             "WiFi scanning requires the 'wifi_scan' feature".into(),
         ))
