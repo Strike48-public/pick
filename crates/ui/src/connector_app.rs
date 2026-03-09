@@ -92,6 +92,12 @@ pub struct ConnectorPagesProps {
     settings_shell_mode: ShellMode,
     /// Callback when the user changes the shell mode in Settings.
     on_shell_mode_change: EventHandler<ShellMode>,
+    /// Selected WiFi adapter for scanning.
+    #[props(default)]
+    wifi_adapter: Option<String>,
+    /// Callback when the user changes the WiFi adapter.
+    #[props(default)]
+    on_wifi_adapter_change: EventHandler<Option<String>>,
     /// Matrix API URL for chat.
     api_url: String,
     /// Auth token for chat.
@@ -197,6 +203,8 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                     on_start_download: move |_| props.on_start_download.call(()),
                     shell_mode: props.settings_shell_mode,
                     on_shell_mode_change: move |mode: ShellMode| props.on_shell_mode_change.call(mode),
+                    wifi_adapter: props.wifi_adapter.clone(),
+                    on_wifi_adapter_change: move |adapter: Option<String>| props.on_wifi_adapter_change.call(adapter),
                 }
             }
         }
@@ -652,6 +660,12 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                     if let Some(set_sb) = cfg.set_sandbox {
                                         set_sb(mode == ShellMode::Proot);
                                     }
+                                },
+                                wifi_adapter: settings.read().wifi_adapter.clone(),
+                                on_wifi_adapter_change: move |adapter: Option<String>| {
+                                    let mut s = settings.write();
+                                    s.wifi_adapter = adapter;
+                                    let _ = save_settings(&s);
                                 },
                                 api_url: chat_api_url,
                                 auth_token: matrix_auth_token.read().clone(),
