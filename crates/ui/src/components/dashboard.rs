@@ -16,6 +16,7 @@ pub fn Dashboard(
     on_open_chat: EventHandler<String>,
     on_open_shell: EventHandler<()>,
     recent_lines: Vec<TerminalLine>,
+    #[props(default)] wifi_adapter: Option<String>,
 ) -> Element {
     let last_five: Vec<&TerminalLine> = recent_lines.iter().rev().take(5).collect();
 
@@ -49,21 +50,18 @@ pub fn Dashboard(
                             class: "action-card",
                             onclick: move |_| {
                                 let action = "Scan for nearby WiFi networks and list SSIDs, channels, and signal strengths.".to_string();
+                                let selected_adapter = wifi_adapter.clone();
                                 spawn(async move {
-                                    // Check WiFi connection status
-                                    match platform_helper::check_wifi_status().await {
+                                    // Check WiFi connection status with selected adapter
+                                    match platform_helper::check_wifi_status(selected_adapter).await {
                                         Ok(status) => {
                                             wifi_status.set(Some(status.clone()));
-                                            if !status.safe_to_scan && status.connected_via_wifi {
-                                                // Show warning for high-risk scenario
-                                                pending_wifi_action.set(Some(action));
-                                                wifi_warning_visible.set(true);
-                                            } else if status.connected_via_wifi && status.total_adapters > 1 {
-                                                // Show caution for multiple adapters
+                                            if !status.safe_to_scan {
+                                                // Show warning - either high-risk or conflict with selected adapter
                                                 pending_wifi_action.set(Some(action));
                                                 wifi_warning_visible.set(true);
                                             } else {
-                                                // Safe to proceed (ethernet or no WiFi detected)
+                                                // Safe to proceed
                                                 on_open_chat.call(action);
                                             }
                                         }

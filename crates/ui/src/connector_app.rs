@@ -133,6 +133,7 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                     on_open_chat: move |msg: String| on_open_chat.call(msg),
                     on_open_shell: move |_| on_open_shell.call(()),
                     recent_lines: terminal_lines.read().clone(),
+                    wifi_adapter: props.wifi_adapter.clone(),
                 }
             }
 
