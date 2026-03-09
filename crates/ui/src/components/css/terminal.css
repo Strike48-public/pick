@@ -1,0 +1,199 @@
+/* Terminal container with filters */
+.terminal-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+}
+
+/* Filter bar */
+.terminal-filters {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.filter-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.filter-btn {
+    padding: 6px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    opacity: 0.5;
+}
+
+.filter-btn:hover {
+    opacity: 0.8;
+    transform: translateY(-1px);
+}
+
+.filter-btn.active {
+    opacity: 1;
+    font-weight: 600;
+}
+
+/* All button styling */
+.filter-btn-all {
+    font-weight: 600;
+}
+
+.filter-btn-all.active {
+    background: var(--accent-color, #2196f3);
+    color: white;
+    border-color: var(--accent-color, #1976d2);
+}
+
+/* Level-specific button colors */
+.filter-btn-error.active {
+    background: #f44336;
+    color: white;
+    border-color: #d32f2f;
+}
+
+.filter-btn-warning.active {
+    background: #ff9800;
+    color: white;
+    border-color: #f57c00;
+}
+
+.filter-btn-success.active {
+    background: #4caf50;
+    color: white;
+    border-color: #388e3c;
+}
+
+.filter-btn-info.active {
+    background: #00bcd4;
+    color: white;
+    border-color: #0097a7;
+}
+
+.filter-btn-debug.active {
+    background: #808080;
+    color: white;
+    border-color: #666666;
+}
+
+/* Filter actions row */
+.filter-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.search-input {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.search-input:focus {
+    outline: none;
+    border-color: var(--accent-color);
+}
+
+.action-btn {
+    padding: 8px 16px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.action-btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--accent-color);
+}
+
+/* Terminal info */
+.terminal-info {
+    padding: 8px 16px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+/* Terminal output area (existing styles remain) */
+.terminal {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.terminal-line {
+    margin-bottom: 4px;
+    padding: 4px 8px;
+    border-radius: 3px;
+}
+
+.terminal-line.debug {
+    color: #808080;
+    background: rgba(128, 128, 128, 0.05);
+}
+
+.terminal-line.info {
+    color: #00bcd4;
+    background: rgba(0, 188, 212, 0.05);
+}
+
+.terminal-line.success {
+    color: #4caf50;
+    background: rgba(76, 175, 80, 0.05);
+}
+
+.terminal-line.warning {
+    color: #ff9800;
+    background: rgba(255, 152, 0, 0.05);
+}
+
+.terminal-line.error {
+    color: #f44336;
+    background: rgba(244, 67, 54, 0.05);
+}
+
+.terminal-line-header {
+    cursor: default;
+}
+
+.terminal-line-header.expandable {
+    cursor: pointer;
+}
+
+.terminal-line-header.expandable:hover {
+    opacity: 0.8;
+}
+
+.terminal-details {
+    margin-top: 8px;
+    padding: 8px;
+    background: rgba(0, 0, 0, 0.2);
+    border-left: 3px solid var(--accent-color);
+    border-radius: 3px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    overflow-x: auto;
+}
