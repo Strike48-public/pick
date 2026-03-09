@@ -253,12 +253,21 @@ pub fn SettingsPage(
                             div { class: "setting-row",
                                 div { class: "setting-label",
                                     div { class: "setting-name", "Scanning Adapter" }
+                                    // Show active connection info prominently
+                                    if let Some(ref active) = status.active_interface {
+                                        if status.connected_via_wifi {
+                                            div { class: "text-dim-xs wifi-active-connection",
+                                                "🌐 Active Connection: "
+                                                span { class: "active-adapter-name", "{active}" }
+                                            }
+                                        }
+                                    }
                                     div { class: "text-dim-xs",
                                         {
                                             if let Some(ref selected) = local_wifi_adapter() {
-                                                format!("Using {}", selected)
+                                                format!("Using {} for scanning", selected)
                                             } else {
-                                                "Auto-detect".to_string()
+                                                "Auto-detect first available".to_string()
                                             }
                                         }
                                     }
@@ -282,7 +291,7 @@ pub fn SettingsPage(
                                                 "{interface}"
                                                 // Show if it's the active connection
                                                 if status.active_interface.as_ref() == Some(interface) {
-                                                    " (currently connected)"
+                                                    " ⚠️ (YOUR INTERNET CONNECTION)"
                                                 }
                                             }
                                         }
@@ -290,14 +299,30 @@ pub fn SettingsPage(
                                 }
                             }
 
-                            // Warning if connected via WiFi
+                            // Warning if selected adapter matches active connection
+                            if let Some(ref selected) = local_wifi_adapter() {
+                                if status.active_interface.as_ref() == Some(selected) {
+                                    div { class: "wifi-adapter-danger",
+                                        "⚠️ WARNING: You selected your active internet connection!"
+                                        br {}
+                                        "Scanning this adapter will disconnect you from the internet and disconnect Pick from Strike48."
+                                        br {}
+                                        "Please select a different adapter or connect an external WiFi adapter."
+                                    }
+                                }
+                            }
+
+                            // General warning if connected via WiFi and no safe adapter selected
                             if status.connected_via_wifi {
-                                div { class: "wifi-adapter-warning",
-                                    "⚠️ Connected via WiFi"
-                                    if status.total_adapters == 1 {
-                                        " - Scanning will disconnect your connection"
-                                    } else {
-                                        " - Use external adapter to avoid disconnection"
+                                if local_wifi_adapter().is_none() {
+                                    div { class: "wifi-adapter-warning",
+                                        "⚠️ Connected via WiFi - Auto-detect mode"
+                                        br {}
+                                        if status.total_adapters == 1 {
+                                            "You only have one WiFi adapter. Scanning will disconnect your connection."
+                                        } else {
+                                            "Auto-detect may pick your internet connection. Select a specific external adapter below."
+                                        }
                                     }
                                 }
                             }
