@@ -98,6 +98,10 @@ impl SystemInfo for DesktopPlatform {
     async fn get_wifi_networks(&self) -> Result<Vec<WifiNetwork>> {
         system::get_wifi_networks().await
     }
+
+    async fn check_wifi_connection_status(&self) -> Result<WifiConnectionStatus> {
+        system::check_wifi_connection_status().await
+    }
 }
 
 #[async_trait]

@@ -89,6 +89,18 @@ impl SystemInfo for IosPlatform {
             "get_wifi_networks not available on iOS".into(),
         ))
     }
+
+    async fn check_wifi_connection_status(&self) -> Result<WifiConnectionStatus> {
+        // iOS doesn't have the same WiFi adapter issues as desktop
+        // Return safe by default
+        Ok(WifiConnectionStatus {
+            connected_via_wifi: false,
+            active_interface: None,
+            total_adapters: 1,
+            safe_to_scan: true,
+            all_wifi_interfaces: vec![],
+        })
+    }
 }
 
 #[async_trait]

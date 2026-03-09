@@ -40,6 +40,9 @@ pub trait SystemInfo: Send + Sync {
 
     /// Get WiFi networks (if available)
     async fn get_wifi_networks(&self) -> Result<Vec<WifiNetwork>>;
+
+    /// Check WiFi connection status for scan safety assessment
+    async fn check_wifi_connection_status(&self) -> Result<WifiConnectionStatus>;
 }
 
 /// Capture operations trait
@@ -204,6 +207,21 @@ pub struct WifiNetwork {
     pub frequency: u32,
     pub channel: u32,
     pub security: String,
+}
+
+/// WiFi connection risk assessment for scan safety
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WifiConnectionStatus {
+    /// Whether the active internet connection is via WiFi
+    pub connected_via_wifi: bool,
+    /// Name of the active WiFi interface (e.g., "wlan0")
+    pub active_interface: Option<String>,
+    /// Total number of WiFi adapters detected
+    pub total_adapters: usize,
+    /// Whether it's safe to scan (has external adapter OR on ethernet)
+    pub safe_to_scan: bool,
+    /// List of all WiFi interfaces (for future adapter selector)
+    pub all_wifi_interfaces: Vec<String>,
 }
 
 /// Screenshot result

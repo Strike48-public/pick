@@ -194,6 +194,62 @@ This is the same architecture as the [android-pentest-connector](../android-pent
 3. Add feature flag to `Cargo.toml`
 4. Update `get_platform()` function
 
+## Recommended WiFi Adapters
+
+For WiFi scanning and pentesting features, we recommend using a dedicated external WiFi adapter. This prevents disconnection issues when your primary adapter enters monitor mode.
+
+### ⚠️ Important: Avoid Connection Loss
+
+If you're connected to the internet via WiFi and try to scan with your built-in adapter:
+1. Your adapter enters monitor mode
+2. You lose your internet connection
+3. Pick disconnects from the Strike48 backend
+4. The scan fails
+
+**Solution:** Use an external adapter for scanning while keeping your internet connection active via built-in WiFi or Ethernet.
+
+### Top Recommendations (2025–2026)
+
+#### Best Overall
+**Alfa AWUS036ACHM** (MT7610U / MediaTek chipset)
+- Dual-band (2.4 & 5 GHz)
+- Excellent range/sensitivity
+- Reliable monitor mode + packet injection
+- Native Linux driver support (mt76 series)
+- Plug-and-play on modern Kali
+- Compact/mini form factor
+- ~$40-50 range
+
+#### Future-Proof Option
+**Alfa AWUS036AXML** (MT7921AU / MediaTek WiFi 6E chipset)
+- WiFi 6E support (adds 6 GHz)
+- Very strong 2025 performance
+- Good drivers in recent kernels
+- Excellent range on 2.4/5 GHz
+- Reliable injection
+- ~$60-70 range
+
+#### Budget Dual-Band
+**Alfa AWUS036ACS or AWUS036AC** (Realtek RTL8811AU / RTL8812AU)
+- Budget-friendly (~$30 range)
+- Dual-band (2.4 & 5 GHz)
+- Solid out-of-the-box Kali support
+- Good for beginners
+- Reliable for basic-intermediate aircrack-ng tasks
+
+#### Maximum Range
+**Alfa AWUS1900** (Realtek RTL8814AU)
+- 4 antennas, very long range
+- High power output
+- Great for wardriving or distant targets
+- Slightly bulkier and more expensive (~$80-100)
+
+### Classic / Budget Options (Still Work Well)
+
+- **Alfa AWUS036NHA** (Atheros AR9271) - Gold standard for years, rock-solid injection, 2.4 GHz only
+- **Panda PAU05 / PAU09** - Low-profile, cheap, reliable 2.4 GHz injection
+- **TP-Link TL-WN722N v1** (Atheros AR9271) - Very cheap and effective (avoid v2/v3)
+
 ## Security Notes
 
 This tool is designed for authorized penetration testing and security research. Features include:
