@@ -28,6 +28,7 @@ pub mod status_bar;
 mod terminal;
 pub mod text_input;
 pub mod tools_page;
+mod wifi_warning_dialog;
 #[cfg(feature = "liveview")]
 pub mod workspace_app;
 
@@ -61,5 +62,6 @@ pub use status_bar::{ShortcutHint, StatusBar};
 pub use terminal::*;
 pub use text_input::TextInput;
 pub use tools_page::ToolsPage;
+pub use wifi_warning_dialog::WifiWarningDialog;
 #[cfg(feature = "liveview")]
 pub use workspace_app::WorkspaceApp;

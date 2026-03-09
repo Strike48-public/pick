@@ -2,8 +2,11 @@
 
 use dioxus::prelude::*;
 use pentest_core::terminal::TerminalLine;
+use pentest_platform::WifiConnectionStatus;
 
+use crate::platform_helper;
 use super::icons::{Info, MessageCircle, Network, Shield, Terminal, Wifi};
+use super::WifiWarningDialog;
 
 /// Connected home screen with status, quick actions, and recent activity.
 /// Settings (shell mode) and disconnect are now in the sidebar.
@@ -15,6 +18,11 @@ pub fn Dashboard(
     recent_lines: Vec<TerminalLine>,
 ) -> Element {
     let last_five: Vec<&TerminalLine> = recent_lines.iter().rev().take(5).collect();
+
+    // WiFi warning dialog state
+    let mut wifi_warning_visible = use_signal(|| false);
+    let mut pending_wifi_action = use_signal(|| None::<String>);
+    let mut wifi_status = use_signal(|| None::<WifiConnectionStatus>);
 
     rsx! {
         style { {include_str!("css/dashboard.css")} }
@@ -39,9 +47,46 @@ pub fn Dashboard(
                         }
                         div {
                             class: "action-card",
-                            onclick: move |_| on_open_chat.call("Scan for nearby WiFi networks and list SSIDs, channels, and signal strengths.".to_string()),
+                            onclick: move |_| {
+                                let action = "Scan for nearby WiFi networks and list SSIDs, channels, and signal strengths.".to_string();
+                                spawn(async move {
+                                    // Check WiFi connection status
+                                    match platform_helper::check_wifi_status().await {
+                                        Ok(status) => {
+                                            wifi_status.set(Some(status.clone()));
+                                            if !status.safe_to_scan && status.connected_via_wifi {
+                                                // Show warning for high-risk scenario
+                                                pending_wifi_action.set(Some(action));
+                                                wifi_warning_visible.set(true);
+                                            } else if status.connected_via_wifi && status.total_adapters > 1 {
+                                                // Show caution for multiple adapters
+                                                pending_wifi_action.set(Some(action));
+                                                wifi_warning_visible.set(true);
+                                            } else {
+                                                // Safe to proceed (ethernet or no WiFi detected)
+                                                on_open_chat.call(action);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("Failed to check WiFi status: {}", e);
+                                            // Proceed anyway if detection fails
+                                            on_open_chat.call(action);
+                                        }
+                                    }
+                                });
+                            },
                             span { class: "action-card-icon", Wifi { size: 24 } }
                             span { class: "action-card-label", "WiFi Scan" }
+                            // Warning badge if WiFi detected
+                            if let Some(status) = wifi_status.read().as_ref() {
+                                if status.connected_via_wifi {
+                                    span {
+                                        class: "warning-badge",
+                                        title: "WiFi scan may disconnect your connection",
+                                        "⚠️"
+                                    }
+                                }
+                            }
                         }
                         div {
                             class: "action-card",
@@ -83,6 +128,25 @@ pub fn Dashboard(
                         }
                     }
                 }
+            }
+        }
+
+        // WiFi warning dialog
+        if let Some(status) = wifi_status.read().as_ref() {
+            WifiWarningDialog {
+                visible: wifi_warning_visible(),
+                status: status.clone(),
+                on_proceed: move |_| {
+                    if let Some(action) = pending_wifi_action.read().as_ref() {
+                        on_open_chat.call(action.clone());
+                    }
+                    wifi_warning_visible.set(false);
+                    pending_wifi_action.set(None);
+                },
+                on_cancel: move |_| {
+                    wifi_warning_visible.set(false);
+                    pending_wifi_action.set(None);
+                },
             }
         }
     }
