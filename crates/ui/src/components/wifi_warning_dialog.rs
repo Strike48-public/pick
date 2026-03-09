@@ -109,6 +109,11 @@ pub fn WifiWarningDialog(props: WifiWarningDialogProps) -> Element {
                                 " - Budget dual-band"
                             }
                         }
+                        p { style: "margin-top: 8px;",
+                            "After connecting an external adapter, go to "
+                            strong { "Settings → WiFi Adapter" }
+                            " to select which adapter to use for scanning."
+                        }
                         a {
                             href: "https://github.com/Strike48-public/pick#recommended-wifi-adapters",
                             target: "_blank",
