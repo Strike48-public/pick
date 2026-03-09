@@ -22,11 +22,25 @@ build-desktop-release:
 run-desktop:
     cargo run --package pentest-desktop
 
+# Run desktop app with sudo (for WiFi hardware access)
+run-desktop-sudo:
+    sudo -E cargo run --package pentest-desktop
+
 # Run desktop app (release)
 run-desktop-release:
     cargo run --package pentest-desktop --release
 
+# Run desktop app (release) with sudo
+run-desktop-release-sudo:
+    sudo -E cargo run --package pentest-desktop --release
+
 # ============ Headless Agent ============
+
+# Default Strike48 host for development
+strike_host := env_var_or_default("STRIKE48_HOST", "ws://localhost:3030")
+strike_tenant := env_var_or_default("STRIKE48_TENANT", "non-prod")
+matrix_api := env_var_or_default("MATRIX_API_URL", "http://localhost:3030")
+matrix_tenant := env_var_or_default("MATRIX_TENANT_ID", "non-prod")
 
 # Build headless agent
 build-headless:
@@ -43,6 +57,31 @@ run-headless *ARGS:
 # Run headless agent (release)
 run-headless-release *ARGS:
     cargo run --package pentest-headless --release -- {{ARGS}}
+
+# Run headless agent with sudo (for WiFi hardware access)
+run-headless-sudo *ARGS:
+    sudo -E cargo run --package pentest-headless -- {{ARGS}}
+
+# Run headless agent with default env vars and sudo
+run-headless-dev *ARGS:
+    #!/usr/bin/env bash
+    sudo -E PATH="$PATH" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+        env \
+        STRIKE48_HOST="{{strike_host}}" \
+        STRIKE48_TENANT="{{strike_tenant}}" \
+        MATRIX_API_URL="{{matrix_api}}" \
+        MATRIX_TENANT_ID="{{matrix_tenant}}" \
+        RUST_LOG="${RUST_LOG:-debug}" \
+        cargo run --package pentest-headless -- {{ARGS}} 2>&1 | tee -a ~/tmp/pentest.log
+
+# Run headless agent with custom config (reads from .env file)
+run-headless-env *ARGS:
+    #!/usr/bin/env bash
+    set -a  # Export all variables
+    [[ -f .env ]] && source .env
+    set +a
+    sudo -E PATH="$PATH" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+        cargo run --package pentest-headless -- {{ARGS}} 2>&1 | tee -a ~/tmp/pentest.log
 
 # ============ Web (Liveview) ============
 
