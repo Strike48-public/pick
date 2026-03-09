@@ -191,6 +191,10 @@ pub struct AppSettings {
 
     /// Download state for BlackArch ISO
     pub download_state: DownloadState,
+
+    /// Selected WiFi adapter for scanning (interface name, e.g., "wlan1")
+    /// If None, will use first available adapter
+    pub wifi_adapter: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -204,6 +208,7 @@ impl Default for AppSettings {
             dark_mode: true,
             shell_mode: ShellMode::default(),
             download_state: DownloadState::default(),
+            wifi_adapter: None,
         }
     }
 }
