@@ -87,10 +87,10 @@ const CATEGORIES: &[ToolCategory] = &[
 
 fn render_category_icon(idx: usize) -> Element {
     match idx {
-        0 => rsx! { Search { size: 18 } },
-        1 => rsx! { Network { size: 18 } },
-        2 => rsx! { Terminal { size: 18 } },
-        3 => rsx! { Folder { size: 18 } },
+        0 => rsx! { Search { size: 18 } },   // Reconnaissance
+        1 => rsx! { Network { size: 18 } },  // Network
+        2 => rsx! { Terminal { size: 18 } }, // System
+        3 => rsx! { Folder { size: 18 } },   // Files
         _ => rsx! { Search { size: 18 } },
     }
 }

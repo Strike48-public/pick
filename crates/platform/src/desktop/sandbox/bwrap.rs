@@ -173,8 +173,15 @@ impl BwrapExecutor {
             "/etc/resolv.conf".to_string(),
         ];
 
-        // User namespace setup (different for single vs multi-uid mapping)
-        if use_multi_mapping {
+        // User namespace setup:
+        // - Real root: skip user namespace entirely, add CAP_NET_RAW for raw sockets
+        // - Normal user: --unshare-user to get fake uid 0 inside sandbox
+        let is_real_root = unsafe { libc::geteuid() } == 0;
+        if is_real_root {
+            // Already uid 0 — keep real capabilities for raw sockets
+            bwrap_args.push("--cap-add".to_string());
+            bwrap_args.push("CAP_NET_RAW".to_string());
+        } else if use_multi_mapping {
             // For multi-uid: inherit the user namespace created by unshare
             bwrap_args.push("--userns".to_string());
             bwrap_args.push("0".to_string());
@@ -186,9 +193,6 @@ impl BwrapExecutor {
             bwrap_args.push("--gid".to_string());
             bwrap_args.push("0".to_string());
         }
-
-        // Note: We don't use --cap-add here because it doesn't work with user namespaces.
-        // Instead, we set file capabilities on tools (cap_net_raw+eip) during rootfs setup.
 
         // Network access (full host network for pentest tools)
         if self.config.network_access {
@@ -230,12 +234,18 @@ impl BwrapExecutor {
         bwrap_args.push("-c".to_string());
         bwrap_args.push(cmd.to_string());
 
-        // Build final command (either unshare + bwrap or just bwrap)
-        let mut command = if use_multi_mapping {
+        // Build final command
+        // - Real root: just bwrap (no user namespace wrappers needed)
+        // - Normal user with multi-uid: unshare + bwrap
+        // - Normal user without multi-uid: just bwrap with --unshare-user
+        let mut command = if is_real_root {
+            let mut cmd = Command::new("bwrap");
+            cmd.args(&bwrap_args);
+            cmd
+        } else if use_multi_mapping {
             let subuid = subuid_range.unwrap();
             let subgid = subgid_range.unwrap();
 
-            // Use unshare to create user namespace with multi-uid mapping
             let mut cmd = Command::new("unshare");
             cmd.arg("-U")
                 .arg("--keep-caps")
@@ -247,7 +257,6 @@ impl BwrapExecutor {
                 .args(&bwrap_args);
             cmd
         } else {
-            // Just use bwrap directly with single-uid mapping
             let mut cmd = Command::new("bwrap");
             cmd.args(&bwrap_args);
             cmd

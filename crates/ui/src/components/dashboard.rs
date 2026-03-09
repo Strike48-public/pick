@@ -3,7 +3,7 @@
 use dioxus::prelude::*;
 use pentest_core::terminal::TerminalLine;
 
-use super::icons::{Info, MessageCircle, Network, Shield, Terminal, Wifi};
+use super::icons::{Info, MessageCircle, Network, Shield, Terminal, Wifi, Wrench};
 
 /// Connected home screen with status, quick actions, and recent activity.
 /// Settings (shell mode) and disconnect are now in the sidebar.
@@ -54,6 +54,12 @@ pub fn Dashboard(
                             onclick: move |_| on_open_shell.call(()),
                             span { class: "action-card-icon", Terminal { size: 24 } }
                             span { class: "action-card-label", "Shell" }
+                        }
+                        div {
+                            class: "action-card",
+                            onclick: move |_| on_open_chat.call("Run autopwn for automated WiFi penetration testing. First use the list_wifi_interfaces tool to show available wireless interfaces, let me select which one to use, then configure and run autopwn with my chosen interface and wordlist.".to_string()),
+                            span { class: "action-card-icon", Wrench { size: 24 } }
+                            span { class: "action-card-label", "Autopwn" }
                         }
                     }
                 }

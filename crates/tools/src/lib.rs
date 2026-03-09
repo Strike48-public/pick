@@ -3,6 +3,7 @@
 //! This crate implements all pentest tools using the platform abstraction layer.
 
 pub mod arp_table;
+pub mod autopwn;
 pub mod device_info;
 pub mod execute_command;
 pub mod list_files;
@@ -13,12 +14,14 @@ pub mod screenshot;
 pub mod ssdp_discover;
 pub mod traffic_capture;
 pub mod util;
+pub mod wifi_interfaces;
 pub mod wifi_scan;
 pub mod write_file;
 
 use pentest_core::tools::ToolRegistry;
 
 pub use arp_table::ArpTableTool;
+pub use autopwn::AutopwnTool;
 pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
 pub use list_files::ListFilesTool;
@@ -28,6 +31,7 @@ pub use read_file::ReadFileTool;
 pub use screenshot::ScreenshotTool;
 pub use ssdp_discover::SsdpDiscoverTool;
 pub use traffic_capture::TrafficCaptureTool;
+pub use wifi_interfaces::WifiInterfacesTool;
 pub use wifi_scan::WifiScanTool;
 pub use write_file::WriteFileTool;
 
@@ -51,6 +55,8 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(ReadFileTool);
     registry.register(WriteFileTool);
     registry.register(ListFilesTool);
+    registry.register(WifiInterfacesTool);
+    registry.register(AutopwnTool);
 
     registry
 }
