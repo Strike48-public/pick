@@ -3,11 +3,29 @@
     const container = document.getElementById('shell-container');
     if (!container) return;
 
+    // Detect if we're inside StrikeHub's iframe (IPC mode).
+    // Windows: http://dioxus.index.html/connector/{id}/liveview  (hostname = dioxus.index.html)
+    // Linux:   dioxus://index.html/connector/{id}/liveview       (protocol = dioxus:)
+    var isStrikeHub = location.hostname === 'dioxus.index.html' || location.protocol === 'dioxus:';
+
     // Detect if we're in a real browser (http/https) vs a Dioxus webview
     // (dioxus://index.html). In the browser/liveview case, derive URLs from
     // the page origin so they work through proxies (e.g. Strike48 Studio).
-    var isRealBrowser = (location.protocol === 'http:' || location.protocol === 'https:');
-    var httpBase = isRealBrowser ? location.origin : BASE;
+    var isRealBrowser = !isStrikeHub && (location.protocol === 'http:' || location.protocol === 'https:');
+
+    var httpBase;
+    if (isStrikeHub) {
+        // Assets must route through the StrikeHub asset handler → bridge → IPC.
+        // Build a base that includes the /connector/{id} prefix so requests
+        // like /connector/{id}/assets/restty.js get intercepted properly.
+        var pathParts = location.pathname.split('/');
+        var connectorBase = pathParts.slice(0, 3).join('/'); // /connector/{id}
+        httpBase = location.origin + connectorBase;
+    } else if (isRealBrowser) {
+        httpBase = location.origin;
+    } else {
+        httpBase = BASE;
+    }
 
     // Load the restty bundle via script tag if not already loaded
     // (In Strike48 mode, it's already inlined in <head>)
@@ -83,8 +101,15 @@
     // In a real browser (liveview / Studio proxy), derive the WebSocket URL
     // from the page origin so it works through HTTPS proxies.  In a Dioxus
     // desktop/mobile webview, use the hardcoded LIVEVIEW_BASE.
+    // In StrikeHub IPC mode, route through the WsRelay bridge.
     var wsUrl;
-    if (isRealBrowser) {
+    if (isStrikeHub && window.__MATRIX_WS_URL__) {
+        // __MATRIX_WS_URL__ is like 'ws://127.0.0.1:{port}/ws/graphql'
+        // Extract the bridge base and route through /ws/{connector_id}/ws/shell
+        var wsBridgeBase = window.__MATRIX_WS_URL__.replace(/\/ws\/graphql$/, '');
+        var connectorId = location.pathname.split('/')[2]; // /connector/{id}/...
+        wsUrl = wsBridgeBase + '/ws/' + connectorId + '/ws/shell?cols=80&rows=24&mode=' + shellMode;
+    } else if (isRealBrowser) {
         var wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
         wsUrl = wsProto + '//' + location.host + '/ws/shell?cols=80&rows=24&mode=' + shellMode;
     } else {
