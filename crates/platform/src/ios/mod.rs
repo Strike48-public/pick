@@ -84,13 +84,18 @@ impl SystemInfo for IosPlatform {
         ))
     }
 
-    async fn get_wifi_networks(&self) -> Result<Vec<WifiNetwork>> {
+    async fn get_wifi_networks(&self, interface: Option<String>) -> Result<Vec<WifiNetwork>> {
+        let _ = interface; // Suppress unused warning
         Err(Error::PlatformNotSupported(
             "get_wifi_networks not available on iOS".into(),
         ))
     }
 
-    async fn check_wifi_connection_status(&self) -> Result<WifiConnectionStatus> {
+    async fn check_wifi_connection_status(
+        &self,
+        selected_adapter: Option<String>,
+    ) -> Result<WifiConnectionStatus> {
+        let _ = selected_adapter; // Suppress unused warning
         // iOS doesn't have the same WiFi adapter issues as desktop
         // Return safe by default
         Ok(WifiConnectionStatus {

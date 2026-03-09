@@ -95,8 +95,8 @@ impl SystemInfo for DesktopPlatform {
         system::get_network_interfaces().await
     }
 
-    async fn get_wifi_networks(&self) -> Result<Vec<WifiNetwork>> {
-        system::get_wifi_networks().await
+    async fn get_wifi_networks(&self, interface: Option<String>) -> Result<Vec<WifiNetwork>> {
+        system::get_wifi_networks(interface).await
     }
 
     async fn check_wifi_connection_status(

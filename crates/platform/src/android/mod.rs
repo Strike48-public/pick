@@ -111,11 +111,17 @@ impl SystemInfo for AndroidPlatform {
         system::get_network_interfaces().await
     }
 
-    async fn get_wifi_networks(&self) -> Result<Vec<WifiNetwork>> {
+    async fn get_wifi_networks(&self, interface: Option<String>) -> Result<Vec<WifiNetwork>> {
+        // TODO: Implement interface selection for Android (Task #5)
+        let _ = interface; // Suppress unused warning
         wifi::get_wifi_networks().await
     }
 
-    async fn check_wifi_connection_status(&self) -> Result<WifiConnectionStatus> {
+    async fn check_wifi_connection_status(
+        &self,
+        selected_adapter: Option<String>,
+    ) -> Result<WifiConnectionStatus> {
+        let _ = selected_adapter; // Suppress unused warning
         // Android doesn't have the same WiFi adapter issues as desktop
         // Return safe by default
         Ok(WifiConnectionStatus {
