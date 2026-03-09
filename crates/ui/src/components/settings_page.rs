@@ -42,9 +42,10 @@ pub fn SettingsPage(
 
     // Load WiFi adapters on mount
     use_effect(move || {
+        let adapter = local_wifi_adapter();
         spawn(async move {
             wifi_loading.set(true);
-            match platform_helper::check_wifi_status().await {
+            match platform_helper::check_wifi_status(adapter).await {
                 Ok(status) => wifi_status.set(Some(status)),
                 Err(e) => tracing::warn!("Failed to load WiFi adapters: {}", e),
             }
