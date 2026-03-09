@@ -189,20 +189,34 @@ async fn scan_specific_interface(interface: &str) -> Result<Vec<WifiNetwork>> {
     let mut current_signal = 0;
     let mut current_channel = 0;
     let mut current_security = Vec::new();
+    let mut current_has_privacy = false;
+    let mut current_has_wpa = false;
 
     for line in stdout.lines() {
         let trimmed = line.trim();
 
         if trimmed.starts_with("BSS ") {
-            // Save previous network if we have one
+            // Finalize previous network's security before saving
             if !current_bssid.is_empty() && !current_ssid.is_empty() {
+                // If Privacy is set but no WPA/RSN found, it's WEP
+                if current_has_privacy && !current_has_wpa && current_security.is_empty() {
+                    current_security.push("WEP".to_string());
+                }
+
+                // If no security info found at all, mark as Open
+                let security = if current_security.is_empty() {
+                    "Open".to_string()
+                } else {
+                    current_security.join(",")
+                };
+
                 networks.push(WifiNetwork {
                     ssid: current_ssid.clone(),
                     bssid: current_bssid.clone(),
                     signal_strength: current_signal,
                     frequency: 0,
                     channel: current_channel,
-                    security: current_security.join(","),
+                    security,
                 });
             }
 
@@ -213,6 +227,8 @@ async fn scan_specific_interface(interface: &str) -> Result<Vec<WifiNetwork>> {
             current_signal = 0;
             current_channel = 0;
             current_security = Vec::new();
+            current_has_privacy = false;
+            current_has_wpa = false;
         } else if trimmed.starts_with("SSID: ") {
             current_ssid = trimmed.strip_prefix("SSID: ").unwrap_or("").to_string();
         } else if trimmed.starts_with("signal: ") {
@@ -225,29 +241,43 @@ async fn scan_specific_interface(interface: &str) -> Result<Vec<WifiNetwork>> {
             if let Some(channel_str) = trimmed.strip_prefix("DS Parameter set: channel ") {
                 current_channel = channel_str.parse().unwrap_or(0);
             }
-        } else if trimmed.contains("WPA") || trimmed.contains("RSN") {
-            if trimmed.contains("WPA2") {
+        } else if trimmed.starts_with("RSN:") || trimmed.starts_with("WPA:") {
+            // Mark that we found WPA/WPA2/WPA3 (RSN = Robust Security Network = WPA2+)
+            current_has_wpa = true;
+            if trimmed.starts_with("RSN:") {
                 current_security.push("WPA2".to_string());
-            } else if trimmed.contains("WPA") {
+            } else {
                 current_security.push("WPA".to_string());
             }
-            if trimmed.contains("PSK") {
-                current_security.push("PSK".to_string());
-            }
-        } else if trimmed.contains("Privacy") {
-            current_security.push("WEP".to_string());
+        } else if trimmed.contains("Authentication suites:") && trimmed.contains("PSK") {
+            current_security.push("PSK".to_string());
+        } else if trimmed.contains("Capability:") && trimmed.contains("Privacy") {
+            // Privacy bit just means encryption is enabled
+            current_has_privacy = true;
         }
     }
 
-    // Save last network
+    // Save last network with security finalization
     if !current_bssid.is_empty() && !current_ssid.is_empty() {
+        // If Privacy is set but no WPA/RSN found, it's WEP
+        if current_has_privacy && !current_has_wpa && current_security.is_empty() {
+            current_security.push("WEP".to_string());
+        }
+
+        // If no security info found at all, mark as Open
+        let security = if current_security.is_empty() {
+            "Open".to_string()
+        } else {
+            current_security.join(",")
+        };
+
         networks.push(WifiNetwork {
             ssid: current_ssid,
             bssid: current_bssid,
             signal_strength: current_signal,
             frequency: 0,
             channel: current_channel,
-            security: current_security.join(","),
+            security,
         });
     }
 
