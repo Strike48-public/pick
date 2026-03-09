@@ -182,3 +182,46 @@ pub async fn get_wifi_networks() -> Result<Vec<WifiNetwork>> {
         ))
     }
 }
+
+/// Check WiFi connection status for scan safety assessment
+pub async fn check_wifi_connection_status() -> Result<WifiConnectionStatus> {
+    let interfaces = get_network_interfaces().await?;
+
+    // WiFi interface name patterns (Linux, macOS, Windows)
+    let is_wifi_name = |name: &str| {
+        name.starts_with("wlan")
+            || name.starts_with("wlp")
+            || name.starts_with("wl")
+            || name.starts_with("en0") // macOS WiFi (usually)
+            || name.contains("wi-fi")
+            || name.contains("wireless")
+            || name.to_lowercase().contains("wifi")
+    };
+
+    // Find active WiFi interfaces (up + has IP)
+    let active_wifi: Vec<_> = interfaces
+        .iter()
+        .filter(|i| i.is_up && !i.ip_addresses.is_empty() && is_wifi_name(&i.name))
+        .collect();
+
+    // Find all WiFi interfaces (even if down)
+    let all_wifi: Vec<String> = interfaces
+        .iter()
+        .filter(|i| is_wifi_name(&i.name))
+        .map(|i| i.name.clone())
+        .collect();
+
+    let connected_via_wifi = !active_wifi.is_empty();
+    let total_adapters = all_wifi.len();
+
+    // Safe if: not on WiFi OR has multiple adapters (external available)
+    let safe_to_scan = !connected_via_wifi || total_adapters > 1;
+
+    Ok(WifiConnectionStatus {
+        connected_via_wifi,
+        active_interface: active_wifi.first().map(|i| i.name.clone()),
+        total_adapters,
+        safe_to_scan,
+        all_wifi_interfaces: all_wifi,
+    })
+}

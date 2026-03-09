@@ -20,7 +20,10 @@ connector = [
     "dep:whoami",
     "dep:tracing-subscriber",
 ]
-shell-ws = ["liveview", "dep:pentest-platform", "dep:futures"]
+shell-ws = ["liveview", "dep:futures"]
+desktop = ["pentest-platform/desktop"]
+android = ["pentest-platform/android"]
+ios = ["pentest-platform/ios"]
 
 [lib]
 name = "pentest_ui"
@@ -34,6 +37,7 @@ required-features = ["connector"]
 [dependencies]
 # Core
 pentest-core = { workspace = true }
+pentest-platform = { workspace = true }
 
 # Dioxus (renderer chosen by app)
 dioxus = { workspace = true }
@@ -78,5 +82,3 @@ futures = { workspace = true, optional = true }
 whoami = { version = "1", optional = true }
 strike48-proto = { workspace = true, optional = true }
 
-# Platform (optional, for shell-ws PTY bridge)
-pentest-platform = { workspace = true, optional = true }
