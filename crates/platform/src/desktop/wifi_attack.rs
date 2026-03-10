@@ -69,7 +69,7 @@ impl WifiAttackOps for DesktopPlatform {
         tracing::info!("Disabling monitor mode on {}", interface);
 
         // Remove "mon" suffix if present to get original interface
-        let base_interface = interface.trim_end_matches("mon");
+        let _base_interface = interface.trim_end_matches("mon");
 
         let output = Command::new("sudo")
             .args(["airmon-ng", "stop", interface])
