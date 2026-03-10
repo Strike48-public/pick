@@ -7,6 +7,8 @@ use pentest_core::tools::{execute_timed, PentestTool, Platform, ToolContext, Too
 use pentest_platform::{get_platform, SystemInfo as _};
 use serde_json::{json, Value};
 
+use crate::util::{dbm_to_bars, dbm_to_quality};
+
 /// WiFi scanning tool
 pub struct WifiScanTool;
 
@@ -46,14 +48,22 @@ impl PentestTool for WifiScanTool {
             let networks = platform.get_wifi_networks(selected_adapter).await?;
 
             Ok(json!({
-                "networks": networks.iter().map(|n| json!({
-                    "ssid": n.ssid,
-                    "bssid": n.bssid,
-                    "signal_strength": n.signal_strength,
-                    "frequency": n.frequency,
-                    "channel": n.channel,
-                    "security": n.security,
-                })).collect::<Vec<_>>(),
+                "networks": networks.iter().map(|n| {
+                    let signal_quality = dbm_to_quality(n.signal_strength);
+                    let signal_bars = dbm_to_bars(n.signal_strength);
+
+                    json!({
+                        "ssid": n.ssid,
+                        "bssid": n.bssid,
+                        "signal_strength": n.signal_strength,
+                        "signal_quality": signal_quality,
+                        "signal_bars": signal_bars,
+                        "frequency": n.frequency,
+                        "channel": n.channel,
+                        "security": n.security,
+                        "clients": n.clients,
+                    })
+                }).collect::<Vec<_>>(),
                 "count": networks.len(),
             }))
         })

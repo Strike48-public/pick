@@ -175,7 +175,7 @@ impl CommandExec for AndroidPlatform {
 
 #[async_trait]
 impl WifiAttackOps for AndroidPlatform {
-    async fn enable_monitor_mode(&self, _interface: &str) -> Result<String> {
+    async fn enable_monitor_mode(&self, _interface: &str, _allow_kill_network_manager: bool) -> Result<String> {
         Err(Error::PlatformNotSupported(
             "WiFi attacks not supported on Android without root".into(),
         ))

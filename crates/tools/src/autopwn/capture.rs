@@ -19,7 +19,7 @@ impl PentestTool for AutoPwnCaptureTool {
     }
 
     fn description(&self) -> &str {
-        "Capture WiFi handshake (WPA) or IVs (WEP) from a target network"
+        "Capture WiFi handshake (WPA) or IVs (WEP) from a target network. Note: WPA/WPA2/WPA3 requires a client to be connected or connecting for handshake capture. WEP does not require clients."
     }
 
     fn schema(&self) -> ToolSchema {
@@ -69,6 +69,12 @@ impl PentestTool for AutoPwnCaptureTool {
                 "Target number of IVs to capture (WEP only)",
                 json!(40000),
             ))
+            .param(ToolParam::optional(
+                "allow_network_disruption",
+                ParamType::Boolean,
+                "Allow killing NetworkManager if required for monitor mode (will disconnect internet temporarily). Default: true for attack tools",
+                json!(true),
+            ))
     }
 
     fn supported_platforms(&self) -> Vec<Platform> {
@@ -82,9 +88,12 @@ impl PentestTool for AutoPwnCaptureTool {
                 .as_str()
                 .ok_or_else(|| Error::InvalidParams("bssid is required".into()))?;
 
+            // Parse channel - accept both float and int
             let channel = params["channel"]
-                .as_u64()
-                .ok_or_else(|| Error::InvalidParams("channel is required".into()))? as u8;
+                .as_f64()
+                .or_else(|| params["channel"].as_u64().map(|v| v as f64))
+                .ok_or_else(|| Error::InvalidParams("channel parameter is required (must be a number 1-14)".into()))?
+                as u8;
 
             let security = params["security"]
                 .as_str()
@@ -94,6 +103,7 @@ impl PentestTool for AutoPwnCaptureTool {
             let timeout_secs = params["timeout"].as_u64().unwrap_or(120);
             let use_deauth = params["use_deauth"].as_bool().unwrap_or(true);
             let target_ivs = params["target_ivs"].as_u64().unwrap_or(40000) as u32;
+            let allow_network_disruption = params["allow_network_disruption"].as_bool().unwrap_or(true);
 
             // Get interface from settings or param
             let settings = load_settings();
@@ -124,7 +134,7 @@ impl PentestTool for AutoPwnCaptureTool {
             // Enable monitor mode
             tracing::info!("⚙️  Enabling monitor mode...");
             let mon_interface = platform
-                .enable_monitor_mode(&interface)
+                .enable_monitor_mode(&interface, allow_network_disruption)
                 .await
                 .map_err(|e| {
                     Error::ToolExecution(format!("Failed to enable monitor mode: {}. Make sure aircrack-ng is installed and you have sudo access.", e))
@@ -133,10 +143,10 @@ impl PentestTool for AutoPwnCaptureTool {
             tracing::info!("✓ Monitor mode enabled: {}", mon_interface);
 
             // Set up cleanup on error or completion
-            let cleanup_interface = interface.clone();
+            let cleanup_mon_interface = mon_interface.clone();
             let cleanup = async {
-                tracing::info!("🧹 Cleaning up...");
-                if let Err(e) = platform.disable_monitor_mode(&cleanup_interface).await {
+                tracing::info!("🧹 Cleaning up and restoring network...");
+                if let Err(e) = platform.disable_monitor_mode(&cleanup_mon_interface).await {
                     tracing::warn!("Failed to disable monitor mode: {}", e);
                 }
             };
@@ -185,8 +195,15 @@ impl PentestTool for AutoPwnCaptureTool {
                 }
             };
 
-            // Cleanup
+            // Cleanup and restore network (always runs)
+            tracing::info!("");
+            tracing::info!("═══════════════════════════════════════════════════");
+            tracing::info!("📡 Restoring Network Connectivity");
+            tracing::info!("═══════════════════════════════════════════════════");
             cleanup.await;
+            tracing::info!("✓ Network restoration complete");
+            tracing::info!("═══════════════════════════════════════════════════");
+            tracing::info!("");
 
             match result {
                 Ok(capture_result) => Ok(json!(capture_result)),

@@ -217,6 +217,7 @@ async fn scan_specific_interface(interface: &str) -> Result<Vec<WifiNetwork>> {
                     frequency: 0,
                     channel: current_channel,
                     security,
+                    clients: None, // Not available without monitor mode
                 });
             }
 
@@ -278,6 +279,7 @@ async fn scan_specific_interface(interface: &str) -> Result<Vec<WifiNetwork>> {
             frequency: 0,
             channel: current_channel,
             security,
+            clients: None, // Not available without monitor mode
         });
     }
 
@@ -318,6 +320,7 @@ pub async fn get_wifi_networks(interface: Option<String>) -> Result<Vec<WifiNetw
                     .map(|s| s.to_string())
                     .collect::<Vec<_>>()
                     .join(","),
+                clients: None, // Not available without monitor mode
             })
             .collect())
     }

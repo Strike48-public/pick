@@ -5,7 +5,7 @@ use pentest_core::terminal::TerminalLine;
 use pentest_platform::WifiConnectionStatus;
 
 use crate::platform_helper;
-use super::icons::{Info, MessageCircle, Network, Shield, Terminal, Wifi};
+use super::icons::{Bolt, Info, MessageCircle, Network, Shield, Terminal, Wifi};
 use super::WifiWarningDialog;
 
 /// Connected home screen with status, quick actions, and recent activity.
@@ -19,6 +19,7 @@ pub fn Dashboard(
     #[props(default)] wifi_adapter: Option<String>,
 ) -> Element {
     let last_five: Vec<&TerminalLine> = recent_lines.iter().rev().take(5).collect();
+    let wifi_adapter = use_memo(move || wifi_adapter.clone());
 
     // WiFi warning dialog state
     let mut wifi_warning_visible = use_signal(|| false);
@@ -50,7 +51,7 @@ pub fn Dashboard(
                             class: "action-card",
                             onclick: move |_| {
                                 let action = "Scan for nearby WiFi networks and list SSIDs, channels, and signal strengths.".to_string();
-                                let selected_adapter = wifi_adapter.clone();
+                                let selected_adapter = wifi_adapter();
                                 spawn(async move {
                                     // Check WiFi connection status with selected adapter
                                     match platform_helper::check_wifi_status(selected_adapter).await {
@@ -85,6 +86,32 @@ pub fn Dashboard(
                                     }
                                 }
                             }
+                        }
+                        div {
+                            class: "action-card",
+                            onclick: move |_| {
+                                let action = "Run autopwn: scan for WiFi networks, then for my selected target, plan attack strategy, capture handshake, and crack password.".to_string();
+                                let selected_adapter = wifi_adapter();
+                                spawn(async move {
+                                    match platform_helper::check_wifi_status(selected_adapter).await {
+                                        Ok(status) => {
+                                            wifi_status.set(Some(status.clone()));
+                                            if !status.safe_to_scan {
+                                                pending_wifi_action.set(Some(action));
+                                                wifi_warning_visible.set(true);
+                                            } else {
+                                                on_open_chat.call(action);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("Failed to check WiFi status: {}", e);
+                                            on_open_chat.call(action);
+                                        }
+                                    }
+                                });
+                            },
+                            span { class: "action-card-icon", Bolt { size: 24 } }
+                            span { class: "action-card-label", "AutoPwn" }
                         }
                         div {
                             class: "action-card",

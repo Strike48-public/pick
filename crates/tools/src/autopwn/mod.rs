@@ -143,9 +143,19 @@ impl PentestTool for AutoPwnPlanTool {
             }
 
             if clients == 0 {
-                warnings.push(
-                    "No visible clients - handshake capture may take longer".to_string(),
-                );
+                // WPA requires clients for handshake capture, WEP does not
+                if security.to_uppercase().contains("WPA") {
+                    warnings.push(
+                        "No clients detected - WPA handshake capture REQUIRES a client to be connected or connecting. You can either wait for a client to join, or use deauth attack on an existing client.".to_string(),
+                    );
+                } else if security.to_uppercase().contains("WEP") {
+                    // WEP doesn't need clients - fake auth + injection works
+                    tracing::info!("  Note: WEP attack does not require clients (will use fake auth + injection)");
+                } else {
+                    warnings.push(
+                        "No visible clients - attack success may be limited".to_string(),
+                    );
+                }
             }
 
             let plan = AttackPlan {

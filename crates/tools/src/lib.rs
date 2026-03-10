@@ -15,6 +15,7 @@ pub mod ssdp_discover;
 pub mod traffic_capture;
 pub mod util;
 pub mod wifi_scan;
+pub mod wifi_scan_detailed;
 pub mod write_file;
 
 use pentest_core::tools::ToolRegistry;
@@ -31,6 +32,7 @@ pub use screenshot::ScreenshotTool;
 pub use ssdp_discover::SsdpDiscoverTool;
 pub use traffic_capture::TrafficCaptureTool;
 pub use wifi_scan::WifiScanTool;
+pub use wifi_scan_detailed::WifiScanDetailedTool;
 pub use write_file::WriteFileTool;
 
 /// Create a tool registry with all available tools
@@ -40,6 +42,7 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(PortScanTool);
     registry.register(DeviceInfoTool);
     registry.register(WifiScanTool);
+    registry.register(WifiScanDetailedTool);
     registry.register(AutoPwnPlanTool);
     registry.register(AutoPwnCaptureTool);
     registry.register(AutoPwnCrackTool);

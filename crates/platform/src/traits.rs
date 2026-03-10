@@ -111,7 +111,12 @@ pub trait CommandExec: Send + Sync {
 pub trait WifiAttackOps: Send + Sync {
     /// Enable monitor mode on a WiFi interface
     /// Returns the monitor interface name (e.g., "wlan0mon")
-    async fn enable_monitor_mode(&self, interface: &str) -> Result<String>;
+    ///
+    /// # Arguments
+    /// * `interface` - WiFi interface name (e.g., "wlan0")
+    /// * `allow_kill_network_manager` - If true, allows killing NetworkManager to enable monitor mode.
+    ///   If false and monitor mode fails, returns an error instead of killing NetworkManager.
+    async fn enable_monitor_mode(&self, interface: &str, allow_kill_network_manager: bool) -> Result<String>;
 
     /// Disable monitor mode and restore managed mode
     async fn disable_monitor_mode(&self, interface: &str) -> Result<()>;
@@ -272,6 +277,9 @@ pub struct WifiNetwork {
     pub frequency: u32,
     pub channel: u32,
     pub security: String,
+    /// Number of connected clients (if available). None if not scanned in monitor mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clients: Option<u32>,
 }
 
 /// WiFi connection risk assessment for scan safety

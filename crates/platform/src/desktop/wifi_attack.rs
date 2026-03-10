@@ -11,17 +11,13 @@ use super::DesktopPlatform;
 
 #[async_trait]
 impl WifiAttackOps for DesktopPlatform {
-    async fn enable_monitor_mode(&self, interface: &str) -> Result<String> {
+    async fn enable_monitor_mode(&self, interface: &str, allow_kill_network_manager: bool) -> Result<String> {
         tracing::info!("Enabling monitor mode on {}", interface);
 
-        // Kill interfering processes
-        tracing::info!("Stopping interfering processes...");
-        let _ = Command::new("sudo")
-            .args(["airmon-ng", "check", "kill"])
-            .output()
-            .await;
+        // Modern airmon-ng can work alongside NetworkManager
+        // Only kill interfering processes if explicitly allowed and monitor mode fails first
+        tracing::info!("Attempting monitor mode without killing NetworkManager...");
 
-        // Start monitor mode
         let output = Command::new("sudo")
             .args(["airmon-ng", "start", interface])
             .output()
@@ -33,12 +29,47 @@ impl WifiAttackOps for DesktopPlatform {
                 ))
             })?;
 
+        // If it failed, check if we're allowed to kill NetworkManager
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::ToolExecution(format!(
-                "airmon-ng failed: {}",
-                stderr
-            )));
+            if !allow_kill_network_manager {
+                // User has not authorized killing NetworkManager - fail with clear message
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(Error::ToolExecution(format!(
+                    "Monitor mode failed. Your WiFi adapter requires killing NetworkManager to enable monitor mode, which will disconnect your internet connection. \
+                    To proceed, run the tool with allow_network_disruption=true. Error: {}",
+                    stderr
+                )));
+            }
+
+            // User authorized killing NetworkManager
+            tracing::warn!("⚠️  Monitor mode failed without killing NetworkManager");
+            tracing::warn!("⚠️  User authorized network disruption - killing interfering processes...");
+            tracing::warn!("⚠️  This will temporarily disconnect your internet!");
+
+            let _ = Command::new("sudo")
+                .args(["airmon-ng", "check", "kill"])
+                .output()
+                .await;
+
+            // Retry monitor mode
+            let output = Command::new("sudo")
+                .args(["airmon-ng", "start", interface])
+                .output()
+                .await
+                .map_err(|e| {
+                    Error::ToolExecution(format!(
+                        "Failed to run airmon-ng (is it installed?): {}",
+                        e
+                    ))
+                })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(Error::ToolExecution(format!(
+                    "airmon-ng failed even after killing interfering processes: {}",
+                    stderr
+                )));
+            }
         }
 
         // Parse output to get monitor interface name
@@ -61,16 +92,14 @@ impl WifiAttackOps for DesktopPlatform {
             format!("{}mon", interface)
         };
 
-        tracing::info!("Monitor mode enabled: {}", mon_interface);
+        tracing::info!("✓ Monitor mode enabled: {}", mon_interface);
         Ok(mon_interface)
     }
 
     async fn disable_monitor_mode(&self, interface: &str) -> Result<()> {
-        tracing::info!("Disabling monitor mode on {}", interface);
+        tracing::info!("🧹 Disabling monitor mode on {}", interface);
 
-        // Remove "mon" suffix if present to get original interface
-        let _base_interface = interface.trim_end_matches("mon");
-
+        // Stop monitor interface
         let output = Command::new("sudo")
             .args(["airmon-ng", "stop", interface])
             .output()
@@ -82,13 +111,31 @@ impl WifiAttackOps for DesktopPlatform {
             tracing::warn!("Failed to disable monitor mode: {}", stderr);
         }
 
-        // Restart NetworkManager if it was killed
+        // Always restart NetworkManager to ensure network connectivity is restored
+        tracing::info!("🔄 Restarting NetworkManager to restore network connectivity...");
         let _ = Command::new("sudo")
-            .args(["systemctl", "start", "NetworkManager"])
+            .args(["systemctl", "restart", "NetworkManager"])
             .output()
             .await;
 
-        tracing::info!("Monitor mode disabled, NetworkManager restarted");
+        // Give NetworkManager time to come back up and reconnect
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        // Check if NetworkManager is running
+        let nm_status = Command::new("systemctl")
+            .args(["is-active", "NetworkManager"])
+            .output()
+            .await;
+
+        if let Ok(status) = nm_status {
+            if status.status.success() {
+                tracing::info!("✓ NetworkManager is running");
+            } else {
+                tracing::warn!("⚠️  NetworkManager may not be running - network connectivity may be limited");
+            }
+        }
+
+        tracing::info!("✓ Monitor mode disabled, network restoration attempted");
         Ok(())
     }
 
