@@ -6,6 +6,7 @@ mod network;
 pub mod pty_shell;
 pub mod sandbox;
 mod system;
+mod wifi_attack;
 
 // Re-export sandbox control functions
 pub use command::{is_sandbox_enabled, set_use_sandbox};
@@ -95,8 +96,15 @@ impl SystemInfo for DesktopPlatform {
         system::get_network_interfaces().await
     }
 
-    async fn get_wifi_networks(&self) -> Result<Vec<WifiNetwork>> {
-        system::get_wifi_networks().await
+    async fn get_wifi_networks(&self, interface: Option<String>) -> Result<Vec<WifiNetwork>> {
+        system::get_wifi_networks(interface).await
+    }
+
+    async fn check_wifi_connection_status(
+        &self,
+        selected_adapter: Option<String>,
+    ) -> Result<WifiConnectionStatus> {
+        system::check_wifi_connection_status(selected_adapter).await
     }
 }
 

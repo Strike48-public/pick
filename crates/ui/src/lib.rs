@@ -7,6 +7,7 @@ pub mod components;
 pub mod connector_app;
 pub mod download_manager;
 pub mod ipc;
+mod platform_helper;
 #[cfg(feature = "connector")]
 pub mod liveview_connector;
 pub mod liveview_server;

@@ -56,6 +56,12 @@ pub struct WorkspacePagesProps {
     shell_mode: ShellMode,
     /// Callback when the user changes the shell mode.
     on_shell_mode_change: EventHandler<ShellMode>,
+    /// Selected WiFi adapter for scanning.
+    #[props(default)]
+    wifi_adapter: Option<String>,
+    /// Callback when the user changes the WiFi adapter.
+    #[props(default)]
+    on_wifi_adapter_change: EventHandler<Option<String>>,
     /// Matrix API URL for chat.
     api_url: String,
     /// Auth token for chat.
@@ -92,6 +98,7 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
                             on_open_chat: move |msg: String| on_open_chat.call(msg),
                             on_open_shell: move |_| on_open_shell.call(()),
                             recent_lines: terminal_lines.read().clone(),
+                            wifi_adapter: props.wifi_adapter.clone(),
                         }
                     }
                 }
@@ -161,6 +168,8 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
                     on_start_download: move |_| props.on_start_download.call(()),
                     shell_mode: props.shell_mode,
                     on_shell_mode_change: move |mode: ShellMode| props.on_shell_mode_change.call(mode),
+                    wifi_adapter: props.wifi_adapter.clone(),
+                    on_wifi_adapter_change: move |adapter: Option<String>| props.on_wifi_adapter_change.call(adapter),
                 }
             }
         }
@@ -507,6 +516,12 @@ pub fn WorkspaceApp() -> Element {
                         let _ = save_settings(&s);
                         #[cfg(all(feature = "shell-ws", not(target_os = "android")))]
                         pentest_platform::set_use_sandbox(mode == ShellMode::Proot);
+                    },
+                    wifi_adapter: settings.read().wifi_adapter.clone(),
+                    on_wifi_adapter_change: move |adapter: Option<String>| {
+                        let mut s = settings.write();
+                        s.wifi_adapter = adapter;
+                        let _ = save_settings(&s);
                     },
                     api_url: matrix_api_url.read().clone(),
                     auth_token: matrix_auth_token.read().clone(),

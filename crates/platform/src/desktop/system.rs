@@ -147,8 +147,155 @@ async fn get_network_interfaces_fallback() -> Result<Vec<NetworkInterface>> {
     }
 }
 
+/// Scan WiFi networks on a specific interface using `iw` command (Linux only)
+#[cfg(target_os = "linux")]
+async fn scan_specific_interface(interface: &str) -> Result<Vec<WifiNetwork>> {
+    use tokio::process::Command;
+
+    // First, verify the interface exists
+    let check_output = Command::new("ip")
+        .args(["link", "show", interface])
+        .output()
+        .await
+        .map_err(|e| Error::Network(format!("Failed to check interface: {}", e)))?;
+
+    if !check_output.status.success() {
+        return Err(Error::Network(format!(
+            "WiFi adapter '{}' not found. Please check Settings → WiFi Adapter.",
+            interface
+        )));
+    }
+
+    // Run iw scan
+    let output = Command::new("iw")
+        .args(["dev", interface, "scan"])
+        .output()
+        .await
+        .map_err(|e| Error::Network(format!("Failed to execute iw command: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Network(format!(
+            "WiFi scan failed on '{}': {}",
+            interface, stderr
+        )));
+    }
+
+    // Parse iw scan output
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut networks = Vec::new();
+    let mut current_bssid = String::new();
+    let mut current_ssid = String::new();
+    let mut current_signal = 0;
+    let mut current_channel = 0;
+    let mut current_security = Vec::new();
+    let mut current_has_privacy = false;
+    let mut current_has_wpa = false;
+
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("BSS ") {
+            // Finalize previous network's security before saving
+            if !current_bssid.is_empty() && !current_ssid.is_empty() {
+                // If Privacy is set but no WPA/RSN found, it's WEP
+                if current_has_privacy && !current_has_wpa && current_security.is_empty() {
+                    current_security.push("WEP".to_string());
+                }
+
+                // If no security info found at all, mark as Open
+                let security = if current_security.is_empty() {
+                    "Open".to_string()
+                } else {
+                    current_security.join(",")
+                };
+
+                networks.push(WifiNetwork {
+                    ssid: current_ssid.clone(),
+                    bssid: current_bssid.clone(),
+                    signal_strength: current_signal,
+                    frequency: 0,
+                    channel: current_channel,
+                    security,
+                });
+            }
+
+            // Start new network
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            current_bssid = parts.get(1).unwrap_or(&"").trim_end_matches('(').to_string();
+            current_ssid = String::new();
+            current_signal = 0;
+            current_channel = 0;
+            current_security = Vec::new();
+            current_has_privacy = false;
+            current_has_wpa = false;
+        } else if trimmed.starts_with("SSID: ") {
+            current_ssid = trimmed.strip_prefix("SSID: ").unwrap_or("").to_string();
+        } else if trimmed.starts_with("signal: ") {
+            if let Some(signal_str) = trimmed.strip_prefix("signal: ") {
+                if let Some(value) = signal_str.split_whitespace().next() {
+                    current_signal = value.parse().unwrap_or(0);
+                }
+            }
+        } else if trimmed.starts_with("DS Parameter set: channel ") {
+            if let Some(channel_str) = trimmed.strip_prefix("DS Parameter set: channel ") {
+                current_channel = channel_str.parse().unwrap_or(0);
+            }
+        } else if trimmed.starts_with("RSN:") || trimmed.starts_with("WPA:") {
+            // Mark that we found WPA/WPA2/WPA3 (RSN = Robust Security Network = WPA2+)
+            current_has_wpa = true;
+            if trimmed.starts_with("RSN:") {
+                current_security.push("WPA2".to_string());
+            } else {
+                current_security.push("WPA".to_string());
+            }
+        } else if trimmed.contains("Authentication suites:") && trimmed.contains("PSK") {
+            current_security.push("PSK".to_string());
+        } else if trimmed.contains("Capability:") && trimmed.contains("Privacy") {
+            // Privacy bit just means encryption is enabled
+            current_has_privacy = true;
+        }
+    }
+
+    // Save last network with security finalization
+    if !current_bssid.is_empty() && !current_ssid.is_empty() {
+        // If Privacy is set but no WPA/RSN found, it's WEP
+        if current_has_privacy && !current_has_wpa && current_security.is_empty() {
+            current_security.push("WEP".to_string());
+        }
+
+        // If no security info found at all, mark as Open
+        let security = if current_security.is_empty() {
+            "Open".to_string()
+        } else {
+            current_security.join(",")
+        };
+
+        networks.push(WifiNetwork {
+            ssid: current_ssid,
+            bssid: current_bssid,
+            signal_strength: current_signal,
+            frequency: 0,
+            channel: current_channel,
+            security,
+        });
+    }
+
+    Ok(networks)
+}
+
 /// Get WiFi networks
-pub async fn get_wifi_networks() -> Result<Vec<WifiNetwork>> {
+///
+/// # Arguments
+/// * `interface` - Optional WiFi interface to scan (e.g., "wlan1"). If None, uses auto-detect.
+pub async fn get_wifi_networks(interface: Option<String>) -> Result<Vec<WifiNetwork>> {
+    // If interface specified, use iw command (Linux only)
+    #[cfg(target_os = "linux")]
+    if let Some(iface) = interface {
+        return scan_specific_interface(&iface).await;
+    }
+
+    // Fallback to wifi_scan crate for auto-detect
     #[cfg(feature = "wifi_scan")]
     {
         let networks = tokio::task::spawn_blocking(wifi_scan::scan)
@@ -177,8 +324,71 @@ pub async fn get_wifi_networks() -> Result<Vec<WifiNetwork>> {
 
     #[cfg(not(feature = "wifi_scan"))]
     {
+        let _ = interface; // Suppress unused warning
         Err(Error::PlatformNotSupported(
             "WiFi scanning requires the 'wifi_scan' feature".into(),
         ))
     }
+}
+
+/// Check WiFi connection status for scan safety assessment
+///
+/// # Arguments
+/// * `selected_adapter` - User's chosen WiFi interface (e.g., "wlan1"). If provided,
+///   safety is assessed based on whether this adapter differs from the active connection.
+pub async fn check_wifi_connection_status(
+    selected_adapter: Option<String>,
+) -> Result<WifiConnectionStatus> {
+    let interfaces = get_network_interfaces().await?;
+
+    // WiFi interface name patterns (Linux, macOS, Windows)
+    let is_wifi_name = |name: &str| {
+        name.starts_with("wlan")
+            || name.starts_with("wlp")
+            || name.starts_with("wl")
+            || name.starts_with("en0") // macOS WiFi (usually)
+            || name.contains("wi-fi")
+            || name.contains("wireless")
+            || name.to_lowercase().contains("wifi")
+    };
+
+    // Find active WiFi interfaces (up + has IP)
+    let active_wifi: Vec<_> = interfaces
+        .iter()
+        .filter(|i| i.is_up && !i.ip_addresses.is_empty() && is_wifi_name(&i.name))
+        .collect();
+
+    // Find all WiFi interfaces (even if down)
+    let all_wifi: Vec<String> = interfaces
+        .iter()
+        .filter(|i| is_wifi_name(&i.name))
+        .map(|i| i.name.clone())
+        .collect();
+
+    let connected_via_wifi = !active_wifi.is_empty();
+    let total_adapters = all_wifi.len();
+    let active_interface = active_wifi.first().map(|i| i.name.clone());
+
+    // Smart safety assessment based on selected adapter
+    let safe_to_scan = if let Some(ref selected) = selected_adapter {
+        // User explicitly chose an adapter
+        if let Some(ref active) = active_interface {
+            // Check if selected adapter differs from active connection
+            selected != active // Safe if different, unsafe if same
+        } else {
+            // Not connected via WiFi, always safe
+            true
+        }
+    } else {
+        // Auto-detect mode: Safe if not on WiFi OR has multiple adapters
+        !connected_via_wifi || total_adapters > 1
+    };
+
+    Ok(WifiConnectionStatus {
+        connected_via_wifi,
+        active_interface,
+        total_adapters,
+        safe_to_scan,
+        all_wifi_interfaces: all_wifi,
+    })
 }

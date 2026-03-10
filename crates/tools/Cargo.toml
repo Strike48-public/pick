@@ -19,6 +19,7 @@ pentest-platform = { workspace = true, default-features = false }
 # Async
 tokio = { workspace = true }
 async-trait = { workspace = true }
+futures = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
@@ -33,4 +34,7 @@ tracing = { workspace = true }
 # Utilities
 base64 = { workspace = true }
 lazy_static = "1.4"
+regex = { workspace = true }
+chrono = { workspace = true }
 dns-lookup = { workspace = true }
+reqwest = { workspace = true }
