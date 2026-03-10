@@ -4,9 +4,9 @@ use dioxus::prelude::*;
 use pentest_core::terminal::TerminalLine;
 use pentest_platform::WifiConnectionStatus;
 
-use crate::platform_helper;
 use super::icons::{Bolt, Info, MessageCircle, Network, Shield, Terminal, Wifi};
 use super::WifiWarningDialog;
+use crate::platform_helper;
 
 /// Connected home screen with status, quick actions, and recent activity.
 /// Settings (shell mode) and disconnect are now in the sidebar.
@@ -118,6 +118,12 @@ pub fn Dashboard(
                             onclick: move |_| on_open_chat.call("Scan the local gateway for common open ports and identify running services.".to_string()),
                             span { class: "action-card-icon", Shield { size: 24 } }
                             span { class: "action-card-label", "Port Scan" }
+                        }
+                        div {
+                            class: "action-card",
+                            onclick: move |_| on_open_chat.call("Perform a comprehensive network vulnerability assessment. Phase 1: Discover all hosts (ARP scan, mDNS, SSDP, WiFi). Phase 2: For each host, scan ports and grab service banners. Phase 3: Lookup CVEs for discovered services, test default credentials, scan for web vulnerabilities. Generate a detailed report with severity ratings and remediation recommendations.".to_string()),
+                            span { class: "action-card-icon", Shield { size: 24 } }
+                            span { class: "action-card-label", "Vuln Assessment" }
                         }
                         div {
                             class: "action-card",
