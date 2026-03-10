@@ -84,6 +84,13 @@
     color: var(--foreground);
 }
 
+.settings-page .setting-controls {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    align-items: center;
+}
+
 .settings-page .setting-toggle {
     display: flex;
     flex-direction: row;
@@ -112,6 +119,11 @@
 .settings-page .toggle-btn.active {
     background-color: var(--primary);
     color: var(--primary-foreground);
+}
+
+.settings-page .toggle-btn.active.saved {
+    border: 2px solid var(--ring);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
 }
 
 .settings-page .toggle-btn:disabled {
@@ -212,51 +224,6 @@
     border-radius: 4px;
 }
 
-/* Docker install help */
-.settings-page .setup-help-text {
-    font-size: 12px;
-    font-family: var(--font-mono);
-    color: var(--foreground);
-    line-height: 1.6;
-    padding: 12px;
-    background-color: var(--background);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-}
-
-.settings-page .setup-help-text p {
-    margin: 0 0 6px 0;
-}
-
-.settings-page .setup-help-text p:last-child {
-    margin-bottom: 0;
-}
-
-.settings-page .setup-help-text ul {
-    margin: 4px 0 8px 0;
-    padding-left: 16px;
-}
-
-.settings-page .setup-help-text li {
-    margin-bottom: 4px;
-}
-
-.settings-page .setup-help-text code {
-    background-color: var(--secondary);
-    padding: 1px 4px;
-    border-radius: 3px;
-    font-size: 11px;
-}
-
-.settings-page .setup-help-text a {
-    color: var(--primary);
-    text-decoration: underline;
-}
-
-.settings-page .setup-help-text a:hover {
-    color: var(--ring);
-}
-
 /* save / discard actions */
 .settings-actions {
     display: flex;
@@ -301,6 +268,73 @@
 .settings-discard-btn:hover {
     color: var(--foreground);
     border-color: var(--foreground);
+}
+
+/* Success state for save button */
+.settings-save-btn.success {
+    background-color: #10b981;
+    cursor: default;
+}
+
+.settings-save-btn.success:hover {
+    background-color: #10b981;
+}
+
+/* Inline save button (appears next to toggle buttons) */
+.settings-save-btn-inline {
+    background-color: var(--primary);
+    color: var(--primary-foreground);
+    border: none;
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    white-space: nowrap;
+}
+
+.settings-save-btn-inline:hover {
+    background-color: var(--ring);
+}
+
+.settings-save-btn-inline.success {
+    background-color: #10b981;
+    cursor: default;
+}
+
+.settings-save-btn-inline.success:hover {
+    background-color: #10b981;
+}
+
+.settings-save-btn-inline:disabled {
+    opacity: 1;
+}
+
+/* Success message */
+.settings-save-success {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: #10b981;
+    background-color: rgba(16, 185, 129, 0.1);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    border-radius: 4px;
+    animation: fade-in 0.2s ease;
+}
+
+@keyframes fade-in {
+    from {
+        opacity: 0;
+        transform: translateY(-4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 /* WiFi adapter settings */

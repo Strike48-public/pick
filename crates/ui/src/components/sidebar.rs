@@ -66,7 +66,9 @@ pub fn Sidebar(
     active_page: NavPage,
     on_navigate: EventHandler<NavPage>,
     sidebar_open: bool,
+    #[props(default)] sidebar_collapsed: bool,
     on_close: EventHandler<()>,
+    #[props(default)] on_toggle_collapse: EventHandler<()>,
     unread_logs: usize,
     #[props(default)] connected: bool,
     #[props(default)] host: String,
@@ -74,11 +76,14 @@ pub fn Sidebar(
     #[props(default)] auth_token: String,
     #[props(default)] on_open_conversation: EventHandler<String>,
 ) -> Element {
-    let open_class = if sidebar_open {
-        "sidebar open"
-    } else {
-        "sidebar"
-    };
+    let mut class_names = vec!["sidebar"];
+    if sidebar_open {
+        class_names.push("open");
+    }
+    if sidebar_collapsed {
+        class_names.push("collapsed");
+    }
+    let sidebar_class = class_names.join(" ");
 
     // -----------------------------------------------------------------------
     // Fetch recent conversations reactively
@@ -130,7 +135,7 @@ pub fn Sidebar(
     rsx! {
         style { {include_str!("css/sidebar.css")} }
 
-        nav { class: "{open_class}",
+        nav { class: "{sidebar_class}",
             // Header
             div { class: "sidebar-header",
                 div { class: "sidebar-header-brand",
@@ -138,12 +143,26 @@ pub fn Sidebar(
                         class: "header-logo",
                         dangerous_inner_html: STRIKE48_SIDEBAR_LOGO_SVG,
                     }
-                    span { class: "sidebar-header-title", "Pentest" }
+                    if !sidebar_collapsed {
+                        span { class: "sidebar-header-title", "Pentest" }
+                    }
                 }
-                button {
-                    class: "sidebar-close-btn",
-                    onclick: move |_| on_close.call(()),
-                    X { size: 20 }
+                div { class: "sidebar-header-actions",
+                    button {
+                        class: "sidebar-collapse-btn",
+                        onclick: move |_| on_toggle_collapse.call(()),
+                        title: if sidebar_collapsed { "Expand sidebar" } else { "Collapse sidebar" },
+                        dangerous_inner_html: if sidebar_collapsed {
+                            r#"<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"#
+                        } else {
+                            r#"<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>"#
+                        },
+                    }
+                    button {
+                        class: "sidebar-close-btn",
+                        onclick: move |_| on_close.call(()),
+                        X { size: 20 }
+                    }
                 }
             }
 

@@ -24,15 +24,28 @@ pub fn SettingsPage(
     #[props(default)] on_wifi_adapter_change: EventHandler<Option<String>>,
 ) -> Element {
     // -----------------------------------------------------------------------
-    // Form change tracking
+    // Auto-save on toggle with visual feedback
     // -----------------------------------------------------------------------
 
-    // Capture the original shell mode when the component first mounts.
-    let original_shell_mode = use_hook(|| shell_mode);
+    let is_proot = shell_mode == ShellMode::Proot;
 
-    // Local signal tracks what the user has selected (may differ from the
-    // committed prop value while the user is toggling).
-    let mut local_shell_mode = use_signal(|| shell_mode);
+    // Track which mode was just saved for visual feedback (bold border)
+    let mut just_saved = use_signal(|| None::<ShellMode>);
+
+    // Handler: toggle and auto-save
+    let mut on_toggle = {
+        let on_shell_mode_change = on_shell_mode_change;
+        move |mode: ShellMode| {
+            on_shell_mode_change.call(mode);
+            // Show saved feedback
+            just_saved.set(Some(mode));
+            // Auto-hide after 2 seconds
+            spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                just_saved.set(None);
+            });
+        }
+    };
 
     // WiFi adapter state
     let original_wifi_adapter = use_hook(|| wifi_adapter.clone());
@@ -55,22 +68,10 @@ pub fn SettingsPage(
         });
     });
 
-    // Keep local_shell_mode in sync when the parent prop changes (e.g. after
-    // a save round-trips through the parent and comes back as a new prop).
-    use_effect({
-        let shell_mode = shell_mode;
-        move || {
-            local_shell_mode.set(shell_mode);
-        }
-    });
-
-    let is_proot = local_shell_mode() == ShellMode::Proot;
-    let shell_mode_changed = local_shell_mode() != original_shell_mode;
     let wifi_adapter_changed = local_wifi_adapter() != original_wifi_adapter;
-    let has_changes = shell_mode_changed || wifi_adapter_changed;
 
     // Check if save is safe (not selecting active connection)
-    let save_disabled = if wifi_adapter_changed {
+    let save_wifi_disabled = if wifi_adapter_changed {
         if let Some(status) = wifi_status.read().as_ref() {
             if let Some(ref selected) = local_wifi_adapter() {
                 status.active_interface.as_ref() == Some(selected) && status.connected_via_wifi
@@ -84,37 +85,20 @@ pub fn SettingsPage(
         false
     };
 
-    // Handler: save — propagate to parent and update baseline
-    let on_save = {
-        let on_shell_mode_change = on_shell_mode_change;
+    // Handler: save WiFi adapter selection
+    let on_save_wifi = {
         let on_wifi_adapter_change = on_wifi_adapter_change;
         move |_| {
-            if shell_mode_changed {
-                on_shell_mode_change.call(local_shell_mode());
-            }
-            if wifi_adapter_changed {
-                // Validation: prevent saving if selecting active connection
-                if let Some(status) = wifi_status.read().as_ref() {
-                    if let Some(ref selected) = local_wifi_adapter() {
-                        if status.active_interface.as_ref() == Some(selected)
-                            && status.connected_via_wifi
-                        {
-                            tracing::warn!(
-                                "Prevented saving: user tried to select active connection"
-                            );
-                            return;
-                        }
+            if let Some(status) = wifi_status.read().as_ref() {
+                if let Some(ref selected) = local_wifi_adapter() {
+                    if status.active_interface.as_ref() == Some(selected) && status.connected_via_wifi {
+                        tracing::warn!("Prevented saving: user tried to select active connection");
+                        return;
                     }
                 }
-                on_wifi_adapter_change.call(local_wifi_adapter());
             }
+            on_wifi_adapter_change.call(local_wifi_adapter());
         }
-    };
-
-    // Handler: discard — revert to original
-    let on_discard = move |_| {
-        local_shell_mode.set(original_shell_mode);
-        local_wifi_adapter.set(original_wifi_adapter.clone());
     };
 
     // Handler: test WiFi adapter
@@ -136,6 +120,7 @@ pub fn SettingsPage(
             wifi_testing.set(false);
         });
     };
+
 
     rsx! {
         style { {include_str!("css/settings_page.css")} }
@@ -201,38 +186,6 @@ pub fn SettingsPage(
                             div { class: "setup-error-message", white_space: "pre-wrap",
                                 {err.as_str()}
                             }
-                            if err.contains("Docker") || err.contains("sandbox backend") {
-                                div { class: "setup-help-text",
-                                    p { "Docker is required to run the BlackArch sandbox on macOS." }
-                                    p { "Install one of the following:" }
-                                    ul {
-                                        li {
-                                            strong { "Colima" }
-                                            " (lightweight, recommended): "
-                                            code { "brew install colima docker && colima start" }
-                                        }
-                                        li {
-                                            strong { "Docker Desktop" }
-                                            ": "
-                                            a {
-                                                href: "https://docs.docker.com/desktop/install/mac-install/",
-                                                target: "_blank",
-                                                "docs.docker.com/desktop/install/mac-install"
-                                            }
-                                        }
-                                        li {
-                                            strong { "OrbStack" }
-                                            ": "
-                                            a {
-                                                href: "https://orbstack.dev",
-                                                target: "_blank",
-                                                "orbstack.dev"
-                                            }
-                                        }
-                                    }
-                                    p { class: "text-dim-xs", "After installing, make sure the Docker daemon is running, then retry." }
-                                }
-                            }
                             button {
                                 class: "sidebar-download-btn",
                                 onclick: move |_| on_start_download.call(()),
@@ -263,22 +216,40 @@ pub fn SettingsPage(
                                 if is_proot { "BlackArch proot" } else { "Native shell" }
                             }
                         }
-                        div { class: "setting-toggle",
-                            button {
-                                class: if !is_proot { "toggle-btn active" } else { "toggle-btn" },
-                                onclick: move |_| local_shell_mode.set(ShellMode::Native),
-                                "Native"
-                            }
-                            button {
-                                class: if is_proot { "toggle-btn active" } else { "toggle-btn" },
-                                disabled: !blackarch_downloaded,
-                                onclick: move |_| {
-                                    if blackarch_downloaded {
-                                        local_shell_mode.set(ShellMode::Proot);
-                                    }
-                                },
-                                title: if !blackarch_downloaded { "Set up BlackArch environment first" } else { "" },
-                                "Proot"
+                        div { class: "setting-controls",
+                            div { class: "setting-toggle",
+                                button {
+                                    class: if !is_proot {
+                                        if just_saved() == Some(ShellMode::Native) {
+                                            "toggle-btn active saved"
+                                        } else {
+                                            "toggle-btn active"
+                                        }
+                                    } else {
+                                        "toggle-btn"
+                                    },
+                                    onclick: move |_| on_toggle(ShellMode::Native),
+                                    "Native"
+                                }
+                                button {
+                                    class: if is_proot {
+                                        if just_saved() == Some(ShellMode::Proot) {
+                                            "toggle-btn active saved"
+                                        } else {
+                                            "toggle-btn active"
+                                        }
+                                    } else {
+                                        "toggle-btn"
+                                    },
+                                    disabled: !blackarch_downloaded,
+                                    onclick: move |_| {
+                                        if blackarch_downloaded {
+                                            on_toggle(ShellMode::Proot);
+                                        }
+                                    },
+                                    title: if !blackarch_downloaded { "Set up BlackArch environment first" } else { "" },
+                                    "Proot"
+                                }
                             }
                         }
                     }
@@ -303,7 +274,6 @@ pub fn SettingsPage(
                             div { class: "setting-row",
                                 div { class: "setting-label",
                                     div { class: "setting-name", "Scanning Adapter" }
-                                    // Show active connection info prominently
                                     if let Some(ref active) = status.active_interface {
                                         if status.connected_via_wifi {
                                             div { class: "text-dim-xs wifi-active-connection",
@@ -328,7 +298,7 @@ pub fn SettingsPage(
                                         value: local_wifi_adapter().unwrap_or_default(),
                                         onchange: move |evt| {
                                             let value = evt.value();
-                                            wifi_test_result.set(None); // Clear test result on change
+                                            wifi_test_result.set(None);
                                             if value.is_empty() {
                                                 local_wifi_adapter.set(None);
                                             } else {
@@ -341,7 +311,6 @@ pub fn SettingsPage(
                                                 value: "{interface}",
                                                 selected: local_wifi_adapter().as_ref() == Some(interface),
                                                 "{interface}"
-                                                // Show if it's the active connection
                                                 if status.active_interface.as_ref() == Some(interface) {
                                                     " ⚠️ (YOUR INTERNET CONNECTION)"
                                                 }
@@ -353,30 +322,18 @@ pub fn SettingsPage(
                                         disabled: wifi_testing() || local_wifi_adapter().is_none(),
                                         onclick: on_test_adapter,
                                         title: if local_wifi_adapter().is_none() { "Select an adapter to test" } else { "Test this adapter" },
-                                        if wifi_testing() {
-                                            "Testing..."
-                                        } else {
-                                            "Test"
-                                        }
+                                        if wifi_testing() { "Testing..." } else { "Test" }
                                     }
                                 }
                             }
 
-                            // Test result display - success
                             if let Some(Ok(ref msg)) = wifi_test_result.read().as_ref() {
-                                div { class: "wifi-test-success",
-                                    "✓ {msg}"
-                                }
+                                div { class: "wifi-test-success", "✓ {msg}" }
                             }
-
-                            // Test result display - error
                             if let Some(Err(ref err_msg)) = wifi_test_result.read().as_ref() {
-                                div { class: "wifi-test-error",
-                                    "✗ Test failed: {err_msg}"
-                                }
+                                div { class: "wifi-test-error", "✗ Test failed: {err_msg}" }
                             }
 
-                            // Warning if selected adapter matches active connection
                             if let Some(ref selected) = local_wifi_adapter() {
                                 if status.active_interface.as_ref() == Some(selected) {
                                     div { class: "wifi-adapter-danger",
@@ -389,7 +346,6 @@ pub fn SettingsPage(
                                 }
                             }
 
-                            // General warning if connected via WiFi and no safe adapter selected
                             if status.connected_via_wifi {
                                 if local_wifi_adapter().is_none() {
                                     div { class: "wifi-adapter-warning",
@@ -404,7 +360,6 @@ pub fn SettingsPage(
                                 }
                             }
 
-                            // Info about external adapters
                             div { class: "wifi-adapter-info",
                                 "💡 For best results, use a dedicated external WiFi adapter. "
                                 a {
@@ -421,23 +376,24 @@ pub fn SettingsPage(
                 }
             }
 
-            // Save / Discard actions — only visible when something changed
-            if has_changes {
+            // Save WiFi adapter — only visible when adapter changed
+            if wifi_adapter_changed {
                 div { class: "settings-actions",
                     button {
                         class: "settings-discard-btn",
-                        onclick: on_discard,
+                        onclick: move |_| local_wifi_adapter.set(original_wifi_adapter.clone()),
                         "Discard Changes"
                     }
                     button {
                         class: "settings-save-btn",
-                        disabled: save_disabled,
-                        onclick: on_save,
-                        title: if save_disabled { "Cannot save: selected adapter is your active connection" } else { "" },
+                        disabled: save_wifi_disabled,
+                        onclick: on_save_wifi,
+                        title: if save_wifi_disabled { "Cannot save: selected adapter is your active connection" } else { "" },
                         "Save"
                     }
                 }
             }
+
 
             }
         }

@@ -29,6 +29,7 @@ pub fn AppLayout(
     children: Element,
 ) -> Element {
     let mut sidebar_open = use_signal(|| false);
+    let mut sidebar_collapsed = use_signal(|| false);
 
     // Provide context signal for ChatPanel (full-page mode) to publish its
     // header actions. ChatPanel writes Some(ChatHeaderCtx) when mounted in
@@ -37,6 +38,10 @@ pub fn AppLayout(
 
     let on_close = move |_: ()| {
         sidebar_open.set(false);
+    };
+
+    let on_toggle_collapse = move |_: ()| {
+        sidebar_collapsed.set(!sidebar_collapsed());
     };
 
     // Read chat header context as owned data (clone once per render, not a Signal handle).
@@ -63,7 +68,9 @@ pub fn AppLayout(
                 active_page,
                 on_navigate,
                 sidebar_open: *sidebar_open.read(),
+                sidebar_collapsed: *sidebar_collapsed.read(),
                 on_close,
+                on_toggle_collapse,
                 unread_logs,
                 connected,
                 host: host.clone(),

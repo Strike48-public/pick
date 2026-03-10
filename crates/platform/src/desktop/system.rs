@@ -191,6 +191,14 @@ async fn scan_specific_interface(interface: &str) -> Result<Vec<WifiNetwork>> {
     // Give it a moment for wpa_supplicant to release the device
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
+    // Ensure the interface is up — NetworkManager may leave it down after
+    // unmanaging, causing "Network is down (-100)" from iw scan.
+    let _ = Command::new("ip")
+        .args(["link", "set", interface, "up"])
+        .output()
+        .await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
     // Run iw scan
     let scan_result = Command::new("iw")
         .args(["dev", interface, "scan"])
@@ -223,6 +231,16 @@ async fn scan_specific_interface(interface: &str) -> Result<Vec<WifiNetwork>> {
                  2. Try the test again\n\
                  3. If still failing: sudo systemctl restart NetworkManager",
                 interface
+            )));
+        }
+
+        if stderr.contains("Network is down") || stderr.contains("(-100)") {
+            return Err(Error::Network(format!(
+                "WiFi adapter '{}' is down and could not be brought up.\n\n\
+                 This can happen when NetworkManager has the interface suspended.\n\
+                 Try: sudo ip link set {} up\n\
+                 Or restart NetworkManager: sudo systemctl restart NetworkManager",
+                interface, interface
             )));
         }
 
