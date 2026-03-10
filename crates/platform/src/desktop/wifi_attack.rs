@@ -19,6 +19,41 @@ impl WifiAttackOps for DesktopPlatform {
         tracing::info!("Enabling monitor mode on {}", interface);
         let mut killed_network_manager = false;
 
+        // Check if the interface is already in monitor mode
+        let iw_info = Command::new("iw")
+            .args(["dev", interface, "info"])
+            .output()
+            .await;
+
+        if let Ok(info_output) = iw_info {
+            let info_stdout = String::from_utf8_lossy(&info_output.stdout);
+            if info_stdout.contains("type monitor") {
+                tracing::info!(
+                    "✓ Interface {} is already in monitor mode — reusing it",
+                    interface
+                );
+                return Ok((interface.to_string(), false));
+            }
+        }
+
+        // Also check if a monitor variant already exists (e.g. wlan0mon for wlan0)
+        let mon_variant = format!("{}mon", interface);
+        let iw_mon_info = Command::new("iw")
+            .args(["dev", &mon_variant, "info"])
+            .output()
+            .await;
+
+        if let Ok(info_output) = iw_mon_info {
+            let info_stdout = String::from_utf8_lossy(&info_output.stdout);
+            if info_stdout.contains("type monitor") {
+                tracing::info!(
+                    "✓ Monitor interface {} already exists — reusing it",
+                    mon_variant
+                );
+                return Ok((mon_variant, false));
+            }
+        }
+
         // Modern airmon-ng can work alongside NetworkManager
         // Only kill interfering processes if explicitly allowed and monitor mode fails first
         tracing::info!("Attempting monitor mode without killing NetworkManager...");
@@ -112,16 +147,36 @@ impl WifiAttackOps for DesktopPlatform {
     ) -> Result<()> {
         tracing::info!("🧹 Disabling monitor mode on {}", interface);
 
-        // Stop monitor interface
-        let output = Command::new("sudo")
-            .args(["airmon-ng", "stop", interface])
+        // Check if the interface is actually in monitor mode before trying to stop it
+        let iw_info = Command::new("iw")
+            .args(["dev", interface, "info"])
             .output()
-            .await
-            .map_err(|e| Error::ToolExecution(format!("Failed to stop monitor mode: {}", e)))?;
+            .await;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!("Failed to disable monitor mode: {}", stderr);
+        let is_monitor = iw_info
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("type monitor"))
+            .unwrap_or(false);
+
+        if !is_monitor {
+            tracing::info!(
+                "Interface {} is not in monitor mode — nothing to disable",
+                interface
+            );
+            // Still restart NetworkManager if needed (it may have been killed)
+        } else {
+            // Stop monitor interface
+            let output = Command::new("sudo")
+                .args(["airmon-ng", "stop", interface])
+                .output()
+                .await
+                .map_err(|e| {
+                    Error::ToolExecution(format!("Failed to stop monitor mode: {}", e))
+                })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                tracing::warn!("Failed to disable monitor mode: {}", stderr);
+            }
         }
 
         // Only restart NetworkManager if we killed it during enable_monitor_mode

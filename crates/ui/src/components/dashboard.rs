@@ -5,7 +5,6 @@ use pentest_core::terminal::TerminalLine;
 use pentest_platform::WifiConnectionStatus;
 
 use super::icons::{Bolt, Info, MessageCircle, Network, Shield, Terminal, Wifi};
-use super::WifiWarningDialog;
 use crate::platform_helper;
 
 /// Connected home screen with status, quick actions, and recent activity.
@@ -17,13 +16,14 @@ pub fn Dashboard(
     on_open_shell: EventHandler<()>,
     recent_lines: Vec<TerminalLine>,
     #[props(default)] wifi_adapter: Option<String>,
+    /// Callback to show the WiFi warning dialog at the top level (outside overflow containers).
+    #[props(default)]
+    on_wifi_warning: EventHandler<(WifiConnectionStatus, String)>,
 ) -> Element {
     let last_five: Vec<&TerminalLine> = recent_lines.iter().rev().take(5).collect();
     let wifi_adapter = use_memo(move || wifi_adapter.clone());
 
-    // WiFi warning dialog state
-    let mut wifi_warning_visible = use_signal(|| false);
-    let mut pending_wifi_action = use_signal(|| None::<String>);
+    // WiFi status for the warning badge on the WiFi Scan card
     let mut wifi_status = use_signal(|| None::<WifiConnectionStatus>);
 
     rsx! {
@@ -58,9 +58,8 @@ pub fn Dashboard(
                                         Ok(status) => {
                                             wifi_status.set(Some(status.clone()));
                                             if !status.safe_to_scan {
-                                                // Show warning - either high-risk or conflict with selected adapter
-                                                pending_wifi_action.set(Some(action));
-                                                wifi_warning_visible.set(true);
+                                                // Show warning at top level (outside overflow containers)
+                                                on_wifi_warning.call((status, action));
                                             } else {
                                                 // Safe to proceed
                                                 on_open_chat.call(action);
@@ -97,8 +96,7 @@ pub fn Dashboard(
                                         Ok(status) => {
                                             wifi_status.set(Some(status.clone()));
                                             if !status.safe_to_scan {
-                                                pending_wifi_action.set(Some(action));
-                                                wifi_warning_visible.set(true);
+                                                on_wifi_warning.call((status, action));
                                             } else {
                                                 on_open_chat.call(action);
                                             }
@@ -162,23 +160,5 @@ pub fn Dashboard(
             }
         }
 
-        // WiFi warning dialog
-        if let Some(status) = wifi_status.read().as_ref() {
-            WifiWarningDialog {
-                visible: wifi_warning_visible(),
-                status: status.clone(),
-                on_proceed: move |_| {
-                    if let Some(action) = pending_wifi_action.read().as_ref() {
-                        on_open_chat.call(action.clone());
-                    }
-                    wifi_warning_visible.set(false);
-                    pending_wifi_action.set(None);
-                },
-                on_cancel: move |_| {
-                    wifi_warning_visible.set(false);
-                    pending_wifi_action.set(None);
-                },
-            }
-        }
     }
 }

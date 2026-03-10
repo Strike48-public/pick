@@ -37,6 +37,7 @@ pub fn WifiWarningDialog(props: WifiWarningDialogProps) -> Element {
     };
 
     rsx! {
+        style { {include_str!("css/alert_dialog.css")} }
         style { {include_str!("css/wifi_warning.css")} }
 
         // Backdrop - clicking it cancels

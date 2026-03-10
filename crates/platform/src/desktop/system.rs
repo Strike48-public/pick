@@ -175,10 +175,38 @@ async fn scan_specific_interface(interface: &str) -> Result<Vec<WifiNetwork>> {
 
     let info_stdout = String::from_utf8_lossy(&iw_info.stdout);
     if info_stdout.contains("type monitor") {
-        return Err(Error::Network(format!(
-            "Adapter '{}' is in monitor mode. Disable monitor mode first:\n  sudo airmon-ng stop {}",
-            interface, interface
-        )));
+        // Try to find the original managed-mode interface name.
+        // Common patterns: wlan0mon → wlan0, wlp2s0mon → wlp2s0
+        let base_iface = interface.strip_suffix("mon").unwrap_or(interface);
+        let has_base = if base_iface != interface {
+            // Check if the base interface still exists
+            Command::new("iw")
+                .args(["dev", base_iface, "info"])
+                .output()
+                .await
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        let hint = if has_base {
+            format!(
+                "Adapter '{}' is in monitor mode (used for packet capture/autopwn).\n\n\
+                 Your base adapter '{}' is still available — try scanning with that instead.\n\
+                 Or disable monitor mode first:\n  sudo airmon-ng stop {}",
+                interface, base_iface, interface
+            )
+        } else {
+            format!(
+                "Adapter '{}' is in monitor mode. Regular WiFi scanning requires managed mode.\n\n\
+                 To restore it:\n  sudo airmon-ng stop {}\n\n\
+                 If that doesn't work:\n  sudo ip link set {} down\n  sudo iw dev {} set type managed\n  sudo ip link set {} up",
+                interface, interface, interface, interface, interface
+            )
+        };
+
+        return Err(Error::Network(hint));
     }
 
     // Temporarily unmanage the device from NetworkManager to release wpa_supplicant
@@ -418,6 +446,7 @@ pub async fn check_wifi_connection_status(
     let interfaces = get_network_interfaces().await?;
 
     // WiFi interface name patterns (Linux, macOS, Windows)
+    // Also recognises monitor-mode variants like wlan0mon, wlp2s0mon
     let is_wifi_name = |name: &str| {
         name.starts_with("wlan")
             || name.starts_with("wlp")
@@ -426,6 +455,7 @@ pub async fn check_wifi_connection_status(
             || name.contains("wi-fi")
             || name.contains("wireless")
             || name.to_lowercase().contains("wifi")
+            || name.ends_with("mon") // monitor-mode interfaces (e.g. wlan0mon)
     };
 
     // Find active WiFi interfaces (up + has IP)
