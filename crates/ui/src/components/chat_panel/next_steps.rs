@@ -21,10 +21,7 @@ pub fn NextStepsActions(props: NextStepsActionsProps) -> Element {
     let messages = props.messages.read();
 
     // Find the last agent message
-    let last_agent_msg = messages
-        .iter()
-        .rev()
-        .find(|msg| msg.sender_type != "USER");
+    let last_agent_msg = messages.iter().rev().find(|msg| msg.sender_type != "USER");
 
     // Check if it contains a successful wifi_scan tool call
     let has_wifi_scan = last_agent_msg

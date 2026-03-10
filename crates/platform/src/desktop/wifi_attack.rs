@@ -169,9 +169,7 @@ impl WifiAttackOps for DesktopPlatform {
                 .args(["airmon-ng", "stop", interface])
                 .output()
                 .await
-                .map_err(|e| {
-                    Error::ToolExecution(format!("Failed to stop monitor mode: {}", e))
-                })?;
+                .map_err(|e| Error::ToolExecution(format!("Failed to stop monitor mode: {}", e)))?;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);

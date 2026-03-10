@@ -91,7 +91,9 @@ pub fn SettingsPage(
         move |_| {
             if let Some(status) = wifi_status.read().as_ref() {
                 if let Some(ref selected) = local_wifi_adapter() {
-                    if status.active_interface.as_ref() == Some(selected) && status.connected_via_wifi {
+                    if status.active_interface.as_ref() == Some(selected)
+                        && status.connected_via_wifi
+                    {
                         tracing::warn!("Prevented saving: user tried to select active connection");
                         return;
                     }
@@ -120,7 +122,6 @@ pub fn SettingsPage(
             wifi_testing.set(false);
         });
     };
-
 
     rsx! {
         style { {include_str!("css/settings_page.css")} }
