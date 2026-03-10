@@ -352,8 +352,8 @@ impl LiveViewConnector {
             // Auth initialization follows the SDK's priority order:
             // 1. Direct config (cert-manager / K8s secrets)
             // 2. Pre-approval OTT (env var / file)
-            // 3. Saved credentials (handled post-registration)
-            // 4. Post-approval (wait for admin)
+            // 3. Saved credentials (loaded here, token fetched per-iteration)
+            // 4. Post-approval (wait for admin via CredentialsIssued)
             let connector_type = "pentest-connector".to_string();
             let instance_id = self.config.instance_id.clone();
             let mut ott_provider =
@@ -391,6 +391,14 @@ impl LiveViewConnector {
                         *self.ott_provider.write().await = Some(ott_provider);
                     }
                 }
+            } else if ott_provider
+                .load_saved_credentials(&connector_type, Some(&instance_id))
+                .is_some()
+            {
+                // Store the OTT provider; token will be fetched at the start of
+                // each connection loop iteration (matching kubestudio's pattern).
+                tracing::info!("Loaded saved credentials, will use JWT authentication");
+                *self.ott_provider.write().await = Some(ott_provider);
             }
         }
 
@@ -400,6 +408,40 @@ impl LiveViewConnector {
         loop {
             if self.shutdown.load(Ordering::SeqCst) {
                 break;
+            }
+
+            // Get fresh JWT if we have an OTT provider (matches kubestudio pattern:
+            // fetch a token at the start of each iteration so reconnects always use
+            // a valid token instead of a potentially expired cached one).
+            {
+                let mut ott_guard = self.ott_provider.write().await;
+                if let Some(ref mut ott) = *ott_guard {
+                    match ott.get_token().await {
+                        Ok(token) => {
+                            tracing::info!("Got fresh JWT via OttProvider (len={})", token.len());
+                            self.config.auth_token = token.clone();
+                            self.send_event(ConnectorEvent::CredentialsUpdated {
+                                auth_token: token,
+                                api_url: self.derive_matrix_api_url(),
+                            });
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to get JWT from saved credentials: {}", e);
+                            self.config.auth_token.clear();
+                            // Clean up stale credentials file
+                            let home =
+                                std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                            let stale = format!(
+                                "{}/.strike48/credentials/pentest-connector_{}.json",
+                                home, self.config.instance_id
+                            );
+                            if std::fs::remove_file(&stale).is_ok() {
+                                tracing::info!("Removed stale credentials file: {}", stale);
+                            }
+                            *ott_guard = None;
+                        }
+                    }
+                }
             }
 
             self.send_event(ConnectorEvent::StepChanged(ConnectingStep::Connecting));
@@ -664,6 +706,17 @@ impl LiveViewConnector {
                                    resp.error.contains("auth") || resp.error.contains("jwt") {
                                     tracing::info!("Auth token expired/invalid, clearing and will retry");
                                     self.config.auth_token.clear();
+                                    // Clear the OTT provider so we don't try to refresh stale credentials
+                                    *self.ott_provider.write().await = None;
+                                    // Delete stale saved credentials file to break the retry loop
+                                    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                                    let stale = format!(
+                                        "{}/.strike48/credentials/pentest-connector_{}.json",
+                                        home, self.config.instance_id
+                                    );
+                                    if std::fs::remove_file(&stale).is_ok() {
+                                        tracing::info!("Removed stale credentials file: {}", stale);
+                                    }
                                     // Notify main app to clear saved token
                                     self.send_event(ConnectorEvent::CredentialsUpdated {
                                         auth_token: String::new(),
