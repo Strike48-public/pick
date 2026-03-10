@@ -121,9 +121,16 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         }
     };
 
+    // Shared base client — created once, reuses the reqwest connection pool.
+    // Avoids repeated Client::builder() calls (which can fail on Windows).
+    let base_client = use_hook({
+        let api_url = api_url.clone();
+        move || Arc::new(MatrixChatClient::new(api_url))
+    });
+
     // Build client helper — reads session store at call time for freshest token
     let make_client = {
-        let api_url = api_url.clone();
+        let base_client = base_client.clone();
         let effective_token = effective_token.clone();
         move || -> Arc<MatrixChatClient> {
             let session_token = crate::session::get_auth_token();
@@ -132,7 +139,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             } else {
                 effective_token.clone()
             };
-            let mut c = MatrixChatClient::new(api_url.clone());
+            let mut c = MatrixChatClient::from_shared(&base_client);
             if !token.is_empty() {
                 c.set_auth_token(token);
             }
