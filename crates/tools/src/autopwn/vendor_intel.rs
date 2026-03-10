@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 /// Vendor-specific intelligence
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct VendorIntel {
     pub vendor: &'static str,
     pub default_ssid_patterns: Vec<Regex>,

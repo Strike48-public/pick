@@ -138,6 +138,7 @@ fn select_wpa_strategy(ssid: &str, _bssid: &str, signal: i32, clients: u32) -> A
 }
 
 /// Estimate time for a strategy
+#[allow(dead_code)]
 pub fn estimate_duration(strategy: &AttackStrategy) -> u64 {
     match strategy {
         AttackStrategy::Wep { estimated_time_sec, .. } => *estimated_time_sec,
