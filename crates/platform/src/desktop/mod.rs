@@ -6,6 +6,7 @@ mod network;
 pub mod pty_shell;
 pub mod sandbox;
 mod system;
+mod wifi_attack;
 
 // Re-export sandbox control functions
 pub use command::{is_sandbox_enabled, set_use_sandbox};
