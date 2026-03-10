@@ -16,6 +16,7 @@ use super::file_browser::FileBrowser;
 use super::help_modal::HelpModal;
 use super::icons::MessageCircle;
 use super::keyboard_shortcuts::KeyboardShortcuts;
+use super::log_filter_bar::LogFilterBar;
 use super::settings_page::SettingsPage;
 use super::shell::InteractiveShell;
 use super::sidebar::NavPage;
@@ -86,6 +87,9 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
     let on_open_chat = props.on_open_chat;
     let on_open_shell = props.on_open_shell;
 
+    // Filtered terminal lines (updated by LogFilterBar)
+    let filtered_lines = use_signal(Vec::<TerminalLine>::new);
+
     rsx! {
         div { class: "content-area",
             // Dashboard
@@ -152,8 +156,12 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
             // Logs
             if page == NavPage::Logs {
                 div { class: "main-content flex-col-full",
+                    LogFilterBar {
+                        lines: terminal_lines,
+                        filtered_lines,
+                    }
                     div { class: "flex-scroll",
-                        Terminal { lines: terminal_lines.read().clone() }
+                        Terminal { lines: filtered_lines.read().clone() }
                     }
                 }
             }

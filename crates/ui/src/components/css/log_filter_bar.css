@@ -1,0 +1,128 @@
+.log-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--bg-secondary, #1e1e1e);
+  border-bottom: 1px solid var(--border-color, #333);
+  flex-wrap: wrap;
+}
+
+.log-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-color, #444);
+  border-radius: 16px;
+  background: transparent;
+  color: var(--text-secondary, #999);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.log-filter-btn:hover {
+  background: var(--bg-hover, #2a2a2a);
+  border-color: var(--border-hover, #555);
+}
+
+.log-filter-label {
+  font-weight: 500;
+}
+
+.log-filter-count {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+/* Active state for All button */
+.log-filter-btn.all.active {
+  background: var(--primary-color, #0ea5e9);
+  border-color: var(--primary-color, #0ea5e9);
+  color: white;
+}
+
+.log-filter-btn.all.active:hover {
+  background: var(--primary-hover, #0284c7);
+  border-color: var(--primary-hover, #0284c7);
+}
+
+/* Active state for Debug (gray) */
+.log-filter-btn.debug.active {
+  background: #808080;
+  border-color: #808080;
+  color: white;
+}
+
+.log-filter-btn.debug.active:hover {
+  background: #999;
+  border-color: #999;
+}
+
+/* Active state for Info (cyan) */
+.log-filter-btn.info.active {
+  background: #00bcd4;
+  border-color: #00bcd4;
+  color: white;
+}
+
+.log-filter-btn.info.active:hover {
+  background: #00acc1;
+  border-color: #00acc1;
+}
+
+/* Active state for Success (green) */
+.log-filter-btn.success.active {
+  background: #4caf50;
+  border-color: #4caf50;
+  color: white;
+}
+
+.log-filter-btn.success.active:hover {
+  background: #66bb6a;
+  border-color: #66bb6a;
+}
+
+/* Active state for Warning (orange/yellow) */
+.log-filter-btn.warning.active {
+  background: #ff9800;
+  border-color: #ff9800;
+  color: white;
+}
+
+.log-filter-btn.warning.active:hover {
+  background: #ffa726;
+  border-color: #ffa726;
+}
+
+/* Active state for Error (red) */
+.log-filter-btn.error.active {
+  background: #f44336;
+  border-color: #f44336;
+  color: white;
+}
+
+.log-filter-btn.error.active:hover {
+  background: #ef5350;
+  border-color: #ef5350;
+}
+
+/* Responsive: stack on small screens */
+@media (max-width: 640px) {
+  .log-filter-bar {
+    gap: 6px;
+    padding: 10px 12px;
+  }
+
+  .log-filter-btn {
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+
+  .log-filter-count {
+    font-size: 10px;
+  }
+}

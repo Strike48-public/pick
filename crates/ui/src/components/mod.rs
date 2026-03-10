@@ -16,6 +16,7 @@ pub mod help_modal;
 pub mod icons;
 pub mod keyboard_shortcuts;
 pub mod loading_spinner;
+mod log_filter_bar;
 // router module requires dioxus-router dependency — kept as scaffolding reference
 // #[cfg(feature = "liveview")]
 // pub mod router;
@@ -50,6 +51,7 @@ pub use file_browser::{FileBrowser, FileBrowserProps};
 pub use help_modal::HelpModal;
 pub use keyboard_shortcuts::KeyboardShortcuts;
 pub use loading_spinner::{LoadingSpinner, SpinnerSize};
+pub use log_filter_bar::LogFilterBar;
 // #[cfg(feature = "liveview")]
 // pub use router::{Route, WorkspaceRouter};
 pub use icons::STRIKE48_SIDEBAR_LOGO_SVG;

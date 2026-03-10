@@ -166,6 +166,21 @@ async fn scan_specific_interface(interface: &str) -> Result<Vec<WifiNetwork>> {
         )));
     }
 
+    // Check if interface is in monitor mode
+    let iw_info = Command::new("iw")
+        .args(["dev", interface, "info"])
+        .output()
+        .await
+        .map_err(|e| Error::Network(format!("Failed to check interface mode: {}", e)))?;
+
+    let info_stdout = String::from_utf8_lossy(&iw_info.stdout);
+    if info_stdout.contains("type monitor") {
+        return Err(Error::Network(format!(
+            "Adapter '{}' is in monitor mode. Disable monitor mode first:\n  sudo airmon-ng stop {}",
+            interface, interface
+        )));
+    }
+
     // Run iw scan
     let output = Command::new("iw")
         .args(["dev", interface, "scan"])
@@ -175,6 +190,22 @@ async fn scan_specific_interface(interface: &str) -> Result<Vec<WifiNetwork>> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // Provide helpful error messages for common issues
+        if stderr.contains("Device or resource busy") || stderr.contains("(-16)") {
+            return Err(Error::Network(format!(
+                "Adapter '{}' is busy. This usually means:\n\
+                 • NetworkManager is actively using it (if it's your active connection)\n\
+                 • Another scanning process is running\n\
+                 • The adapter needs to be reset\n\n\
+                 Try:\n\
+                 1. If this is your active connection, select a different adapter\n\
+                 2. Restart NetworkManager: sudo systemctl restart NetworkManager\n\
+                 3. Bring interface down and up: sudo ip link set {} down && sudo ip link set {} up",
+                interface, interface, interface
+            )));
+        }
+
         return Err(Error::Network(format!(
             "WiFi scan failed on '{}': {}",
             interface, stderr
