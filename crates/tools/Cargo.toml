@@ -33,4 +33,5 @@ tracing = { workspace = true }
 # Utilities
 base64 = { workspace = true }
 lazy_static = "1.4"
+regex = { workspace = true }
 dns-lookup = { workspace = true }
