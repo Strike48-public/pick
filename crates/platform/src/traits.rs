@@ -9,7 +9,7 @@ use std::time::Duration;
 /// Combined platform provider trait
 #[async_trait]
 pub trait PlatformProvider:
-    NetworkOps + SystemInfo + CaptureOps + CommandExec + Send + Sync
+    NetworkOps + SystemInfo + CaptureOps + CommandExec + WifiAttackOps + Send + Sync
 {
 }
 
@@ -104,6 +104,62 @@ pub trait CommandExec: Send + Sync {
     fn is_command_exec_supported(&self) -> bool {
         true
     }
+}
+
+/// WiFi attack operations trait
+#[async_trait]
+pub trait WifiAttackOps: Send + Sync {
+    /// Enable monitor mode on a WiFi interface
+    /// Returns the monitor interface name (e.g., "wlan0mon")
+    async fn enable_monitor_mode(&self, interface: &str) -> Result<String>;
+
+    /// Disable monitor mode and restore managed mode
+    async fn disable_monitor_mode(&self, interface: &str) -> Result<()>;
+
+    /// Clone MAC address to appear as another device
+    async fn clone_mac(&self, interface: &str, target_mac: &str) -> Result<()>;
+
+    /// Test packet injection capability
+    async fn test_injection(&self, interface: &str) -> Result<InjectionCapability>;
+
+    /// Start capturing WiFi packets
+    async fn start_capture(
+        &self,
+        interface: &str,
+        bssid: &str,
+        channel: u8,
+        output_file: &str,
+    ) -> Result<WifiCaptureHandle>;
+
+    /// Stop WiFi packet capture
+    async fn stop_capture(&self, handle: WifiCaptureHandle) -> Result<()>;
+
+    /// Get capture statistics (IVs, packets, handshake status)
+    async fn get_capture_stats(&self, handle: &WifiCaptureHandle) -> Result<WifiCaptureStats>;
+
+    /// Perform fake authentication (WEP)
+    async fn fake_auth(&self, interface: &str, bssid: &str) -> Result<()>;
+
+    /// Start ARP replay attack (WEP - generate IVs)
+    async fn start_arp_replay(&self, interface: &str, bssid: &str) -> Result<ArpReplayHandle>;
+
+    /// Stop ARP replay attack
+    async fn stop_arp_replay(&self, handle: ArpReplayHandle) -> Result<()>;
+
+    /// Send deauth packets to force client reconnection (WPA)
+    async fn deauth_attack(
+        &self,
+        interface: &str,
+        bssid: &str,
+        client: Option<&str>,
+        count: u8,
+    ) -> Result<()>;
+
+    /// Verify WPA handshake in capture file
+    async fn verify_handshake(&self, capture_file: &str, bssid: &str) -> Result<bool>;
+
+    /// Crack WEP key from captured IVs (live cracking)
+    async fn crack_wep(&self, capture_file: &str, bssid: &str) -> Result<Option<String>>;
 }
 
 // ============ Data Types ============
@@ -348,4 +404,34 @@ pub fn port_to_service(port: u16) -> Option<&'static str> {
         27017 => Some("mongodb"),
         _ => None,
     }
+}
+
+/// WiFi capture handle
+#[derive(Debug, Clone)]
+pub struct WifiCaptureHandle {
+    pub pid: u32,
+    pub output_file: String,
+    pub interface: String,
+}
+
+/// ARP replay attack handle
+#[derive(Debug, Clone)]
+pub struct ArpReplayHandle {
+    pub pid: u32,
+}
+
+/// Packet injection capability
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InjectionCapability {
+    pub supported: bool,
+    pub success_rate: f32,
+}
+
+/// WiFi capture statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WifiCaptureStats {
+    pub packets: u64,
+    pub ivs: u32,            // For WEP
+    pub has_handshake: bool, // For WPA
+    pub data_packets: u64,
 }
