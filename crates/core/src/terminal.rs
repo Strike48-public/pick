@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Log level for terminal output
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LogLevel {
     Debug,
     Info,
@@ -33,6 +33,28 @@ impl LogLevel {
             LogLevel::Success => "[OK]",
             LogLevel::Warning => "[WARN]",
             LogLevel::Error => "[ERROR]",
+        }
+    }
+
+    /// Get the human-readable label for filter buttons
+    pub fn label(&self) -> &'static str {
+        match self {
+            LogLevel::Debug => "Debug",
+            LogLevel::Info => "Info",
+            LogLevel::Success => "Success",
+            LogLevel::Warning => "Warning",
+            LogLevel::Error => "Error",
+        }
+    }
+
+    /// Get the CSS class name for styling
+    pub fn css_class(&self) -> &'static str {
+        match self {
+            LogLevel::Debug => "debug",
+            LogLevel::Info => "info",
+            LogLevel::Success => "success",
+            LogLevel::Warning => "warning",
+            LogLevel::Error => "error",
         }
     }
 }
@@ -119,6 +141,28 @@ impl TerminalLine {
                 self.message
             ),
             None => format!("{} {} {}", time, self.level.prefix(), self.message),
+        }
+    }
+
+    /// Format the line with full timestamp for export
+    pub fn format_full(&self) -> String {
+        let time = self.timestamp.format("%Y-%m-%d %H:%M:%S%.3f");
+        let base = match &self.source {
+            Some(src) => format!(
+                "{} {} [{}] {}",
+                time,
+                self.level.prefix(),
+                src,
+                self.message
+            ),
+            None => format!("{} {} {}", time, self.level.prefix(), self.message),
+        };
+
+        // Include details if present
+        if let Some(details) = &self.details {
+            format!("{}\n{}", base, details)
+        } else {
+            base
         }
     }
 }

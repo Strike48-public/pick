@@ -117,7 +117,11 @@ pub fn Sidebar(
                 }
             };
             match client.list_conversations(agent_id.as_deref()).await {
-                Ok(list) => recent_convos.set(list),
+                Ok(mut list) => {
+                    // Sort by updated_at descending (most recent first)
+                    list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                    recent_convos.set(list);
+                }
                 Err(e) => tracing::warn!("Sidebar: failed to fetch conversations: {e}"),
             }
         });
