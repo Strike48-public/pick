@@ -25,7 +25,7 @@ pub async fn check_wifi_status(
     selected_adapter: Option<String>,
 ) -> Result<WifiConnectionStatus, String> {
     let _ = selected_adapter; // Suppress unused warning
-    // Return safe by default for unsupported platforms
+                              // Return safe by default for unsupported platforms
     Ok(WifiConnectionStatus {
         connected_via_wifi: false,
         active_interface: None,
@@ -49,13 +49,11 @@ pub async fn test_wifi_adapter(adapter: Option<String>) -> Result<String, String
         Some(ref iface) => {
             // Test by attempting to scan with this specific adapter
             match platform.get_wifi_networks(Some(iface.clone())).await {
-                Ok(networks) => {
-                    Ok(format!(
-                        "Adapter '{}' is working - found {} network(s)",
-                        iface,
-                        networks.len()
-                    ))
-                }
+                Ok(networks) => Ok(format!(
+                    "Adapter '{}' is working - found {} network(s)",
+                    iface,
+                    networks.len()
+                )),
                 Err(e) => Err(format!("Adapter '{}' test failed: {}", iface, e)),
             }
         }

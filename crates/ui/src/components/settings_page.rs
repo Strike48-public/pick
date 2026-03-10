@@ -96,8 +96,12 @@ pub fn SettingsPage(
                 // Validation: prevent saving if selecting active connection
                 if let Some(status) = wifi_status.read().as_ref() {
                     if let Some(ref selected) = local_wifi_adapter() {
-                        if status.active_interface.as_ref() == Some(selected) && status.connected_via_wifi {
-                            tracing::warn!("Prevented saving: user tried to select active connection");
+                        if status.active_interface.as_ref() == Some(selected)
+                            && status.connected_via_wifi
+                        {
+                            tracing::warn!(
+                                "Prevented saving: user tried to select active connection"
+                            );
                             return;
                         }
                     }
