@@ -39,6 +39,7 @@
     display: flex;
     flex-direction: column;
     height: 100vh;
+    max-height: 100vh;
     overflow: hidden;
     z-index: 10000;
     box-shadow: -4px 0 24px rgba(0, 0, 0, 0.4);
@@ -63,6 +64,26 @@
     min-height: 0;
     overflow: hidden;
     background: var(--background);
+}
+
+/* Hide the main status bar when chat or shell page is active */
+.main-column:has(.chat-page) .status-bar,
+.main-column:has(.shell-pane-active) .status-bar {
+    display: none;
+}
+
+/* Prevent parent containers from scrolling when chat is active - chat handles its own internal scroll */
+.content-area:has(.chat-page) {
+    overflow: hidden !important;
+    display: flex;
+    flex-direction: column;
+}
+
+.tab-content:has(.chat-page) {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
 }
 
 @keyframes chat-slide-out {
@@ -261,20 +282,23 @@
 
 .chat-messages-wrapper {
     flex: 1;
-    position: relative;
-    overflow: hidden;
+    display: flex;
+    flex-direction: column;
     min-height: 0;
+    overflow: hidden;
 }
 
 .chat-messages {
-    height: 100%;
+    flex: 1;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 0.75rem;
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
     scrollbar-width: thin;
     scrollbar-color: var(--border) transparent;
+    min-height: 0;
 }
 
 .chat-messages::-webkit-scrollbar {
@@ -850,15 +874,18 @@
 
 /* Conversation history dropdown */
 .chat-history-dropdown {
-    position: relative;
+    position: absolute;
+    top: 3.5rem;
+    left: 0.75rem;
+    right: 0.75rem;
     z-index: 200;
     max-height: 200px;
     overflow-y: auto;
-    margin: 0 0.75rem;
     border: 1px solid var(--border);
     border-radius: 4px;
     background: var(--secondary);
     flex-shrink: 0;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
 }
 
 .chat-history-dropdown::-webkit-scrollbar {

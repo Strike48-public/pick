@@ -20,39 +20,27 @@ pub fn SettingsPage(
     on_shell_mode_change: EventHandler<ShellMode>,
 ) -> Element {
     // -----------------------------------------------------------------------
-    // Form change tracking
+    // Auto-save on toggle with visual feedback
     // -----------------------------------------------------------------------
 
-    // Capture the original shell mode when the component first mounts.
-    let original_shell_mode = use_hook(|| shell_mode);
+    let is_proot = shell_mode == ShellMode::Proot;
 
-    // Local signal tracks what the user has selected (may differ from the
-    // committed prop value while the user is toggling).
-    let mut local_shell_mode = use_signal(|| shell_mode);
+    // Track which mode was just saved for visual feedback (bold border)
+    let mut just_saved = use_signal(|| None::<ShellMode>);
 
-    // Keep local_shell_mode in sync when the parent prop changes (e.g. after
-    // a save round-trips through the parent and comes back as a new prop).
-    use_effect({
-        let shell_mode = shell_mode;
-        move || {
-            local_shell_mode.set(shell_mode);
-        }
-    });
-
-    let is_proot = local_shell_mode() == ShellMode::Proot;
-    let has_changes = local_shell_mode() != original_shell_mode;
-
-    // Handler: save — propagate to parent and update baseline
-    let on_save = {
+    // Handler: toggle and auto-save
+    let mut on_toggle = {
         let on_shell_mode_change = on_shell_mode_change;
-        move |_| {
-            on_shell_mode_change.call(local_shell_mode());
+        move |mode: ShellMode| {
+            on_shell_mode_change.call(mode);
+            // Show saved feedback
+            just_saved.set(Some(mode));
+            // Auto-hide after 2 seconds
+            spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                just_saved.set(None);
+            });
         }
-    };
-
-    // Handler: discard — revert to original
-    let on_discard = move |_| {
-        local_shell_mode.set(original_shell_mode);
     };
 
     rsx! {
@@ -119,38 +107,6 @@ pub fn SettingsPage(
                             div { class: "setup-error-message", white_space: "pre-wrap",
                                 {err.as_str()}
                             }
-                            if err.contains("Docker") || err.contains("sandbox backend") {
-                                div { class: "setup-help-text",
-                                    p { "Docker is required to run the BlackArch sandbox on macOS." }
-                                    p { "Install one of the following:" }
-                                    ul {
-                                        li {
-                                            strong { "Colima" }
-                                            " (lightweight, recommended): "
-                                            code { "brew install colima docker && colima start" }
-                                        }
-                                        li {
-                                            strong { "Docker Desktop" }
-                                            ": "
-                                            a {
-                                                href: "https://docs.docker.com/desktop/install/mac-install/",
-                                                target: "_blank",
-                                                "docs.docker.com/desktop/install/mac-install"
-                                            }
-                                        }
-                                        li {
-                                            strong { "OrbStack" }
-                                            ": "
-                                            a {
-                                                href: "https://orbstack.dev",
-                                                target: "_blank",
-                                                "orbstack.dev"
-                                            }
-                                        }
-                                    }
-                                    p { class: "text-dim-xs", "After installing, make sure the Docker daemon is running, then retry." }
-                                }
-                            }
                             button {
                                 class: "sidebar-download-btn",
                                 onclick: move |_| on_start_download.call(()),
@@ -181,40 +137,42 @@ pub fn SettingsPage(
                                 if is_proot { "BlackArch proot" } else { "Native shell" }
                             }
                         }
-                        div { class: "setting-toggle",
-                            button {
-                                class: if !is_proot { "toggle-btn active" } else { "toggle-btn" },
-                                onclick: move |_| local_shell_mode.set(ShellMode::Native),
-                                "Native"
-                            }
-                            button {
-                                class: if is_proot { "toggle-btn active" } else { "toggle-btn" },
-                                disabled: !blackarch_downloaded,
-                                onclick: move |_| {
-                                    if blackarch_downloaded {
-                                        local_shell_mode.set(ShellMode::Proot);
-                                    }
-                                },
-                                title: if !blackarch_downloaded { "Set up BlackArch environment first" } else { "" },
-                                "Proot"
+                        div { class: "setting-controls",
+                            div { class: "setting-toggle",
+                                button {
+                                    class: if !is_proot {
+                                        if just_saved() == Some(ShellMode::Native) {
+                                            "toggle-btn active saved"
+                                        } else {
+                                            "toggle-btn active"
+                                        }
+                                    } else {
+                                        "toggle-btn"
+                                    },
+                                    onclick: move |_| on_toggle(ShellMode::Native),
+                                    "Native"
+                                }
+                                button {
+                                    class: if is_proot {
+                                        if just_saved() == Some(ShellMode::Proot) {
+                                            "toggle-btn active saved"
+                                        } else {
+                                            "toggle-btn active"
+                                        }
+                                    } else {
+                                        "toggle-btn"
+                                    },
+                                    disabled: !blackarch_downloaded,
+                                    onclick: move |_| {
+                                        if blackarch_downloaded {
+                                            on_toggle(ShellMode::Proot);
+                                        }
+                                    },
+                                    title: if !blackarch_downloaded { "Set up BlackArch environment first" } else { "" },
+                                    "Proot"
+                                }
                             }
                         }
-                    }
-                }
-            }
-
-            // Save / Discard actions — only visible when something changed
-            if has_changes {
-                div { class: "settings-actions",
-                    button {
-                        class: "settings-discard-btn",
-                        onclick: on_discard,
-                        "Discard Changes"
-                    }
-                    button {
-                        class: "settings-save-btn",
-                        onclick: on_save,
-                        "Save"
                     }
                 }
             }

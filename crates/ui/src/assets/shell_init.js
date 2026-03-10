@@ -55,6 +55,9 @@
     // Track whether we've ever connected (to avoid showing
     // "[Connection closed]" from the initial "disconnected" status)
     var hasConnected = false;
+    var reconnectAttempts = 0;
+    var maxReconnectAttempts = 5;
+    var reconnectDelay = 2000; // Start with 2 seconds
 
     var term = new ResttyXterm.Terminal({
         cursorBlink: true,
@@ -71,10 +74,31 @@
                     console.log('[Shell] PTY status:', status);
                     if (status === 'connected') {
                         hasConnected = true;
+                        reconnectAttempts = 0; // Reset on successful connection
                         var loading = document.getElementById('shell-loading');
                         if (loading) loading.style.display = 'none';
                     } else if (status === 'disconnected' && hasConnected) {
-                        term.write('\r\n\x1b[31m[Connection closed]\x1b[0m\r\n');
+                        term.write('\r\n\x1b[33m[Connection closed]\x1b[0m\r\n');
+
+                        // Attempt automatic reconnection
+                        if (reconnectAttempts < maxReconnectAttempts) {
+                            reconnectAttempts++;
+                            var delay = reconnectDelay * reconnectAttempts; // Exponential backoff
+                            term.write('\x1b[36m[Reconnecting in ' + (delay/1000) + ' seconds... (attempt ' + reconnectAttempts + '/' + maxReconnectAttempts + ')]\x1b[0m\r\n');
+
+                            setTimeout(function() {
+                                console.log('[Shell] Attempting reconnection...');
+                                try {
+                                    if (term.restty && typeof term.restty.connectPty === 'function') {
+                                        term.restty.connectPty(wsUrl);
+                                    }
+                                } catch (e) {
+                                    console.error('[Shell] Reconnection failed:', e);
+                                }
+                            }, delay);
+                        } else {
+                            term.write('\x1b[31m[Maximum reconnection attempts reached. Refresh the page to reconnect.]\x1b[0m\r\n');
+                        }
                     }
                 },
             },
