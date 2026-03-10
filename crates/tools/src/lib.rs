@@ -20,7 +20,7 @@ pub mod write_file;
 use pentest_core::tools::ToolRegistry;
 
 pub use arp_table::ArpTableTool;
-pub use autopwn::AutoPwnPlanTool;
+pub use autopwn::{AutoPwnCaptureTool, AutoPwnPlanTool};
 pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
 pub use list_files::ListFilesTool;
@@ -41,6 +41,7 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(DeviceInfoTool);
     registry.register(WifiScanTool);
     registry.register(AutoPwnPlanTool);
+    registry.register(AutoPwnCaptureTool);
     registry.register(ArpTableTool);
     registry.register(SsdpDiscoverTool);
     registry.register(NetworkDiscoverTool);

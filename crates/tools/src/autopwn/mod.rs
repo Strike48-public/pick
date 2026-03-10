@@ -2,13 +2,15 @@
 //!
 //! This module provides tools for automated WiFi network attacks:
 //! - `autopwn_plan`: Analyze target and recommend attack strategy
-//! - `autopwn_capture`: Capture handshake or IVs (coming soon)
+//! - `autopwn_capture`: Capture handshake or IVs
 //! - `autopwn_crack`: Crack captured data (coming soon)
 
+mod capture;
 mod strategy;
 mod types;
 mod vendor_intel;
 
+pub use capture::AutoPwnCaptureTool;
 pub use types::*;
 
 use async_trait::async_trait;
