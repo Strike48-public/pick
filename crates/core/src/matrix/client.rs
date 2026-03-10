@@ -36,9 +36,9 @@ impl MatrixChatClient {
     /// Create a new client that reuses the underlying HTTP connection pool
     /// from `other`. Avoids repeated `reqwest::Client::builder()` calls that
     /// can fail on Windows and wastes file descriptors elsewhere.
-    pub fn from_shared(other: &Self) -> Self {
+    pub fn from_shared(other: &Self, api_url: impl Into<String>) -> Self {
         Self {
-            api_url: other.api_url.clone(),
+            api_url: api_url.into(),
             client: other.client.clone(),
             auth_token: None,
         }

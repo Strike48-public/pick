@@ -128,10 +128,13 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         move || Arc::new(MatrixChatClient::new(api_url))
     });
 
-    // Build client helper — reads session store at call time for freshest token
+    // Build client helper — reads session store at call time for freshest token.
+    // Uses the current api_url prop (not the one captured in use_hook) so that
+    // requests hit the right host even when the URL arrives after first mount.
     let make_client = {
         let base_client = base_client.clone();
         let effective_token = effective_token.clone();
+        let api_url = api_url.clone();
         move || -> Arc<MatrixChatClient> {
             let session_token = crate::session::get_auth_token();
             let token = if !session_token.is_empty() {
@@ -139,7 +142,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             } else {
                 effective_token.clone()
             };
-            let mut c = MatrixChatClient::from_shared(&base_client);
+            let mut c = MatrixChatClient::from_shared(&base_client, &api_url);
             if !token.is_empty() {
                 c.set_auth_token(token);
             }
@@ -189,7 +192,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // Fetch agents when we have a token
     // -----------------------------------------------------------------------
 
-    if !effective_token.is_empty() && !agents_loaded() && !fetch_started() {
+    if !effective_token.is_empty() && !api_url.is_empty() && !agents_loaded() && !fetch_started() {
         fetch_started.set(true);
         tracing::info!("ChatPanel: fetch_started set to true (will not retry)");
         let client = make_client();
