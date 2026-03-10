@@ -11,6 +11,7 @@
 
 mod auth;
 mod injections;
+mod token_refresh;
 mod tools;
 
 use tools::handle_execute_impl;
@@ -821,8 +822,14 @@ impl LiveViewConnector {
                     let api_url = self.derive_matrix_api_url();
                     self.send_event(ConnectorEvent::MatrixTokenObtained {
                         auth_token: token.clone(),
-                        api_url,
+                        api_url: api_url.clone(),
                     });
+
+                    // Start server-side token refresh loop (idempotent) so
+                    // the session token stays valid for GraphQL calls.
+                    if !api_url.is_empty() {
+                        token_refresh::spawn_token_refresh(api_url);
+                    }
                 }
                 Some(_) => {
                     tracing::warn!("[WsOpen] __st param found but empty");
