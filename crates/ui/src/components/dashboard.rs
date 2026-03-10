@@ -90,7 +90,7 @@ pub fn Dashboard(
                         div {
                             class: "action-card",
                             onclick: move |_| {
-                                let action = "Run autopwn: scan for WiFi networks, then for my selected target, plan attack strategy, capture handshake, and crack password.".to_string();
+                                let action = "Scan for nearby WiFi networks and show them in a table. I'll tell you which network to attack after I see the scan results.".to_string();
                                 let selected_adapter = wifi_adapter();
                                 spawn(async move {
                                     match platform_helper::check_wifi_status(selected_adapter).await {
