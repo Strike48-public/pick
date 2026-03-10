@@ -181,12 +181,31 @@ async fn scan_specific_interface(interface: &str) -> Result<Vec<WifiNetwork>> {
         )));
     }
 
+    // Temporarily unmanage the device from NetworkManager to release wpa_supplicant
+    // This prevents "Device or resource busy" errors when scanning
+    let _ = Command::new("nmcli")
+        .args(["device", "set", interface, "managed", "no"])
+        .output()
+        .await;
+
+    // Give it a moment for wpa_supplicant to release the device
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
     // Run iw scan
-    let output = Command::new("iw")
+    let scan_result = Command::new("iw")
         .args(["dev", interface, "scan"])
         .output()
         .await
-        .map_err(|e| Error::Network(format!("Failed to execute iw command: {}", e)))?;
+        .map_err(|e| Error::Network(format!("Failed to execute iw command: {}", e)));
+
+    // Always re-manage the device (cleanup), even if scan failed
+    let _ = Command::new("nmcli")
+        .args(["device", "set", interface, "managed", "yes"])
+        .output()
+        .await;
+
+    // Now check the scan result
+    let output = scan_result?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -194,15 +213,16 @@ async fn scan_specific_interface(interface: &str) -> Result<Vec<WifiNetwork>> {
         // Provide helpful error messages for common issues
         if stderr.contains("Device or resource busy") || stderr.contains("(-16)") {
             return Err(Error::Network(format!(
-                "Adapter '{}' is busy. This usually means:\n\
-                 • NetworkManager is actively using it (if it's your active connection)\n\
-                 • Another scanning process is running\n\
-                 • The adapter needs to be reset\n\n\
-                 Try:\n\
-                 1. If this is your active connection, select a different adapter\n\
-                 2. Restart NetworkManager: sudo systemctl restart NetworkManager\n\
-                 3. Bring interface down and up: sudo ip link set {} down && sudo ip link set {} up",
-                interface, interface, interface
+                "Adapter '{}' is still busy after releasing from NetworkManager.\n\n\
+                 This can happen if:\n\
+                 • The adapter driver is misbehaving\n\
+                 • Another tool has locked the device\n\
+                 • The adapter needs a reset\n\n\
+                 Try unplugging and replugging the adapter, then:\n\
+                 1. Wait 5-10 seconds after plugging it in\n\
+                 2. Try the test again\n\
+                 3. If still failing: sudo systemctl restart NetworkManager",
+                interface
             )));
         }
 
