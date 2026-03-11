@@ -16,11 +16,13 @@ use super::file_browser::FileBrowser;
 use super::help_modal::HelpModal;
 use super::icons::MessageCircle;
 use super::keyboard_shortcuts::KeyboardShortcuts;
+use super::log_filter_bar::LogFilterBar;
 use super::settings_page::SettingsPage;
 use super::shell::InteractiveShell;
 use super::sidebar::NavPage;
 use super::terminal::Terminal;
 use super::tools_page::ToolsPage;
+use super::WifiWarningDialog;
 use crate::liveview_server::{get_terminal_lines, get_workspace_path, terminal_lines_count};
 use crate::theme::{responsive_css, tailwind_css, theme_css, utils_css};
 use pentest_core::config::ShellMode;
@@ -56,6 +58,12 @@ pub struct WorkspacePagesProps {
     shell_mode: ShellMode,
     /// Callback when the user changes the shell mode.
     on_shell_mode_change: EventHandler<ShellMode>,
+    /// Selected WiFi adapter for scanning.
+    #[props(default)]
+    wifi_adapter: Option<String>,
+    /// Callback when the user changes the WiFi adapter.
+    #[props(default)]
+    on_wifi_adapter_change: EventHandler<Option<String>>,
     /// Matrix API URL for chat.
     api_url: String,
     /// Auth token for chat.
@@ -66,6 +74,9 @@ pub struct WorkspacePagesProps {
     chat_mailbox: Signal<Option<String>>,
     /// Mailbox for opening a specific conversation by ID.
     conversation_mailbox: Signal<Option<String>>,
+    /// Callback to show WiFi warning dialog at top level (status, action_message).
+    #[props(default)]
+    on_wifi_warning: EventHandler<(pentest_platform::WifiConnectionStatus, String)>,
 }
 
 /// Routes between Dashboard, Tools, Files, Shell, Logs, and Settings.
@@ -80,18 +91,24 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
     let on_open_chat = props.on_open_chat;
     let on_open_shell = props.on_open_shell;
 
+    // Filtered terminal lines (updated by LogFilterBar)
+    let filtered_lines = use_signal(Vec::<TerminalLine>::new);
+
     rsx! {
         div { class: "content-area",
             // Dashboard
             if page == NavPage::Dashboard {
                 {
                     let ws_display = if workspace.is_empty() { "No workspace path".to_string() } else { workspace.clone() };
+                    let on_wifi_warning = props.on_wifi_warning;
                     rsx! {
                         Dashboard {
                             host: ws_display,
                             on_open_chat: move |msg: String| on_open_chat.call(msg),
                             on_open_shell: move |_| on_open_shell.call(()),
                             recent_lines: terminal_lines.read().clone(),
+                            wifi_adapter: props.wifi_adapter.clone(),
+                            on_wifi_warning: move |data| on_wifi_warning.call(data),
                         }
                     }
                 }
@@ -145,8 +162,12 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
             // Logs
             if page == NavPage::Logs {
                 div { class: "main-content flex-col-full",
+                    LogFilterBar {
+                        lines: terminal_lines,
+                        filtered_lines,
+                    }
                     div { class: "flex-scroll",
-                        Terminal { lines: terminal_lines.read().clone() }
+                        Terminal { lines: filtered_lines.read().clone() }
                     }
                 }
             }
@@ -161,6 +182,8 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
                     on_start_download: move |_| props.on_start_download.call(()),
                     shell_mode: props.shell_mode,
                     on_shell_mode_change: move |mode: ShellMode| props.on_shell_mode_change.call(mode),
+                    wifi_adapter: props.wifi_adapter.clone(),
+                    on_wifi_adapter_change: move |adapter: Option<String>| props.on_wifi_adapter_change.call(adapter),
                 }
             }
         }
@@ -233,6 +256,11 @@ pub fn WorkspaceApp() -> Element {
 
     // help modal state
     let mut help_visible = use_signal(|| false);
+
+    // WiFi warning dialog state — rendered at top level so it overlays everything
+    let mut wifi_warning_visible = use_signal(|| false);
+    let mut wifi_warning_status = use_signal(|| None::<pentest_platform::WifiConnectionStatus>);
+    let mut wifi_warning_action = use_signal(|| None::<String>);
 
     // chat state — credentials obtained from the Studio session via /auth/refresh
     let mut matrix_api_url = use_signal(String::new);
@@ -508,11 +536,22 @@ pub fn WorkspaceApp() -> Element {
                         #[cfg(all(feature = "shell-ws", not(target_os = "android")))]
                         pentest_platform::set_use_sandbox(mode == ShellMode::Proot);
                     },
+                    wifi_adapter: settings.read().wifi_adapter.clone(),
+                    on_wifi_adapter_change: move |adapter: Option<String>| {
+                        let mut s = settings.write();
+                        s.wifi_adapter = adapter;
+                        let _ = save_settings(&s);
+                    },
                     api_url: matrix_api_url.read().clone(),
                     auth_token: matrix_auth_token.read().clone(),
                     tenant_id: crate::session::get_tenant_id(),
                     chat_mailbox,
                     conversation_mailbox,
+                    on_wifi_warning: move |(status, action): (pentest_platform::WifiConnectionStatus, String)| {
+                        wifi_warning_status.set(Some(status));
+                        wifi_warning_action.set(Some(action));
+                        wifi_warning_visible.set(true);
+                    },
                 }
             }
         }
@@ -521,6 +560,28 @@ pub fn WorkspaceApp() -> Element {
         HelpModal {
             visible: *help_visible.read(),
             on_close: move |_| help_visible.set(false),
+        }
+
+        // WiFi warning dialog — rendered outside the app-layout so it overlays everything
+        if let Some(status) = wifi_warning_status.read().as_ref() {
+            WifiWarningDialog {
+                visible: wifi_warning_visible(),
+                status: status.clone(),
+                on_proceed: move |_| {
+                    if let Some(action) = wifi_warning_action.read().as_ref() {
+                        if !action.is_empty() {
+                            chat_mailbox.set(Some(action.clone()));
+                        }
+                        active_page.set(NavPage::Chat);
+                    }
+                    wifi_warning_visible.set(false);
+                    wifi_warning_action.set(None);
+                },
+                on_cancel: move |_| {
+                    wifi_warning_visible.set(false);
+                    wifi_warning_action.set(None);
+                },
+            }
         }
     }
 }

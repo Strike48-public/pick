@@ -123,8 +123,8 @@ pub fn Sidebar(
             };
             match client.list_conversations(agent_id.as_deref()).await {
                 Ok(mut list) => {
-                    // Reverse so newest conversations appear first
-                    list.reverse();
+                    // Sort by updated_at in reverse order (newest first)
+                    list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
                     recent_convos.set(list);
                 }
                 Err(e) => tracing::warn!("Sidebar: failed to fetch conversations: {e}"),

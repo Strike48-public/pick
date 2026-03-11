@@ -1,0 +1,86 @@
+/* WiFi warning dialog specific styles */
+.wifi-warning {
+    max-width: 600px;
+}
+
+.wifi-warning-content {
+    margin: 16px 0;
+}
+
+.risk-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 13px;
+    margin-bottom: 16px;
+}
+
+.risk-badge.risk-caution {
+    background: #ff9800;
+    color: white;
+}
+
+.risk-badge.risk-high-risk {
+    background: #f44336;
+    color: white;
+}
+
+.warning-consequences {
+    background: rgba(244, 67, 54, 0.1);
+    border-left: 4px solid #f44336;
+    padding: 12px;
+    margin: 12px 0;
+    border-radius: 4px;
+}
+
+.warning-consequences h4 {
+    margin-top: 0;
+    color: #f44336;
+    font-size: 14px;
+}
+
+.warning-consequences ul {
+    margin: 8px 0 0 0;
+    padding-left: 20px;
+}
+
+.warning-consequences li {
+    margin: 4px 0;
+    font-size: 14px;
+}
+
+.adapter-recommendation {
+    background: rgba(33, 150, 243, 0.1);
+    border-left: 4px solid #2196f3;
+    padding: 12px;
+    margin: 12px 0;
+    border-radius: 4px;
+}
+
+.adapter-recommendation h4 {
+    margin-top: 0;
+    color: #2196f3;
+    font-size: 14px;
+}
+
+.adapter-recommendation ul {
+    margin: 8px 0;
+    padding-left: 20px;
+}
+
+.adapter-recommendation li {
+    margin: 4px 0;
+    font-size: 14px;
+}
+
+.adapter-recommendation a {
+    color: #2196f3;
+    text-decoration: none;
+    font-weight: 500;
+    font-size: 14px;
+}
+
+.adapter-recommendation a:hover {
+    text-decoration: underline;
+}

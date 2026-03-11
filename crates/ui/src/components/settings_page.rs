@@ -3,8 +3,10 @@
 
 use dioxus::prelude::*;
 use pentest_core::config::ShellMode;
+use pentest_platform::WifiConnectionStatus;
 
 use super::icons::{Download, Settings, Wifi};
+use crate::platform_helper;
 
 #[component]
 pub fn SettingsPage(
@@ -18,6 +20,8 @@ pub fn SettingsPage(
     #[props(default)] setup_error: Option<String>,
     shell_mode: ShellMode,
     on_shell_mode_change: EventHandler<ShellMode>,
+    #[props(default)] wifi_adapter: Option<String>,
+    #[props(default)] on_wifi_adapter_change: EventHandler<Option<String>>,
 ) -> Element {
     // -----------------------------------------------------------------------
     // Auto-save on toggle with visual feedback
@@ -41,6 +45,82 @@ pub fn SettingsPage(
                 just_saved.set(None);
             });
         }
+    };
+
+    // WiFi adapter state
+    let original_wifi_adapter = use_hook(|| wifi_adapter.clone());
+    let mut local_wifi_adapter = use_signal(|| wifi_adapter.clone());
+    let mut wifi_status = use_signal(|| None::<WifiConnectionStatus>);
+    let mut wifi_loading = use_signal(|| false);
+    let mut wifi_test_result = use_signal(|| None::<Result<String, String>>);
+    let mut wifi_testing = use_signal(|| false);
+
+    // Load WiFi adapters on mount
+    use_effect(move || {
+        let adapter = local_wifi_adapter();
+        spawn(async move {
+            wifi_loading.set(true);
+            match platform_helper::check_wifi_status(adapter).await {
+                Ok(status) => wifi_status.set(Some(status)),
+                Err(e) => tracing::warn!("Failed to load WiFi adapters: {}", e),
+            }
+            wifi_loading.set(false);
+        });
+    });
+
+    let wifi_adapter_changed = local_wifi_adapter() != original_wifi_adapter;
+
+    // Check if save is safe (not selecting active connection)
+    let save_wifi_disabled = if wifi_adapter_changed {
+        if let Some(status) = wifi_status.read().as_ref() {
+            if let Some(ref selected) = local_wifi_adapter() {
+                status.active_interface.as_ref() == Some(selected) && status.connected_via_wifi
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    // Handler: save WiFi adapter selection
+    let on_save_wifi = {
+        let on_wifi_adapter_change = on_wifi_adapter_change;
+        move |_| {
+            if let Some(status) = wifi_status.read().as_ref() {
+                if let Some(ref selected) = local_wifi_adapter() {
+                    if status.active_interface.as_ref() == Some(selected)
+                        && status.connected_via_wifi
+                    {
+                        tracing::warn!("Prevented saving: user tried to select active connection");
+                        return;
+                    }
+                }
+            }
+            on_wifi_adapter_change.call(local_wifi_adapter());
+        }
+    };
+
+    // Handler: test WiFi adapter
+    let on_test_adapter = move |_| {
+        let adapter_to_test = local_wifi_adapter();
+        spawn(async move {
+            wifi_testing.set(true);
+            wifi_test_result.set(None);
+
+            match platform_helper::test_wifi_adapter(adapter_to_test.clone()).await {
+                Ok(msg) => {
+                    wifi_test_result.set(Some(Ok(msg)));
+                }
+                Err(e) => {
+                    wifi_test_result.set(Some(Err(e)));
+                }
+            }
+
+            wifi_testing.set(false);
+        });
     };
 
     rsx! {
@@ -176,6 +256,145 @@ pub fn SettingsPage(
                     }
                 }
             }
+
+            // WiFi Adapter card
+            div { class: "settings-card dashboard-card",
+                div { class: "settings-card-header",
+                    span { class: "settings-card-icon", Wifi { size: 16 } }
+                    h2 { "WiFi Adapter" }
+                }
+                div { class: "settings-card-body",
+                    if wifi_loading() {
+                        div { class: "text-dim-xs", "Loading adapters..." }
+                    } else if let Some(status) = wifi_status.read().as_ref() {
+                        if status.all_wifi_interfaces.is_empty() {
+                            div { class: "text-dim-xs",
+                                "No WiFi adapters detected. Connect an external adapter for WiFi scanning."
+                            }
+                        } else {
+                            div { class: "setting-row",
+                                div { class: "setting-label",
+                                    div { class: "setting-name", "Scanning Adapter" }
+                                    if let Some(ref active) = status.active_interface {
+                                        if status.connected_via_wifi {
+                                            div { class: "text-dim-xs wifi-active-connection",
+                                                "🌐 Active Connection: "
+                                                span { class: "active-adapter-name", "{active}" }
+                                            }
+                                        }
+                                    }
+                                    div { class: "text-dim-xs",
+                                        {
+                                            if let Some(ref selected) = local_wifi_adapter() {
+                                                format!("Using {} for scanning", selected)
+                                            } else {
+                                                "Auto-detect first available".to_string()
+                                            }
+                                        }
+                                    }
+                                }
+                                div { class: "setting-select-with-test",
+                                    select {
+                                        class: "setting-select",
+                                        value: local_wifi_adapter().unwrap_or_default(),
+                                        onchange: move |evt| {
+                                            let value = evt.value();
+                                            wifi_test_result.set(None);
+                                            if value.is_empty() {
+                                                local_wifi_adapter.set(None);
+                                            } else {
+                                                local_wifi_adapter.set(Some(value));
+                                            }
+                                        },
+                                        option { value: "", "Auto-detect (first available)" }
+                                        for interface in &status.all_wifi_interfaces {
+                                            option {
+                                                value: "{interface}",
+                                                selected: local_wifi_adapter().as_ref() == Some(interface),
+                                                "{interface}"
+                                                if status.active_interface.as_ref() == Some(interface) {
+                                                    " ⚠️ (YOUR INTERNET CONNECTION)"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    button {
+                                        class: "test-adapter-btn",
+                                        disabled: wifi_testing() || local_wifi_adapter().is_none(),
+                                        onclick: on_test_adapter,
+                                        title: if local_wifi_adapter().is_none() { "Select an adapter to test" } else { "Test this adapter" },
+                                        if wifi_testing() { "Testing..." } else { "Test" }
+                                    }
+                                }
+                            }
+
+                            if let Some(Ok(ref msg)) = wifi_test_result.read().as_ref() {
+                                div { class: "wifi-test-success", "✓ {msg}" }
+                            }
+                            if let Some(Err(ref err_msg)) = wifi_test_result.read().as_ref() {
+                                div { class: "wifi-test-error", "✗ Test failed: {err_msg}" }
+                            }
+
+                            if let Some(ref selected) = local_wifi_adapter() {
+                                if status.active_interface.as_ref() == Some(selected) {
+                                    div { class: "wifi-adapter-danger",
+                                        "⚠️ WARNING: You selected your active internet connection!"
+                                        br {}
+                                        "Scanning this adapter will disconnect you from the internet and disconnect Pick from Strike48."
+                                        br {}
+                                        "Please select a different adapter or connect an external WiFi adapter."
+                                    }
+                                }
+                            }
+
+                            if status.connected_via_wifi {
+                                if local_wifi_adapter().is_none() {
+                                    div { class: "wifi-adapter-warning",
+                                        "⚠️ Connected via WiFi - Auto-detect mode"
+                                        br {}
+                                        if status.total_adapters == 1 {
+                                            "You only have one WiFi adapter. Scanning will disconnect your connection."
+                                        } else {
+                                            "Auto-detect may pick your internet connection. Select a specific external adapter below."
+                                        }
+                                    }
+                                }
+                            }
+
+                            div { class: "wifi-adapter-info",
+                                "💡 For best results, use a dedicated external WiFi adapter. "
+                                a {
+                                    href: "https://github.com/Strike48-public/pick#recommended-wifi-adapters",
+                                    target: "_blank",
+                                    rel: "noopener noreferrer",
+                                    "View recommended adapters →"
+                                }
+                            }
+                        }
+                    } else {
+                        div { class: "text-dim-xs", "Failed to load WiFi adapters" }
+                    }
+                }
+            }
+
+            // Save WiFi adapter — only visible when adapter changed
+            if wifi_adapter_changed {
+                div { class: "settings-actions",
+                    button {
+                        class: "settings-discard-btn",
+                        onclick: move |_| local_wifi_adapter.set(original_wifi_adapter.clone()),
+                        "Discard Changes"
+                    }
+                    button {
+                        class: "settings-save-btn",
+                        disabled: save_wifi_disabled,
+                        onclick: on_save_wifi,
+                        title: if save_wifi_disabled { "Cannot save: selected adapter is your active connection" } else { "" },
+                        "Save"
+                    }
+                }
+            }
+
 
             }
         }

@@ -84,10 +84,27 @@ impl SystemInfo for IosPlatform {
         ))
     }
 
-    async fn get_wifi_networks(&self) -> Result<Vec<WifiNetwork>> {
+    async fn get_wifi_networks(&self, interface: Option<String>) -> Result<Vec<WifiNetwork>> {
+        let _ = interface; // Suppress unused warning
         Err(Error::PlatformNotSupported(
             "get_wifi_networks not available on iOS".into(),
         ))
+    }
+
+    async fn check_wifi_connection_status(
+        &self,
+        selected_adapter: Option<String>,
+    ) -> Result<WifiConnectionStatus> {
+        let _ = selected_adapter; // Suppress unused warning
+                                  // iOS doesn't have the same WiFi adapter issues as desktop
+                                  // Return safe by default
+        Ok(WifiConnectionStatus {
+            connected_via_wifi: false,
+            active_interface: None,
+            total_adapters: 1,
+            safe_to_scan: true,
+            all_wifi_interfaces: vec![],
+        })
     }
 }
 
@@ -137,6 +154,103 @@ impl CommandExec for IosPlatform {
 
     fn is_command_exec_supported(&self) -> bool {
         false
+    }
+}
+
+#[async_trait]
+impl WifiAttackOps for IosPlatform {
+    async fn enable_monitor_mode(
+        &self,
+        _interface: &str,
+        _allow_kill_network_manager: bool,
+    ) -> Result<(String, bool)> {
+        Err(Error::PlatformNotSupported(
+            "WiFi attacks not supported on iOS".into(),
+        ))
+    }
+
+    async fn disable_monitor_mode(
+        &self,
+        _interface: &str,
+        _restart_network_manager: bool,
+    ) -> Result<()> {
+        Err(Error::PlatformNotSupported(
+            "WiFi attacks not supported on iOS".into(),
+        ))
+    }
+
+    async fn clone_mac(&self, _interface: &str, _target_mac: &str) -> Result<()> {
+        Err(Error::PlatformNotSupported(
+            "WiFi attacks not supported on iOS".into(),
+        ))
+    }
+
+    async fn test_injection(&self, _interface: &str) -> Result<InjectionCapability> {
+        Ok(InjectionCapability {
+            supported: false,
+            success_rate: 0.0,
+        })
+    }
+
+    async fn start_capture(
+        &self,
+        _interface: &str,
+        _bssid: &str,
+        _channel: u8,
+        _output_file: &str,
+    ) -> Result<WifiCaptureHandle> {
+        Err(Error::PlatformNotSupported(
+            "WiFi attacks not supported on iOS".into(),
+        ))
+    }
+
+    async fn stop_capture(&self, _handle: WifiCaptureHandle) -> Result<()> {
+        Ok(())
+    }
+
+    async fn get_capture_stats(&self, _handle: &WifiCaptureHandle) -> Result<WifiCaptureStats> {
+        Ok(WifiCaptureStats {
+            packets: 0,
+            ivs: 0,
+            has_handshake: false,
+            data_packets: 0,
+        })
+    }
+
+    async fn fake_auth(&self, _interface: &str, _bssid: &str) -> Result<()> {
+        Err(Error::PlatformNotSupported(
+            "WiFi attacks not supported on iOS".into(),
+        ))
+    }
+
+    async fn start_arp_replay(&self, _interface: &str, _bssid: &str) -> Result<ArpReplayHandle> {
+        Err(Error::PlatformNotSupported(
+            "WiFi attacks not supported on iOS".into(),
+        ))
+    }
+
+    async fn stop_arp_replay(&self, _handle: ArpReplayHandle) -> Result<()> {
+        Ok(())
+    }
+
+    async fn deauth_attack(
+        &self,
+        _interface: &str,
+        _bssid: &str,
+        _client: Option<&str>,
+        _count: u8,
+    ) -> Result<()> {
+        Err(Error::PlatformNotSupported(
+            "WiFi attacks not supported on iOS".into(),
+        ))
+    }
+
+    async fn verify_handshake(&self, _capture_file: &str, _bssid: &str) -> Result<bool> {
+        Ok(false)
+    }
+
+    async fn crack_wep(&self, _capture_file: &str, _bssid: &str) -> Result<Option<String>> {
+        Ok(None)
     }
 }
 

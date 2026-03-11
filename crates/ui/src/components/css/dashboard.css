@@ -297,3 +297,17 @@
         padding: 3px 0;
     }
 }
+
+/* Warning badge for WiFi scan */
+.action-card {
+    position: relative;
+}
+
+.warning-badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    font-size: 16px;
+    line-height: 1;
+    cursor: help;
+}

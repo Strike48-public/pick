@@ -1,0 +1,90 @@
+.next-steps-container {
+  margin: 16px 0;
+  padding: 16px;
+  background: var(--bg-secondary, #1e1e1e);
+  border: 1px solid var(--border-color, #333);
+  border-radius: 8px;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.next-steps-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary, #999);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 12px;
+}
+
+.next-steps-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.next-steps-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--bg-hover, #2a2a2a);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 6px;
+  color: var(--text-primary, #fff);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+  width: 100%;
+}
+
+.next-steps-btn:hover {
+  background: var(--bg-active, #333);
+  border-color: var(--primary-color, #0ea5e9);
+  transform: translateX(2px);
+}
+
+.next-steps-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.next-steps-label {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.next-steps-desc {
+  font-size: 12px;
+  color: var(--text-secondary, #999);
+  margin-left: auto;
+}
+
+/* Mobile responsive */
+@media (max-width: 640px) {
+  .next-steps-container {
+    margin: 12px 0;
+    padding: 12px;
+  }
+
+  .next-steps-btn {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .next-steps-desc {
+    margin-left: 0;
+  }
+}

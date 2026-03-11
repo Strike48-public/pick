@@ -13,7 +13,7 @@ path = "src/main.rs"
 # Crates
 pentest-core = { workspace = true }
 pentest-platform = { workspace = true, features = ["desktop"] }
-pentest-ui = { workspace = true, features = ["connector", "shell-ws"] }
+pentest-ui = { workspace = true, features = ["connector", "shell-ws", "desktop"] }
 pentest-tools = { workspace = true, features = ["desktop"] }
 
 # Async

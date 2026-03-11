@@ -482,3 +482,25 @@ info:
     @echo ""
     @echo "Android SDK:"
     @echo "ANDROID_HOME=${ANDROID_HOME:-not set}"
+
+# ============ Network Recovery ============
+
+# Emergency WiFi recovery (fast)
+fix-wifi:
+    sudo ./emergency-wifi-fix.sh
+
+# Full network recovery with diagnostics
+recover-network:
+    sudo ./recover-network.sh
+
+# Show network status
+network-status:
+    @echo "=== Network Devices ==="
+    @nmcli device status
+    @echo ""
+    @echo "=== WiFi Networks ==="
+    @nmcli device wifi list | head -10
+    @echo ""
+    @echo "=== Monitor Mode Interfaces ==="
+    @iw dev | grep -A5 "Interface.*mon" || echo "None"
+
