@@ -199,20 +199,20 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         let client = make_client();
         let tenant_id = props.tenant_id.clone();
         let log_url = api_url.clone();
-        crate::liveview_server::push_terminal_line(TerminalLine::info(
-            format!("[chat] fetching agents from {}", api_url),
-        ));
+        crate::liveview_server::push_terminal_line(TerminalLine::info(format!(
+            "[chat] fetching agents from {}",
+            api_url
+        )));
         spawn(async move {
             match client.list_agents().await {
                 Ok(mut list) => {
-                    crate::liveview_server::push_terminal_line(TerminalLine::success(
-                        format!("[chat] loaded {} agents from {}", list.len(), log_url),
-                    ));
+                    crate::liveview_server::push_terminal_line(TerminalLine::success(format!(
+                        "[chat] loaded {} agents from {}",
+                        list.len(),
+                        log_url
+                    )));
                     let connector_name = crate::session::get_connector_name();
-                    let auto = list
-                        .iter()
-                        .find(|a| a.name == connector_name)
-                        .cloned();
+                    let auto = list.iter().find(|a| a.name == connector_name).cloned();
 
                     if let Some(agent) = auto {
                         tracing::info!(
@@ -246,7 +246,10 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             }
                         }
                     } else {
-                        tracing::info!("ChatPanel: no {} agent found, creating one", connector_name);
+                        tracing::info!(
+                            "ChatPanel: no {} agent found, creating one",
+                            connector_name
+                        );
                         match client
                             .create_agent(default_pentest_agent_input(&tenant_id, &connector_name))
                             .await
@@ -277,9 +280,10 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         err_str,
                         session_tok.len(),
                     );
-                    crate::liveview_server::push_terminal_line(TerminalLine::error(
-                        format!("[chat] failed to fetch agents: {}", err_str),
-                    ));
+                    crate::liveview_server::push_terminal_line(TerminalLine::error(format!(
+                        "[chat] failed to fetch agents: {}",
+                        err_str
+                    )));
 
                     let is_auth_err = err_str.contains("authenticated")
                         || err_str.contains("authorized")

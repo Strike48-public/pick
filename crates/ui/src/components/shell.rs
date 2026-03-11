@@ -45,9 +45,10 @@ pub fn InteractiveShell(
         let js = SHELL_INIT_JS
             .replace("__LIVEVIEW_BASE__", LIVEVIEW_BASE)
             .replace("__SHELL_MODE__", &current_mode);
-        crate::liveview_server::push_terminal_line(TerminalLine::info(
-            format!("[shell] initializing (mode={})", current_mode),
-        ));
+        crate::liveview_server::push_terminal_line(TerminalLine::info(format!(
+            "[shell] initializing (mode={})",
+            current_mode
+        )));
         spawn(async move {
             // Tear down any existing terminal before (re-)initializing
             let _ = document::eval(
@@ -67,9 +68,9 @@ pub fn InteractiveShell(
                 }
                 Err(e) => {
                     tracing::warn!("JS eval failed (shell init): {e}");
-                    crate::liveview_server::push_terminal_line(TerminalLine::error(
-                        format!("[shell] init failed: {e}"),
-                    ));
+                    crate::liveview_server::push_terminal_line(TerminalLine::error(format!(
+                        "[shell] init failed: {e}"
+                    )));
                 }
             }
         });

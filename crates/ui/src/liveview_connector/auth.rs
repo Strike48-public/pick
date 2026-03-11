@@ -56,9 +56,7 @@ impl LiveViewConnector {
     /// to avoid disrupting an already-successful registration with a reconnect cycle.
     pub(crate) async fn handle_post_registration_auth(&mut self) {
         if std::env::var("STRIKEHUB_SOCKET").is_ok() {
-            tracing::info!(
-                "[RegisterResponse] StrikeHub mode: waiting for admin approval"
-            );
+            tracing::info!("[RegisterResponse] StrikeHub mode: waiting for admin approval");
             self.send_event(ConnectorEvent::Log(TerminalLine::info(
                 "Waiting for admin approval in Studio…",
             )));
@@ -66,9 +64,7 @@ impl LiveViewConnector {
                 ConnectingStep::WaitingForApproval,
             ));
         } else {
-            tracing::info!(
-                "[RegisterResponse] No JWT, trying browser login fallback"
-            );
+            tracing::info!("[RegisterResponse] No JWT, trying browser login fallback");
             self.try_fetch_matrix_token_fallback().await;
         }
     }
