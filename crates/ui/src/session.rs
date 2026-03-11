@@ -9,6 +9,8 @@ use std::sync::{LazyLock, RwLock};
 
 static AUTH_TOKEN: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
 static TENANT_ID: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
+static CONNECTOR_NAME: LazyLock<RwLock<String>> =
+    LazyLock::new(|| RwLock::new("pentest-connector".to_string()));
 static TOOL_NAMES: LazyLock<RwLock<Vec<String>>> = LazyLock::new(|| RwLock::new(Vec::new()));
 
 /// Read the current session auth token (Matrix access token for GraphQL).
@@ -33,6 +35,21 @@ pub fn set_tenant_id(tenant: &str) {
     let mut guard = TENANT_ID.write().unwrap_or_else(|e| e.into_inner());
     guard.clear();
     guard.push_str(tenant);
+}
+
+/// Read the connector name (gateway identity in Matrix).
+pub fn get_connector_name() -> String {
+    CONNECTOR_NAME
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Store the connector name.
+pub fn set_connector_name(name: &str) {
+    let mut guard = CONNECTOR_NAME.write().unwrap_or_else(|e| e.into_inner());
+    guard.clear();
+    guard.push_str(name);
 }
 
 /// Read the registered connector tool names.

@@ -17,6 +17,9 @@ connector:
   token: ""
   tenantId: ""
   instanceId: ""
+  # Gateway identity name in Matrix. Instances with the same connectorName
+  # are round-robin'd; set a unique name for a dedicated agent view.
+  connectorName: ""
   # Enable TLS for gRPC connection
   tls: false
   # Skip TLS certificate verification

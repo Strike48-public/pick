@@ -125,9 +125,10 @@ impl LiveViewConnector {
     pub fn new(config: ConnectorConfig, tools: ToolRegistry) -> Self {
         let (event_tx, _) = broadcast::channel(64);
 
-        // Store tenant_id and tool names in the global session so the
+        // Store tenant_id, connector_name, and tool names in the global session so the
         // WorkspaceApp (liveview) can read them when auto-creating the agent persona.
         crate::session::set_tenant_id(&config.tenant_id);
+        crate::session::set_connector_name(&config.connector_name);
         crate::session::set_tool_names(tools.names().iter().map(|s| s.to_string()).collect());
 
         // Create workspace directory
@@ -552,9 +553,9 @@ impl LiveViewConnector {
         drop(tools);
 
         // Build app manifest for workspace (Files + Shell)
-        // Use hostname as the app name (display name), but connector type is static
+        // Use hostname as the app name (display name); connector_name controls gateway identity
         let hostname = whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string());
-        let connector_type = "pentest-connector".to_string();
+        let connector_type = self.config.connector_name.clone();
 
         let manifest = AppManifest::new(&hostname, "/")
             .description("Browse files and access the interactive shell")
