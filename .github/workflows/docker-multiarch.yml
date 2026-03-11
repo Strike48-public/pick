@@ -7,93 +7,51 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   packages: write
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  REGISTRY_IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Build per-architecture images in parallel
+  # Build per-architecture images natively (no QEMU)
   # ---------------------------------------------------------------------------
-  build:
+  build-image:
     name: Build ${{ matrix.arch }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: true
       matrix:
         include:
           - arch: amd64
             platform: linux/amd64
+            runner: x64-runner-github-hosted
           - arch: arm64
             platform: linux/arm64
+            runner: arm64-runner-github-hosted
+    outputs:
+      meta_version: ${{ steps.meta.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-qemu-action@v3
-        if: matrix.arch == 'arm64'
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push by digest
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.scratch
-          platforms: ${{ matrix.platform }}
-          push: ${{ github.event_name != 'pull_request' }}
-          provenance: false
-          sbom: false
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
-          cache-from: type=gha,scope=${{ matrix.arch }}
-          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
-
-      - name: Export digest
-        if: github.event_name != 'pull_request'
+      - name: Set up Docker
         run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - name: Upload digest
-        if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: digests-${{ matrix.arch }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  # ---------------------------------------------------------------------------
-  # Merge per-arch images into a single multi-arch manifest
-  # ---------------------------------------------------------------------------
-  merge:
-    name: Create Multi-Arch Manifest
-    runs-on: ubuntu-latest
-    needs: [build]
-    if: github.event_name != 'pull_request'
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download digests
-        uses: actions/download-artifact@v4
-        with:
-          path: /tmp/digests
-          pattern: digests-*
-          merge-multiple: true
+          if ! command -v docker &>/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq docker.io >/dev/null
+            sudo systemctl start docker
+            sudo usermod -aG docker $USER
+            sudo chmod 666 /var/run/docker.sock
+          fi
+          docker version
 
       - uses: docker/setup-buildx-action@v3
 
@@ -106,27 +64,120 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY_IMAGE }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+          flavor: |
+            latest=false
+
+      - name: Build and push per-arch image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.scratch
+          platforms: ${{ matrix.platform }}
+          push: true
+          provenance: false
+          sbom: false
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY_IMAGE }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.REGISTRY_IMAGE }}:buildcache-${{ matrix.arch }},mode=max,image-manifest=true,oci-mediatypes=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Merge per-arch images into a single multi-arch manifest
+  # ---------------------------------------------------------------------------
+  merge-manifests:
+    name: Merge Multi-Arch Manifest
+    runs-on: x64-runner-github-hosted
+    needs: [build-image]
+    steps:
+      - name: Set up Docker
+        run: |
+          if ! command -v docker &>/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq docker.io >/dev/null
+            sudo systemctl start docker
+            sudo usermod -aG docker $USER
+            sudo chmod 666 /var/run/docker.sock
+          fi
+          docker version
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+          flavor: |
+            latest=false
 
       - name: Create and push multi-arch manifest
         working-directory: /tmp/digests
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-
-          # Build digest source list
+          IMAGE="${{ env.REGISTRY_IMAGE }}"
           DIGEST_ARGS=""
           for f in *; do
             DIGEST_ARGS="$DIGEST_ARGS ${IMAGE}@sha256:${f}"
           done
+          echo "Digests to merge: $DIGEST_ARGS"
+          TAG_ARGS=$(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          echo "Tags to apply: $TAG_ARGS"
+          docker buildx imagetools create $TAG_ARGS $DIGEST_ARGS
 
-          echo "Merging digests: $DIGEST_ARGS"
+      - name: Inspect manifest
+        run: |
+          TAG=$(jq -cr '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          echo "Inspecting: $TAG"
+          docker buildx imagetools inspect "$TAG"
 
-          # Create multi-arch manifest with all tags from metadata
-          TAGS=$(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")
-          docker buildx imagetools create $TAGS $DIGEST_ARGS
+      - name: Generate image report
+        run: |
+          echo "## Docker Image Built" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ env.REGISTRY_IMAGE }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Platforms:** linux/amd64, linux/arm64" >> $GITHUB_STEP_SUMMARY
