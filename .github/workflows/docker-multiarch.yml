@@ -33,26 +33,15 @@ jobs:
         include:
           - arch: amd64
             platform: linux/amd64
-            runner: x64-runner-github-hosted
+            runner: ubuntu-latest
           - arch: arm64
             platform: linux/arm64
-            runner: arm64-runner-github-hosted
+            runner: ubuntu-24.04-arm
     outputs:
       meta_version: ${{ steps.meta.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Docker
-        run: |
-          if ! command -v docker &>/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq docker.io >/dev/null
-            sudo systemctl start docker
-            sudo usermod -aG docker $USER
-            sudo chmod 666 /var/run/docker.sock
-          fi
-          docker version
 
       - uses: docker/setup-buildx-action@v3
 
@@ -110,20 +99,9 @@ jobs:
   # ---------------------------------------------------------------------------
   merge-manifests:
     name: Merge Multi-Arch Manifest
-    runs-on: x64-runner-github-hosted
+    runs-on: ubuntu-latest
     needs: [build-image]
     steps:
-      - name: Set up Docker
-        run: |
-          if ! command -v docker &>/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq docker.io >/dev/null
-            sudo systemctl start docker
-            sudo usermod -aG docker $USER
-            sudo chmod 666 /var/run/docker.sock
-          fi
-          docker version
-
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
