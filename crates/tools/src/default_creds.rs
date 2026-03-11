@@ -128,7 +128,7 @@ impl DefaultCredsTool {
     ) -> Result<bool> {
         // Use sshpass if available
         let output = tokio::process::Command::new("sshpass")
-            .args(&[
+            .args([
                 "-p",
                 password,
                 "ssh",

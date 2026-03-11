@@ -40,7 +40,7 @@ impl ServiceBannerTool {
         // SSH
         if banner.starts_with("SSH-") {
             let parts: Vec<&str> = banner.split_whitespace().collect();
-            if let Some(version_info) = parts.get(0) {
+            if let Some(version_info) = parts.first() {
                 return (Some("ssh".to_string()), Some(version_info.to_string()));
             }
         }
