@@ -78,10 +78,8 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            {{- if .Values.persistence.enabled }}
             - name: connector-data
               mountPath: /data/connector
-            {{- end }}
           livenessProbe:
             exec:
               command:
@@ -105,10 +103,12 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-        {{- if .Values.persistence.enabled }}
         - name: connector-data
+        {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
             claimName: {{ include "pick-connector.fullname" . }}-data
+        {{- else }}
+          emptyDir: {}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

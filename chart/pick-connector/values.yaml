@@ -2,7 +2,7 @@
 securityProfile: restricted
 
 image:
-  repository: pick-connector
+  repository: ghcr.io/strike48-public/pick
   tag: ""  # defaults to Chart.appVersion
   pullPolicy: IfNotPresent
 
