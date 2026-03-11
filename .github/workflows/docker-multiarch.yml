@@ -17,7 +17,8 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  REGISTRY_IMAGE: ghcr.io/${{ github.repository }}
+  # github.repository may contain uppercase — Docker requires lowercase
+  REGISTRY_IMAGE: ghcr.io/strike48-public/pick
 
 jobs:
   # ---------------------------------------------------------------------------
