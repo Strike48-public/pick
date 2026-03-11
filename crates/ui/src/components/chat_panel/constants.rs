@@ -2,9 +2,6 @@
 
 use pentest_core::matrix::CreateAgentInput;
 
-/// Name used to auto-select the pentest-connector agent from the agent list.
-pub const PENTEST_AGENT_NAME: &str = "pentest-connector";
-
 pub const CHAT_MIN_WIDTH: i32 = 280;
 pub const CHAT_MAX_WIDTH: i32 = 800;
 pub const CHAT_DEFAULT_WIDTH: i32 = 380;
@@ -38,17 +35,22 @@ fn build_tool_configs(names: &[String]) -> serde_json::Value {
 /// Build the default CreateAgentInput for auto-creating a pentest-connector persona.
 ///
 /// `tenant_id` is the tenant/realm name (e.g. "non-prod") used to build the
-/// connector address pattern `{tenant}.pentest-connector.*` so the Matrix
+/// connector address pattern `{tenant}.{connector_name}.*` so the Matrix
 /// backend can match registered connector tools to this agent.
+///
+/// `connector_name` controls the gateway identity. Instances sharing the same
+/// name are round-robin'd; use a unique name (e.g. `pentest-connector-<hostname>`)
+/// to get a dedicated agent view.
 ///
 /// Tool configs are derived from the tool registry (stored in the global
 /// session) so that every registered tool is automatically pre-approved.
-pub fn default_pentest_agent_input(tenant_id: &str) -> CreateAgentInput {
-    let connector_key = format!("{}.pentest-connector.*", tenant_id);
+pub fn default_pentest_agent_input(tenant_id: &str, connector_name: &str) -> CreateAgentInput {
+    let connector_key = format!("{}.{}.*", tenant_id, connector_name);
     let tool_names = crate::session::get_tool_names();
     tracing::info!(
-        "default_pentest_agent_input: tenant={}, connector_key={}, tool_names({})={:?}",
+        "default_pentest_agent_input: tenant={}, connector_name={}, connector_key={}, tool_names({})={:?}",
         tenant_id,
+        connector_name,
         connector_key,
         tool_names.len(),
         tool_names,
@@ -66,13 +68,13 @@ pub fn default_pentest_agent_input(tenant_id: &str) -> CreateAgentInput {
     );
 
     CreateAgentInput {
-        name: "pentest-connector".to_string(),
+        name: connector_name.to_string(),
         description: Some("Red team operational agent for penetration testing".to_string()),
         system_message: Some(RED_TEAM_SYSTEM_PROMPT.to_string()),
         agent_greeting: Some("Ready for red team operations. What's the target?".to_string()),
         context: Some(serde_json::json!({
-            "created_by": "pentest-connector",
-            "description": "Auto-created by pentest-connector"
+            "created_by": connector_name,
+            "description": format!("Auto-created by {}", connector_name)
         })),
         tools: Some(serde_json::json!({
             "allow_patterns": [],

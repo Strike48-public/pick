@@ -28,6 +28,13 @@ pub struct ConnectorConfig {
     /// Instance ID for this connector (auto-generated if not provided)
     pub instance_id: String,
 
+    /// Connector name used as the gateway identity in Matrix.
+    /// Instances sharing the same connector_name are round-robin'd;
+    /// set a unique name (e.g. via CONNECTOR_NAME env var) to get a
+    /// dedicated agent view. Defaults to "pentest-connector".
+    #[serde(default = "default_connector_name")]
+    pub connector_name: String,
+
     /// Display name shown in the Strike48 UI
     pub display_name: Option<String>,
 
@@ -43,6 +50,10 @@ pub struct ConnectorConfig {
     pub max_backoff_delay_ms: u64,
 }
 
+fn default_connector_name() -> String {
+    "pentest-connector".to_string()
+}
+
 impl Default for ConnectorConfig {
     fn default() -> Self {
         Self {
@@ -50,6 +61,7 @@ impl Default for ConnectorConfig {
             tenant_id: "default".to_string(),
             auth_token: String::new(),
             instance_id: Uuid::new_v4().to_string(),
+            connector_name: default_connector_name(),
             display_name: None,
             tags: vec![],
             use_tls: true,
@@ -125,6 +137,7 @@ impl ConnectorConfig {
             host: self.host.clone(),
             tenant_id: self.tenant_id.clone(),
             instance_id: self.instance_id.clone(),
+            connector_type: self.connector_name.clone(),
             use_tls: self.use_tls,
             reconnect_enabled: self.reconnect_enabled,
             reconnect_delay_ms: self.reconnect_delay_ms,
@@ -273,6 +286,9 @@ pub fn load_connector_config(args: &[String]) -> ConfigLoadResult {
     if let Ok(tls) = std::env::var("STRIKE48_TLS") {
         config.use_tls = tls != "false" && tls != "0";
     }
+    if let Ok(name) = std::env::var("CONNECTOR_NAME") {
+        config.connector_name = name;
+    }
 
     // CLI args override everything
     let mut i = 1;
@@ -294,6 +310,12 @@ pub fn load_connector_config(args: &[String]) -> ConfigLoadResult {
                 i += 1;
                 if i < args.len() {
                     config.instance_id = args[i].clone();
+                }
+            }
+            "--connector-name" => {
+                i += 1;
+                if i < args.len() {
+                    config.connector_name = args[i].clone();
                 }
             }
             "--no-tls" => {

@@ -104,6 +104,7 @@ Environment variables (standalone):
 | `STRIKE48_INSTANCE_ID` / `INSTANCE_ID` | Connector instance ID |
 | `STRIKE48_TOKEN` | JWT auth token (optional) |
 | `STRIKE48_TLS` | `true` or `false` |
+| `CONNECTOR_NAME` | Gateway identity name (default: `pentest-connector`). Set a unique name per host to get a dedicated agent view instead of round-robin. |
 | `MATRIX_TLS_INSECURE` | Accept self-signed certs |
 | `STRIKEHUB_SOCKET` | Unix socket path (set by StrikeHub) |
 
@@ -166,6 +167,7 @@ Environment variables:
 - `STRIKE48_HOST` / `STRIKE48_URL` - Strike48 server URL
 - `STRIKE48_TENANT` / `TENANT_ID` - Tenant ID
 - `STRIKE48_INSTANCE_ID` / `INSTANCE_ID` - Connector instance ID
+- `CONNECTOR_NAME` - Gateway identity name (default: `pentest-connector`)
 - `RUST_LOG` - Logging level (e.g., `pentest=debug`)
 
 ## How It Works

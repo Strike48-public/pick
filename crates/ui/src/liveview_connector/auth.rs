@@ -104,8 +104,8 @@ impl LiveViewConnector {
             return;
         }
 
-        // Use static connector type (instance differentiation is via instance_id)
-        let connector_type = "pentest-connector".to_string();
+        // Use connector_name from config (controls gateway identity in Matrix)
+        let connector_type = self.config.connector_name.clone();
 
         let mut ott_provider = OttProvider::new(
             Some(connector_type.clone()),

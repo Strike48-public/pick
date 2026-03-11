@@ -55,6 +55,10 @@ spec:
             - name: STRIKE48_INSTANCE_ID
               value: {{ .Values.connector.instanceId | quote }}
             {{- end }}
+            {{- if .Values.connector.connectorName }}
+            - name: CONNECTOR_NAME
+              value: {{ .Values.connector.connectorName | quote }}
+            {{- end }}
             {{- if .Values.connector.tls }}
             - name: STRIKE48_TLS
               value: "true"

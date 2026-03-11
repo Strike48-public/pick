@@ -208,9 +208,10 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     crate::liveview_server::push_terminal_line(TerminalLine::success(
                         format!("[chat] loaded {} agents from {}", list.len(), log_url),
                     ));
+                    let connector_name = crate::session::get_connector_name();
                     let auto = list
                         .iter()
-                        .find(|a| a.name.to_lowercase().contains(PENTEST_AGENT_NAME))
+                        .find(|a| a.name == connector_name)
                         .cloned();
 
                     if let Some(agent) = auto {
@@ -219,7 +220,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             agent.name
                         );
                         // Update the existing agent's tool configs with current tools
-                        let fresh_input = default_pentest_agent_input(&tenant_id);
+                        let fresh_input = default_pentest_agent_input(&tenant_id, &connector_name);
                         let update_input = UpdateAgentInput {
                             id: agent.id.clone(),
                             tools: fresh_input.tools,
@@ -245,9 +246,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             }
                         }
                     } else {
-                        tracing::info!("ChatPanel: no pentest-connector agent found, creating one");
+                        tracing::info!("ChatPanel: no {} agent found, creating one", connector_name);
                         match client
-                            .create_agent(default_pentest_agent_input(&tenant_id))
+                            .create_agent(default_pentest_agent_input(&tenant_id, &connector_name))
                             .await
                         {
                             Ok(new_agent) => {

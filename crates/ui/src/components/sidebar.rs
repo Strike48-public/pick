@@ -110,11 +110,12 @@ pub fn Sidebar(
             let mut client = MatrixChatClient::new(url);
             client.set_auth_token(token);
             let client: Arc<dyn ChatClient> = Arc::new(client);
-            // Resolve the pentest-connector agent so we only show its conversations
+            // Resolve the connector agent so we only show its conversations
+            let cn = crate::session::get_connector_name();
             let agent_id = match client.list_agents().await {
                 Ok(agents) => agents
                     .iter()
-                    .find(|a| a.name.to_lowercase().contains("pentest-connector"))
+                    .find(|a| a.name == cn)
                     .map(|a| a.id.clone()),
                 Err(e) => {
                     tracing::warn!("Sidebar: failed to fetch agents: {e}");
