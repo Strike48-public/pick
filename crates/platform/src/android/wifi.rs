@@ -90,6 +90,7 @@ fn get_wifi_networks_blocking() -> Result<Vec<WifiNetwork>> {
                 frequency,
                 channel,
                 security,
+                clients: None, // Not available on Android
             });
         }
 

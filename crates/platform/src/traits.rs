@@ -9,7 +9,7 @@ use std::time::Duration;
 /// Combined platform provider trait
 #[async_trait]
 pub trait PlatformProvider:
-    NetworkOps + SystemInfo + CaptureOps + CommandExec + Send + Sync
+    NetworkOps + SystemInfo + CaptureOps + CommandExec + WifiAttackOps + Send + Sync
 {
 }
 
@@ -39,7 +39,19 @@ pub trait SystemInfo: Send + Sync {
     async fn get_network_interfaces(&self) -> Result<Vec<NetworkInterface>>;
 
     /// Get WiFi networks (if available)
-    async fn get_wifi_networks(&self) -> Result<Vec<WifiNetwork>>;
+    ///
+    /// # Arguments
+    /// * `interface` - Optional WiFi interface to scan (e.g., "wlan1"). If None, uses auto-detect.
+    async fn get_wifi_networks(&self, interface: Option<String>) -> Result<Vec<WifiNetwork>>;
+
+    /// Check WiFi connection status for scan safety assessment
+    ///
+    /// # Arguments
+    /// * `selected_adapter` - User's chosen WiFi interface (e.g., "wlan1")
+    async fn check_wifi_connection_status(
+        &self,
+        selected_adapter: Option<String>,
+    ) -> Result<WifiConnectionStatus>;
 }
 
 /// Capture operations trait
@@ -92,6 +104,83 @@ pub trait CommandExec: Send + Sync {
     fn is_command_exec_supported(&self) -> bool {
         true
     }
+}
+
+/// WiFi attack operations trait
+#[async_trait]
+pub trait WifiAttackOps: Send + Sync {
+    /// Enable monitor mode on a WiFi interface
+    /// Returns (monitor_interface_name, killed_network_manager)
+    ///
+    /// # Arguments
+    /// * `interface` - WiFi interface name (e.g., "wlan0")
+    /// * `allow_kill_network_manager` - If true, allows killing NetworkManager to enable monitor mode.
+    ///   If false and monitor mode fails, returns an error instead of killing NetworkManager.
+    ///
+    /// # Returns
+    /// * `monitor_interface` - Name of the monitor interface (e.g., "wlan0mon")
+    /// * `killed_network_manager` - True if NetworkManager was killed to enable monitor mode
+    async fn enable_monitor_mode(
+        &self,
+        interface: &str,
+        allow_kill_network_manager: bool,
+    ) -> Result<(String, bool)>;
+
+    /// Disable monitor mode and restore managed mode
+    ///
+    /// # Arguments
+    /// * `interface` - Monitor interface name (e.g., "wlan0mon")
+    /// * `restart_network_manager` - If true, restarts NetworkManager (only needed if it was killed during enable)
+    async fn disable_monitor_mode(
+        &self,
+        interface: &str,
+        restart_network_manager: bool,
+    ) -> Result<()>;
+
+    /// Clone MAC address to appear as another device
+    async fn clone_mac(&self, interface: &str, target_mac: &str) -> Result<()>;
+
+    /// Test packet injection capability
+    async fn test_injection(&self, interface: &str) -> Result<InjectionCapability>;
+
+    /// Start capturing WiFi packets
+    async fn start_capture(
+        &self,
+        interface: &str,
+        bssid: &str,
+        channel: u8,
+        output_file: &str,
+    ) -> Result<WifiCaptureHandle>;
+
+    /// Stop WiFi packet capture
+    async fn stop_capture(&self, handle: WifiCaptureHandle) -> Result<()>;
+
+    /// Get capture statistics (IVs, packets, handshake status)
+    async fn get_capture_stats(&self, handle: &WifiCaptureHandle) -> Result<WifiCaptureStats>;
+
+    /// Perform fake authentication (WEP)
+    async fn fake_auth(&self, interface: &str, bssid: &str) -> Result<()>;
+
+    /// Start ARP replay attack (WEP - generate IVs)
+    async fn start_arp_replay(&self, interface: &str, bssid: &str) -> Result<ArpReplayHandle>;
+
+    /// Stop ARP replay attack
+    async fn stop_arp_replay(&self, handle: ArpReplayHandle) -> Result<()>;
+
+    /// Send deauth packets to force client reconnection (WPA)
+    async fn deauth_attack(
+        &self,
+        interface: &str,
+        bssid: &str,
+        client: Option<&str>,
+        count: u8,
+    ) -> Result<()>;
+
+    /// Verify WPA handshake in capture file
+    async fn verify_handshake(&self, capture_file: &str, bssid: &str) -> Result<bool>;
+
+    /// Crack WEP key from captured IVs (live cracking)
+    async fn crack_wep(&self, capture_file: &str, bssid: &str) -> Result<Option<String>>;
 }
 
 // ============ Data Types ============
@@ -204,6 +293,24 @@ pub struct WifiNetwork {
     pub frequency: u32,
     pub channel: u32,
     pub security: String,
+    /// Number of connected clients (if available). None if not scanned in monitor mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clients: Option<u32>,
+}
+
+/// WiFi connection risk assessment for scan safety
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WifiConnectionStatus {
+    /// Whether the active internet connection is via WiFi
+    pub connected_via_wifi: bool,
+    /// Name of the active WiFi interface (e.g., "wlan0")
+    pub active_interface: Option<String>,
+    /// Total number of WiFi adapters detected
+    pub total_adapters: usize,
+    /// Whether it's safe to scan (has external adapter OR on ethernet)
+    pub safe_to_scan: bool,
+    /// List of all WiFi interfaces (for future adapter selector)
+    pub all_wifi_interfaces: Vec<String>,
 }
 
 /// Screenshot result
@@ -321,4 +428,34 @@ pub fn port_to_service(port: u16) -> Option<&'static str> {
         27017 => Some("mongodb"),
         _ => None,
     }
+}
+
+/// WiFi capture handle
+#[derive(Debug, Clone)]
+pub struct WifiCaptureHandle {
+    pub pid: u32,
+    pub output_file: String,
+    pub interface: String,
+}
+
+/// ARP replay attack handle
+#[derive(Debug, Clone)]
+pub struct ArpReplayHandle {
+    pub pid: u32,
+}
+
+/// Packet injection capability
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InjectionCapability {
+    pub supported: bool,
+    pub success_rate: f32,
+}
+
+/// WiFi capture statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WifiCaptureStats {
+    pub packets: u64,
+    pub ivs: u32,            // For WEP
+    pub has_handshake: bool, // For WPA
+    pub data_packets: u64,
 }

@@ -7,6 +7,7 @@ use dioxus::prelude::*;
 use pentest_core::matrix::{AgentInfo, ChatMessage, ConversationInfo};
 
 use super::agent_selector::SuggestedActions;
+use super::next_steps::NextStepsActions;
 use super::render::render_message;
 
 /// Props for [`MessageList`].
@@ -104,6 +105,14 @@ pub fn MessageList(props: MessageListProps) -> Element {
                 // Message bubbles
                 for msg in messages.read().iter() {
                     {render_message(msg, &mut expanded_tools)}
+                }
+
+                // Next Steps action buttons (context-sensitive)
+                if !messages.read().is_empty() && !agent_thinking() {
+                    NextStepsActions {
+                        messages: messages,
+                        on_send: props.on_send,
+                    }
                 }
 
                 // Thinking indicator

@@ -312,6 +312,10 @@ async fn screenshot_returns_result() {
 
 #[tokio::test]
 async fn traffic_capture_requires_action() {
+    if !pentest_platform::is_pcap_available() {
+        eprintln!("skipping: libpcap not available");
+        return;
+    }
     let c = connector();
     let result = exec(&c, json!({"tool": "traffic_capture"})).await;
     assert_tool_result_shape(&result, "traffic_capture_no_action");
@@ -325,6 +329,10 @@ async fn traffic_capture_requires_action() {
 
 #[tokio::test]
 async fn traffic_capture_get_packets_no_capture() {
+    if !pentest_platform::is_pcap_available() {
+        eprintln!("skipping: libpcap not available");
+        return;
+    }
     let c = connector();
     let result = exec(
         &c,

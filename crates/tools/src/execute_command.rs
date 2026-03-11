@@ -21,10 +21,7 @@ impl PentestTool for ExecuteCommandTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command in a sandboxed BlackArch Linux environment. \
-         Commands run in an isolated namespace/proot sandbox with pacman \
-         and the BlackArch repository available for installing pentest tools. \
-         Full network access for penetration testing."
+        "Execute a shell command. Respects Settings > Shell Mode: Native (direct host execution) or Proot (sandboxed BlackArch environment with pacman)."
     }
 
     fn schema(&self) -> ToolSchema {

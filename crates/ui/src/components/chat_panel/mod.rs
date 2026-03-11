@@ -9,6 +9,7 @@ mod constants;
 mod history;
 mod input;
 mod messages;
+mod next_steps;
 mod polling;
 mod render;
 
@@ -361,7 +362,11 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 history_loading.set(true);
                 spawn(async move {
                     match client.list_conversations(Some(&agent_id)).await {
-                        Ok(list) => conversation_list.set(list),
+                        Ok(mut list) => {
+                            // Sort by updated_at in reverse order (newest first)
+                            list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                            conversation_list.set(list);
+                        }
                         Err(e) => tracing::warn!("Failed to fetch conversation list: {}", e),
                     }
                     history_loading.set(false);
@@ -540,7 +545,11 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 history_loading.set(true);
                 spawn(async move {
                     match client.list_conversations(Some(&agent_id)).await {
-                        Ok(list) => conversation_list.set(list),
+                        Ok(mut list) => {
+                            // Sort by updated_at in reverse order (newest first)
+                            list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                            conversation_list.set(list);
+                        }
                         Err(e) => tracing::warn!("Failed to refresh conversation list: {}", e),
                     }
                     history_loading.set(false);
@@ -561,7 +570,11 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     history_loading.set(true);
                     spawn(async move {
                         match client.list_conversations(Some(&agent_id)).await {
-                            Ok(list) => conversation_list.set(list),
+                            Ok(mut list) => {
+                                // Sort by updated_at in reverse order (newest first)
+                                list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                                conversation_list.set(list);
+                            }
                             Err(e) => tracing::warn!("Failed to fetch conversation list: {}", e),
                         }
                         history_loading.set(false);

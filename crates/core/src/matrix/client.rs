@@ -641,7 +641,7 @@ impl ChatClient for MatrixChatClient {
         }
 
         let variables = serde_json::json!({
-            "first": 20,
+            "first": 100,
             "filter": filter,
         });
 
