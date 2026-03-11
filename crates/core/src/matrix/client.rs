@@ -33,6 +33,17 @@ impl MatrixChatClient {
         }
     }
 
+    /// Create a new client that reuses the underlying HTTP connection pool
+    /// from `other`. Avoids repeated `reqwest::Client::builder()` calls that
+    /// can fail on Windows and wastes file descriptors elsewhere.
+    pub fn from_shared(other: &Self, api_url: impl Into<String>) -> Self {
+        Self {
+            api_url: api_url.into(),
+            client: other.client.clone(),
+            auth_token: None,
+        }
+    }
+
     pub fn with_auth_token(mut self, token: impl Into<String>) -> Self {
         self.auth_token = Some(token.into());
         self
@@ -77,6 +88,14 @@ impl MatrixChatClient {
         query: &str,
         variables: serde_json::Value,
     ) -> crate::error::Result<T> {
+        let gql_url = format!("{}/api/v1alpha", super::normalize_url(&self.api_url));
+        tracing::info!(
+            "[gql] POST {} (token_len={} query={})",
+            gql_url,
+            self.auth_token.as_ref().map(|t| t.len()).unwrap_or(0),
+            query.trim().lines().next().unwrap_or("?"),
+        );
+
         let resp = self
             .authed_post()
             .json(&serde_json::json!({
@@ -85,10 +104,15 @@ impl MatrixChatClient {
             }))
             .send()
             .await
-            .map_err(|e| crate::error::Error::Matrix(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!("[gql] send failed: {} (url={})", e, gql_url);
+                crate::error::Error::Matrix(e.to_string())
+            })?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
+        let status = resp.status();
+        tracing::info!("[gql] response status={}", status);
+
+        if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(crate::error::Error::Matrix(format!(
                 "GraphQL request failed: {} - {}",

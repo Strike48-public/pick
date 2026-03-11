@@ -4,6 +4,7 @@
 //! compatibility layer (WebGPU/WebGL2), connected to the PTY shell via WebSocket.
 
 use dioxus::prelude::*;
+use pentest_core::terminal::TerminalLine;
 
 /// Base URL for the internal LiveView server.
 /// Used by the Dioxus desktop/mobile WebView where `location.origin` is not
@@ -44,6 +45,10 @@ pub fn InteractiveShell(
         let js = SHELL_INIT_JS
             .replace("__LIVEVIEW_BASE__", LIVEVIEW_BASE)
             .replace("__SHELL_MODE__", &current_mode);
+        crate::liveview_server::push_terminal_line(TerminalLine::info(format!(
+            "[shell] initializing (mode={})",
+            current_mode
+        )));
         spawn(async move {
             // Tear down any existing terminal before (re-)initializing
             let _ = document::eval(
@@ -55,8 +60,18 @@ pub fn InteractiveShell(
             "#,
             )
             .await;
-            if let Err(e) = document::eval(&js).await {
-                tracing::warn!("JS eval failed (shell init): {e}");
+            match document::eval(&js).await {
+                Ok(_) => {
+                    crate::liveview_server::push_terminal_line(TerminalLine::success(
+                        "[shell] terminal connected".to_string(),
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!("JS eval failed (shell init): {e}");
+                    crate::liveview_server::push_terminal_line(TerminalLine::error(format!(
+                        "[shell] init failed: {e}"
+                    )));
+                }
             }
         });
     });

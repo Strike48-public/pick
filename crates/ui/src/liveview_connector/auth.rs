@@ -49,79 +49,14 @@ impl LiveViewConnector {
         }
     }
 
-    /// Handle post-registration auth: try loading saved OTT credentials or fallback.
+    /// Handle post-registration auth: wait for admin approval or browser fallback.
     ///
     /// Called from the message loop when registration succeeds but no JWT is present.
+    /// Saved credentials are now loaded *before* the connection loop (in connect_and_run)
+    /// to avoid disrupting an already-successful registration with a reconnect cycle.
     pub(crate) async fn handle_post_registration_auth(&mut self) {
-        tracing::info!("[RegisterResponse] No JWT — attempting to load saved OTT credentials");
-        let connector_type = "pentest-connector".to_string();
-        let instance_id = self.config.instance_id.clone();
-
-        let mut ott_provider =
-            OttProvider::new(Some(connector_type.clone()), Some(instance_id.clone()));
-        if let Some(creds) =
-            ott_provider.load_saved_credentials(&connector_type, Some(&instance_id))
-        {
-            tracing::info!(
-                "[RegisterResponse] Found saved credentials: client_id={} auth_url={}",
-                creds.client_id,
-                creds.auth_url,
-            );
-            self.send_event(ConnectorEvent::Log(TerminalLine::info(
-                "Found saved credentials, refreshing token...",
-            )));
-            match ott_provider.get_token().await {
-                Ok(jwt_token) => {
-                    tracing::info!(
-                        "[RegisterResponse] Refreshed JWT from saved credentials (len={})",
-                        jwt_token.len(),
-                    );
-                    self.config.auth_token = jwt_token.clone();
-                    self.send_event(ConnectorEvent::CredentialsUpdated {
-                        auth_token: jwt_token,
-                        api_url: self.derive_matrix_api_url(),
-                    });
-                    *self.ott_provider.write().await = Some(ott_provider);
-                    self.reconnect_with_jwt.store(true, Ordering::SeqCst);
-                    self.send_event(ConnectorEvent::Log(TerminalLine::success(
-                        "Token refreshed, reconnecting with JWT...",
-                    )));
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "[RegisterResponse] Failed to refresh token from saved credentials: {}. \
-                         Clearing stale credentials.",
-                        e,
-                    );
-                    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                    let stale = format!(
-                        "{}/.strike48/credentials/{}_{}.json",
-                        home, connector_type, instance_id
-                    );
-                    if std::fs::remove_file(&stale).is_ok() {
-                        tracing::info!("Removed stale credentials file: {}", stale);
-                    }
-                    if std::env::var("STRIKEHUB_SOCKET").is_ok() {
-                        tracing::info!(
-                            "[RegisterResponse] StrikeHub mode: waiting for admin approval"
-                        );
-                        self.send_event(ConnectorEvent::Log(TerminalLine::info(
-                            "Waiting for admin approval in Studio…",
-                        )));
-                        self.send_event(ConnectorEvent::StepChanged(
-                            ConnectingStep::WaitingForApproval,
-                        ));
-                    } else {
-                        self.try_fetch_matrix_token_fallback().await;
-                    }
-                }
-            }
-        } else if std::env::var("STRIKEHUB_SOCKET").is_ok() {
-            // Running inside StrikeHub — don't open browser, wait for
-            // admin approval in Studio gateway UI.
-            tracing::info!(
-                "[RegisterResponse] StrikeHub mode: waiting for admin approval (no browser fallback)"
-            );
+        if std::env::var("STRIKEHUB_SOCKET").is_ok() {
+            tracing::info!("[RegisterResponse] StrikeHub mode: waiting for admin approval");
             self.send_event(ConnectorEvent::Log(TerminalLine::info(
                 "Waiting for admin approval in Studio…",
             )));
@@ -129,9 +64,7 @@ impl LiveViewConnector {
                 ConnectingStep::WaitingForApproval,
             ));
         } else {
-            tracing::info!(
-                "[RegisterResponse] No saved credentials found, trying browser login fallback"
-            );
+            tracing::info!("[RegisterResponse] No JWT, trying browser login fallback");
             self.try_fetch_matrix_token_fallback().await;
         }
     }
@@ -167,8 +100,8 @@ impl LiveViewConnector {
             return;
         }
 
-        // Use static connector type (instance differentiation is via instance_id)
-        let connector_type = "pentest-connector".to_string();
+        // Use connector_name from config (controls gateway identity in Matrix)
+        let connector_type = self.config.connector_name.clone();
 
         let mut ott_provider = OttProvider::new(
             Some(connector_type.clone()),

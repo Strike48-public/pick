@@ -58,6 +58,10 @@ pub fn push_terminal_line(line: pentest_core::terminal::TerminalLine) {
     }
 }
 
+/// No-op when liveview is not enabled.
+#[cfg(not(feature = "liveview"))]
+pub fn push_terminal_line(_line: pentest_core::terminal::TerminalLine) {}
+
 /// Return all terminal lines from the global buffer.
 #[cfg(feature = "liveview")]
 pub fn get_terminal_lines() -> Vec<pentest_core::terminal::TerminalLine> {

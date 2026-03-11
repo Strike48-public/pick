@@ -17,6 +17,7 @@ use dioxus::prelude::*;
 use pentest_core::matrix::{
     AgentInfo, ChatClient, ChatMessage, ConversationInfo, MatrixChatClient, UpdateAgentInput,
 };
+use pentest_core::terminal::TerminalLine;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -121,10 +122,20 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         }
     };
 
-    // Build client helper — reads session store at call time for freshest token
-    let make_client = {
+    // Shared base client — created once, reuses the reqwest connection pool.
+    // Avoids repeated Client::builder() calls (which can fail on Windows).
+    let base_client = use_hook({
         let api_url = api_url.clone();
+        move || Arc::new(MatrixChatClient::new(api_url))
+    });
+
+    // Build client helper — reads session store at call time for freshest token.
+    // Uses the current api_url prop (not the one captured in use_hook) so that
+    // requests hit the right host even when the URL arrives after first mount.
+    let make_client = {
+        let base_client = base_client.clone();
         let effective_token = effective_token.clone();
+        let api_url = api_url.clone();
         move || -> Arc<MatrixChatClient> {
             let session_token = crate::session::get_auth_token();
             let token = if !session_token.is_empty() {
@@ -132,7 +143,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             } else {
                 effective_token.clone()
             };
-            let mut c = MatrixChatClient::new(api_url.clone());
+            let mut c = MatrixChatClient::from_shared(&base_client, &api_url);
             if !token.is_empty() {
                 c.set_auth_token(token);
             }
@@ -166,36 +177,42 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         });
     }
 
-    // Debug: log credential state on each render when panel is visible
+    // Debug: log credential state to both tracing and the Logs sidebar
     if props.visible && !agents_loaded() {
-        tracing::info!(
-            "[ChatPanel] render: api_url={:?} auth_token_len={} session_token_len={} agents_loaded={} fetch_started={}",
-            if api_url.is_empty() { "(empty)" } else { &api_url },
+        let log_msg = format!(
+            "[chat] waiting for credentials: api_url={} token_len={} session_token_len={} fetch_started={}",
+            if api_url.is_empty() { "(empty)" } else { "(set)" },
             effective_token.len(),
             crate::session::get_auth_token().len(),
-            agents_loaded(),
             fetch_started(),
         );
+        tracing::info!("{}", log_msg);
+        crate::liveview_server::push_terminal_line(TerminalLine::info(log_msg));
     }
 
     // -----------------------------------------------------------------------
     // Fetch agents when we have a token
     // -----------------------------------------------------------------------
 
-    if !effective_token.is_empty() && !agents_loaded() && !fetch_started() {
+    if !effective_token.is_empty() && !api_url.is_empty() && !agents_loaded() && !fetch_started() {
         fetch_started.set(true);
-        tracing::info!("ChatPanel: fetch_started set to true (will not retry)");
         let client = make_client();
         let tenant_id = props.tenant_id.clone();
-        tracing::info!("ChatPanel: fetching agents from {}", api_url);
+        let log_url = api_url.clone();
+        crate::liveview_server::push_terminal_line(TerminalLine::info(format!(
+            "[chat] fetching agents from {}",
+            api_url
+        )));
         spawn(async move {
             match client.list_agents().await {
                 Ok(mut list) => {
-                    tracing::info!("ChatPanel: loaded {} agents", list.len());
-                    let auto = list
-                        .iter()
-                        .find(|a| a.name.to_lowercase().contains(PENTEST_AGENT_NAME))
-                        .cloned();
+                    crate::liveview_server::push_terminal_line(TerminalLine::success(format!(
+                        "[chat] loaded {} agents from {}",
+                        list.len(),
+                        log_url
+                    )));
+                    let connector_name = crate::session::get_connector_name();
+                    let auto = list.iter().find(|a| a.name == connector_name).cloned();
 
                     if let Some(agent) = auto {
                         tracing::info!(
@@ -203,7 +220,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             agent.name
                         );
                         // Update the existing agent's tool configs with current tools
-                        let fresh_input = default_pentest_agent_input(&tenant_id);
+                        let fresh_input = default_pentest_agent_input(&tenant_id, &connector_name);
                         let update_input = UpdateAgentInput {
                             id: agent.id.clone(),
                             tools: fresh_input.tools,
@@ -229,9 +246,12 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             }
                         }
                     } else {
-                        tracing::info!("ChatPanel: no pentest-connector agent found, creating one");
+                        tracing::info!(
+                            "ChatPanel: no {} agent found, creating one",
+                            connector_name
+                        );
                         match client
-                            .create_agent(default_pentest_agent_input(&tenant_id))
+                            .create_agent(default_pentest_agent_input(&tenant_id, &connector_name))
                             .await
                         {
                             Ok(new_agent) => {
@@ -254,19 +274,16 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 }
                 Err(e) => {
                     let err_str = e.to_string();
-                    // Log the token prefix for debugging (first 20 chars)
                     let session_tok = crate::session::get_auth_token();
-                    let tok_preview = if session_tok.len() > 20 {
-                        format!("{}...", &session_tok[..20])
-                    } else {
-                        session_tok.clone()
-                    };
                     tracing::error!(
-                        "ChatPanel: failed to fetch agents: {} (token_len={} preview={:?})",
+                        "ChatPanel: failed to fetch agents: {} (token_len={})",
                         err_str,
                         session_tok.len(),
-                        tok_preview,
                     );
+                    crate::liveview_server::push_terminal_line(TerminalLine::error(format!(
+                        "[chat] failed to fetch agents: {}",
+                        err_str
+                    )));
 
                     let is_auth_err = err_str.contains("authenticated")
                         || err_str.contains("authorized")
@@ -428,13 +445,15 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 };
                 messages.write().push(user_msg);
                 user_scrolled_up.set(false);
-                if let Err(e) = document::eval("resetScrollFlag('.chat-messages')").await {
-                    tracing::warn!("JS eval failed (reset scroll flag): {e}");
-                }
 
-                if let Err(e) = document::eval("clearTextarea('.chat-input')").await {
-                    tracing::warn!("JS eval failed (clear input): {e}");
-                }
+                // Fire-and-forget: don't await these UI polish evals before
+                // the API call. On Windows WebView2 in LiveView mode,
+                // document::eval responses can hang indefinitely, which
+                // would block send_message from ever executing.
+                spawn(async move {
+                    let _ = document::eval("resetScrollFlag('.chat-messages')").await;
+                    let _ = document::eval("clearTextarea('.chat-input')").await;
+                });
 
                 match client.send_message(&conv_id, &agent.id, &text).await {
                     Ok(_) => {

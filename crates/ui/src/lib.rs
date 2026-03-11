@@ -123,6 +123,7 @@ pub async fn run_event_loop(
                         signals.matrix_auth_token.set(auth_token.clone());
                         crate::session::set_auth_token(&auth_token);
                         crate::session::set_tenant_id(&signals.config.peek().tenant_id);
+                        crate::session::set_connector_name(&signals.config.peek().connector_name);
                     }
                 }
                 ConnectorEvent::ToolStarted { tool_name, params } => {

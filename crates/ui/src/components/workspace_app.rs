@@ -262,129 +262,63 @@ pub fn WorkspaceApp() -> Element {
     let mut wifi_warning_status = use_signal(|| None::<pentest_platform::WifiConnectionStatus>);
     let mut wifi_warning_action = use_signal(|| None::<String>);
 
-    // chat state — credentials obtained from the Studio session via /auth/refresh
-    let mut matrix_api_url = use_signal(String::new);
-    let mut matrix_auth_token = use_signal(String::new);
+    // chat state — initialise from env vars / session store (same pattern as KubeStudio)
+    let mut matrix_api_url = use_signal(|| {
+        // StrikeHub sets STRIKE48_API_URL on the connector process
+        std::env::var("STRIKE48_API_URL")
+            .or_else(|_| std::env::var("MATRIX_API_URL"))
+            .or_else(|_| std::env::var("MATRIX_URL"))
+            .unwrap_or_default()
+    });
+    let mut matrix_auth_token = use_signal(|| {
+        let session_token = crate::session::get_auth_token();
+        if !session_token.is_empty() {
+            return session_token;
+        }
+        std::env::var("MATRIX_AUTH_TOKEN").unwrap_or_default()
+    });
     let mut chat_mailbox: Signal<Option<String>> = use_signal(|| None);
     let mut conversation_mailbox: Signal<Option<String>> = use_signal(|| None);
 
-    // Get a GraphQL access token from the Studio session.
-    // Strategy 1: Read window.__MATRIX_SESSION_TOKEN__ (injected by Strike48 proxy)
-    // Strategy 2: POST /auth/refresh using the browser's _matrix_sid session cookie
-    let _cred_fetch = use_future(move || async move {
-        tracing::info!("[WorkspaceApp] fetching credentials...");
+    // Poll for bridge-injected credentials (window.__MATRIX_SESSION_TOKEN__ etc.)
+    // The bridge injects these into the HTML but the scripts may not have executed
+    // by the time the component mounts — polling handles the race reliably.
+    {
+        use_effect(move || {
+            spawn(async move {
+                loop {
+                    // Pick up session token from bridge injection
+                    if let Ok(val) = document::eval(
+                        "return JSON.stringify({ t: window.__MATRIX_SESSION_TOKEN__ || '', u: window.__MATRIX_API_URL__ || '' })"
+                    ).await {
+                        if let Some(json_str) = val.as_str() {
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                let token = parsed.get("t").and_then(|v| v.as_str()).unwrap_or_default();
+                                let url = parsed.get("u").and_then(|v| v.as_str()).unwrap_or_default();
 
-        match document::eval(r#"
-            try {
-                var result = {};
-                // Prefer __MATRIX_API_URL__ (injected by StrikeHub proxy) over
-                // window.location.origin which may be a custom scheme like connector://
-                result.origin = window.__MATRIX_API_URL__ || window.location.origin;
-                result.href = window.location.href;
-
-                // Debug: log all __MATRIX* and __st globals
-                var globals = {};
-                for (var k in window) {
-                    if (k.startsWith('__MATRIX') || k.startsWith('__matrix') || k === '__st') {
-                        globals[k] = typeof window[k] === 'string' ? window[k].substring(0, 40) + '...' : typeof window[k];
-                    }
-                }
-                var st = new URLSearchParams(window.location.search).get('__st') || '';
-                console.log('[WorkspaceApp] credential scan:', JSON.stringify({
-                    globals: globals,
-                    st_from_url: st ? st.substring(0, 40) + '...' : '(empty)',
-                    origin: result.origin,
-                    search: window.location.search.substring(0, 100)
-                }));
-
-                // Strategy 0: __st query param (iframe session token injected by Strike48 proxy)
-                if (st) {
-                    result.access_token = st;
-                    result.source = 'url_st_param';
-                    return JSON.stringify(result);
-                }
-
-                // Strategy 1: __MATRIX_SESSION_TOKEN__ (injected by Strike48 proxy)
-                var sessionToken = window.__MATRIX_SESSION_TOKEN__ || '';
-                if (sessionToken) {
-                    result.access_token = sessionToken;
-                    result.source = 'session_token_global';
-                    return JSON.stringify(result);
-                }
-
-                // Strategy 2: __MATRIX_ACCESS_TOKEN__ (Keycloak JWT set by Strike48)
-                var accessToken = window.__MATRIX_ACCESS_TOKEN__ || '';
-                if (accessToken) {
-                    result.access_token = accessToken;
-                    result.source = 'access_token_global';
-                    return JSON.stringify(result);
-                }
-
-                // Strategy 3: __MATRIX_AUTH_TOKEN__ (set by KubeStudio-style injection)
-                var authToken = window.__MATRIX_AUTH_TOKEN__ || '';
-                if (authToken) {
-                    result.access_token = authToken;
-                    result.source = 'auth_token_global';
-                    return JSON.stringify(result);
-                }
-
-                // Strategy 3: POST /auth/refresh with session cookie
-                var resp = await fetch(result.origin + '/auth/refresh', {
-                    method: 'POST',
-                    credentials: 'include',
-                    headers: { 'Accept': 'application/json' }
-                });
-                if (!resp.ok) {
-                    result.error = 'HTTP ' + resp.status;
-                    return JSON.stringify(result);
-                }
-                var data = await resp.json();
-                result.access_token = data.access_token || '';
-                result.source = 'auth_refresh';
-                return JSON.stringify(result);
-            } catch (e) {
-                return JSON.stringify({ error: e.message, origin: window.location.origin, href: window.location.href });
-            }
-        "#).await {
-            Ok(val) => {
-                if let Some(json_str) = val.as_str() {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
-                        if let Some(err) = parsed.get("error").and_then(|v| v.as_str()) {
-                            let origin = parsed.get("origin").and_then(|v| v.as_str()).unwrap_or("?");
-                            let href = parsed.get("href").and_then(|v| v.as_str()).unwrap_or("?");
-                            tracing::error!(
-                                "[WorkspaceApp] credential fetch failed: {} (origin={} href={})",
-                                err, origin, href,
-                            );
-                        } else {
-                            let origin = parsed.get("origin").and_then(|v| v.as_str()).unwrap_or_default();
-                            let token = parsed.get("access_token").and_then(|v| v.as_str()).unwrap_or_default();
-                            let source = parsed.get("source").and_then(|v| v.as_str()).unwrap_or("unknown");
-                            if !origin.is_empty() && !token.is_empty() {
-                                let preview = if token.len() > 20 { &token[..20] } else { token };
-                                let dot_count = token.chars().filter(|c| *c == '.').count();
-                                tracing::info!(
-                                    "[WorkspaceApp] got token via {} (origin={} len={} dots={} preview={:?})",
-                                    source, origin, token.len(), dot_count, preview,
-                                );
-                                matrix_api_url.set(origin.to_string());
-                                matrix_auth_token.set(token.to_string());
-                                crate::session::set_auth_token(token);
-                            } else {
-                                tracing::warn!(
-                                    "[WorkspaceApp] credential fetch returned empty (source={} origin={} token_len={})",
-                                    source, origin, token.len(),
-                                );
+                                if !token.is_empty() {
+                                    let current = crate::session::get_auth_token();
+                                    if token != current {
+                                        tracing::info!(
+                                            "[WorkspaceApp] picked up session token from browser (len={})",
+                                            token.len()
+                                        );
+                                        crate::session::set_auth_token(token);
+                                        matrix_auth_token.set(token.to_string());
+                                    }
+                                }
+                                if !url.is_empty() && matrix_api_url.peek().is_empty() {
+                                    tracing::info!("[WorkspaceApp] picked up API URL from browser: {}", url);
+                                    matrix_api_url.set(url.to_string());
+                                }
                             }
                         }
                     }
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 }
-            }
-            Err(e) => {
-                tracing::warn!("JS eval failed (credential fetch): {e}");
-            }
-        }
-    });
+            });
+        });
+    }
 
     // Build the combined CSS (theme variables + responsive/sidebar classes + tailwind)
     let combined_css = format!(
