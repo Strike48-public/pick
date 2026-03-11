@@ -113,10 +113,7 @@ pub fn Sidebar(
             // Resolve the connector agent so we only show its conversations
             let cn = crate::session::get_connector_name();
             let agent_id = match client.list_agents().await {
-                Ok(agents) => agents
-                    .iter()
-                    .find(|a| a.name == cn)
-                    .map(|a| a.id.clone()),
+                Ok(agents) => agents.iter().find(|a| a.name == cn).map(|a| a.id.clone()),
                 Err(e) => {
                     tracing::warn!("Sidebar: failed to fetch agents: {e}");
                     None

@@ -431,8 +431,7 @@ impl LiveViewConnector {
                             tracing::warn!("Failed to get JWT from saved credentials: {}", e);
                             self.config.auth_token.clear();
                             // Clean up stale credentials file
-                            let home =
-                                std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
                             let stale = format!(
                                 "{}/.strike48/credentials/pentest-connector_{}.json",
                                 home, self.config.instance_id
