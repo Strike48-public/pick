@@ -1,12 +1,8 @@
 # ============================================================
-# Pick Connector — multi-arch BlackArch container image
+# Pick Connector — multi-arch container image
 # ============================================================
-# Builds the pentest-agent binary and packages it with BlackArch
+# Builds the pentest-agent binary and packages it with Kali Linux
 # security tools for multi-arch deployment (amd64 + arm64).
-#
-# Runtime: Arch Linux base + BlackArch repo (via strap.sh)
-# This gives us BlackArch tools on arm64 where the official
-# BlackArch Docker image is x86_64-only.
 #
 # Usage:
 #   docker buildx build --platform linux/amd64,linux/arm64 \
@@ -83,25 +79,16 @@ RUN RUST_TARGET=$(cat /tmp/rust-target) && \
     cp target/"$(cat /tmp/rust-target)"/release/pentest-agent /out/
 
 # ----------------------------------------------------------
-# Stage 3: Arch Linux + BlackArch runtime (multi-arch)
+# Stage 3: Kali Linux runtime (multi-arch: amd64 + arm64)
 # ----------------------------------------------------------
-FROM lopsided/archlinux AS runtime
+FROM kalilinux/kali-rolling AS runtime
 
-# Install BlackArch repository via official strap.sh
-RUN pacman -Syu --noconfirm && \
-    pacman -S --noconfirm --needed curl && \
-    curl -O https://blackarch.org/strap.sh && \
-    echo "d062038042c5f141755ea39dbd615e6ff9e23121 strap.sh" | sha1sum -c && \
-    chmod +x strap.sh && \
-    ./strap.sh && \
-    rm strap.sh
-
-# Sync repos and install pentest tools from BlackArch + community
-RUN pacman -Syyu --noconfirm && \
-    pacman -S --noconfirm --needed \
-        ca-certificates-utils \
+# Install common pentest tools + runtime deps
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
         openssl \
-        libpcap \
+        libpcap0.8 \
         nmap \
         nikto \
         sqlmap \
@@ -110,7 +97,7 @@ RUN pacman -Syyu --noconfirm && \
         hydra \
         john \
         hashcat \
-        metasploit \
+        metasploit-framework \
         exploitdb \
         enum4linux \
         smbclient \
@@ -122,19 +109,16 @@ RUN pacman -Syyu --noconfirm && \
         wget \
         net-tools \
         iproute2 \
-        bind-tools \
+        dnsutils \
         whois \
         traceroute \
         tcpdump \
         socat \
-        openbsd-netcat \
-        proxychains-ng \
-        python \
-        python-pip \
-    && pacman -Scc --noconfirm
-
-# Compat symlink: binary is linked against Debian's libpcap.so.0.8
-RUN ln -sf /usr/lib/libpcap.so.1 /usr/lib/libpcap.so.0.8
+        netcat-openbsd \
+        proxychains4 \
+        python3 \
+        python3-pip \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/pentest-agent /usr/local/bin/pentest-agent
 
