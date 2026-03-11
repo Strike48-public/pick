@@ -29,8 +29,12 @@ FROM --platform=$BUILDPLATFORM rust:1.88-bookworm AS builder
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev protobuf-compiler libpcap-dev \
+# Add arm64 arch for cross-compilation libraries
+RUN dpkg --add-architecture arm64 && \
+    apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config protobuf-compiler \
+    libssl-dev libpcap-dev \
+    libssl-dev:arm64 libpcap-dev:arm64 \
     gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
     && rm -rf /var/lib/apt/lists/*
 
@@ -58,6 +62,10 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 ENV CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
 ENV PKG_CONFIG_PATH_aarch64_unknown_linux_gnu=/usr/lib/aarch64-linux-gnu/pkgconfig
 ENV PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu=/usr/aarch64-linux-gnu
+# OpenSSL cross-compilation: point openssl-sys to arm64 libs
+ENV OPENSSL_DIR_aarch64_unknown_linux_gnu=/usr
+ENV OPENSSL_LIB_DIR_aarch64_unknown_linux_gnu=/usr/lib/aarch64-linux-gnu
+ENV OPENSSL_INCLUDE_DIR_aarch64_unknown_linux_gnu=/usr/include
 
 # Add target
 RUN rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
