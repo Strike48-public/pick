@@ -1,13 +1,13 @@
 # ============================================================
-# Pick Connector — multi-arch BlackArch container image
+# Pick Connector — multi-arch container image
 # ============================================================
-# Builds the pentest-agent binary and packages it with BlackArch
-# security tools for multi-arch deployment.
+# Builds the pentest-agent binary and packages it with Kali Linux
+# security tools for multi-arch deployment (amd64 + arm64).
 #
 # Usage:
-#   docker buildx build --platform linux/amd64 \
+#   docker buildx build --platform linux/amd64,linux/arm64 \
 #     -t ghcr.io/strike48-public/pick:latest \
-#     -f Dockerfile.scratch --load .
+#     -f Dockerfile.scratch --push .
 
 # ----------------------------------------------------------
 # Stage 1: cargo-chef planner
@@ -79,16 +79,16 @@ RUN RUST_TARGET=$(cat /tmp/rust-target) && \
     cp target/"$(cat /tmp/rust-target)"/release/pentest-agent /out/
 
 # ----------------------------------------------------------
-# Stage 3: BlackArch runtime
+# Stage 3: Kali Linux runtime (multi-arch: amd64 + arm64)
 # ----------------------------------------------------------
-FROM blackarchlinux/blackarch AS runtime
+FROM kalilinux/kali-rolling AS runtime
 
 # Install common pentest tools + runtime deps
-RUN pacman -Syu --noconfirm && \
-    pacman -S --noconfirm --needed \
-        ca-certificates-utils \
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
         openssl \
-        libpcap \
+        libpcap0.8 \
         nmap \
         nikto \
         sqlmap \
@@ -97,7 +97,7 @@ RUN pacman -Syu --noconfirm && \
         hydra \
         john \
         hashcat \
-        metasploit \
+        metasploit-framework \
         exploitdb \
         enum4linux \
         smbclient \
@@ -109,19 +109,16 @@ RUN pacman -Syu --noconfirm && \
         wget \
         net-tools \
         iproute2 \
-        bind-tools \
+        dnsutils \
         whois \
         traceroute \
         tcpdump \
         socat \
-        openbsd-netcat \
-        proxychains-ng \
-        python \
-        python-pip \
-    && pacman -Scc --noconfirm
-
-# Compat symlink: binary is linked against Debian's libpcap.so.0.8
-RUN ln -sf /usr/lib/libpcap.so.1 /usr/lib/libpcap.so.0.8
+        netcat-openbsd \
+        proxychains4 \
+        python3 \
+        python3-pip \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/pentest-agent /usr/local/bin/pentest-agent
 
