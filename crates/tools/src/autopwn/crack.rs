@@ -508,11 +508,11 @@ async fn crack_wpa_remote(
     let password = result["password"].as_str().map(|s| s.to_string());
     let message = result["message"].as_str();
 
-    if success && password.is_some() {
+    if let (true, Some(ref pw)) = (success, &password) {
         tracing::info!("");
         tracing::info!("✓ SUCCESS! Password Found by Remote Service");
         tracing::info!("═══════════════════════════════════════════════════");
-        tracing::info!("  Password: {}", password.as_ref().unwrap());
+        tracing::info!("  Password: {}", pw);
         tracing::info!("═══════════════════════════════════════════════════");
     } else if let Some(msg) = message {
         tracing::info!("  Status: {}", msg);
