@@ -63,6 +63,7 @@ pub fn dbm_to_quality(dbm: i32) -> u8 {
 ///
 /// # Examples
 /// ```
+/// use pentest_tools::util::quality_to_bars;
 /// assert_eq!(quality_to_bars(100), "▂▄▆█");  // 4 bars (excellent)
 /// assert_eq!(quality_to_bars(75), "▂▄▆_");   // 3 bars (good)
 /// assert_eq!(quality_to_bars(55), "▂▄__");   // 2 bars (fair)
