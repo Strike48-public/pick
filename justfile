@@ -504,3 +504,30 @@ network-status:
     @echo "=== Monitor Mode Interfaces ==="
     @iw dev | grep -A5 "Interface.*mon" || echo "None"
 
+# ============ Docker (Multi-Arch) ============
+
+# Build multi-arch container image locally
+docker-build tag="latest":
+    docker buildx build \
+        --platform linux/amd64 \
+        --load \
+        -t ghcr.io/strike48-public/pick:{{tag}} \
+        -f Dockerfile.scratch .
+
+# Build and inspect Dockerfile.scratch (dry-run to see layers)
+docker-package:
+    @echo "=== Dockerfile.scratch ==="
+    @cat Dockerfile.scratch
+    @echo ""
+    @echo "=== Building locally (amd64 only, for inspection) ==="
+    docker buildx build \
+        --platform linux/amd64 \
+        --load \
+        -t pick:local-scratch \
+        -f Dockerfile.scratch .
+    @echo ""
+    @echo "=== Image details ==="
+    docker images pick:local-scratch
+    @echo ""
+    @echo "=== Image layers ==="
+    docker history pick:local-scratch
