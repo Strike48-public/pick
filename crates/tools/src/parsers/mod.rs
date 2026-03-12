@@ -6,20 +6,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub mod arp_table;
+pub mod cve_lookup;
 pub mod default_creds;
 pub mod network_discover;
 pub mod port_scan;
 pub mod service_banner;
 pub mod smb_enum;
+pub mod ssdp_discover;
 pub mod web_vuln_scan;
 pub mod wifi_scan;
 
 pub use arp_table::ArpTableParser;
+pub use cve_lookup::CveLookupParser;
 pub use default_creds::DefaultCredsParser;
 pub use network_discover::NetworkDiscoverParser;
 pub use port_scan::PortScanParser;
 pub use service_banner::ServiceBannerParser;
 pub use smb_enum::SmbEnumParser;
+pub use ssdp_discover::SsdpDiscoverParser;
 pub use web_vuln_scan::WebVulnScanParser;
 pub use wifi_scan::WifiScanParser;
 
@@ -37,11 +41,13 @@ impl OutputParserRegistry {
 
         // Register parsers for each tool
         registry.register(Arc::new(ArpTableParser));
+        registry.register(Arc::new(CveLookupParser));
         registry.register(Arc::new(DefaultCredsParser));
         registry.register(Arc::new(NetworkDiscoverParser));
         registry.register(Arc::new(PortScanParser));
         registry.register(Arc::new(ServiceBannerParser));
         registry.register(Arc::new(SmbEnumParser));
+        registry.register(Arc::new(SsdpDiscoverParser));
         registry.register(Arc::new(WebVulnScanParser));
         registry.register(Arc::new(WifiScanParser));
 
