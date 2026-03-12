@@ -6,10 +6,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub mod default_creds;
+pub mod network_discover;
 pub mod port_scan;
 pub mod wifi_scan;
 
 pub use default_creds::DefaultCredsParser;
+pub use network_discover::NetworkDiscoverParser;
 pub use port_scan::PortScanParser;
 pub use wifi_scan::WifiScanParser;
 
@@ -27,6 +29,7 @@ impl OutputParserRegistry {
 
         // Register parsers for each tool
         registry.register(Arc::new(DefaultCredsParser));
+        registry.register(Arc::new(NetworkDiscoverParser));
         registry.register(Arc::new(PortScanParser));
         registry.register(Arc::new(WifiScanParser));
 
