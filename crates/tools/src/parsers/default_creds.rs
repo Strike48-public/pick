@@ -12,7 +12,7 @@ pub struct DefaultCredsParser;
 
 impl OutputParser for DefaultCredsParser {
     fn parser_name(&self) -> &str {
-        "default_creds_test"
+        "default_creds"
     }
 
     fn parse(
