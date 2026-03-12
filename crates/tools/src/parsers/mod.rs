@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub mod arp_table;
+pub mod autopwn_crack;
 pub mod cve_lookup;
 pub mod default_creds;
 pub mod device_info;
@@ -19,6 +20,7 @@ pub mod wifi_scan;
 pub mod wifi_scan_detailed;
 
 pub use arp_table::ArpTableParser;
+pub use autopwn_crack::AutoPwnCrackParser;
 pub use cve_lookup::CveLookupParser;
 pub use default_creds::DefaultCredsParser;
 pub use device_info::DeviceInfoParser;
@@ -45,6 +47,7 @@ impl OutputParserRegistry {
 
         // Register parsers for each tool
         registry.register(Arc::new(ArpTableParser));
+        registry.register(Arc::new(AutoPwnCrackParser));
         registry.register(Arc::new(CveLookupParser));
         registry.register(Arc::new(DefaultCredsParser));
         registry.register(Arc::new(DeviceInfoParser));
