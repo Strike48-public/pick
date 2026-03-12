@@ -1,11 +1,11 @@
 //! Parser for default_creds_test tool output
 
+use chrono::Utc;
 use pentest_core::output_parser::{
     CredentialFound, CredentialInfo, CredentialStatus, CredentialType, Evidence, FindingReported,
     FindingStatus, OutputParser, ParserContext, PrivilegeTier, Severity, StructuredMessage,
 };
 use pentest_core::tools::ToolResult;
-use chrono::Utc;
 
 /// Parser for default credentials testing results
 pub struct DefaultCredsParser;
@@ -80,11 +80,7 @@ impl OutputParser for DefaultCredsParser {
                         .unwrap_or("");
 
                     // Handle <empty> placeholder
-                    let password = if password == "<empty>" {
-                        ""
-                    } else {
-                        password
-                    };
+                    let password = if password == "<empty>" { "" } else { password };
 
                     successful_creds.push((username.to_string(), password.to_string()));
 
@@ -184,7 +180,8 @@ fn infer_privilege_tier(username: &str, service: &str) -> PrivilegeTier {
         || username_lower == "admin"
         || username_lower == "administrator"
         || username_lower == "sa" // SQL Server admin
-        || username_lower == "postgres" // PostgreSQL admin
+        || username_lower == "postgres"
+    // PostgreSQL admin
     {
         return PrivilegeTier::LocalAdmin;
     }
@@ -232,10 +229,8 @@ mod tests {
             duration_ms: 5000,
         };
 
-        let context = ParserContext::new(
-            "test-engagement".to_string(),
-            "test-connector".to_string(),
-        );
+        let context =
+            ParserContext::new("test-engagement".to_string(), "test-connector".to_string());
 
         let messages = parser.parse("default_creds_test", &result, &context);
 
@@ -288,10 +283,8 @@ mod tests {
             duration_ms: 8000,
         };
 
-        let context = ParserContext::new(
-            "test-engagement".to_string(),
-            "test-connector".to_string(),
-        );
+        let context =
+            ParserContext::new("test-engagement".to_string(), "test-connector".to_string());
 
         let messages = parser.parse("default_creds_test", &result, &context);
 
@@ -343,10 +336,8 @@ mod tests {
             duration_ms: 3000,
         };
 
-        let context = ParserContext::new(
-            "test-engagement".to_string(),
-            "test-connector".to_string(),
-        );
+        let context =
+            ParserContext::new("test-engagement".to_string(), "test-connector".to_string());
 
         let messages = parser.parse("default_creds_test", &result, &context);
 
@@ -356,13 +347,22 @@ mod tests {
 
     #[test]
     fn test_infer_privilege_tier() {
-        assert_eq!(infer_privilege_tier("root", "ssh"), PrivilegeTier::LocalAdmin);
-        assert_eq!(infer_privilege_tier("admin", "http"), PrivilegeTier::LocalAdmin);
+        assert_eq!(
+            infer_privilege_tier("root", "ssh"),
+            PrivilegeTier::LocalAdmin
+        );
+        assert_eq!(
+            infer_privilege_tier("admin", "http"),
+            PrivilegeTier::LocalAdmin
+        );
         assert_eq!(
             infer_privilege_tier("administrator", "smb"),
             PrivilegeTier::LocalAdmin
         );
-        assert_eq!(infer_privilege_tier("postgres", "postgresql"), PrivilegeTier::LocalAdmin);
+        assert_eq!(
+            infer_privilege_tier("postgres", "postgresql"),
+            PrivilegeTier::LocalAdmin
+        );
         assert_eq!(infer_privilege_tier("user", "ssh"), PrivilegeTier::User);
         assert_eq!(infer_privilege_tier("guest", "http"), PrivilegeTier::User);
     }

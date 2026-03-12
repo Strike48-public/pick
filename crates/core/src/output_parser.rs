@@ -306,8 +306,9 @@ impl StructuredMessage {
         tool_name: String,
     ) -> crate::error::Result<MessageEnvelope> {
         let message_type = self.message_type();
-        let payload = serde_json::to_value(&self)
-            .map_err(|e| crate::error::Error::Serialization(format!("Failed to serialize message: {}", e)))?;
+        let payload = serde_json::to_value(&self).map_err(|e| {
+            crate::error::Error::Serialization(format!("Failed to serialize message: {}", e))
+        })?;
 
         Ok(MessageEnvelope::new(
             message_type,

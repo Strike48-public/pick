@@ -56,13 +56,22 @@ impl OutputParser for PortScanParser {
                 };
 
                 // Extract open status
-                let is_open = port_obj.get("open").and_then(|v| v.as_bool()).unwrap_or(false);
+                let is_open = port_obj
+                    .get("open")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 // Only include open ports in the target discovery
                 if is_open {
                     // Extract service info if available
-                    let service = port_obj.get("service").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    let version = port_obj.get("version").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let service = port_obj
+                        .get("service")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let version = port_obj
+                        .get("version")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
 
                     ports.push(PortInfo {
                         number: port_number,
@@ -122,10 +131,8 @@ mod tests {
             duration_ms: 1523,
         };
 
-        let context = ParserContext::new(
-            "test-engagement".to_string(),
-            "test-connector".to_string(),
-        );
+        let context =
+            ParserContext::new("test-engagement".to_string(), "test-connector".to_string());
 
         let messages = parser.parse("port_scan", &result, &context);
 
@@ -157,10 +164,8 @@ mod tests {
             duration_ms: 5000,
         };
 
-        let context = ParserContext::new(
-            "test-engagement".to_string(),
-            "test-connector".to_string(),
-        );
+        let context =
+            ParserContext::new("test-engagement".to_string(), "test-connector".to_string());
 
         let messages = parser.parse("port_scan", &result, &context);
         assert_eq!(messages.len(), 0);
@@ -184,10 +189,8 @@ mod tests {
             duration_ms: 1000,
         };
 
-        let context = ParserContext::new(
-            "test-engagement".to_string(),
-            "test-connector".to_string(),
-        );
+        let context =
+            ParserContext::new("test-engagement".to_string(), "test-connector".to_string());
 
         let messages = parser.parse("port_scan", &result, &context);
 

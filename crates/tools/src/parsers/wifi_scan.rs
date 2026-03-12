@@ -1,11 +1,11 @@
 //! Parser for wifi_scan tool output
 
+use chrono::Utc;
 use pentest_core::output_parser::{
     Evidence, FindingReported, FindingStatus, OutputParser, ParserContext, Severity,
     StructuredMessage, TargetDiscovered, TargetType,
 };
 use pentest_core::tools::ToolResult;
-use chrono::Utc;
 
 /// Parser for WiFi scan results
 pub struct WifiScanParser;
@@ -72,22 +72,23 @@ impl OutputParser for WifiScanParser {
                     .map(|f| f as u32);
 
                 // Create TargetDiscovered for this WiFi network
-                let target = TargetDiscovered {
-                    target_type: TargetType::Network,
-                    name: format!("{} ({})", ssid, bssid),
-                    ip_address: None,
-                    hostname: Some(ssid.to_string()),
-                    domain: None,
-                    os: None,
-                    ports: vec![],
-                    tags: vec![
-                        "wifi".to_string(),
-                        security.to_lowercase(),
-                        format!("channel_{}", channel.unwrap_or(0)),
-                    ],
-                    detection_source: "pick:wifi_scan".to_string(),
-                    confidence: Some(90),
-                    notes: Some(format!(
+                let target =
+                    TargetDiscovered {
+                        target_type: TargetType::Network,
+                        name: format!("{} ({})", ssid, bssid),
+                        ip_address: None,
+                        hostname: Some(ssid.to_string()),
+                        domain: None,
+                        os: None,
+                        ports: vec![],
+                        tags: vec![
+                            "wifi".to_string(),
+                            security.to_lowercase(),
+                            format!("channel_{}", channel.unwrap_or(0)),
+                        ],
+                        detection_source: "pick:wifi_scan".to_string(),
+                        confidence: Some(90),
+                        notes: Some(format!(
                         "BSSID: {}, Security: {}, Signal: {} dBm, Channel: {}, Frequency: {} MHz",
                         bssid,
                         security,
@@ -95,7 +96,7 @@ impl OutputParser for WifiScanParser {
                         channel.map(|c| c.to_string()).unwrap_or_else(|| "Unknown".to_string()),
                         frequency.map(|f| f.to_string()).unwrap_or_else(|| "Unknown".to_string())
                     )),
-                };
+                    };
 
                 messages.push(StructuredMessage::TargetDiscovered(target));
 
@@ -146,8 +147,14 @@ impl OutputParser for WifiScanParser {
                         status: FindingStatus::Confirmed,
                         evidence: vec![Evidence {
                             evidence_type: "wifi_scan".to_string(),
-                            description: format!("WEP encryption detected at {} dBm signal strength", signal_strength),
-                            data: format!("SSID: {}, BSSID: {}, Security: {}", ssid, bssid, security),
+                            description: format!(
+                                "WEP encryption detected at {} dBm signal strength",
+                                signal_strength
+                            ),
+                            data: format!(
+                                "SSID: {}, BSSID: {}, Security: {}",
+                                ssid, bssid, security
+                            ),
                             timestamp: Utc::now(),
                         }],
                         mitre_techniques: vec!["T1040".to_string(), "T1557".to_string()], // Network Sniffing, MITM
@@ -165,7 +172,10 @@ impl OutputParser for WifiScanParser {
                 }
 
                 // 3. WPA (original, deprecated) vs WPA2/WPA3
-                if security.to_lowercase() == "wpa" && !security.to_lowercase().contains("wpa2") && !security.to_lowercase().contains("wpa3") {
+                if security.to_lowercase() == "wpa"
+                    && !security.to_lowercase().contains("wpa2")
+                    && !security.to_lowercase().contains("wpa3")
+                {
                     let finding = FindingReported {
                         title: format!("Deprecated WPA Encryption Detected: {}", ssid),
                         description: format!(
@@ -177,14 +187,19 @@ impl OutputParser for WifiScanParser {
                         status: FindingStatus::Confirmed,
                         evidence: vec![Evidence {
                             evidence_type: "wifi_scan".to_string(),
-                            description: format!("WPA (non-WPA2/WPA3) encryption detected at {} dBm signal strength", signal_strength),
-                            data: format!("SSID: {}, BSSID: {}, Security: {}", ssid, bssid, security),
+                            description: format!(
+                                "WPA (non-WPA2/WPA3) encryption detected at {} dBm signal strength",
+                                signal_strength
+                            ),
+                            data: format!(
+                                "SSID: {}, BSSID: {}, Security: {}",
+                                ssid, bssid, security
+                            ),
                             timestamp: Utc::now(),
                         }],
                         mitre_techniques: vec!["T1040".to_string()],
                         remediation: Some(
-                            "Upgrade to WPA3 (preferred) or WPA2 with AES encryption."
-                                .to_string(),
+                            "Upgrade to WPA3 (preferred) or WPA2 with AES encryption.".to_string(),
                         ),
                         cve_ids: vec![],
                         target_ids: vec![],
@@ -232,10 +247,8 @@ mod tests {
             duration_ms: 2000,
         };
 
-        let context = ParserContext::new(
-            "test-engagement".to_string(),
-            "test-connector".to_string(),
-        );
+        let context =
+            ParserContext::new("test-engagement".to_string(), "test-connector".to_string());
 
         let messages = parser.parse("wifi_scan", &result, &context);
 
@@ -287,10 +300,8 @@ mod tests {
             duration_ms: 2000,
         };
 
-        let context = ParserContext::new(
-            "test-engagement".to_string(),
-            "test-connector".to_string(),
-        );
+        let context =
+            ParserContext::new("test-engagement".to_string(), "test-connector".to_string());
 
         let messages = parser.parse("wifi_scan", &result, &context);
 
@@ -330,10 +341,8 @@ mod tests {
             duration_ms: 2000,
         };
 
-        let context = ParserContext::new(
-            "test-engagement".to_string(),
-            "test-connector".to_string(),
-        );
+        let context =
+            ParserContext::new("test-engagement".to_string(), "test-connector".to_string());
 
         let messages = parser.parse("wifi_scan", &result, &context);
 
@@ -359,10 +368,8 @@ mod tests {
             duration_ms: 100,
         };
 
-        let context = ParserContext::new(
-            "test-engagement".to_string(),
-            "test-connector".to_string(),
-        );
+        let context =
+            ParserContext::new("test-engagement".to_string(), "test-connector".to_string());
 
         let messages = parser.parse("wifi_scan", &result, &context);
         assert_eq!(messages.len(), 0);

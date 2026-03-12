@@ -67,7 +67,10 @@ impl OutputParser for NetworkDiscoverParser {
                     .map(|obj| {
                         obj.iter()
                             .map(|(k, v)| {
-                                let value = v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string());
+                                let value = v
+                                    .as_str()
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|| v.to_string());
                                 format!("{}={}", k, value)
                             })
                             .collect::<Vec<_>>()
@@ -75,15 +78,16 @@ impl OutputParser for NetworkDiscoverParser {
                     });
 
                 // Determine target type based on service
-                let target_type = if service_type.contains("_http") || service_type.contains("_https") {
-                    TargetType::Service
-                } else if service_type.contains("_printer") || service_type.contains("_ipp") {
-                    TargetType::Service
-                } else if service_type.contains("_smb") || service_type.contains("_afp") {
-                    TargetType::Service
-                } else {
-                    TargetType::Host
-                };
+                let target_type =
+                    if service_type.contains("_http") || service_type.contains("_https") {
+                        TargetType::Service
+                    } else if service_type.contains("_printer") || service_type.contains("_ipp") {
+                        TargetType::Service
+                    } else if service_type.contains("_smb") || service_type.contains("_afp") {
+                        TargetType::Service
+                    } else {
+                        TargetType::Host
+                    };
 
                 // Infer protocol from service type
                 let protocol = if service_type.contains("._tcp.") {
@@ -197,10 +201,8 @@ mod tests {
             duration_ms: 5000,
         };
 
-        let context = ParserContext::new(
-            "test-engagement".to_string(),
-            "test-connector".to_string(),
-        );
+        let context =
+            ParserContext::new("test-engagement".to_string(), "test-connector".to_string());
 
         let messages = parser.parse("network_discover", &result, &context);
 
@@ -250,10 +252,8 @@ mod tests {
             duration_ms: 8000,
         };
 
-        let context = ParserContext::new(
-            "test-engagement".to_string(),
-            "test-connector".to_string(),
-        );
+        let context =
+            ParserContext::new("test-engagement".to_string(), "test-connector".to_string());
 
         let messages = parser.parse("network_discover", &result, &context);
 
@@ -300,10 +300,8 @@ mod tests {
             duration_ms: 3000,
         };
 
-        let context = ParserContext::new(
-            "test-engagement".to_string(),
-            "test-connector".to_string(),
-        );
+        let context =
+            ParserContext::new("test-engagement".to_string(), "test-connector".to_string());
 
         let messages = parser.parse("network_discover", &result, &context);
 
@@ -320,7 +318,10 @@ mod tests {
     #[test]
     fn test_extract_service_name() {
         assert_eq!(extract_service_name("_http._tcp.local."), "http");
-        assert_eq!(extract_service_name("_googlecast._tcp.local."), "googlecast");
+        assert_eq!(
+            extract_service_name("_googlecast._tcp.local."),
+            "googlecast"
+        );
         assert_eq!(extract_service_name("_printer._tcp.local."), "printer");
         assert_eq!(extract_service_name("unknown"), "unknown");
     }
@@ -335,10 +336,8 @@ mod tests {
             duration_ms: 10000,
         };
 
-        let context = ParserContext::new(
-            "test-engagement".to_string(),
-            "test-connector".to_string(),
-        );
+        let context =
+            ParserContext::new("test-engagement".to_string(), "test-connector".to_string());
 
         let messages = parser.parse("network_discover", &result, &context);
         assert_eq!(messages.len(), 0);
