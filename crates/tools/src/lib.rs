@@ -4,10 +4,12 @@
 
 pub mod arp_table;
 pub mod autopwn;
+pub mod credential_harvest;
 pub mod cve_lookup;
 pub mod default_creds;
 pub mod device_info;
 pub mod execute_command;
+pub mod lateral_movement;
 pub mod list_files;
 pub mod network_discover;
 pub mod port_scan;
@@ -30,9 +32,11 @@ pub use autopwn::{
     AutoPwnCaptureTool, AutoPwnCrackTool, AutoPwnNetworkPlanTool, AutoPwnOrchestratorTool,
     AutoPwnPlanTool,
 };
+pub use credential_harvest::CredentialHarvestTool;
 pub use cve_lookup::CveLookupTool;
 pub use default_creds::DefaultCredsTool;
 pub use device_info::DeviceInfoTool;
+pub use lateral_movement::LateralMovementTool;
 pub use execute_command::ExecuteCommandTool;
 pub use list_files::ListFilesTool;
 pub use network_discover::NetworkDiscoverTool;
@@ -77,6 +81,10 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(DefaultCredsTool);
     registry.register(WebVulnScanTool);
     registry.register(SmbEnumTool);
+
+    // Post-exploitation
+    registry.register(CredentialHarvestTool);
+    registry.register(LateralMovementTool);
 
     // Device and system info
     registry.register(DeviceInfoTool);
