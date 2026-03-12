@@ -11,6 +11,7 @@ pub mod network_discover;
 pub mod port_scan;
 pub mod service_banner;
 pub mod smb_enum;
+pub mod web_vuln_scan;
 pub mod wifi_scan;
 
 pub use arp_table::ArpTableParser;
@@ -19,6 +20,7 @@ pub use network_discover::NetworkDiscoverParser;
 pub use port_scan::PortScanParser;
 pub use service_banner::ServiceBannerParser;
 pub use smb_enum::SmbEnumParser;
+pub use web_vuln_scan::WebVulnScanParser;
 pub use wifi_scan::WifiScanParser;
 
 /// Registry of output parsers
@@ -40,6 +42,7 @@ impl OutputParserRegistry {
         registry.register(Arc::new(PortScanParser));
         registry.register(Arc::new(ServiceBannerParser));
         registry.register(Arc::new(SmbEnumParser));
+        registry.register(Arc::new(WebVulnScanParser));
         registry.register(Arc::new(WifiScanParser));
 
         registry
