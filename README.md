@@ -111,12 +111,15 @@ Environment variables (standalone):
 ### Desktop
 
 ```bash
-# Development
-cargo run --package pentest-desktop
+# Development (requires sudo for WiFi hardware access)
+sudo cargo run --package pentest-desktop
 
 # Release build
 cargo build --release --package pentest-desktop
+sudo ./target/release/pentest-desktop
 ```
+
+**Why sudo?** WiFi penetration testing tools (autopwn, wifi_scan, airmon-ng) require direct hardware access to wireless adapters, which needs real root privileges. See [docs/BWRAP_SUDO_EXPLAINED.md](docs/BWRAP_SUDO_EXPLAINED.md) for details.
 
 ### Web (Liveview)
 
