@@ -27,6 +27,13 @@
   margin-bottom: 12px;
 }
 
+.next-steps-text {
+  font-size: 13px;
+  color: var(--text-secondary, #ccc);
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
 .next-steps-actions {
   display: flex;
   flex-direction: column;

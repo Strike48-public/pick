@@ -89,7 +89,23 @@ pub fn Dashboard(
                         div {
                             class: "action-card",
                             onclick: move |_| {
-                                let action = "Scan for nearby WiFi networks and show them in a table. I'll tell you which network to attack after I see the scan results.".to_string();
+                                let action = "Execute automated penetration test: \
+                                    \
+                                    1. Check if I have WiFi pentesting hardware (monitor mode capable adapter). \
+                                    \
+                                    2. If YES (WiFi pentest adapter available): \
+                                       - Scan for WiFi networks \
+                                       - Run detailed scan to detect clients \
+                                       - Automatically select the best target (strongest signal, most clients, attackable security) \
+                                       - Plan and execute the WiFi attack (WEP/WPA2 capture + crack) \
+                                    \
+                                    3. If NO (no WiFi pentest adapter): \
+                                       - Skip WiFi and pivot to network-based attacks \
+                                       - Plan a full network penetration test (autopwn_network_plan) \
+                                       - Execute each phase: discovery → port scanning → service enumeration → vuln assessment → exploitation planning \
+                                    \
+                                    Make all decisions autonomously. Only ask me for confirmation before destructive actions. \
+                                    Walk through the complete attack sequence like a professional penetration tester.".to_string();
                                 let selected_adapter = wifi_adapter();
                                 spawn(async move {
                                     match platform_helper::check_wifi_status(selected_adapter).await {
