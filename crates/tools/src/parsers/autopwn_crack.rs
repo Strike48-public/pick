@@ -2,9 +2,8 @@
 
 use chrono::Utc;
 use pentest_core::output_parser::{
-    CredentialFound, CredentialInfo, CredentialStatus, CredentialType, Evidence,
-    FindingReported, FindingStatus, OutputParser, ParserContext, PrivilegeTier, Severity,
-    StructuredMessage,
+    CredentialFound, CredentialInfo, CredentialStatus, CredentialType, Evidence, FindingReported,
+    FindingStatus, OutputParser, ParserContext, PrivilegeTier, Severity, StructuredMessage,
 };
 use pentest_core::tools::ToolResult;
 
@@ -73,7 +72,7 @@ impl OutputParser for AutoPwnCrackParser {
                     method, duration_sec
                 )),
             },
-            target_id: None, // Will be linked by StrikeKit
+            target_id: None,                     // Will be linked by StrikeKit
             privilege_tier: PrivilegeTier::User, // WiFi access = user-level
             test_result: Some("cracked".to_string()),
         };

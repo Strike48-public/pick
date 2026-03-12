@@ -187,14 +187,13 @@ fn infer_privilege_tier(username: &str, service: &str) -> PrivilegeTier {
     }
 
     // Service accounts
-    if service.contains("sql")
+    if (service.contains("sql")
         || service.contains("mysql")
         || service.contains("postgres")
-        || service.contains("mongodb")
+        || service.contains("mongodb"))
+        && (username_lower.contains("service") || username_lower == "mysql")
     {
-        if username_lower.contains("service") || username_lower == "mysql" {
-            return PrivilegeTier::Service;
-        }
+        return PrivilegeTier::Service;
     }
 
     // Default to user-level

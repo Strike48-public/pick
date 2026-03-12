@@ -98,15 +98,9 @@ impl OutputParser for SsdpDiscoverParser {
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown");
 
-                let usn = device_obj
-                    .get("usn")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let usn = device_obj.get("usn").and_then(|v| v.as_str()).unwrap_or("");
 
-                let st = device_obj
-                    .get("st")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let st = device_obj.get("st").and_then(|v| v.as_str()).unwrap_or("");
 
                 let friendly_name = device_obj
                     .get("friendly_name")

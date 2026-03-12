@@ -71,10 +71,7 @@ impl OutputParser for ArpTableParser {
                     tags: vec!["arp".to_string(), "local-network".to_string()],
                     detection_source: "pick:arp_table".to_string(),
                     confidence: Some(95), // Very high confidence - from ARP cache
-                    notes: Some(format!(
-                        "MAC: {}, Interface: {}",
-                        mac, interface
-                    )),
+                    notes: Some(format!("MAC: {}, Interface: {}", mac, interface)),
                 };
 
                 messages.push(StructuredMessage::TargetDiscovered(target));

@@ -196,8 +196,7 @@ impl OutputParser for WebVulnScanParser {
                 if !path.is_empty() {
                     evidence_data.push_str(&format!(", Path: {}", path));
                 }
-                if let Some(status_code) = finding_obj.get("status_code").and_then(|v| v.as_u64())
-                {
+                if let Some(status_code) = finding_obj.get("status_code").and_then(|v| v.as_u64()) {
                     evidence_data.push_str(&format!(", Status Code: {}", status_code));
                 }
 
@@ -413,7 +412,11 @@ mod tests {
                 assert!(finding.title.contains("Directory Listing"));
                 assert_eq!(finding.severity, Severity::Medium);
                 assert!(finding.mitre_techniques.contains(&"T1083".to_string()));
-                assert!(finding.remediation.as_ref().unwrap().contains("Options -Indexes"));
+                assert!(finding
+                    .remediation
+                    .as_ref()
+                    .unwrap()
+                    .contains("Options -Indexes"));
             }
             _ => panic!("Expected FindingReported message"),
         }

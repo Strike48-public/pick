@@ -78,16 +78,17 @@ impl OutputParser for NetworkDiscoverParser {
                     });
 
                 // Determine target type based on service
-                let target_type =
-                    if service_type.contains("_http") || service_type.contains("_https") {
-                        TargetType::Service
-                    } else if service_type.contains("_printer") || service_type.contains("_ipp") {
-                        TargetType::Service
-                    } else if service_type.contains("_smb") || service_type.contains("_afp") {
-                        TargetType::Service
-                    } else {
-                        TargetType::Host
-                    };
+                let target_type = if service_type.contains("_http")
+                    || service_type.contains("_https")
+                    || service_type.contains("_printer")
+                    || service_type.contains("_ipp")
+                    || service_type.contains("_smb")
+                    || service_type.contains("_afp")
+                {
+                    TargetType::Service
+                } else {
+                    TargetType::Host
+                };
 
                 // Infer protocol from service type
                 let protocol = if service_type.contains("._tcp.") {

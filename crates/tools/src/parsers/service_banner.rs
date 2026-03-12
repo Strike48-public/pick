@@ -82,7 +82,10 @@ impl OutputParser for ServiceBannerParser {
             detection_source: "pick:service_banner".to_string(),
             confidence: Some(90), // High confidence - directly connected
             notes: if !banner.is_empty() {
-                Some(format!("Banner: {}", banner.lines().next().unwrap_or(banner)))
+                Some(format!(
+                    "Banner: {}",
+                    banner.lines().next().unwrap_or(banner)
+                ))
             } else {
                 None
             },

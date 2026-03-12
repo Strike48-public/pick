@@ -1,8 +1,6 @@
 //! Parsers for file operation tools (read_file, write_file, list_files)
 
-use pentest_core::output_parser::{
-    OutputParser, ParserContext, StructuredMessage, ToolExecuted,
-};
+use pentest_core::output_parser::{OutputParser, ParserContext, StructuredMessage, ToolExecuted};
 use pentest_core::tools::ToolResult;
 
 /// Parser for read_file tool

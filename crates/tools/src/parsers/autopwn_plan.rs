@@ -1,8 +1,6 @@
 //! Parser for autopwn_plan tool output
 
-use pentest_core::output_parser::{
-    OutputParser, ParserContext, StructuredMessage, ToolExecuted,
-};
+use pentest_core::output_parser::{OutputParser, ParserContext, StructuredMessage, ToolExecuted};
 use pentest_core::tools::ToolResult;
 
 /// Parser for AutoPwn planning results

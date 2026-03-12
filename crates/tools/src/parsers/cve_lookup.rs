@@ -93,10 +93,7 @@ impl OutputParser for CveLookupParser {
                     .and_then(|v| v.as_str())
                     .unwrap_or("No description available");
 
-                let cvss_score = cve_obj
-                    .get("cvss")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
+                let cvss_score = cve_obj.get("cvss").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
                 let severity_str = cve_obj
                     .get("severity")
@@ -132,7 +129,7 @@ impl OutputParser for CveLookupParser {
                     status: FindingStatus::Confirmed,
                     evidence: vec![Evidence {
                         evidence_type: "cve_lookup".to_string(),
-                        description: format!("CVE found via NVD database lookup"),
+                        description: "CVE found via NVD database lookup".to_string(),
                         data: format!(
                             "CVE: {}, Product: {}{}, CVSS: {:.1}, Severity: {}{}",
                             cve_id,

@@ -193,7 +193,9 @@ impl OutputParser for WifiScanDetailedParser {
                                 ssid,
                                 bssid,
                                 security,
-                                clients.map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string())
+                                clients
+                                    .map(|c| c.to_string())
+                                    .unwrap_or_else(|| "unknown".to_string())
                             ),
                             timestamp: Utc::now(),
                         }],
@@ -304,7 +306,11 @@ mod tests {
                 assert_eq!(target.target_type, TargetType::Network);
                 assert!(target.name.contains("CoffeeShop-WiFi"));
                 assert!(target.tags.contains(&"detailed_scan".to_string()));
-                assert!(target.notes.as_ref().unwrap().contains("Connected Clients: 8"));
+                assert!(target
+                    .notes
+                    .as_ref()
+                    .unwrap()
+                    .contains("Connected Clients: 8"));
                 assert_eq!(target.confidence, Some(95));
             }
             _ => panic!("Expected TargetDiscovered message"),

@@ -1,8 +1,6 @@
 //! Parser for screenshot tool output
 
-use pentest_core::output_parser::{
-    OutputParser, ParserContext, StructuredMessage, ToolExecuted,
-};
+use pentest_core::output_parser::{OutputParser, ParserContext, StructuredMessage, ToolExecuted};
 use pentest_core::tools::ToolResult;
 
 /// Parser for screenshot results
