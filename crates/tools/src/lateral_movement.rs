@@ -363,8 +363,9 @@ impl PentestTool for LateralMovementTool {
 
             match technique.to_lowercase().as_str() {
                 "ssh_key" => {
-                    let key = key_path
-                        .ok_or_else(|| Error::InvalidParams("key_path required for ssh_key technique".into()))?;
+                    let key = key_path.ok_or_else(|| {
+                        Error::InvalidParams("key_path required for ssh_key technique".into())
+                    })?;
 
                     for target in &targets {
                         if let Ok(result) = Self::try_ssh_key_reuse(target, key, username).await {
@@ -380,14 +381,19 @@ impl PentestTool for LateralMovementTool {
                 }
 
                 "credential" => {
-                    let pass = password
-                        .ok_or_else(|| Error::InvalidParams("password required for credential technique".into()))?;
+                    let pass = password.ok_or_else(|| {
+                        Error::InvalidParams("password required for credential technique".into())
+                    })?;
 
                     for target in &targets {
                         if let Ok(result) = Self::try_credential_reuse(target, username, pass).await
                         {
                             if result.success {
-                                tracing::info!("✅ {} - SUCCESS as {}", target, result.access_level.as_ref().unwrap());
+                                tracing::info!(
+                                    "✅ {} - SUCCESS as {}",
+                                    target,
+                                    result.access_level.as_ref().unwrap()
+                                );
                             } else {
                                 tracing::info!("❌ {} - FAILED", target);
                             }
@@ -398,8 +404,9 @@ impl PentestTool for LateralMovementTool {
                 }
 
                 "pth" => {
-                    let hash = nt_hash
-                        .ok_or_else(|| Error::InvalidParams("nt_hash required for pth technique".into()))?;
+                    let hash = nt_hash.ok_or_else(|| {
+                        Error::InvalidParams("nt_hash required for pth technique".into())
+                    })?;
 
                     for target in &targets {
                         if let Ok(result) = Self::try_pass_the_hash(target, username, hash).await {
@@ -415,8 +422,9 @@ impl PentestTool for LateralMovementTool {
                 }
 
                 "tunnel" => {
-                    let pivot = pivot_host
-                        .ok_or_else(|| Error::InvalidParams("pivot_host required for tunnel technique".into()))?;
+                    let pivot = pivot_host.ok_or_else(|| {
+                        Error::InvalidParams("pivot_host required for tunnel technique".into())
+                    })?;
 
                     for target in &targets {
                         if let Ok(result) = Self::create_ssh_tunnel(

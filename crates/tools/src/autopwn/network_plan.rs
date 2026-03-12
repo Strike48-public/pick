@@ -101,9 +101,7 @@ impl PentestTool for AutoPwnNetworkPlanTool {
             let active_iface = interfaces
                 .iter()
                 .find(|i| i.is_up && !i.ip_addresses.is_empty())
-                .ok_or_else(|| {
-                    Error::InvalidParams("No active network interface found".into())
-                })?;
+                .ok_or_else(|| Error::InvalidParams("No active network interface found".into()))?;
 
             let local_ip = active_iface
                 .ip_addresses
@@ -214,8 +212,7 @@ fn build_full_pentest_plan(network: &str) -> NetworkAttackPlan {
     phases.push(AttackPhase {
         phase_number: 3,
         name: "Service Enumeration".to_string(),
-        description: "Grab service banners and enumerate protocols (SMB, HTTP, etc.)"
-            .to_string(),
+        description: "Grab service banners and enumerate protocols (SMB, HTTP, etc.)".to_string(),
         tools: vec![
             "service_banner".to_string(),
             "smb_enum".to_string(),
@@ -230,10 +227,7 @@ fn build_full_pentest_plan(network: &str) -> NetworkAttackPlan {
         phase_number: 4,
         name: "Vulnerability Assessment".to_string(),
         description: "Search for known vulnerabilities and default credentials".to_string(),
-        tools: vec![
-            "cve_lookup".to_string(),
-            "default_creds".to_string(),
-        ],
+        tools: vec!["cve_lookup".to_string(), "default_creds".to_string()],
         estimated_duration_min: 5,
         depends_on: Some(3),
     });
@@ -260,8 +254,7 @@ fn build_full_pentest_plan(network: &str) -> NetworkAttackPlan {
                 .to_string(),
             "Exploitation phase requires manual intervention based on discovered vulnerabilities"
                 .to_string(),
-            "Ensure you have proper authorization before running this attack sequence"
-                .to_string(),
+            "Ensure you have proper authorization before running this attack sequence".to_string(),
         ],
     }
 }
@@ -299,10 +292,7 @@ fn build_targeted_attack_plan(target: &str, network: &str) -> NetworkAttackPlan 
         phase_number: 3,
         name: "Vulnerability Search".to_string(),
         description: "Search for CVEs and test default credentials".to_string(),
-        tools: vec![
-            "cve_lookup".to_string(),
-            "default_creds".to_string(),
-        ],
+        tools: vec!["cve_lookup".to_string(), "default_creds".to_string()],
         estimated_duration_min: 5,
         depends_on: Some(2),
     });
@@ -353,10 +343,7 @@ fn build_recon_plan(network: &str) -> NetworkAttackPlan {
         phase_number: 2,
         name: "Service Discovery".to_string(),
         description: "Discover advertised services via mDNS and SSDP".to_string(),
-        tools: vec![
-            "network_discover".to_string(),
-            "ssdp_discover".to_string(),
-        ],
+        tools: vec!["network_discover".to_string(), "ssdp_discover".to_string()],
         estimated_duration_min: 2,
         depends_on: None,
     });

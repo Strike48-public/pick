@@ -137,7 +137,9 @@ impl CredentialHarvestTool {
                         };
 
                         // Get fingerprint
-                        let fingerprint = Self::get_ssh_fingerprint(&key_path).await.unwrap_or_else(|_| "unknown".to_string());
+                        let fingerprint = Self::get_ssh_fingerprint(&key_path)
+                            .await
+                            .unwrap_or_else(|_| "unknown".to_string());
 
                         keys.push(SshKey {
                             path: key_path.to_string_lossy().to_string(),
@@ -163,7 +165,11 @@ impl CredentialHarvestTool {
 
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            Ok(stdout.split_whitespace().nth(1).unwrap_or("unknown").to_string())
+            Ok(stdout
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("unknown")
+                .to_string())
         } else {
             Ok("unable_to_read".to_string())
         }
@@ -330,10 +336,7 @@ impl PentestTool for CredentialHarvestTool {
 
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
         execute_timed(|| async {
-            let targets = params["targets"]
-                .as_str()
-                .unwrap_or("all")
-                .to_lowercase();
+            let targets = params["targets"].as_str().unwrap_or("all").to_lowercase();
 
             tracing::info!("═══════════════════════════════════════════════════");
             tracing::info!("🔑 Credential Harvesting Started");
@@ -373,10 +376,8 @@ impl PentestTool for CredentialHarvestTool {
                 Vec::new()
             };
 
-            let total_found = wifi_passwords.len()
-                + ssh_keys.len()
-                + env_secrets.len()
-                + config_files.len();
+            let total_found =
+                wifi_passwords.len() + ssh_keys.len() + env_secrets.len() + config_files.len();
 
             tracing::info!("");
             tracing::info!("Harvest Complete:");

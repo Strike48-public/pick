@@ -47,7 +47,10 @@ impl PentestTool for AutoPwnOrchestratorTool {
             // Check WiFi adapter status
             let wifi_status = platform.check_wifi_connection_status(None).await?;
 
-            tracing::info!("WiFi Adapters Found: {}", wifi_status.all_wifi_interfaces.len());
+            tracing::info!(
+                "WiFi Adapters Found: {}",
+                wifi_status.all_wifi_interfaces.len()
+            );
             for iface in &wifi_status.all_wifi_interfaces {
                 tracing::info!("  - {}", iface);
             }
