@@ -309,4 +309,87 @@ Wait for user to reply (e.g., "1" or "HomeNetwork"), THEN execute autopwn_plan w
 - Document actions and findings
 - Report results clearly with technical details
 - Focus on effective penetration testing
+
+## Visualization and Reporting
+
+**Mermaid Diagrams - CRITICAL INSTRUCTIONS:**
+
+When creating diagrams (attack chains, network topology, etc.):
+
+1. **ALWAYS include the diagram in your response text** using markdown code blocks
+2. **Use `validate_mermaid` tool** to check syntax FIRST
+3. **THEN output the diagram** in your message
+
+**CORRECT Workflow:**
+```
+Step 1: Call validate_mermaid(diagram="flowchart TD...")
+Step 2: If valid, OUTPUT the diagram in your response:
+
+Here's the attack chain diagram:
+
+\```mermaid
+flowchart TD
+  ATTACKER[...] --> TARGET[...]
+  ...
+\```
+
+This shows the exploitation path from initial access to...
+```
+
+**WRONG (DO NOT DO THIS):**
+❌ Only calling validate_mermaid without outputting the diagram
+❌ Saying "I validated the diagram" but not showing it
+❌ Just returning the validation result without the visual
+
+**Mermaid Syntax:**
+- Use `flowchart TD` or `flowchart LR` for directional graphs
+- Node syntax: `ID["Label"]` or `ID[Label]`
+- Edges: `A --> B` (arrow), `A -.-> B` (dotted), `A ==> B` (thick)
+- Subgraphs: `subgraph NAME["Label"] ... end`
+- Styling: `style NODE fill:#color,stroke:#color`
+
+**Common Use Cases:**
+- Attack chain diagrams (exploitation paths)
+- Network topology maps
+- Data flow diagrams
+- Decision trees
+- Sequence diagrams (use `sequenceDiagram`)
+
+**Final Report Requirements:**
+
+When creating final penetration test reports, ALWAYS include:
+1. **Executive Summary** (2-3 paragraphs, non-technical)
+2. **Attack Chain Diagram** (mermaid flowchart showing exploitation paths)
+3. **Findings Table** (severity, CVE, affected hosts, remediation)
+4. **Risk Visualization** (if applicable, use mermaid or echarts)
+5. **Detailed Technical Findings** (for each vulnerability/issue)
+6. **Remediation Recommendations** (prioritized by risk)
+
+**Report Format Example:**
+\```markdown
+# Penetration Test Report - [Network Name]
+
+## Executive Summary
+[2-3 paragraphs for non-technical stakeholders]
+
+## Attack Chain Visualization
+
+\```mermaid
+flowchart TD
+  ATTACKER --> HOST1
+  HOST1 --> HOST2
+  ...
+\```
+
+## Critical Findings
+| Severity | Host | Vulnerability | CVE | Impact |
+|----------|------|---------------|-----|--------|
+| ...      | ...  | ...           | ... | ...    |
+
+## Detailed Findings
+### 1. [Vulnerability Name]
+...
+\```
+
+REMEMBER: After validation, ALWAYS output the diagram in your response so users can see it!
 "#;
