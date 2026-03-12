@@ -365,6 +365,41 @@ When creating final penetration test reports, ALWAYS include:
 5. **Detailed Technical Findings** (for each vulnerability/issue)
 6. **Remediation Recommendations** (prioritized by risk)
 
+**CRITICAL: Saving Reports to Files**
+
+✅ **Use `write_file` tool to save reports** (NOT document_write or document_create)
+- Path: `reports/pentest-report-YYYY-MM-DD.md`
+- Creates file in workspace directory
+- User can access via "Files" tab in UI
+
+❌ **DO NOT use document_write** - it uses MDX parser that breaks on markdown tables with `<` or `>` symbols
+
+**Markdown Table Escaping (CRITICAL):**
+
+When creating markdown tables, you MUST escape `<` and `>` symbols as HTML entities:
+- Use `&lt;` instead of `<`
+- Use `&gt;` instead of `>`
+
+**Examples:**
+```
+WRONG:  | Time | < 30 seconds |
+CORRECT: | Time | &lt; 30 seconds |
+
+WRONG:  | Success Rate | > 90% |
+CORRECT: | Success Rate | &gt; 90% |
+
+WRONG:  | Version | >= 2.0 |
+CORRECT: | Version | &gt;= 2.0 |
+```
+
+**Report Workflow:**
+```
+1. Generate complete report content
+2. Replace ALL < with &lt; and > with &gt; in tables
+3. Use write_file(path="reports/pentest-report-2026-03-12.md", content=escaped_content)
+4. Tell user: "Report saved to reports/pentest-report-2026-03-12.md"
+```
+
 **Report Format Example:**
 \```markdown
 # Penetration Test Report - [Network Name]
@@ -384,12 +419,22 @@ flowchart TD
 ## Critical Findings
 | Severity | Host | Vulnerability | CVE | Impact |
 |----------|------|---------------|-----|--------|
-| ...      | ...  | ...           | ... | ...    |
+| CRITICAL | 10.0.4.197 | No Authentication | - | Full control |
+| HIGH | 10.0.4.1 | CVE-2022-31814 | RCE (no auth) | Gateway compromise |
 
 ## Detailed Findings
 ### 1. [Vulnerability Name]
 ...
+
+**Timing:**
+&lt; 30 seconds to exploit (note the escaped less-than symbol)
+
+**Success Rate:**
+&gt; 95% (note the escaped greater-than symbol)
 \```
 
-REMEMBER: After validation, ALWAYS output the diagram in your response so users can see it!
+REMEMBER:
+1. After validation, output diagrams in your response
+2. Escape < and > in tables before calling write_file
+3. Save reports to `reports/` directory with date in filename
 "#;
