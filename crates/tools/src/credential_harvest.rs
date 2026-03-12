@@ -5,7 +5,7 @@ use pentest_core::error::{Error, Result};
 use pentest_core::tools::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::process::Command;
 
@@ -93,13 +93,13 @@ impl CredentialHarvestTool {
                 let mut current_ssid = None;
                 for line in content.lines() {
                     let line = line.trim();
-                    if line.starts_with("ssid=") {
-                        current_ssid = Some(line[5..].trim_matches('"').to_string());
-                    } else if line.starts_with("psk=") {
+                    if let Some(stripped) = line.strip_prefix("ssid=") {
+                        current_ssid = Some(stripped.trim_matches('"').to_string());
+                    } else if let Some(stripped) = line.strip_prefix("psk=") {
                         if let Some(ssid) = current_ssid.take() {
                             creds.push(WifiCredential {
                                 ssid,
-                                password: line[4..].trim_matches('"').to_string(),
+                                password: stripped.trim_matches('"').to_string(),
                                 auth_type: "WPA-PSK".to_string(),
                             });
                         }
@@ -156,9 +156,9 @@ impl CredentialHarvestTool {
     }
 
     /// Get SSH key fingerprint
-    async fn get_ssh_fingerprint(key_path: &PathBuf) -> Result<String> {
+    async fn get_ssh_fingerprint(key_path: &Path) -> Result<String> {
         let output = Command::new("ssh-keygen")
-            .args(&["-lf", key_path.to_str().unwrap()])
+            .args(["-lf", key_path.to_str().unwrap()])
             .output()
             .await
             .map_err(|e| Error::ToolExecution(format!("ssh-keygen failed: {}", e)))?;
@@ -255,7 +255,7 @@ impl CredentialHarvestTool {
             for (pattern, file_type) in &patterns {
                 // Use find command for efficiency
                 if let Ok(output) = Command::new("find")
-                    .args(&[
+                    .args([
                         search_dir.to_str().unwrap(),
                         "-name",
                         pattern,

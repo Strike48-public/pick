@@ -27,21 +27,30 @@ pub fn LogFilterBar(
     // Load from localStorage on mount
     use_effect(move || {
         spawn(async move {
-            if let Ok(result) = document::eval(&format!(
-                "localStorage.getItem('{}')",
-                storage_key
-            )).await {
+            if let Ok(result) =
+                document::eval(&format!("localStorage.getItem('{}')", storage_key)).await
+            {
                 if let Some(stored) = result.as_str() {
                     if !stored.is_empty() && stored != "null" {
                         // Parse stored levels: "Debug,Info,Success,Warning,Error"
                         let mut set = HashSet::new();
                         for level_str in stored.split(',') {
                             match level_str {
-                                "Debug" => { set.insert(LogLevel::Debug); }
-                                "Info" => { set.insert(LogLevel::Info); }
-                                "Success" => { set.insert(LogLevel::Success); }
-                                "Warning" => { set.insert(LogLevel::Warning); }
-                                "Error" => { set.insert(LogLevel::Error); }
+                                "Debug" => {
+                                    set.insert(LogLevel::Debug);
+                                }
+                                "Info" => {
+                                    set.insert(LogLevel::Info);
+                                }
+                                "Success" => {
+                                    set.insert(LogLevel::Success);
+                                }
+                                "Warning" => {
+                                    set.insert(LogLevel::Warning);
+                                }
+                                "Error" => {
+                                    set.insert(LogLevel::Error);
+                                }
                                 _ => {}
                             }
                         }
@@ -100,7 +109,8 @@ pub fn LogFilterBar(
             let _ = document::eval(&format!(
                 "localStorage.setItem('{}', '{}')",
                 storage_key, stored_value
-            )).await;
+            ))
+            .await;
         });
     });
 

@@ -182,65 +182,62 @@ impl NetworkAttackPlan {
 
 /// Build a full penetration test plan
 fn build_full_pentest_plan(network: &str) -> NetworkAttackPlan {
-    let mut phases = Vec::new();
-
-    // Phase 1: Network Discovery
-    phases.push(AttackPhase {
-        phase_number: 1,
-        name: "Network Discovery".to_string(),
-        description: "Discover live hosts on the network using ARP, mDNS, and SSDP".to_string(),
-        tools: vec![
-            "arp_table".to_string(),
-            "ssdp_discover".to_string(),
-            "network_discover".to_string(),
-        ],
-        estimated_duration_min: 2,
-        depends_on: None,
-    });
-
-    // Phase 2: Port Scanning
-    phases.push(AttackPhase {
-        phase_number: 2,
-        name: "Port Scanning".to_string(),
-        description: "Scan common ports on discovered hosts to identify services".to_string(),
-        tools: vec!["port_scan".to_string()],
-        estimated_duration_min: 5,
-        depends_on: Some(1),
-    });
-
-    // Phase 3: Service Enumeration
-    phases.push(AttackPhase {
-        phase_number: 3,
-        name: "Service Enumeration".to_string(),
-        description: "Grab service banners and enumerate protocols (SMB, HTTP, etc.)".to_string(),
-        tools: vec![
-            "service_banner".to_string(),
-            "smb_enum".to_string(),
-            "web_vuln_scan".to_string(),
-        ],
-        estimated_duration_min: 10,
-        depends_on: Some(2),
-    });
-
-    // Phase 4: Vulnerability Assessment
-    phases.push(AttackPhase {
-        phase_number: 4,
-        name: "Vulnerability Assessment".to_string(),
-        description: "Search for known vulnerabilities and default credentials".to_string(),
-        tools: vec!["cve_lookup".to_string(), "default_creds".to_string()],
-        estimated_duration_min: 5,
-        depends_on: Some(3),
-    });
-
-    // Phase 5: Exploitation Planning
-    phases.push(AttackPhase {
-        phase_number: 5,
-        name: "Exploitation Planning".to_string(),
-        description: "Analyze findings and recommend exploitation strategies".to_string(),
-        tools: vec!["Manual analysis required".to_string()],
-        estimated_duration_min: 10,
-        depends_on: Some(4),
-    });
+    let phases = vec![
+        // Phase 1: Network Discovery
+        AttackPhase {
+            phase_number: 1,
+            name: "Network Discovery".to_string(),
+            description: "Discover live hosts on the network using ARP, mDNS, and SSDP".to_string(),
+            tools: vec![
+                "arp_table".to_string(),
+                "ssdp_discover".to_string(),
+                "network_discover".to_string(),
+            ],
+            estimated_duration_min: 2,
+            depends_on: None,
+        },
+        // Phase 2: Port Scanning
+        AttackPhase {
+            phase_number: 2,
+            name: "Port Scanning".to_string(),
+            description: "Scan common ports on discovered hosts to identify services".to_string(),
+            tools: vec!["port_scan".to_string()],
+            estimated_duration_min: 5,
+            depends_on: Some(1),
+        },
+        // Phase 3: Service Enumeration
+        AttackPhase {
+            phase_number: 3,
+            name: "Service Enumeration".to_string(),
+            description: "Grab service banners and enumerate protocols (SMB, HTTP, etc.)"
+                .to_string(),
+            tools: vec![
+                "service_banner".to_string(),
+                "smb_enum".to_string(),
+                "web_vuln_scan".to_string(),
+            ],
+            estimated_duration_min: 10,
+            depends_on: Some(2),
+        },
+        // Phase 4: Vulnerability Assessment
+        AttackPhase {
+            phase_number: 4,
+            name: "Vulnerability Assessment".to_string(),
+            description: "Search for known vulnerabilities and default credentials".to_string(),
+            tools: vec!["cve_lookup".to_string(), "default_creds".to_string()],
+            estimated_duration_min: 5,
+            depends_on: Some(3),
+        },
+        // Phase 5: Exploitation Planning
+        AttackPhase {
+            phase_number: 5,
+            name: "Exploitation Planning".to_string(),
+            description: "Analyze findings and recommend exploitation strategies".to_string(),
+            tools: vec!["Manual analysis required".to_string()],
+            estimated_duration_min: 10,
+            depends_on: Some(4),
+        },
+    ];
 
     let total_duration: u32 = phases.iter().map(|p| p.estimated_duration_min).sum();
 
@@ -261,51 +258,48 @@ fn build_full_pentest_plan(network: &str) -> NetworkAttackPlan {
 
 /// Build a targeted host attack plan
 fn build_targeted_attack_plan(target: &str, network: &str) -> NetworkAttackPlan {
-    let mut phases = Vec::new();
-
-    // Phase 1: Port Scanning
-    phases.push(AttackPhase {
-        phase_number: 1,
-        name: "Port Scanning".to_string(),
-        description: format!("Scan all common ports on {}", target),
-        tools: vec!["port_scan".to_string()],
-        estimated_duration_min: 3,
-        depends_on: None,
-    });
-
-    // Phase 2: Service Enumeration
-    phases.push(AttackPhase {
-        phase_number: 2,
-        name: "Service Enumeration".to_string(),
-        description: "Identify services and versions on open ports".to_string(),
-        tools: vec![
-            "service_banner".to_string(),
-            "smb_enum".to_string(),
-            "web_vuln_scan".to_string(),
-        ],
-        estimated_duration_min: 8,
-        depends_on: Some(1),
-    });
-
-    // Phase 3: Vulnerability Search
-    phases.push(AttackPhase {
-        phase_number: 3,
-        name: "Vulnerability Search".to_string(),
-        description: "Search for CVEs and test default credentials".to_string(),
-        tools: vec!["cve_lookup".to_string(), "default_creds".to_string()],
-        estimated_duration_min: 5,
-        depends_on: Some(2),
-    });
-
-    // Phase 4: Exploitation
-    phases.push(AttackPhase {
-        phase_number: 4,
-        name: "Exploitation".to_string(),
-        description: "Attempt to exploit discovered vulnerabilities".to_string(),
-        tools: vec!["Manual exploitation".to_string()],
-        estimated_duration_min: 15,
-        depends_on: Some(3),
-    });
+    let phases = vec![
+        // Phase 1: Port Scanning
+        AttackPhase {
+            phase_number: 1,
+            name: "Port Scanning".to_string(),
+            description: format!("Scan all common ports on {}", target),
+            tools: vec!["port_scan".to_string()],
+            estimated_duration_min: 3,
+            depends_on: None,
+        },
+        // Phase 2: Service Enumeration
+        AttackPhase {
+            phase_number: 2,
+            name: "Service Enumeration".to_string(),
+            description: "Identify services and versions on open ports".to_string(),
+            tools: vec![
+                "service_banner".to_string(),
+                "smb_enum".to_string(),
+                "web_vuln_scan".to_string(),
+            ],
+            estimated_duration_min: 8,
+            depends_on: Some(1),
+        },
+        // Phase 3: Vulnerability Search
+        AttackPhase {
+            phase_number: 3,
+            name: "Vulnerability Search".to_string(),
+            description: "Search for CVEs and test default credentials".to_string(),
+            tools: vec!["cve_lookup".to_string(), "default_creds".to_string()],
+            estimated_duration_min: 5,
+            depends_on: Some(2),
+        },
+        // Phase 4: Exploitation
+        AttackPhase {
+            phase_number: 4,
+            name: "Exploitation".to_string(),
+            description: "Attempt to exploit discovered vulnerabilities".to_string(),
+            tools: vec!["Manual exploitation".to_string()],
+            estimated_duration_min: 15,
+            depends_on: Some(3),
+        },
+    ];
 
     let total_duration: u32 = phases.iter().map(|p| p.estimated_duration_min).sum();
 
@@ -326,37 +320,35 @@ fn build_targeted_attack_plan(target: &str, network: &str) -> NetworkAttackPlan 
 
 /// Build a reconnaissance-only plan
 fn build_recon_plan(network: &str) -> NetworkAttackPlan {
-    let mut phases = Vec::new();
-
-    // Phase 1: Passive Discovery
-    phases.push(AttackPhase {
-        phase_number: 1,
-        name: "Passive Discovery".to_string(),
-        description: "Discover hosts using ARP table and passive methods".to_string(),
-        tools: vec!["arp_table".to_string()],
-        estimated_duration_min: 1,
-        depends_on: None,
-    });
-
-    // Phase 2: Service Discovery
-    phases.push(AttackPhase {
-        phase_number: 2,
-        name: "Service Discovery".to_string(),
-        description: "Discover advertised services via mDNS and SSDP".to_string(),
-        tools: vec!["network_discover".to_string(), "ssdp_discover".to_string()],
-        estimated_duration_min: 2,
-        depends_on: None,
-    });
-
-    // Phase 3: Light Port Scan
-    phases.push(AttackPhase {
-        phase_number: 3,
-        name: "Light Port Scan".to_string(),
-        description: "Quick scan of common ports on discovered hosts".to_string(),
-        tools: vec!["port_scan".to_string()],
-        estimated_duration_min: 3,
-        depends_on: Some(1),
-    });
+    let phases = vec![
+        // Phase 1: Passive Discovery
+        AttackPhase {
+            phase_number: 1,
+            name: "Passive Discovery".to_string(),
+            description: "Discover hosts using ARP table and passive methods".to_string(),
+            tools: vec!["arp_table".to_string()],
+            estimated_duration_min: 1,
+            depends_on: None,
+        },
+        // Phase 2: Service Discovery
+        AttackPhase {
+            phase_number: 2,
+            name: "Service Discovery".to_string(),
+            description: "Discover advertised services via mDNS and SSDP".to_string(),
+            tools: vec!["network_discover".to_string(), "ssdp_discover".to_string()],
+            estimated_duration_min: 2,
+            depends_on: None,
+        },
+        // Phase 3: Light Port Scan
+        AttackPhase {
+            phase_number: 3,
+            name: "Light Port Scan".to_string(),
+            description: "Quick scan of common ports on discovered hosts".to_string(),
+            tools: vec!["port_scan".to_string()],
+            estimated_duration_min: 3,
+            depends_on: Some(1),
+        },
+    ];
 
     let total_duration: u32 = phases.iter().map(|p| p.estimated_duration_min).sum();
 

