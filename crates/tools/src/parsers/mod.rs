@@ -6,8 +6,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub mod port_scan;
+pub mod wifi_scan;
 
 pub use port_scan::PortScanParser;
+pub use wifi_scan::WifiScanParser;
 
 /// Registry of output parsers
 pub struct OutputParserRegistry {
@@ -23,6 +25,7 @@ impl OutputParserRegistry {
 
         // Register parsers for each tool
         registry.register(Arc::new(PortScanParser));
+        registry.register(Arc::new(WifiScanParser));
 
         registry
     }
