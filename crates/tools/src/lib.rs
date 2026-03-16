@@ -33,10 +33,11 @@ pub use default_creds::DefaultCredsTool;
 pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
 pub use external::{
-    AmassTool, ArjunTool, CommixTool, CrackmapexecTool, DirbTool, DirsearchTool, Enum4linuxTool,
-    EvilwinrmTool, FeroxbusterTool, FfufTool, GobusterTool, HydraTool, ImpacketPsexecTool,
-    ImpacketSecretsdumpTool, JohnTool, LinpeasTool, MasscanTool, NiktoTool, NmapTool, NucleiTool,
-    RustScanTool, SqlmapTool, Sublist3rTool, WfuzzTool, WpscanTool,
+    AircrackngTool, AmassTool, ArjunTool, BettercapTool, CommixTool, CrackmapexecTool, DirbTool,
+    DirsearchTool, Enum4linuxTool, EvilwinrmTool, ExiftoolTool, FeroxbusterTool, FfufTool,
+    GobusterTool, HashcatTool, HydraTool, ImpacketPsexecTool, ImpacketSecretsdumpTool, JohnTool,
+    LinpeasTool, MasscanTool, NiktoTool, NmapTool, NucleiTool, ResponderTool, RustScanTool,
+    SearchsploitTool, SqlmapTool, Sublist3rTool, WfuzzTool, WpscanTool,
 }; // External tools
 pub use list_files::ListFilesTool;
 pub use network_discover::NetworkDiscoverTool;
@@ -107,6 +108,20 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(LinpeasTool); // Linux privilege escalation enum
     registry.register(CrackmapexecTool); // Network pentesting Swiss army knife
     registry.register(EvilwinrmTool); // WinRM shell
+
+    // Phase 5+: Network exploitation
+    registry.register(BettercapTool); // Network attacks and monitoring
+    registry.register(ResponderTool); // LLMNR/NBT-NS poisoning
+
+    // Forensics
+    registry.register(ExiftoolTool); // Metadata extraction
+
+    // Wireless security
+    registry.register(AircrackngTool); // WiFi WEP/WPA cracking
+
+    // Specialized tools
+    registry.register(HashcatTool); // GPU password cracking
+    registry.register(SearchsploitTool); // Exploit database search
 
     // Device and system info
     registry.register(DeviceInfoTool);

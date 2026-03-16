@@ -29,6 +29,12 @@ pub mod web;
 // Phase 4 tools - Post-Exploitation & Lateral Movement
 pub mod postexploit;
 
+// Phase 5+ tools - Network, Forensics, Wireless, Specialized
+pub mod network;
+pub mod forensics;
+pub mod wireless;
+pub mod specialized;
+
 // Re-exports
 // Phase 1
 pub use ffuf::FfufTool;
@@ -54,3 +60,9 @@ pub use web::{
 pub use postexploit::{
     CrackmapexecTool, EvilwinrmTool, ImpacketPsexecTool, ImpacketSecretsdumpTool, LinpeasTool,
 };
+
+// Phase 5+ - Network, Forensics, Wireless, Specialized
+pub use forensics::ExiftoolTool;
+pub use network::{BettercapTool, ResponderTool};
+pub use specialized::{HashcatTool, SearchsploitTool};
+pub use wireless::AircrackngTool;
