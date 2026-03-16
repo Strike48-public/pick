@@ -8,6 +8,7 @@ pub mod cve_lookup;
 pub mod default_creds;
 pub mod device_info;
 pub mod execute_command;
+pub mod external; // NEW: External tool integrations (BlackArch)
 pub mod list_files;
 pub mod network_discover;
 pub mod port_scan;
@@ -31,6 +32,10 @@ pub use cve_lookup::CveLookupTool;
 pub use default_creds::DefaultCredsTool;
 pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
+pub use external::{
+    DirbTool, Enum4linuxTool, FfufTool, GobusterTool, HydraTool, JohnTool, MasscanTool, NiktoTool,
+    NmapTool, RustScanTool,
+}; // External tools
 pub use list_files::ListFilesTool;
 pub use network_discover::NetworkDiscoverTool;
 pub use port_scan::PortScanTool;
@@ -51,6 +56,9 @@ pub fn create_tool_registry() -> ToolRegistry {
 
     // Network scanning and discovery
     registry.register(PortScanTool);
+    registry.register(NmapTool); // External: comprehensive network scanner
+    registry.register(RustScanTool); // External: ultra-fast port scanner
+    registry.register(MasscanTool); // External: internet-scale scanner
     registry.register(ArpTableTool);
     registry.register(SsdpDiscoverTool);
     registry.register(NetworkDiscoverTool);
@@ -68,6 +76,17 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(DefaultCredsTool);
     registry.register(WebVulnScanTool);
     registry.register(SmbEnumTool);
+    registry.register(Enum4linuxTool); // External: SMB/Windows enumeration
+
+    // Web application testing (External tools)
+    registry.register(FfufTool); // Fast web fuzzer
+    registry.register(GobusterTool); // Directory/DNS/vhost bruteforce
+    registry.register(NiktoTool); // Web server vulnerability scanner
+    registry.register(DirbTool); // Web content scanner
+
+    // Credential attacks (External tools)
+    registry.register(HydraTool); // Login bruteforcer (50+ protocols)
+    registry.register(JohnTool); // Password cracker
 
     // Device and system info
     registry.register(DeviceInfoTool);
