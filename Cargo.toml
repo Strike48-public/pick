@@ -83,8 +83,8 @@ lucide-dioxus = { version = "2", features = ["all-icons"] }
 sysinfo = "0.32"
 
 # Strike48 Connector SDK
-strike48-connector = "0.3.0"
-strike48-proto = "0.3.0"
+strike48-connector = "0.3.1"
+strike48-proto = "0.3.1"
 
 # Internal crates
 pentest-core = { path = "crates/core" }
