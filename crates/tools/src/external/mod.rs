@@ -42,4 +42,7 @@ pub use nikto::NiktoTool;
 pub use rustscan::RustScanTool;
 
 // Phase 3 - Web
-pub use web::{FeroxbusterTool, NucleiTool, SqlmapTool, WfuzzTool, WpscanTool};
+pub use web::{
+    AmassTool, ArjunTool, CommixTool, DirsearchTool, FeroxbusterTool, NucleiTool, SqlmapTool,
+    Sublist3rTool, WfuzzTool, WpscanTool,
+};
