@@ -33,8 +33,9 @@ pub use default_creds::DefaultCredsTool;
 pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
 pub use external::{
-    AmassTool, ArjunTool, CommixTool, DirbTool, DirsearchTool, Enum4linuxTool, FeroxbusterTool,
-    FfufTool, GobusterTool, HydraTool, JohnTool, MasscanTool, NiktoTool, NmapTool, NucleiTool,
+    AmassTool, ArjunTool, CommixTool, CrackmapexecTool, DirbTool, DirsearchTool, Enum4linuxTool,
+    EvilwinrmTool, FeroxbusterTool, FfufTool, GobusterTool, HydraTool, ImpacketPsexecTool,
+    ImpacketSecretsdumpTool, JohnTool, LinpeasTool, MasscanTool, NiktoTool, NmapTool, NucleiTool,
     RustScanTool, SqlmapTool, Sublist3rTool, WfuzzTool, WpscanTool,
 }; // External tools
 pub use list_files::ListFilesTool;
@@ -99,6 +100,13 @@ pub fn create_tool_registry() -> ToolRegistry {
     // Credential attacks (External tools)
     registry.register(HydraTool); // Login bruteforcer (50+ protocols)
     registry.register(JohnTool); // Password cracker
+
+    // Phase 4: Post-Exploitation & Lateral Movement
+    registry.register(ImpacketSecretsdumpTool); // Windows credential extraction
+    registry.register(ImpacketPsexecTool); // Remote execution via SMB
+    registry.register(LinpeasTool); // Linux privilege escalation enum
+    registry.register(CrackmapexecTool); // Network pentesting Swiss army knife
+    registry.register(EvilwinrmTool); // WinRM shell
 
     // Device and system info
     registry.register(DeviceInfoTool);

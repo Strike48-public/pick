@@ -26,6 +26,9 @@ pub mod john;
 // Phase 3 tools - Web Application Security
 pub mod web;
 
+// Phase 4 tools - Post-Exploitation & Lateral Movement
+pub mod postexploit;
+
 // Re-exports
 // Phase 1
 pub use ffuf::FfufTool;
@@ -45,4 +48,9 @@ pub use rustscan::RustScanTool;
 pub use web::{
     AmassTool, ArjunTool, CommixTool, DirsearchTool, FeroxbusterTool, NucleiTool, SqlmapTool,
     Sublist3rTool, WfuzzTool, WpscanTool,
+};
+
+// Phase 4 - Post-Exploitation
+pub use postexploit::{
+    CrackmapexecTool, EvilwinrmTool, ImpacketPsexecTool, ImpacketSecretsdumpTool, LinpeasTool,
 };
