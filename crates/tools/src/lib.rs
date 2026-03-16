@@ -33,8 +33,9 @@ pub use default_creds::DefaultCredsTool;
 pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
 pub use external::{
-    DirbTool, Enum4linuxTool, FeroxbusterTool, FfufTool, GobusterTool, HydraTool, JohnTool,
-    MasscanTool, NiktoTool, NmapTool, NucleiTool, RustScanTool, SqlmapTool, WfuzzTool, WpscanTool,
+    AmassTool, ArjunTool, CommixTool, DirbTool, DirsearchTool, Enum4linuxTool, FeroxbusterTool,
+    FfufTool, GobusterTool, HydraTool, JohnTool, MasscanTool, NiktoTool, NmapTool, NucleiTool,
+    RustScanTool, SqlmapTool, Sublist3rTool, WfuzzTool, WpscanTool,
 }; // External tools
 pub use list_files::ListFilesTool;
 pub use network_discover::NetworkDiscoverTool;
@@ -89,6 +90,11 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(WpscanTool); // WordPress security scanner
     registry.register(WfuzzTool); // Web application fuzzer
     registry.register(FeroxbusterTool); // Fast content discovery (Rust)
+    registry.register(ArjunTool); // HTTP parameter discovery
+    registry.register(CommixTool); // Command injection exploitation
+    registry.register(DirsearchTool); // Web path scanner
+    registry.register(Sublist3rTool); // Subdomain enumeration
+    registry.register(AmassTool); // DNS enumeration and network mapping
 
     // Credential attacks (External tools)
     registry.register(HydraTool); // Login bruteforcer (50+ protocols)
