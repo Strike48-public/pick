@@ -3,7 +3,7 @@ entries:
   pick-connector:
   - apiVersion: v2
     appVersion: 0.2.0
-    created: "2026-03-16T00:35:13.544160975Z"
+    created: "2026-03-16T03:34:33.945127748Z"
     description: Pick Connector — headless pentest agent for Kubernetes
     digest: 587f40abe81d42b91b4fb2f059325b4804a47622bd9e63cdf0c67b40f7314430
     name: pick-connector
@@ -11,4 +11,14 @@ entries:
     urls:
     - https://strike48-public.github.io/pick/pick-connector-0.2.0.tgz
     version: 0.2.0
-generated: "2026-03-16T00:35:13.543609915Z"
+  - apiVersion: v2
+    appVersion: 0.1.3
+    created: "2026-03-16T03:34:33.944773465Z"
+    description: Pick Connector — headless pentest agent for Kubernetes
+    digest: e72347f7ecc06fcbdc8eefd540585d4aad3e457b71af13fe045a2a1887477b99
+    name: pick-connector
+    type: application
+    urls:
+    - https://strike48-public.github.io/pick/pick-connector-0.1.3.tgz
+    version: 0.1.3
+generated: "2026-03-16T03:34:33.944334105Z"
