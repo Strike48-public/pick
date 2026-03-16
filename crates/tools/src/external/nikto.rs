@@ -31,7 +31,14 @@ impl PentestTool for NiktoTool {
     }
 
     fn schema(&self) -> ToolSchema {
+        use pentest_core::tools::ExternalDependency;
+
         ToolSchema::new(self.name(), self.description())
+            .external_dependency(ExternalDependency::new(
+                "nikto",
+                "nikto",
+                "Web server vulnerability scanner"
+            ))
             .param(ToolParam::required(
                 "target",
                 ParamType::String,

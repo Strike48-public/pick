@@ -108,6 +108,28 @@ impl ToolParam {
     }
 }
 
+/// External dependency information for tools that require installation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalDependency {
+    pub binary_name: String,
+    pub package_name: String,
+    pub description: String,
+}
+
+impl ExternalDependency {
+    pub fn new(
+        binary_name: impl Into<String>,
+        package_name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            binary_name: binary_name.into(),
+            package_name: package_name.into(),
+            description: description.into(),
+        }
+    }
+}
+
 /// Schema for a pentest tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSchema {
@@ -115,6 +137,8 @@ pub struct ToolSchema {
     pub description: String,
     pub params: Vec<ToolParam>,
     pub supported_platforms: Vec<Platform>,
+    #[serde(default)]
+    pub external_dependencies: Vec<ExternalDependency>,
 }
 
 impl ToolSchema {
@@ -125,6 +149,7 @@ impl ToolSchema {
             description: description.into(),
             params: Vec::new(),
             supported_platforms: DEFAULT_TOOL_PLATFORMS.to_vec(),
+            external_dependencies: Vec::new(),
         }
     }
 
@@ -140,9 +165,20 @@ impl ToolSchema {
         self
     }
 
+    /// Add an external dependency
+    pub fn external_dependency(mut self, dep: ExternalDependency) -> Self {
+        self.external_dependencies.push(dep);
+        self
+    }
+
     /// Check if supported on current platform
     pub fn is_supported(&self) -> bool {
         self.supported_platforms.contains(&Platform::current())
+    }
+
+    /// Check if this tool has external dependencies
+    pub fn has_external_dependencies(&self) -> bool {
+        !self.external_dependencies.is_empty()
     }
 
     /// Convert to JSON schema format (for Strike48 SDK)
@@ -176,7 +212,7 @@ impl ToolSchema {
             }
         }
 
-        serde_json::json!({
+        let mut schema = serde_json::json!({
             "name": self.name,
             "description": self.description,
             "parameters": {
@@ -184,7 +220,13 @@ impl ToolSchema {
                 "properties": properties,
                 "required": required
             }
-        })
+        });
+
+        if !self.external_dependencies.is_empty() {
+            schema["external_dependencies"] = serde_json::to_value(&self.external_dependencies).unwrap();
+        }
+
+        schema
     }
 }
 

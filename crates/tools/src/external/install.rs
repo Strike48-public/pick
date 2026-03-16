@@ -20,11 +20,14 @@ use tracing::{info, warn};
 ///
 /// # Example
 /// ```no_run
+/// # async fn example() -> pentest_core::error::Result<()> {
 /// use pentest_platform::get_platform;
 /// use pentest_tools::external::install::ensure_tool_installed;
 ///
 /// let platform = get_platform();
 /// ensure_tool_installed(&platform, "ffuf", "ffuf").await?;
+/// # Ok(())
+/// # }
 /// ```
 pub async fn ensure_tool_installed(
     platform: &impl CommandExec,
@@ -69,6 +72,17 @@ pub async fn ensure_tool_installed(
     Ok(())
 }
 
+/// Check if a single tool binary is installed
+pub async fn is_tool_installed(
+    platform: &impl CommandExec,
+    binary_name: &str,
+) -> Result<bool> {
+    let check = platform
+        .execute_command("which", &[binary_name], Duration::from_secs(5))
+        .await?;
+    Ok(check.exit_code == 0)
+}
+
 /// Check if multiple tools are installed, returning a list of missing tools
 pub async fn check_tools_installed(
     platform: &impl CommandExec,
@@ -77,11 +91,7 @@ pub async fn check_tools_installed(
     let mut missing = Vec::new();
 
     for (binary_name, _) in tools {
-        let check = platform
-            .execute_command("which", &[binary_name], Duration::from_secs(5))
-            .await?;
-
-        if check.exit_code != 0 {
+        if !is_tool_installed(platform, binary_name).await? {
             missing.push(binary_name.to_string());
         }
     }
