@@ -23,6 +23,9 @@ pub mod enum4linux;
 pub mod hydra;
 pub mod john;
 
+// Phase 3 tools - Web Application Security
+pub mod web;
+
 // Re-exports
 // Phase 1
 pub use ffuf::FfufTool;
@@ -37,3 +40,6 @@ pub use john::JohnTool;
 pub use masscan::MasscanTool;
 pub use nikto::NiktoTool;
 pub use rustscan::RustScanTool;
+
+// Phase 3 - Web
+pub use web::{FeroxbusterTool, NucleiTool, SqlmapTool, WfuzzTool, WpscanTool};
