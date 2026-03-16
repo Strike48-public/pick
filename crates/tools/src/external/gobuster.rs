@@ -30,7 +30,14 @@ impl PentestTool for GobusterTool {
     }
 
     fn schema(&self) -> ToolSchema {
+        use pentest_core::tools::ExternalDependency;
+
         ToolSchema::new(self.name(), self.description())
+            .external_dependency(ExternalDependency::new(
+                "gobuster",
+                "gobuster",
+                "Directory/DNS/vhost bruteforce tool written in Go"
+            ))
             .param(ToolParam::required(
                 "mode",
                 ParamType::String,
