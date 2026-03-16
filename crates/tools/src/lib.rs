@@ -33,11 +33,12 @@ pub use default_creds::DefaultCredsTool;
 pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
 pub use external::{
-    AircrackngTool, AmassTool, ArjunTool, BettercapTool, CommixTool, CrackmapexecTool, DirbTool,
-    DirsearchTool, Enum4linuxTool, EvilwinrmTool, ExiftoolTool, FeroxbusterTool, FfufTool,
-    GobusterTool, HashcatTool, HydraTool, ImpacketPsexecTool, ImpacketSecretsdumpTool, JohnTool,
-    LinpeasTool, MasscanTool, NiktoTool, NmapTool, NucleiTool, ResponderTool, RustScanTool,
-    SearchsploitTool, SqlmapTool, Sublist3rTool, WfuzzTool, WpscanTool,
+    AircrackngTool, AmassTool, ArjunTool, BettercapTool, CewlTool, CommixTool, CrackmapexecTool,
+    DirbTool, DirsearchTool, Enum4linuxTool, EvilwinrmTool, ExiftoolTool, FeroxbusterTool,
+    FfufTool, GobusterTool, HashcatTool, HydraTool, ImpacketPsexecTool, ImpacketSecretsdumpTool,
+    JohnTool, LinpeasTool, MasscanTool, NcatTool, NiktoTool, NmapTool, NucleiTool, ResponderTool,
+    RustScanTool, SearchsploitTool, SqlmapTool, Sublist3rTool, WfuzzTool, WpscanTool,
+    XsstrikeTool,
 }; // External tools
 pub use list_files::ListFilesTool;
 pub use network_discover::NetworkDiscoverTool;
@@ -122,6 +123,9 @@ pub fn create_tool_registry() -> ToolRegistry {
     // Specialized tools
     registry.register(HashcatTool); // GPU password cracking
     registry.register(SearchsploitTool); // Exploit database search
+    registry.register(CewlTool); // Custom wordlist generator
+    registry.register(NcatTool); // Netcat reimplementation
+    registry.register(XsstrikeTool); // XSS detection
 
     // Device and system info
     registry.register(DeviceInfoTool);

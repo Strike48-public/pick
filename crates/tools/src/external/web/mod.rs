@@ -13,6 +13,7 @@ pub mod commix;
 pub mod dirsearch;
 pub mod sublist3r;
 pub mod amass;
+pub mod xsstrike;
 
 pub use sqlmap::SqlmapTool;
 pub use nuclei::NucleiTool;
@@ -24,3 +25,4 @@ pub use commix::CommixTool;
 pub use dirsearch::DirsearchTool;
 pub use sublist3r::Sublist3rTool;
 pub use amass::AmassTool;
+pub use xsstrike::XsstrikeTool;
