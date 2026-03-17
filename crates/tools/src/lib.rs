@@ -33,12 +33,14 @@ pub use default_creds::DefaultCredsTool;
 pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
 pub use external::{
-    AircrackngTool, AmassTool, ArjunTool, BettercapTool, CewlTool, CommixTool, CrackmapexecTool,
-    CrunchTool, DirbTool, DirsearchTool, Enum4linuxTool, EvilwinrmTool, ExiftoolTool,
-    FeroxbusterTool, FfufTool, GobusterTool, HakrawlerTool, HashcatTool, HttpprobeTool, HydraTool,
+    AircrackngTool, AmassTool, ArjunTool, AssetfinderTool, BettercapTool, CewlTool, CommixTool,
+    CrackmapexecTool, CrunchTool, DirbTool, DirsearchTool, DnsenumTool, DnsreconTool,
+    Enum4linuxTool, EvilwinrmTool, ExiftoolTool, FeroxbusterTool, FfufDnsTool, FfufTool, FierceTool,
+    GauTool, GobusterTool, HakrawlerTool, HashcatTool, HttpprobeTool, HydraTool,
     ImpacketGetuserspnsTool, ImpacketPsexecTool, ImpacketSecretsdumpTool, ImpacketWmiexecTool,
-    JohnTool, LinpeasTool, MasscanTool, NcatTool, NetdiscoverTool, NiktoTool, NmapTool, NucleiTool,
-    ResponderTool, RustScanTool, SearchsploitTool, SocatTool, SqlmapTool, Sublist3rTool, TsharkTool,
+    JohnTool, LinpeasTool, MasscanFastTool, MasscanTool, NcatTool, NetdiscoverTool, NiktoTool,
+    NmapTool, NmapVulnTool, NucleiTool, ResponderTool, RustScanTool, SearchsploitTool, SocatTool,
+    SqlmapTool, SubfinderTool, Sublist3rTool, TheHarvesterTool, TsharkTool, WaybackurlsTool,
     WfuzzTool, WpscanTool, XsstrikeTool,
 }; // External tools
 pub use list_files::ListFilesTool;
@@ -102,6 +104,11 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(XsstrikeTool); // XSS detection
     registry.register(HakrawlerTool); // Web crawler
     registry.register(HttpprobeTool); // HTTP/HTTPS probe
+    registry.register(WaybackurlsTool); // Wayback Machine URLs
+    registry.register(GauTool); // Get All URLs
+    registry.register(FfufDnsTool); // DNS subdomain fuzzing
+    registry.register(SubfinderTool); // Subdomain discovery
+    registry.register(AssetfinderTool); // Asset discovery
 
     // Credential attacks (External tools)
     registry.register(HydraTool); // Login bruteforcer (50+ protocols)
@@ -121,6 +128,8 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(ResponderTool); // LLMNR/NBT-NS poisoning
     registry.register(TsharkTool); // Network protocol analyzer
     registry.register(NetdiscoverTool); // ARP reconnaissance
+    registry.register(MasscanFastTool); // Ultra-fast port scanner
+    registry.register(NmapVulnTool); // Nmap vulnerability scanning
 
     // Forensics
     registry.register(ExiftoolTool); // Metadata extraction
@@ -135,6 +144,10 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(NcatTool); // Netcat reimplementation
     registry.register(SocatTool); // Multipurpose relay tool
     registry.register(CrunchTool); // Wordlist generator
+    registry.register(TheHarvesterTool); // OSINT gathering
+    registry.register(DnsreconTool); // DNS enumeration
+    registry.register(DnsenumTool); // DNS information gathering
+    registry.register(FierceTool); // DNS reconnaissance
 
     // Device and system info
     registry.register(DeviceInfoTool);

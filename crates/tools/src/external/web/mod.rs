@@ -28,6 +28,16 @@ pub use amass::AmassTool;
 pub use xsstrike::XsstrikeTool;
 pub mod hakrawler;
 pub mod httprobe;
+pub mod waybackurls;
+pub mod gau;
+pub mod ffuf_dns;
+pub mod subfinder;
+pub mod assetfinder;
 
 pub use hakrawler::HakrawlerTool;
 pub use httprobe::HttpprobeTool;
+pub use waybackurls::WaybackurlsTool;
+pub use gau::GauTool;
+pub use ffuf_dns::FfufDnsTool;
+pub use subfinder::SubfinderTool;
+pub use assetfinder::AssetfinderTool;
