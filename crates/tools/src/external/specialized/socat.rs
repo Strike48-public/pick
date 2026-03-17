@@ -27,10 +27,27 @@ impl PentestTool for SocatTool {
 
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new("socat", "socat", "Multipurpose relay"))
-            .param(ToolParam::required("source", ParamType::String, "Source address"))
-            .param(ToolParam::required("destination", ParamType::String, "Destination address"))
-            .param(ToolParam::optional("timeout", ParamType::Integer, "Timeout", json!(30)))
+            .external_dependency(ExternalDependency::new(
+                "socat",
+                "socat",
+                "Multipurpose relay",
+            ))
+            .param(ToolParam::required(
+                "source",
+                ParamType::String,
+                "Source address",
+            ))
+            .param(ToolParam::required(
+                "destination",
+                ParamType::String,
+                "Destination address",
+            ))
+            .param(ToolParam::optional(
+                "timeout",
+                ParamType::Integer,
+                "Timeout",
+                json!(30),
+            ))
             .platforms(vec![Platform::Desktop, Platform::Tui])
     }
 
@@ -46,15 +63,21 @@ impl PentestTool for SocatTool {
             let source = param_str_or(&params, "source", "");
             let destination = param_str_or(&params, "destination", "");
             if source.is_empty() || destination.is_empty() {
-                return Err(pentest_core::error::Error::InvalidParams("source and destination required".into()));
+                return Err(pentest_core::error::Error::InvalidParams(
+                    "source and destination required".into(),
+                ));
             }
 
             let timeout_secs = crate::util::param_u64(&params, "timeout", 30);
 
-            let builder = CommandBuilder::new().positional(&source).positional(&destination);
+            let builder = CommandBuilder::new()
+                .positional(&source)
+                .positional(&destination);
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            let result = platform.execute_command("socat", &args_refs, Duration::from_secs(timeout_secs)).await?;
+            let result = platform
+                .execute_command("socat", &args_refs, Duration::from_secs(timeout_secs))
+                .await?;
 
             Ok(json!({"success": result.exit_code == 0, "output": result.stdout}))
         })

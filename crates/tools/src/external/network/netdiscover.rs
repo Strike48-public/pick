@@ -28,11 +28,35 @@ impl PentestTool for NetdiscoverTool {
 
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new("netdiscover", "netdiscover", "ARP scanner"))
-            .param(ToolParam::optional("range", ParamType::String, "IP range (e.g., 192.168.1.0/24)", json!("")))
-            .param(ToolParam::optional("interface", ParamType::String, "Network interface", json!("")))
-            .param(ToolParam::optional("passive", ParamType::Boolean, "Passive mode", json!(false)))
-            .param(ToolParam::optional("timeout", ParamType::Integer, "Timeout", json!(60)))
+            .external_dependency(ExternalDependency::new(
+                "netdiscover",
+                "netdiscover",
+                "ARP scanner",
+            ))
+            .param(ToolParam::optional(
+                "range",
+                ParamType::String,
+                "IP range (e.g., 192.168.1.0/24)",
+                json!(""),
+            ))
+            .param(ToolParam::optional(
+                "interface",
+                ParamType::String,
+                "Network interface",
+                json!(""),
+            ))
+            .param(ToolParam::optional(
+                "passive",
+                ParamType::Boolean,
+                "Passive mode",
+                json!(false),
+            ))
+            .param(ToolParam::optional(
+                "timeout",
+                ParamType::Integer,
+                "Timeout",
+                json!(60),
+            ))
             .platforms(vec![Platform::Desktop, Platform::Tui])
     }
 
@@ -70,7 +94,9 @@ impl PentestTool for NetdiscoverTool {
 
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            let result = platform.execute_command("netdiscover", &args_refs, Duration::from_secs(timeout_secs)).await?;
+            let result = platform
+                .execute_command("netdiscover", &args_refs, Duration::from_secs(timeout_secs))
+                .await?;
 
             let mut hosts = Vec::new();
             for line in result.stdout.lines() {

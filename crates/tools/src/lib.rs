@@ -33,19 +33,19 @@ pub use default_creds::DefaultCredsTool;
 pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
 pub use external::{
-    AircrackngTool, AmassTool, ArjunTool, ArpingTool, ArpScanTool, AssetfinderTool, BettercapTool,
+    AircrackngTool, AmassTool, ArjunTool, ArpScanTool, ArpingTool, AssetfinderTool, BettercapTool,
     CewlTool, ChangemeTool, CommixTool, CrackmapexecTool, CrunchTool, DalfoxTool, DirbTool,
     DirsearchTool, DnsenumTool, DnsreconTool, DroopescanTool, Enum4linuxNgTool, Enum4linuxTool,
     EvilwinrmTool, ExiftoolTool, EyewitnessTool, FeroxbusterTool, FfufDnsTool, FfufTool,
     FierceTool, GauTool, GobusterTool, GospiderTool, HakrawlerTool, HashcatTool, Hping3Tool,
-    HttpprobeTool, HydraTool, ImpacketGetuserspnsTool, ImpacketPsexecTool,
-    ImpacketSecretsdumpTool, ImpacketWmiexecTool, JohnTool, JoomscanTool, KatanaTool,
-    LdapsearchTool, LinpeasTool, MasscanFastTool, MasscanTool, NbtscanTool, NcatTool,
-    NetdiscoverTool, NiktoNgTool, NiktoTool, NmapTool, NmapVulnTool, NucleiTool, OnesixtyoneTool,
-    ParamspiderTool, ReconNgTool, ResponderTool, RustScanTool, SearchsploitTool, SkipfishTool,
-    SmbmapTool, SnmpwalkTool, SocatTool, SpiderfootTool, SqlmapTool, SslscanTool, SubfinderTool,
-    Sublist3rTool, TestsslTool, TheHarvesterTool, TsharkTool, UnicornscanTool, Wafw00fTool,
-    WaybackurlsTool, WfuzzTool, WhatwebTool, WhoisTool, WpscanTool, XsstrikeTool,
+    HttpprobeTool, HydraTool, ImpacketGetuserspnsTool, ImpacketPsexecTool, ImpacketSecretsdumpTool,
+    ImpacketWmiexecTool, JohnTool, JoomscanTool, KatanaTool, LdapsearchTool, LinpeasTool,
+    MasscanFastTool, MasscanTool, NbtscanTool, NcatTool, NetdiscoverTool, NiktoNgTool, NiktoTool,
+    NmapTool, NmapVulnTool, NucleiTool, OnesixtyoneTool, ParamspiderTool, ReconNgTool,
+    ResponderTool, RustScanTool, SearchsploitTool, SkipfishTool, SmbmapTool, SnmpwalkTool,
+    SocatTool, SpiderfootTool, SqlmapTool, SslscanTool, SubfinderTool, Sublist3rTool, TestsslTool,
+    TheHarvesterTool, TsharkTool, UnicornscanTool, Wafw00fTool, WaybackurlsTool, WfuzzTool,
+    WhatwebTool, WhoisTool, WpscanTool, XsstrikeTool,
 }; // External tools
 pub use list_files::ListFilesTool;
 pub use network_discover::NetworkDiscoverTool;
@@ -94,7 +94,7 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(GobusterTool); // Directory/DNS/vhost bruteforce
     registry.register(NiktoTool); // Web server vulnerability scanner
     registry.register(DirbTool); // Web content scanner
-    // Phase 3: Advanced web tools
+                                 // Phase 3: Advanced web tools
     registry.register(SqlmapTool); // SQL injection automation
     registry.register(NucleiTool); // Template-based vuln scanner
     registry.register(WpscanTool); // WordPress security scanner

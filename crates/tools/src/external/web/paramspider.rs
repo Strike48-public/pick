@@ -69,15 +69,10 @@ impl PentestTool for ParamspiderTool {
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
             let result = platform
-                .execute_command(
-                    "paramspider",
-                    &args_refs,
-                    Duration::from_secs(timeout_secs),
-                )
+                .execute_command("paramspider", &args_refs, Duration::from_secs(timeout_secs))
                 .await?;
 
-            let params_found: Vec<String> =
-                result.stdout.lines().map(|s| s.to_string()).collect();
+            let params_found: Vec<String> = result.stdout.lines().map(|s| s.to_string()).collect();
             Ok(json!({
                 "domain": domain,
                 "parameters": params_found,

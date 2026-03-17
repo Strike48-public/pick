@@ -35,7 +35,7 @@ impl PentestTool for NucleiTool {
             .external_dependency(ExternalDependency::new(
                 "nuclei",
                 "nuclei",
-                "Template-based vulnerability scanner (Go binary + ~500MB templates on first run)"
+                "Template-based vulnerability scanner (Go binary + ~500MB templates on first run)",
             ))
             .param(ToolParam::required(
                 "target",
@@ -207,10 +207,22 @@ fn parse_nuclei_output(stdout: &str, target: &str) -> Result<Value> {
 
     let count = vulnerabilities.len();
     let summary = if count > 0 {
-        let critical = vulnerabilities.iter().filter(|v| v["severity"] == "critical").count();
-        let high = vulnerabilities.iter().filter(|v| v["severity"] == "high").count();
-        let medium = vulnerabilities.iter().filter(|v| v["severity"] == "medium").count();
-        let low = vulnerabilities.iter().filter(|v| v["severity"] == "low").count();
+        let critical = vulnerabilities
+            .iter()
+            .filter(|v| v["severity"] == "critical")
+            .count();
+        let high = vulnerabilities
+            .iter()
+            .filter(|v| v["severity"] == "high")
+            .count();
+        let medium = vulnerabilities
+            .iter()
+            .filter(|v| v["severity"] == "medium")
+            .count();
+        let low = vulnerabilities
+            .iter()
+            .filter(|v| v["severity"] == "low")
+            .count();
 
         format!(
             "Found {} vulnerabilities: {} critical, {} high, {} medium, {} low",

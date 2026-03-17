@@ -6,8 +6,7 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult,
-    ToolSchema,
+    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
@@ -36,7 +35,7 @@ impl PentestTool for JohnTool {
             .external_dependency(ExternalDependency::new(
                 "john",
                 "john",
-                "John the Ripper password cracker"
+                "John the Ripper password cracker",
             ))
             .param(ToolParam::required(
                 "hash_file",
@@ -100,11 +99,7 @@ impl PentestTool for JohnTool {
             // If show mode, just display cracked passwords
             if show {
                 let result = platform
-                    .execute_command(
-                        "john",
-                        &["--show", &hash_file],
-                        Duration::from_secs(10),
-                    )
+                    .execute_command("john", &["--show", &hash_file], Duration::from_secs(10))
                     .await?;
 
                 return parse_john_show_output(&result.stdout, &hash_file);

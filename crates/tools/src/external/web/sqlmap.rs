@@ -238,7 +238,9 @@ fn parse_sqlmap_output(stdout: &str, target: &str) -> Result<Value> {
         let line = line.trim();
 
         // Check for vulnerability indicators
-        if line.contains("is vulnerable") || line.contains("Parameter:") && line.contains("is vulnerable") {
+        if line.contains("is vulnerable")
+            || line.contains("Parameter:") && line.contains("is vulnerable")
+        {
             vulnerable = true;
             findings.push(line.to_string());
         }

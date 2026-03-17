@@ -182,7 +182,10 @@ impl PlaybookManager {
                         Step {
                             id: "whatweb".to_string(),
                             tool: "whatweb".to_string(),
-                            params: HashMap::from([("url".to_string(), Value::String("${target}".to_string()))]),
+                            params: HashMap::from([(
+                                "url".to_string(),
+                                Value::String("${target}".to_string()),
+                            )]),
                             required: false,
                             condition: StepCondition::Always,
                             require_approval: false,
@@ -193,7 +196,10 @@ impl PlaybookManager {
                         Step {
                             id: "wafw00f".to_string(),
                             tool: "wafw00f".to_string(),
-                            params: HashMap::from([("url".to_string(), Value::String("${target}".to_string()))]),
+                            params: HashMap::from([(
+                                "url".to_string(),
+                                Value::String("${target}".to_string()),
+                            )]),
                             required: false,
                             condition: StepCondition::Always,
                             require_approval: false,
@@ -227,7 +233,12 @@ impl PlaybookManager {
                             tool: "feroxbuster".to_string(),
                             params: HashMap::from([
                                 ("url".to_string(), Value::String("${target}".to_string())),
-                                ("wordlist".to_string(), Value::String("/usr/share/wordlists/dirb/common.txt".to_string())),
+                                (
+                                    "wordlist".to_string(),
+                                    Value::String(
+                                        "/usr/share/wordlists/dirb/common.txt".to_string(),
+                                    ),
+                                ),
                             ]),
                             required: false,
                             condition: StepCondition::Always,
@@ -242,19 +253,20 @@ impl PlaybookManager {
                     name: "Parameter Discovery".to_string(),
                     description: "Find input parameters for testing".to_string(),
                     parallel: false,
-                    steps: vec![
-                        Step {
-                            id: "arjun".to_string(),
-                            tool: "arjun".to_string(),
-                            params: HashMap::from([("url".to_string(), Value::String("${target}".to_string()))]),
-                            required: false,
-                            condition: StepCondition::Always,
-                            require_approval: false,
-                            risk_level: RiskLevel::Medium,
-                            alternatives: vec!["paramspider".to_string()],
-                            description: "HTTP parameter discovery".to_string(),
-                        },
-                    ],
+                    steps: vec![Step {
+                        id: "arjun".to_string(),
+                        tool: "arjun".to_string(),
+                        params: HashMap::from([(
+                            "url".to_string(),
+                            Value::String("${target}".to_string()),
+                        )]),
+                        required: false,
+                        condition: StepCondition::Always,
+                        require_approval: false,
+                        risk_level: RiskLevel::Medium,
+                        alternatives: vec!["paramspider".to_string()],
+                        description: "HTTP parameter discovery".to_string(),
+                    }],
                 },
                 Phase {
                     name: "Vulnerability Scanning".to_string(),
@@ -266,7 +278,10 @@ impl PlaybookManager {
                             tool: "nuclei".to_string(),
                             params: HashMap::from([
                                 ("target".to_string(), Value::String("${target}".to_string())),
-                                ("templates".to_string(), Value::String("cves,exposures".to_string())),
+                                (
+                                    "templates".to_string(),
+                                    Value::String("cves,exposures".to_string()),
+                                ),
                             ]),
                             required: false,
                             condition: StepCondition::Always,
@@ -278,7 +293,10 @@ impl PlaybookManager {
                         Step {
                             id: "nikto".to_string(),
                             tool: "nikto".to_string(),
-                            params: HashMap::from([("host".to_string(), Value::String("${target}".to_string()))]),
+                            params: HashMap::from([(
+                                "host".to_string(),
+                                Value::String("${target}".to_string()),
+                            )]),
                             required: false,
                             condition: StepCondition::Always,
                             require_approval: false,
@@ -296,7 +314,10 @@ impl PlaybookManager {
                         Step {
                             id: "sqlmap".to_string(),
                             tool: "sqlmap".to_string(),
-                            params: HashMap::from([("url".to_string(), Value::String("${target}".to_string()))]),
+                            params: HashMap::from([(
+                                "url".to_string(),
+                                Value::String("${target}".to_string()),
+                            )]),
                             required: false,
                             condition: StepCondition::Always,
                             require_approval: true,
@@ -307,7 +328,10 @@ impl PlaybookManager {
                         Step {
                             id: "xsstrike".to_string(),
                             tool: "xsstrike".to_string(),
-                            params: HashMap::from([("url".to_string(), Value::String("${target}".to_string()))]),
+                            params: HashMap::from([(
+                                "url".to_string(),
+                                Value::String("${target}".to_string()),
+                            )]),
                             required: false,
                             condition: StepCondition::Always,
                             require_approval: true,
@@ -318,16 +342,14 @@ impl PlaybookManager {
                     ],
                 },
             ],
-            tool_selection: HashMap::from([
-                (
-                    "content_discovery".to_string(),
-                    ToolSelection {
-                        silent: "gobuster".to_string(),
-                        normal: "feroxbuster".to_string(),
-                        aggressive: "ffuf".to_string(),
-                    },
-                ),
-            ]),
+            tool_selection: HashMap::from([(
+                "content_discovery".to_string(),
+                ToolSelection {
+                    silent: "gobuster".to_string(),
+                    normal: "feroxbuster".to_string(),
+                    aggressive: "ffuf".to_string(),
+                },
+            )]),
             success_criteria: vec![
                 "Identify all accessible endpoints".to_string(),
                 "Find at least one exploitable vulnerability".to_string(),

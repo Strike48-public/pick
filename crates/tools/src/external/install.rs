@@ -94,10 +94,7 @@ pub async fn ensure_tool_installed(
 }
 
 /// Check if a single tool binary is installed
-pub async fn is_tool_installed(
-    platform: &impl CommandExec,
-    binary_name: &str,
-) -> Result<bool> {
+pub async fn is_tool_installed(platform: &impl CommandExec, binary_name: &str) -> Result<bool> {
     let check = platform
         .execute_command("which", &[binary_name], Duration::from_secs(5))
         .await?;
@@ -121,10 +118,7 @@ pub async fn check_tools_installed(
 }
 
 /// Install multiple tools in parallel (batch install)
-pub async fn install_tools_batch(
-    platform: &impl CommandExec,
-    packages: &[&str],
-) -> Result<()> {
+pub async fn install_tools_batch(platform: &impl CommandExec, packages: &[&str]) -> Result<()> {
     if packages.is_empty() {
         return Ok(());
     }

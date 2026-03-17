@@ -6,8 +6,7 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult,
-    ToolSchema,
+    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};

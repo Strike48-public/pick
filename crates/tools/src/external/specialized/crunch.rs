@@ -27,12 +27,39 @@ impl PentestTool for CrunchTool {
 
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new("crunch", "crunch", "Wordlist generator"))
-            .param(ToolParam::required("min_length", ParamType::Integer, "Minimum length"))
-            .param(ToolParam::required("max_length", ParamType::Integer, "Maximum length"))
-            .param(ToolParam::optional("charset", ParamType::String, "Character set", json!("abcdefghijklmnopqrstuvwxyz0123456789")))
-            .param(ToolParam::optional("pattern", ParamType::String, "Pattern (@ = lower, , = upper, % = digit, ^ = symbol)", json!("")))
-            .param(ToolParam::optional("timeout", ParamType::Integer, "Timeout", json!(60)))
+            .external_dependency(ExternalDependency::new(
+                "crunch",
+                "crunch",
+                "Wordlist generator",
+            ))
+            .param(ToolParam::required(
+                "min_length",
+                ParamType::Integer,
+                "Minimum length",
+            ))
+            .param(ToolParam::required(
+                "max_length",
+                ParamType::Integer,
+                "Maximum length",
+            ))
+            .param(ToolParam::optional(
+                "charset",
+                ParamType::String,
+                "Character set",
+                json!("abcdefghijklmnopqrstuvwxyz0123456789"),
+            ))
+            .param(ToolParam::optional(
+                "pattern",
+                ParamType::String,
+                "Pattern (@ = lower, , = upper, % = digit, ^ = symbol)",
+                json!(""),
+            ))
+            .param(ToolParam::optional(
+                "timeout",
+                ParamType::Integer,
+                "Timeout",
+                json!(60),
+            ))
             .platforms(vec![Platform::Desktop, Platform::Tui])
     }
 

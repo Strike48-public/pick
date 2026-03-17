@@ -34,7 +34,10 @@ fn test_webapp_toolchain_schema() {
         .expect("target parameter should exist");
     assert!(target_param.required, "target should be required");
 
-    println!("✅ autopwn_webapp schema valid: {} params", schema.params.len());
+    println!(
+        "✅ autopwn_webapp schema valid: {} params",
+        schema.params.len()
+    );
 }
 
 #[test]
@@ -44,5 +47,9 @@ fn test_total_tool_count() {
 
     // Should have 100 external tools + autopwn_webapp + other built-in tools
     println!("✅ Total tools registered: {}", count);
-    assert!(count >= 101, "Expected at least 101 tools (100 external + webapp toolchain), got {}", count);
+    assert!(
+        count >= 101,
+        "Expected at least 101 tools (100 external + webapp toolchain), got {}",
+        count
+    );
 }

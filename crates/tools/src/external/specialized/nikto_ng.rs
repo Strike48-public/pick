@@ -28,7 +28,11 @@ impl PentestTool for NiktoNgTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(self.name(), self.description())
             .external_dependency(ExternalDependency::new("nikto", "nikto", "Web scanner"))
-            .param(ToolParam::required("host", ParamType::String, "Target host"))
+            .param(ToolParam::required(
+                "host",
+                ParamType::String,
+                "Target host",
+            ))
             .param(ToolParam::optional(
                 "port",
                 ParamType::Integer,

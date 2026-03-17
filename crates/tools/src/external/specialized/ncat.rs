@@ -28,12 +28,39 @@ impl PentestTool for NcatTool {
 
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new("ncat", "nmap", "Networking utility (part of Nmap)"))
-            .param(ToolParam::required("host", ParamType::String, "Target host"))
-            .param(ToolParam::required("port", ParamType::Integer, "Target port"))
-            .param(ToolParam::optional("listen", ParamType::Boolean, "Listen mode", json!(false)))
-            .param(ToolParam::optional("command", ParamType::String, "Command to execute", json!("")))
-            .param(ToolParam::optional("timeout", ParamType::Integer, "Timeout", json!(30)))
+            .external_dependency(ExternalDependency::new(
+                "ncat",
+                "nmap",
+                "Networking utility (part of Nmap)",
+            ))
+            .param(ToolParam::required(
+                "host",
+                ParamType::String,
+                "Target host",
+            ))
+            .param(ToolParam::required(
+                "port",
+                ParamType::Integer,
+                "Target port",
+            ))
+            .param(ToolParam::optional(
+                "listen",
+                ParamType::Boolean,
+                "Listen mode",
+                json!(false),
+            ))
+            .param(ToolParam::optional(
+                "command",
+                ParamType::String,
+                "Command to execute",
+                json!(""),
+            ))
+            .param(ToolParam::optional(
+                "timeout",
+                ParamType::Integer,
+                "Timeout",
+                json!(30),
+            ))
             .platforms(vec![Platform::Desktop, Platform::Tui])
     }
 

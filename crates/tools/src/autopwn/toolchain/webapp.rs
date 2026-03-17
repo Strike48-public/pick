@@ -71,13 +71,9 @@ impl PentestTool for WebAppToolchain {
                 })?
                 .to_string();
 
-            let execution_mode = params["execution_mode"]
-                .as_str()
-                .unwrap_or("guided");
+            let execution_mode = params["execution_mode"].as_str().unwrap_or("guided");
 
-            let attack_profile = params["attack_profile"]
-                .as_str()
-                .unwrap_or("normal");
+            let attack_profile = params["attack_profile"].as_str().unwrap_or("normal");
 
             let session_id = params["session_id"]
                 .as_str()
@@ -111,12 +107,7 @@ impl PentestTool for WebAppToolchain {
             tracing::info!("═══════════════════════════════════════════════════");
 
             // Create session
-            let session = PentestSession::new(
-                session_id,
-                vec![target.clone()],
-                mode,
-                profile,
-            );
+            let session = PentestSession::new(session_id, vec![target.clone()], mode, profile);
 
             // Load web app playbook
             let playbook = PlaybookManager::builtin_webapp();
@@ -139,20 +130,25 @@ impl PentestTool for WebAppToolchain {
             eprintln!("\n🔧 Registry contains {} tools", registry.names().len());
 
             // Create engine
-            let engine = ToolchainEngine::new(
-                session,
-                registry,
-                ctx.clone(),
-            );
+            let engine = ToolchainEngine::new(session, registry, ctx.clone());
 
             tracing::info!("🚀 Executing playbook...");
-            eprintln!("🚀 Executing playbook with {} phases...", playbook.phases.len());
+            eprintln!(
+                "🚀 Executing playbook with {} phases...",
+                playbook.phases.len()
+            );
 
             // Execute playbook
             let report = engine.execute_playbook(&playbook, &target).await?;
 
             tracing::info!("📝 Report generated");
-            eprintln!("📝 Report generated: {} tools executed\n", report.get("tools_executed").and_then(|v| v.as_u64()).unwrap_or(0));
+            eprintln!(
+                "📝 Report generated: {} tools executed\n",
+                report
+                    .get("tools_executed")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0)
+            );
 
             // Display summary
             if let Some(findings) = report.get("findings") {

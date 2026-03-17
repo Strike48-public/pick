@@ -30,7 +30,7 @@ impl PentestTool for AircrackngTool {
             .external_dependency(ExternalDependency::new(
                 "aircrack-ng",
                 "aircrack-ng",
-                "WiFi security auditing suite"
+                "WiFi security auditing suite",
             ))
             .param(ToolParam::required(
                 "capture_file",

@@ -30,7 +30,7 @@ impl PentestTool for HashcatTool {
             .external_dependency(ExternalDependency::new(
                 "hashcat",
                 "hashcat",
-                "GPU password cracker (requires GPU drivers for full performance)"
+                "GPU password cracker (requires GPU drivers for full performance)",
             ))
             .param(ToolParam::required(
                 "hash_file",

@@ -27,11 +27,7 @@ impl PentestTool for DalfoxTool {
 
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new(
-                "dalfox",
-                "dalfox",
-                "XSS scanner",
-            ))
+            .external_dependency(ExternalDependency::new("dalfox", "dalfox", "XSS scanner"))
             .param(ToolParam::required("url", ParamType::String, "Target URL"))
             .param(ToolParam::optional(
                 "timeout",

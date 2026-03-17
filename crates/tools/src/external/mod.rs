@@ -15,13 +15,13 @@ pub mod gobuster;
 pub mod nmap;
 
 // Phase 2 tools
-pub mod rustscan;
-pub mod masscan;
-pub mod nikto;
 pub mod dirb;
 pub mod enum4linux;
 pub mod hydra;
 pub mod john;
+pub mod masscan;
+pub mod nikto;
+pub mod rustscan;
 
 // Phase 3 tools - Web Application Security
 pub mod web;
@@ -30,10 +30,10 @@ pub mod web;
 pub mod postexploit;
 
 // Phase 5+ tools - Network, Forensics, Wireless, Specialized
-pub mod network;
 pub mod forensics;
-pub mod wireless;
+pub mod network;
 pub mod specialized;
+pub mod wireless;
 
 // Re-exports
 // Phase 1
@@ -52,11 +52,10 @@ pub use rustscan::RustScanTool;
 
 // Phase 3 - Web
 pub use web::{
-    AmassTool, ArjunTool, AssetfinderTool, CommixTool, DalfoxTool, DirsearchTool,
-    DroopescanTool, FeroxbusterTool, FfufDnsTool, GauTool, GospiderTool, HakrawlerTool,
-    HttpprobeTool, JoomscanTool, KatanaTool, NucleiTool, ParamspiderTool, SqlmapTool,
-    SubfinderTool, Sublist3rTool, Wafw00fTool, WaybackurlsTool, WfuzzTool, WhatwebTool,
-    WpscanTool, XsstrikeTool,
+    AmassTool, ArjunTool, AssetfinderTool, CommixTool, DalfoxTool, DirsearchTool, DroopescanTool,
+    FeroxbusterTool, FfufDnsTool, GauTool, GospiderTool, HakrawlerTool, HttpprobeTool,
+    JoomscanTool, KatanaTool, NucleiTool, ParamspiderTool, SqlmapTool, SubfinderTool,
+    Sublist3rTool, Wafw00fTool, WaybackurlsTool, WfuzzTool, WhatwebTool, WpscanTool, XsstrikeTool,
 };
 
 // Phase 4 - Post-Exploitation
@@ -68,7 +67,7 @@ pub use postexploit::{
 // Phase 5+ - Network, Forensics, Wireless, Specialized
 pub use forensics::ExiftoolTool;
 pub use network::{
-    ArpingTool, ArpScanTool, BettercapTool, Hping3Tool, MasscanFastTool, NbtscanTool,
+    ArpScanTool, ArpingTool, BettercapTool, Hping3Tool, MasscanFastTool, NbtscanTool,
     NetdiscoverTool, NmapVulnTool, ResponderTool, TsharkTool, UnicornscanTool,
 };
 pub use specialized::{

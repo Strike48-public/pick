@@ -35,7 +35,7 @@ impl PentestTool for WfuzzTool {
             .external_dependency(ExternalDependency::new(
                 "wfuzz",
                 "wfuzz",
-                "Web application fuzzer (Python-based)"
+                "Web application fuzzer (Python-based)",
             ))
             .param(ToolParam::required(
                 "url",
@@ -124,7 +124,11 @@ impl PentestTool for WfuzzTool {
                 ));
             }
 
-            let wordlist = param_str_or(&params, "wordlist", "/usr/share/seclists/Discovery/Web-Content/common.txt");
+            let wordlist = param_str_or(
+                &params,
+                "wordlist",
+                "/usr/share/seclists/Discovery/Web-Content/common.txt",
+            );
             let hide_code = param_str_opt(&params, "hide_code");
             let show_code = param_str_opt(&params, "show_code");
             let hide_words = param_str_opt(&params, "hide_words");

@@ -67,9 +67,7 @@ impl PentestTool for SkipfishTool {
             let output = param_str_or(&params, "output", "/tmp/skipfish");
             let timeout_secs = crate::util::param_u64(&params, "timeout", 600);
 
-            let builder = CommandBuilder::new()
-                .arg("-o", &output)
-                .positional(&url);
+            let builder = CommandBuilder::new().arg("-o", &output).positional(&url);
 
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();

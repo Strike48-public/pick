@@ -12,7 +12,9 @@ async fn test_whatweb_direct() {
     eprintln!("\n🧪 Testing whatweb tool directly against DVWA\n");
 
     let registry = create_tool_registry();
-    let tool = registry.get("whatweb").expect("whatweb should be registered");
+    let tool = registry
+        .get("whatweb")
+        .expect("whatweb should be registered");
 
     let params = json!({
         "url": "http://localhost:8080"
