@@ -153,14 +153,19 @@ pub fn theme_css() -> &'static str {
             border: 1px solid var(--border);
             border-radius: 4px;
             overflow-y: auto;
+            overflow-x: hidden;
             padding: 8px 12px;
             font-family: var(--font-mono);
             font-size: 13px;
+            scroll-behavior: smooth;
+            line-height: 1.5;
         }
 
         .terminal-line {
             white-space: pre-wrap;
-            word-break: break-all;
+            word-break: break-word;
+            padding: 2px 0;
+            margin: 1px 0;
         }
 
         .terminal-line-header.expandable {

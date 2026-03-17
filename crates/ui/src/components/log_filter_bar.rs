@@ -79,16 +79,15 @@ pub fn LogFilterBar(
         counts
     });
 
-    // Filter lines based on enabled levels (reverse order - newest first)
+    // Filter lines based on enabled levels (chronological order - oldest first, newest last)
     use_effect(move || {
         let enabled = enabled_levels.read();
         let all_lines = lines.read();
-        let mut filtered: Vec<TerminalLine> = all_lines
+        let filtered: Vec<TerminalLine> = all_lines
             .iter()
             .filter(|line| enabled.contains(&line.level))
             .cloned()
             .collect();
-        filtered.reverse(); // Show newest logs first
         filtered_lines.set(filtered);
     });
 
