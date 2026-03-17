@@ -24,7 +24,10 @@ pub enum OutputFormat {
 /// Parse JSON output from a tool
 pub fn parse_json_output(stdout: &str) -> Result<Value> {
     serde_json::from_str(stdout).map_err(|e| {
-        Error::ToolExecution(format!("Failed to parse JSON output: {} (output: {})", e, stdout))
+        Error::ToolExecution(format!(
+            "Failed to parse JSON output: {} (output: {})",
+            e, stdout
+        ))
     })
 }
 

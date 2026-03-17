@@ -6,8 +6,7 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult,
-    ToolSchema,
+    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
@@ -38,7 +37,7 @@ impl PentestTool for FfufTool {
             .external_dependency(ExternalDependency::new(
                 "ffuf",
                 "ffuf",
-                "Fast web fuzzer written in Go"
+                "Fast web fuzzer written in Go",
             ))
             .param(ToolParam::required(
                 "url",
@@ -116,7 +115,8 @@ impl PentestTool for FfufTool {
             }
 
             let threads = param_u64(&params, "threads", 40);
-            let match_codes = param_str_or(&params, "match_codes", "200,204,301,302,307,401,403,405");
+            let match_codes =
+                param_str_or(&params, "match_codes", "200,204,301,302,307,401,403,405");
             let method = param_str_or(&params, "method", "GET");
             let timeout = param_u64(&params, "timeout", 10);
 
@@ -233,9 +233,7 @@ fn parse_ffuf_json(json_str: &str, stderr: &str) -> Result<Value> {
         .get("results")
         .and_then(|v| v.as_array())
         .ok_or_else(|| {
-            pentest_core::error::Error::ToolExecution(
-                "FFUF output missing 'results' array".into(),
-            )
+            pentest_core::error::Error::ToolExecution("FFUF output missing 'results' array".into())
         })?;
 
     // Transform to our format

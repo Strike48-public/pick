@@ -6,8 +6,7 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult,
-    ToolSchema,
+    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
@@ -37,7 +36,7 @@ impl PentestTool for DirbTool {
             .external_dependency(ExternalDependency::new(
                 "dirb",
                 "dirb",
-                "Web content scanner for dictionary-based attacks"
+                "Web content scanner for dictionary-based attacks",
             ))
             .param(ToolParam::required(
                 "url",
@@ -190,10 +189,15 @@ fn parse_dirb_output(output: &str, url: &str) -> Result<Value> {
 
         // Dirb format: "+ http://example.com/admin (CODE:200|SIZE:1234)"
         if line.starts_with('+') {
-            if let Some(url_part) = line.strip_prefix('+').and_then(|s| s.trim().split_whitespace().next()) {
+            if let Some(url_part) = line
+                .strip_prefix('+')
+                .and_then(|s| s.trim().split_whitespace().next())
+            {
                 // Extract status code and size
                 let status_code = if let Some(code_str) = line.split("CODE:").nth(1) {
-                    code_str.split('|').next()
+                    code_str
+                        .split('|')
+                        .next()
                         .and_then(|s| s.trim_end_matches(')').parse::<u16>().ok())
                         .unwrap_or(0)
                 } else {
@@ -201,8 +205,10 @@ fn parse_dirb_output(output: &str, url: &str) -> Result<Value> {
                 };
 
                 let size = if let Some(size_str) = line.split("SIZE:").nth(1) {
-                    size_str.trim_end_matches(')')
-                        .parse::<u64>().ok()
+                    size_str
+                        .trim_end_matches(')')
+                        .parse::<u64>()
+                        .ok()
                         .unwrap_or(0)
                 } else {
                     0

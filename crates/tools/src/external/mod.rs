@@ -15,13 +15,13 @@ pub mod gobuster;
 pub mod nmap;
 
 // Phase 2 tools
-pub mod rustscan;
-pub mod masscan;
-pub mod nikto;
 pub mod dirb;
 pub mod enum4linux;
 pub mod hydra;
 pub mod john;
+pub mod masscan;
+pub mod nikto;
+pub mod rustscan;
 
 // Phase 3 tools - Web Application Security
 pub mod web;
@@ -30,10 +30,10 @@ pub mod web;
 pub mod postexploit;
 
 // Phase 5+ tools - Network, Forensics, Wireless, Specialized
-pub mod network;
 pub mod forensics;
-pub mod wireless;
+pub mod network;
 pub mod specialized;
+pub mod wireless;
 
 // Re-exports
 // Phase 1
@@ -52,10 +52,9 @@ pub use rustscan::RustScanTool;
 
 // Phase 3 - Web
 pub use web::{
-    AmassTool, ArjunTool, AssetfinderTool, CommixTool, DirsearchTool, FeroxbusterTool,
-    FfufDnsTool, GauTool, GospiderTool, HakrawlerTool, HttpprobeTool, KatanaTool, NucleiTool,
-    ParamspiderTool, SqlmapTool, SubfinderTool, Sublist3rTool, WaybackurlsTool, WfuzzTool,
-    WpscanTool, XsstrikeTool,
+    AmassTool, ArjunTool, AssetfinderTool, CommixTool, DirsearchTool, FeroxbusterTool, FfufDnsTool,
+    GauTool, GospiderTool, HakrawlerTool, HttpprobeTool, KatanaTool, NucleiTool, ParamspiderTool,
+    SqlmapTool, SubfinderTool, Sublist3rTool, WaybackurlsTool, WfuzzTool, WpscanTool, XsstrikeTool,
 };
 
 // Phase 4 - Post-Exploitation
@@ -72,7 +71,7 @@ pub use network::{
 };
 pub use specialized::{
     CewlTool, CrunchTool, DnsenumTool, DnsreconTool, Enum4linuxNgTool, FierceTool, HashcatTool,
-    NcatTool, SearchsploitTool, SmbmapTool, SocatTool, SslscanTool, TestsslTool,
-    TheHarvesterTool, WhoisTool,
+    NcatTool, SearchsploitTool, SmbmapTool, SocatTool, SslscanTool, TestsslTool, TheHarvesterTool,
+    WhoisTool,
 };
 pub use wireless::AircrackngTool;

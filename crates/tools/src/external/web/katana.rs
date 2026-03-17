@@ -27,11 +27,7 @@ impl PentestTool for KatanaTool {
 
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new(
-                "katana",
-                "katana",
-                "Web crawler",
-            ))
+            .external_dependency(ExternalDependency::new("katana", "katana", "Web crawler"))
             .param(ToolParam::required("url", ParamType::String, "Target URL"))
             .param(ToolParam::optional(
                 "depth",

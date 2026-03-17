@@ -31,7 +31,7 @@ impl PentestTool for BettercapTool {
             .external_dependency(ExternalDependency::new(
                 "bettercap",
                 "bettercap",
-                "Network attack framework (Go-based)"
+                "Network attack framework (Go-based)",
             ))
             .param(ToolParam::optional(
                 "interface",

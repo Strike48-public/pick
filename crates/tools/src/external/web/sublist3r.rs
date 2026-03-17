@@ -31,7 +31,7 @@ impl PentestTool for Sublist3rTool {
             .external_dependency(ExternalDependency::new(
                 "sublist3r",
                 "sublist3r",
-                "Subdomain enumeration tool (Python-based)"
+                "Subdomain enumeration tool (Python-based)",
             ))
             .param(ToolParam::required(
                 "domain",

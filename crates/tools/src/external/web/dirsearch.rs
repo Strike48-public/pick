@@ -30,13 +30,9 @@ impl PentestTool for DirsearchTool {
             .external_dependency(ExternalDependency::new(
                 "dirsearch",
                 "dirsearch",
-                "Web path scanner (Python-based)"
+                "Web path scanner (Python-based)",
             ))
-            .param(ToolParam::required(
-                "url",
-                ParamType::String,
-                "Target URL",
-            ))
+            .param(ToolParam::required("url", ParamType::String, "Target URL"))
             .param(ToolParam::optional(
                 "extensions",
                 ParamType::String,

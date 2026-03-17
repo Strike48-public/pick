@@ -30,7 +30,7 @@ impl PentestTool for ExiftoolTool {
             .external_dependency(ExternalDependency::new(
                 "exiftool",
                 "perl-image-exiftool",
-                "Metadata extraction tool (Perl-based)"
+                "Metadata extraction tool (Perl-based)",
             ))
             .param(ToolParam::required(
                 "file_path",
@@ -71,9 +71,7 @@ impl PentestTool for ExiftoolTool {
             let recursive = crate::util::param_bool(&params, "recursive", false);
             let timeout_secs = crate::util::param_u64(&params, "timeout", 60);
 
-            let mut builder = CommandBuilder::new()
-                .flag("-json")
-                .positional(&file_path);
+            let mut builder = CommandBuilder::new().flag("-json").positional(&file_path);
 
             if recursive {
                 builder = builder.flag("-r");

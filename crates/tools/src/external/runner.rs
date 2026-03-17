@@ -140,16 +140,9 @@ pub async fn execute_and_parse_json(
 }
 
 /// Read file from sandbox and return contents
-pub async fn read_sandbox_file(
-    platform: &impl CommandExec,
-    file_path: &str,
-) -> Result<String> {
-    let (stdout, stderr, exit_code) = execute_tool(
-        platform,
-        "cat",
-        &[file_path],
-        Duration::from_secs(10),
-    ).await?;
+pub async fn read_sandbox_file(platform: &impl CommandExec, file_path: &str) -> Result<String> {
+    let (stdout, stderr, exit_code) =
+        execute_tool(platform, "cat", &[file_path], Duration::from_secs(10)).await?;
 
     if exit_code != 0 {
         return Err(Error::ToolExecution(format!(
@@ -162,10 +155,7 @@ pub async fn read_sandbox_file(
 }
 
 /// Remove a file from sandbox (cleanup)
-pub async fn remove_sandbox_file(
-    platform: &impl CommandExec,
-    file_path: &str,
-) -> Result<()> {
+pub async fn remove_sandbox_file(platform: &impl CommandExec, file_path: &str) -> Result<()> {
     let _ = platform
         .execute_command("rm", &["-f", file_path], Duration::from_secs(5))
         .await;

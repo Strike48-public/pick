@@ -223,7 +223,8 @@ impl ToolSchema {
         });
 
         if !self.external_dependencies.is_empty() {
-            schema["external_dependencies"] = serde_json::to_value(&self.external_dependencies).unwrap();
+            schema["external_dependencies"] =
+                serde_json::to_value(&self.external_dependencies).unwrap();
         }
 
         schema

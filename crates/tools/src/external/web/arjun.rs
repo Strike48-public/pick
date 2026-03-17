@@ -33,7 +33,7 @@ impl PentestTool for ArjunTool {
             .external_dependency(ExternalDependency::new(
                 "arjun",
                 "arjun",
-                "HTTP parameter discovery tool (Python-based)"
+                "HTTP parameter discovery tool (Python-based)",
             ))
             .param(ToolParam::required(
                 "url",
