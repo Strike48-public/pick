@@ -33,6 +33,9 @@ pub mod gau;
 pub mod ffuf_dns;
 pub mod subfinder;
 pub mod assetfinder;
+pub mod gospider;
+pub mod katana;
+pub mod paramspider;
 
 pub use hakrawler::HakrawlerTool;
 pub use httprobe::HttpprobeTool;
@@ -41,3 +44,6 @@ pub use gau::GauTool;
 pub use ffuf_dns::FfufDnsTool;
 pub use subfinder::SubfinderTool;
 pub use assetfinder::AssetfinderTool;
+pub use gospider::GospiderTool;
+pub use katana::KatanaTool;
+pub use paramspider::ParamspiderTool;

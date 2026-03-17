@@ -40,15 +40,16 @@ pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
 pub use lateral_movement::LateralMovementTool;
 pub use external::{
-    AircrackngTool, AmassTool, ArjunTool, AssetfinderTool, BettercapTool, CewlTool, CommixTool,
-    CrackmapexecTool, CrunchTool, DirbTool, DirsearchTool, DnsenumTool, DnsreconTool,
-    Enum4linuxTool, EvilwinrmTool, ExiftoolTool, FeroxbusterTool, FfufDnsTool, FfufTool, FierceTool,
-    GauTool, GobusterTool, HakrawlerTool, HashcatTool, HttpprobeTool, HydraTool,
-    ImpacketGetuserspnsTool, ImpacketPsexecTool, ImpacketSecretsdumpTool, ImpacketWmiexecTool,
-    JohnTool, LinpeasTool, MasscanFastTool, MasscanTool, NcatTool, NetdiscoverTool, NiktoTool,
-    NmapTool, NmapVulnTool, NucleiTool, ResponderTool, RustScanTool, SearchsploitTool, SocatTool,
-    SqlmapTool, SubfinderTool, Sublist3rTool, TheHarvesterTool, TsharkTool, WaybackurlsTool,
-    WfuzzTool, WpscanTool, XsstrikeTool,
+    AircrackngTool, AmassTool, ArjunTool, ArpScanTool, AssetfinderTool, BettercapTool, CewlTool,
+    CommixTool, CrackmapexecTool, CrunchTool, DirbTool, DirsearchTool, DnsenumTool, DnsreconTool,
+    Enum4linuxNgTool, Enum4linuxTool, EvilwinrmTool, ExiftoolTool, FeroxbusterTool, FfufDnsTool,
+    FfufTool, FierceTool, GauTool, GobusterTool, GospiderTool, HakrawlerTool, HashcatTool,
+    HttpprobeTool, HydraTool, ImpacketGetuserspnsTool, ImpacketPsexecTool,
+    ImpacketSecretsdumpTool, ImpacketWmiexecTool, JohnTool, KatanaTool, LinpeasTool,
+    MasscanFastTool, MasscanTool, NbtscanTool, NcatTool, NetdiscoverTool, NiktoTool, NmapTool,
+    NmapVulnTool, NucleiTool, ParamspiderTool, ResponderTool, RustScanTool, SearchsploitTool,
+    SmbmapTool, SocatTool, SqlmapTool, SslscanTool, SubfinderTool, Sublist3rTool, TestsslTool,
+    TheHarvesterTool, TsharkTool, WaybackurlsTool, WfuzzTool, WhoisTool, WpscanTool, XsstrikeTool,
 }; // External tools
 pub use list_files::ListFilesTool;
 pub use network_discover::NetworkDiscoverTool;
@@ -122,6 +123,9 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(FfufDnsTool); // DNS subdomain fuzzing
     registry.register(SubfinderTool); // Subdomain discovery
     registry.register(AssetfinderTool); // Asset discovery
+    registry.register(GospiderTool); // Fast web spider
+    registry.register(KatanaTool); // Next-gen crawler
+    registry.register(ParamspiderTool); // Parameter discovery
 
     // Credential attacks (External tools)
     registry.register(HydraTool); // Login bruteforcer (50+ protocols)
@@ -147,6 +151,8 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(NetdiscoverTool); // ARP reconnaissance
     registry.register(MasscanFastTool); // Ultra-fast port scanner
     registry.register(NmapVulnTool); // Nmap vulnerability scanning
+    registry.register(ArpScanTool); // ARP scanner
+    registry.register(NbtscanTool); // NetBIOS scanner
 
     // Forensics
     registry.register(ExiftoolTool); // Metadata extraction
@@ -165,6 +171,11 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(DnsreconTool); // DNS enumeration
     registry.register(DnsenumTool); // DNS information gathering
     registry.register(FierceTool); // DNS reconnaissance
+    registry.register(WhoisTool); // WHOIS lookup
+    registry.register(SslscanTool); // SSL/TLS scanner
+    registry.register(TestsslTool); // TLS/SSL testing
+    registry.register(Enum4linuxNgTool); // Next-gen SMB enum
+    registry.register(SmbmapTool); // SMB share enumeration
 
     // Device and system info
     registry.register(DeviceInfoTool);
