@@ -52,17 +52,18 @@ pub use rustscan::RustScanTool;
 
 // Phase 3 - Web
 pub use web::{
-    AmassTool, ArjunTool, CommixTool, DirsearchTool, FeroxbusterTool, NucleiTool, SqlmapTool,
-    Sublist3rTool, WfuzzTool, WpscanTool, XsstrikeTool,
+    AmassTool, ArjunTool, CommixTool, DirsearchTool, FeroxbusterTool, HakrawlerTool,
+    HttpprobeTool, NucleiTool, SqlmapTool, Sublist3rTool, WfuzzTool, WpscanTool, XsstrikeTool,
 };
 
 // Phase 4 - Post-Exploitation
 pub use postexploit::{
-    CrackmapexecTool, EvilwinrmTool, ImpacketPsexecTool, ImpacketSecretsdumpTool, LinpeasTool,
+    CrackmapexecTool, EvilwinrmTool, ImpacketGetuserspnsTool, ImpacketPsexecTool,
+    ImpacketSecretsdumpTool, ImpacketWmiexecTool, LinpeasTool,
 };
 
 // Phase 5+ - Network, Forensics, Wireless, Specialized
 pub use forensics::ExiftoolTool;
-pub use network::{BettercapTool, ResponderTool};
-pub use specialized::{CewlTool, HashcatTool, NcatTool, SearchsploitTool};
+pub use network::{BettercapTool, NetdiscoverTool, ResponderTool, TsharkTool};
+pub use specialized::{CewlTool, CrunchTool, HashcatTool, NcatTool, SearchsploitTool, SocatTool};
 pub use wireless::AircrackngTool;

@@ -122,11 +122,14 @@ fn test_tool_count_increased() {
     // Before external tools: ~20 tools (varies based on pcap availability)
     // Phase 1: +3 tools (nmap, ffuf, gobuster)
     // Phase 2: +7 tools (rustscan, masscan, nikto, dirb, enum4linux, hydra, john)
-    // Total: ~30 tools
+    // Phase 3: +14 tools (web security tools)
+    // Phase 4: +9 tools (post-exploitation)
+    // Phase 5+: +12 tools (network, forensics, wireless, specialized)
+    // Total: 62+ tools
     println!("✅ Tool count: {}", count);
     assert!(
-        count >= 30,
-        "Expected at least 30 tools after Phase 2, got {}",
+        count >= 60,
+        "Expected at least 60 tools, got {}",
         count
     );
 }
