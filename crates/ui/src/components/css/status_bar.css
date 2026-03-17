@@ -34,3 +34,18 @@
     font-family: var(--font-mono);
     margin-right: 4px;
 }
+
+.session-uptime {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    background: var(--accent);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--foreground);
+    font-weight: 500;
+    cursor: help;
+}
