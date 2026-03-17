@@ -5,8 +5,7 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult,
-    ToolSchema,
+    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
@@ -36,7 +35,7 @@ impl PentestTool for GobusterTool {
             .external_dependency(ExternalDependency::new(
                 "gobuster",
                 "gobuster",
-                "Directory/DNS/vhost bruteforce tool written in Go"
+                "Directory/DNS/vhost bruteforce tool written in Go",
             ))
             .param(ToolParam::required(
                 "mode",
@@ -139,9 +138,7 @@ impl PentestTool for GobusterTool {
             // Mode-specific arguments
             match mode.as_str() {
                 "dir" => {
-                    builder = builder
-                        .arg("-u", &target)
-                        .arg("-s", &status_codes);
+                    builder = builder.arg("-u", &target).arg("-s", &status_codes);
 
                     // Add extensions if provided
                     if let Some(ext) = param_str_opt(&params, "extensions") {
@@ -154,9 +151,7 @@ impl PentestTool for GobusterTool {
                     builder = builder.arg("-d", &target);
                 }
                 "vhost" => {
-                    builder = builder
-                        .arg("-u", &target)
-                        .arg("-s", &status_codes);
+                    builder = builder.arg("-u", &target).arg("-s", &status_codes);
                 }
                 _ => unreachable!(),
             }
@@ -197,9 +192,7 @@ async fn get_wordlist_for_mode(platform: &impl CommandExec, mode: &str) -> Resul
             "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt",
             "/usr/share/wordlists/dnsmap.txt",
         ],
-        "vhost" => vec![
-            "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt",
-        ],
+        "vhost" => vec!["/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"],
         _ => vec![],
     };
 
@@ -294,7 +287,8 @@ fn parse_dns_line(line: &str) -> Option<Value> {
 
 fn parse_vhost_line(line: &str) -> Option<Value> {
     // Example: Found: admin.example.com (Status: 200) [Size: 1234]
-    let re = regex::Regex::new(r"^Found:\s+(\S+)\s+\(Status:\s+(\d+)\)\s+\[Size:\s+(\d+)\]").ok()?;
+    let re =
+        regex::Regex::new(r"^Found:\s+(\S+)\s+\(Status:\s+(\d+)\)\s+\[Size:\s+(\d+)\]").ok()?;
     let caps = re.captures(line)?;
 
     Some(json!({

@@ -31,7 +31,7 @@ impl PentestTool for AmassTool {
             .external_dependency(ExternalDependency::new(
                 "amass",
                 "amass",
-                "DNS enumeration and network mapping tool (Go-based)"
+                "DNS enumeration and network mapping tool (Go-based)",
             ))
             .param(ToolParam::required(
                 "domain",
@@ -93,9 +93,7 @@ impl PentestTool for AmassTool {
             let wordlist = param_str_opt(&params, "wordlist");
             let timeout_secs = crate::util::param_u64(&params, "timeout", 600);
 
-            let mut builder = CommandBuilder::new()
-                .positional(&mode)
-                .arg("-d", &domain);
+            let mut builder = CommandBuilder::new().positional(&mode).arg("-d", &domain);
 
             if passive {
                 builder = builder.flag("-passive");

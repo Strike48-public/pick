@@ -32,7 +32,11 @@ impl PentestTool for SnmpwalkTool {
                 "net-snmp",
                 "SNMP tools",
             ))
-            .param(ToolParam::required("host", ParamType::String, "Target host"))
+            .param(ToolParam::required(
+                "host",
+                ParamType::String,
+                "Target host",
+            ))
             .param(ToolParam::optional(
                 "community",
                 ParamType::String,

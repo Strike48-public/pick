@@ -11,6 +11,6 @@ pub mod webapp;
 pub use engine::ToolchainEngine;
 pub use playbook::{Playbook, PlaybookManager, Step, StepCondition};
 pub use session::{
-    AttackProfile, ExecutionMode, PentestSession, ToolExecution, ExecutionStatus, Finding,
+    AttackProfile, ExecutionMode, ExecutionStatus, Finding, PentestSession, ToolExecution,
 };
 pub use webapp::WebAppToolchain;

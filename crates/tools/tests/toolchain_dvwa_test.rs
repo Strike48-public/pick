@@ -68,8 +68,14 @@ async fn test_autopwn_webapp_dvwa() {
     assert!(result.success, "Toolchain should complete successfully");
 
     let data = &result.data;
-    assert!(data.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
-    assert_eq!(data.get("target").and_then(|v| v.as_str()), Some("http://localhost:8080"));
+    assert!(data
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+    assert_eq!(
+        data.get("target").and_then(|v| v.as_str()),
+        Some("http://localhost:8080")
+    );
 
     // Print report
     if let Some(report) = data.get("report") {
@@ -78,9 +84,18 @@ async fn test_autopwn_webapp_dvwa() {
         println!();
 
         // Verify report structure
-        assert!(report.get("progress").is_some(), "Report should have progress");
-        assert!(report.get("findings").is_some(), "Report should have findings");
-        assert!(report.get("tools_executed").is_some(), "Report should have tools_executed");
+        assert!(
+            report.get("progress").is_some(),
+            "Report should have progress"
+        );
+        assert!(
+            report.get("findings").is_some(),
+            "Report should have findings"
+        );
+        assert!(
+            report.get("tools_executed").is_some(),
+            "Report should have tools_executed"
+        );
     }
 
     println!("✅ All assertions passed!");

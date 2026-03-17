@@ -67,9 +67,7 @@ impl PentestTool for DroopescanTool {
             let cms = param_str_or(&params, "cms", "drupal");
             let timeout_secs = crate::util::param_u64(&params, "timeout", 300);
 
-            let builder = CommandBuilder::new()
-                .arg("scan", &cms)
-                .arg("-u", &url);
+            let builder = CommandBuilder::new().arg("scan", &cms).arg("-u", &url);
 
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();

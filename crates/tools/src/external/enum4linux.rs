@@ -6,8 +6,7 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult,
-    ToolSchema,
+    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
@@ -36,7 +35,7 @@ impl PentestTool for Enum4linuxTool {
             .external_dependency(ExternalDependency::new(
                 "enum4linux",
                 "enum4linux",
-                "SMB/Windows enumeration tool"
+                "SMB/Windows enumeration tool",
             ))
             .param(ToolParam::required(
                 "target",
@@ -179,7 +178,10 @@ fn parse_enum4linux_output(stdout: &str, target: &str) -> Result<Value> {
         // Parse users
         if in_users_section && line.starts_with("user:") {
             if let Some(username) = line.strip_prefix("user:") {
-                let username = username.trim().trim_start_matches('[').trim_end_matches(']');
+                let username = username
+                    .trim()
+                    .trim_start_matches('[')
+                    .trim_end_matches(']');
                 users.push(username.to_string());
             }
         }
@@ -194,7 +196,10 @@ fn parse_enum4linux_output(stdout: &str, target: &str) -> Result<Value> {
         // Parse groups
         if in_groups_section && line.starts_with("group:") {
             if let Some(groupname) = line.strip_prefix("group:") {
-                let groupname = groupname.trim().trim_start_matches('[').trim_end_matches(']');
+                let groupname = groupname
+                    .trim()
+                    .trim_start_matches('[')
+                    .trim_end_matches(']');
                 groups.push(groupname.to_string());
             }
         }

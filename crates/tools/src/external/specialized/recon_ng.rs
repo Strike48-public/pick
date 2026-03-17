@@ -64,9 +64,7 @@ impl PentestTool for ReconNgTool {
 
             let timeout_secs = crate::util::param_u64(&params, "timeout", 300);
 
-            let builder = CommandBuilder::new()
-                .arg("-r", "")
-                .positional(&domain);
+            let builder = CommandBuilder::new().arg("-r", "").positional(&domain);
 
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();

@@ -1,9 +1,7 @@
 //! Toolchain execution engine
 
 use super::playbook::{Phase, Playbook, RiskLevel, Step, StepCondition};
-use super::session::{
-    ExecutionMode, FailedStep, Finding, PentestSession, ToolExecution,
-};
+use super::session::{ExecutionMode, FailedStep, Finding, PentestSession, ToolExecution};
 use crate::external::install::ensure_tool_installed;
 use pentest_core::error::{Error, Result};
 use pentest_core::tools::{ToolContext, ToolRegistry};
@@ -23,11 +21,7 @@ pub struct ToolchainEngine {
 
 impl ToolchainEngine {
     /// Create a new toolchain engine
-    pub fn new(
-        session: PentestSession,
-        registry: Arc<ToolRegistry>,
-        context: ToolContext,
-    ) -> Self {
+    pub fn new(session: PentestSession, registry: Arc<ToolRegistry>, context: ToolContext) -> Self {
         Self {
             session: Arc::new(Mutex::new(session)),
             registry,
@@ -36,11 +30,7 @@ impl ToolchainEngine {
     }
 
     /// Execute a complete playbook
-    pub async fn execute_playbook(
-        &self,
-        playbook: &Playbook,
-        target: &str,
-    ) -> Result<Value> {
+    pub async fn execute_playbook(&self, playbook: &Playbook, target: &str) -> Result<Value> {
         tracing::info!("═══════════════════════════════════════════════════");
         tracing::info!("🚀 Starting Toolchain Execution");
         tracing::info!("═══════════════════════════════════════════════════");
@@ -111,7 +101,10 @@ impl ToolchainEngine {
                 let schema = tool.schema();
                 if schema.has_external_dependencies() {
                     for dep in &schema.external_dependencies {
-                        if let Err(e) = ensure_tool_installed(&platform, &dep.binary_name, &dep.package_name).await {
+                        if let Err(e) =
+                            ensure_tool_installed(&platform, &dep.binary_name, &dep.package_name)
+                                .await
+                        {
                             tracing::warn!("    ⚠ Failed to install {}: {}", dep.binary_name, e);
                         } else {
                             tracing::debug!("    ✓ {} is available", dep.binary_name);
@@ -150,9 +143,7 @@ impl ToolchainEngine {
                     context: self.context.clone(),
                 };
 
-                let handle = tokio::spawn(async move {
-                    engine.execute_step(&step, &target).await
-                });
+                let handle = tokio::spawn(async move { engine.execute_step(&step, &target).await });
 
                 handles.push(handle);
             }
@@ -213,7 +204,9 @@ impl ToolchainEngine {
             // In a real implementation, this would wait for user input
             // For now, we'll skip high-risk steps in autonomous mode
             let session = self.session.lock().await;
-            if matches!(session.execution_mode, ExecutionMode::Autonomous) && matches!(step.risk_level, RiskLevel::High | RiskLevel::Critical) {
+            if matches!(session.execution_mode, ExecutionMode::Autonomous)
+                && matches!(step.risk_level, RiskLevel::High | RiskLevel::Critical)
+            {
                 tracing::warn!("    ⊘ Skipping high-risk step in autonomous mode");
                 let mut execution = ToolExecution::new(
                     step.tool.clone(),
@@ -248,16 +241,20 @@ impl ToolchainEngine {
                         let duration_ms = start.elapsed().as_millis() as u64;
                         execution.complete(result.data.clone(), duration_ms);
 
-                        tracing::info!(
-                            "      ✓ {} completed in {}ms",
-                            step.tool,
-                            duration_ms
-                        );
+                        tracing::info!("      ✓ {} completed in {}ms", step.tool, duration_ms);
                         eprintln!("      ✓ {} completed in {}ms", step.tool, duration_ms);
-                        eprintln!("         Result: {}", serde_json::to_string(&result.data).unwrap_or_default().chars().take(200).collect::<String>());
+                        eprintln!(
+                            "         Result: {}",
+                            serde_json::to_string(&result.data)
+                                .unwrap_or_default()
+                                .chars()
+                                .take(200)
+                                .collect::<String>()
+                        );
 
                         // Extract findings if available
-                        self.extract_findings(&step.tool, target, &result.data).await;
+                        self.extract_findings(&step.tool, target, &result.data)
+                            .await;
 
                         self.session.lock().await.record_execution(execution);
                         Ok(())
@@ -348,10 +345,7 @@ impl ToolchainEngine {
 
         // Guided mode requires approval for high-risk steps
         if matches!(session.execution_mode, ExecutionMode::Guided)
-            && matches!(
-                step.risk_level,
-                RiskLevel::High | RiskLevel::Critical
-            )
+            && matches!(step.risk_level, RiskLevel::High | RiskLevel::Critical)
         {
             return true;
         }
@@ -390,7 +384,9 @@ impl ToolchainEngine {
                     let finding = Finding::new(
                         severity,
                         title,
-                        vuln.get("description").and_then(|d| d.as_str()).unwrap_or(""),
+                        vuln.get("description")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or(""),
                         tool,
                         target,
                         vuln.clone(),

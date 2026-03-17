@@ -31,7 +31,7 @@ impl PentestTool for SearchsploitTool {
             .external_dependency(ExternalDependency::new(
                 "searchsploit",
                 "exploitdb",
-                "Exploit database search tool (local exploit-db)"
+                "Exploit database search tool (local exploit-db)",
             ))
             .param(ToolParam::required(
                 "search_term",
@@ -95,7 +95,11 @@ impl PentestTool for SearchsploitTool {
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
             let result = platform
-                .execute_command("searchsploit", &args_refs, Duration::from_secs(timeout_secs))
+                .execute_command(
+                    "searchsploit",
+                    &args_refs,
+                    Duration::from_secs(timeout_secs),
+                )
                 .await?;
 
             // Try to parse JSON output

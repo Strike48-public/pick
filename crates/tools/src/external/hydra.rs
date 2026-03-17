@@ -6,8 +6,7 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult,
-    ToolSchema,
+    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
@@ -37,7 +36,7 @@ impl PentestTool for HydraTool {
             .external_dependency(ExternalDependency::new(
                 "hydra",
                 "hydra",
-                "Parallelized login bruteforcer (THC Hydra)"
+                "Parallelized login bruteforcer (THC Hydra)",
             ))
             .param(ToolParam::required(
                 "target",
@@ -193,7 +192,11 @@ fn parse_hydra_output(output: &str, target: &str, service: &str) -> Result<Value
         // Hydra format: "[22][ssh] host: 10.0.0.1   login: admin   password: password123"
         if line.contains("login:") && line.contains("password:") {
             let username = if let Some(login_part) = line.split("login:").nth(1) {
-                login_part.split_whitespace().next().unwrap_or("").to_string()
+                login_part
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
             } else {
                 String::new()
             };

@@ -68,11 +68,7 @@ impl PentestTool for WaybackurlsTool {
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
             let result = platform
-                .execute_command(
-                    "waybackurls",
-                    &args_refs,
-                    Duration::from_secs(timeout_secs),
-                )
+                .execute_command("waybackurls", &args_refs, Duration::from_secs(timeout_secs))
                 .await?;
 
             let urls: Vec<String> = result.stdout.lines().map(|s| s.to_string()).collect();

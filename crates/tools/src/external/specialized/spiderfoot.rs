@@ -64,9 +64,7 @@ impl PentestTool for SpiderfootTool {
 
             let timeout_secs = crate::util::param_u64(&params, "timeout", 600);
 
-            let builder = CommandBuilder::new()
-                .arg("-s", &target)
-                .flag("-q");
+            let builder = CommandBuilder::new().arg("-s", &target).flag("-q");
 
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();

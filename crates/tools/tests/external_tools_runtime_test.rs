@@ -32,10 +32,16 @@ async fn test_nmap_execution() {
             println!("Result: {}", serde_json::to_string_pretty(&output).unwrap());
 
             // Verify output structure
-            assert!(output.data.is_object(), "Output data should be a JSON object");
+            assert!(
+                output.data.is_object(),
+                "Output data should be a JSON object"
+            );
 
             if let Some(hosts) = output.data.get("hosts") {
-                println!("Found {} host(s)", hosts.as_array().map(|a| a.len()).unwrap_or(0));
+                println!(
+                    "Found {} host(s)",
+                    hosts.as_array().map(|a| a.len()).unwrap_or(0)
+                );
             }
         }
         Err(e) => {
