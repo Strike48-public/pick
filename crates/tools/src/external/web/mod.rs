@@ -26,3 +26,8 @@ pub use dirsearch::DirsearchTool;
 pub use sublist3r::Sublist3rTool;
 pub use amass::AmassTool;
 pub use xsstrike::XsstrikeTool;
+pub mod hakrawler;
+pub mod httprobe;
+
+pub use hakrawler::HakrawlerTool;
+pub use httprobe::HttpprobeTool;

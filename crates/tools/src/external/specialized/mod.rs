@@ -9,3 +9,8 @@ pub use hashcat::HashcatTool;
 pub use searchsploit::SearchsploitTool;
 pub use cewl::CewlTool;
 pub use ncat::NcatTool;
+pub mod socat;
+pub mod crunch;
+
+pub use socat::SocatTool;
+pub use crunch::CrunchTool;

@@ -34,11 +34,12 @@ pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
 pub use external::{
     AircrackngTool, AmassTool, ArjunTool, BettercapTool, CewlTool, CommixTool, CrackmapexecTool,
-    DirbTool, DirsearchTool, Enum4linuxTool, EvilwinrmTool, ExiftoolTool, FeroxbusterTool,
-    FfufTool, GobusterTool, HashcatTool, HydraTool, ImpacketPsexecTool, ImpacketSecretsdumpTool,
-    JohnTool, LinpeasTool, MasscanTool, NcatTool, NiktoTool, NmapTool, NucleiTool, ResponderTool,
-    RustScanTool, SearchsploitTool, SqlmapTool, Sublist3rTool, WfuzzTool, WpscanTool,
-    XsstrikeTool,
+    CrunchTool, DirbTool, DirsearchTool, Enum4linuxTool, EvilwinrmTool, ExiftoolTool,
+    FeroxbusterTool, FfufTool, GobusterTool, HakrawlerTool, HashcatTool, HttpprobeTool, HydraTool,
+    ImpacketGetuserspnsTool, ImpacketPsexecTool, ImpacketSecretsdumpTool, ImpacketWmiexecTool,
+    JohnTool, LinpeasTool, MasscanTool, NcatTool, NetdiscoverTool, NiktoTool, NmapTool, NucleiTool,
+    ResponderTool, RustScanTool, SearchsploitTool, SocatTool, SqlmapTool, Sublist3rTool, TsharkTool,
+    WfuzzTool, WpscanTool, XsstrikeTool,
 }; // External tools
 pub use list_files::ListFilesTool;
 pub use network_discover::NetworkDiscoverTool;
@@ -98,6 +99,9 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(DirsearchTool); // Web path scanner
     registry.register(Sublist3rTool); // Subdomain enumeration
     registry.register(AmassTool); // DNS enumeration and network mapping
+    registry.register(XsstrikeTool); // XSS detection
+    registry.register(HakrawlerTool); // Web crawler
+    registry.register(HttpprobeTool); // HTTP/HTTPS probe
 
     // Credential attacks (External tools)
     registry.register(HydraTool); // Login bruteforcer (50+ protocols)
@@ -106,6 +110,8 @@ pub fn create_tool_registry() -> ToolRegistry {
     // Phase 4: Post-Exploitation & Lateral Movement
     registry.register(ImpacketSecretsdumpTool); // Windows credential extraction
     registry.register(ImpacketPsexecTool); // Remote execution via SMB
+    registry.register(ImpacketWmiexecTool); // WMI-based remote execution
+    registry.register(ImpacketGetuserspnsTool); // Kerberoasting attack
     registry.register(LinpeasTool); // Linux privilege escalation enum
     registry.register(CrackmapexecTool); // Network pentesting Swiss army knife
     registry.register(EvilwinrmTool); // WinRM shell
@@ -113,6 +119,8 @@ pub fn create_tool_registry() -> ToolRegistry {
     // Phase 5+: Network exploitation
     registry.register(BettercapTool); // Network attacks and monitoring
     registry.register(ResponderTool); // LLMNR/NBT-NS poisoning
+    registry.register(TsharkTool); // Network protocol analyzer
+    registry.register(NetdiscoverTool); // ARP reconnaissance
 
     // Forensics
     registry.register(ExiftoolTool); // Metadata extraction
@@ -125,7 +133,8 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(SearchsploitTool); // Exploit database search
     registry.register(CewlTool); // Custom wordlist generator
     registry.register(NcatTool); // Netcat reimplementation
-    registry.register(XsstrikeTool); // XSS detection
+    registry.register(SocatTool); // Multipurpose relay tool
+    registry.register(CrunchTool); // Wordlist generator
 
     // Device and system info
     registry.register(DeviceInfoTool);
