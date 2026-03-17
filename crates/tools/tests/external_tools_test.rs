@@ -126,11 +126,12 @@ fn test_tool_count_increased() {
     // Phase 4: +9 tools (post-exploitation)
     // Phase 5+: +12 tools (network, forensics, wireless, specialized)
     // Batch 6: +11 tools (web recon, DNS enum, OSINT)
-    // Total: 73+ tools
+    // Batch 7: +10 tools (crawlers, SSL/TLS, SMB, network)
+    // Total: 83+ tools
     println!("✅ Tool count: {}", count);
     assert!(
-        count >= 70,
-        "Expected at least 70 tools, got {}",
+        count >= 80,
+        "Expected at least 80 tools, got {}",
         count
     );
 }
