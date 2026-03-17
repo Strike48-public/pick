@@ -27,7 +27,7 @@ pub mod write_file;
 use pentest_core::tools::ToolRegistry;
 
 pub use arp_table::ArpTableTool;
-pub use autopwn::{AutoPwnCaptureTool, AutoPwnCrackTool, AutoPwnPlanTool};
+pub use autopwn::{AutoPwnCaptureTool, AutoPwnCrackTool, AutoPwnPlanTool, WebAppToolchain};
 pub use cve_lookup::CveLookupTool;
 pub use default_creds::DefaultCredsTool;
 pub use device_info::DeviceInfoTool;
@@ -196,6 +196,9 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(ReadFileTool);
     registry.register(WriteFileTool);
     registry.register(ListFilesTool);
+
+    // Automated toolchains
+    registry.register(WebAppToolchain::new());
 
     registry
 }
