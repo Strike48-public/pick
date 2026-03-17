@@ -180,7 +180,10 @@ fn parse_wpscan_output(stdout: &str, url: &str) -> Result<Value> {
                     "version": plugin_data.get("version").and_then(|v| v.get("number")).and_then(|v| v.as_str()).unwrap_or("unknown"),
                 });
 
-                if let Some(vulns) = plugin_data.get("vulnerabilities").and_then(|v| v.as_array()) {
+                if let Some(vulns) = plugin_data
+                    .get("vulnerabilities")
+                    .and_then(|v| v.as_array())
+                {
                     plugin_info["vulnerabilities"] = json!(vulns);
                     if !vulns.is_empty() {
                         vulnerabilities.extend_from_slice(vulns);

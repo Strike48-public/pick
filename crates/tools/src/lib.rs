@@ -9,8 +9,8 @@ pub mod cve_lookup;
 pub mod default_creds;
 pub mod device_info;
 pub mod execute_command;
-pub mod lateral_movement;
 pub mod external; // NEW: External tool integrations (BlackArch)
+pub mod lateral_movement;
 pub mod list_files;
 pub mod network_discover;
 pub mod port_scan;
@@ -38,19 +38,19 @@ pub use cve_lookup::CveLookupTool;
 pub use default_creds::DefaultCredsTool;
 pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
-pub use lateral_movement::LateralMovementTool;
 pub use external::{
     AircrackngTool, AmassTool, ArjunTool, ArpScanTool, AssetfinderTool, BettercapTool, CewlTool,
     CommixTool, CrackmapexecTool, CrunchTool, DirbTool, DirsearchTool, DnsenumTool, DnsreconTool,
     Enum4linuxNgTool, Enum4linuxTool, EvilwinrmTool, ExiftoolTool, FeroxbusterTool, FfufDnsTool,
     FfufTool, FierceTool, GauTool, GobusterTool, GospiderTool, HakrawlerTool, HashcatTool,
-    HttpprobeTool, HydraTool, ImpacketGetuserspnsTool, ImpacketPsexecTool,
-    ImpacketSecretsdumpTool, ImpacketWmiexecTool, JohnTool, KatanaTool, LinpeasTool,
-    MasscanFastTool, MasscanTool, NbtscanTool, NcatTool, NetdiscoverTool, NiktoTool, NmapTool,
-    NmapVulnTool, NucleiTool, ParamspiderTool, ResponderTool, RustScanTool, SearchsploitTool,
-    SmbmapTool, SocatTool, SqlmapTool, SslscanTool, SubfinderTool, Sublist3rTool, TestsslTool,
-    TheHarvesterTool, TsharkTool, WaybackurlsTool, WfuzzTool, WhoisTool, WpscanTool, XsstrikeTool,
+    HttpprobeTool, HydraTool, ImpacketGetuserspnsTool, ImpacketPsexecTool, ImpacketSecretsdumpTool,
+    ImpacketWmiexecTool, JohnTool, KatanaTool, LinpeasTool, MasscanFastTool, MasscanTool,
+    NbtscanTool, NcatTool, NetdiscoverTool, NiktoTool, NmapTool, NmapVulnTool, NucleiTool,
+    ParamspiderTool, ResponderTool, RustScanTool, SearchsploitTool, SmbmapTool, SocatTool,
+    SqlmapTool, SslscanTool, SubfinderTool, Sublist3rTool, TestsslTool, TheHarvesterTool,
+    TsharkTool, WaybackurlsTool, WfuzzTool, WhoisTool, WpscanTool, XsstrikeTool,
 }; // External tools
+pub use lateral_movement::LateralMovementTool;
 pub use list_files::ListFilesTool;
 pub use network_discover::NetworkDiscoverTool;
 pub use port_scan::PortScanTool;
@@ -104,7 +104,7 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(GobusterTool); // Directory/DNS/vhost bruteforce
     registry.register(NiktoTool); // Web server vulnerability scanner
     registry.register(DirbTool); // Web content scanner
-    // Phase 3: Advanced web tools
+                                 // Phase 3: Advanced web tools
     registry.register(SqlmapTool); // SQL injection automation
     registry.register(NucleiTool); // Template-based vuln scanner
     registry.register(WpscanTool); // WordPress security scanner

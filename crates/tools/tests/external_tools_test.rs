@@ -13,18 +13,48 @@ fn test_external_tools_registered() {
     }
 
     // Phase 1 tools
-    assert!(tool_names.contains(&"ffuf"), "FFUF tool should be registered");
-    assert!(tool_names.contains(&"gobuster"), "Gobuster tool should be registered");
-    assert!(tool_names.contains(&"nmap"), "Nmap tool should be registered");
+    assert!(
+        tool_names.contains(&"ffuf"),
+        "FFUF tool should be registered"
+    );
+    assert!(
+        tool_names.contains(&"gobuster"),
+        "Gobuster tool should be registered"
+    );
+    assert!(
+        tool_names.contains(&"nmap"),
+        "Nmap tool should be registered"
+    );
 
     // Phase 2 tools
-    assert!(tool_names.contains(&"rustscan"), "RustScan tool should be registered");
-    assert!(tool_names.contains(&"masscan"), "Masscan tool should be registered");
-    assert!(tool_names.contains(&"nikto"), "Nikto tool should be registered");
-    assert!(tool_names.contains(&"dirb"), "Dirb tool should be registered");
-    assert!(tool_names.contains(&"enum4linux"), "Enum4linux tool should be registered");
-    assert!(tool_names.contains(&"hydra"), "Hydra tool should be registered");
-    assert!(tool_names.contains(&"john"), "John tool should be registered");
+    assert!(
+        tool_names.contains(&"rustscan"),
+        "RustScan tool should be registered"
+    );
+    assert!(
+        tool_names.contains(&"masscan"),
+        "Masscan tool should be registered"
+    );
+    assert!(
+        tool_names.contains(&"nikto"),
+        "Nikto tool should be registered"
+    );
+    assert!(
+        tool_names.contains(&"dirb"),
+        "Dirb tool should be registered"
+    );
+    assert!(
+        tool_names.contains(&"enum4linux"),
+        "Enum4linux tool should be registered"
+    );
+    assert!(
+        tool_names.contains(&"hydra"),
+        "Hydra tool should be registered"
+    );
+    assert!(
+        tool_names.contains(&"john"),
+        "John tool should be registered"
+    );
 
     println!("✅ All 10 external tools are registered!");
 }
@@ -106,10 +136,7 @@ fn test_nmap_schema() {
         .iter()
         .find(|p| p.name == "scan_type")
         .expect("scan_type parameter should exist");
-    assert!(
-        !scan_type_param.required,
-        "scan_type should be optional"
-    );
+    assert!(!scan_type_param.required, "scan_type should be optional");
 
     println!("✅ Nmap schema valid: {} params", schema.params.len());
 }
@@ -129,9 +156,5 @@ fn test_tool_count_increased() {
     // Batch 7: +10 tools (crawlers, SSL/TLS, SMB, network)
     // Total: 83+ tools
     println!("✅ Tool count: {}", count);
-    assert!(
-        count >= 80,
-        "Expected at least 80 tools, got {}",
-        count
-    );
+    assert!(count >= 80, "Expected at least 80 tools, got {}", count);
 }

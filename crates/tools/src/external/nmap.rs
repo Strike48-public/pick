@@ -6,8 +6,7 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult,
-    ToolSchema,
+    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
@@ -134,14 +133,15 @@ impl PentestTool for NmapTool {
 
             // Scan type
             match scan_type.as_str() {
-                "syn" => builder = builder.flag("-sS"),      // SYN stealth scan (requires root)
-                "connect" => builder = builder.flag("-sT"),  // TCP connect scan
-                "udp" => builder = builder.flag("-sU"),      // UDP scan
-                "ping" => builder = builder.flag("-sn"),     // Ping scan only
+                "syn" => builder = builder.flag("-sS"), // SYN stealth scan (requires root)
+                "connect" => builder = builder.flag("-sT"), // TCP connect scan
+                "udp" => builder = builder.flag("-sU"), // UDP scan
+                "ping" => builder = builder.flag("-sn"), // Ping scan only
                 _ => {
-                    return Err(pentest_core::error::Error::InvalidParams(
-                        format!("Invalid scan_type: {}", scan_type),
-                    ))
+                    return Err(pentest_core::error::Error::InvalidParams(format!(
+                        "Invalid scan_type: {}",
+                        scan_type
+                    )))
                 }
             }
 
@@ -149,7 +149,7 @@ impl PentestTool for NmapTool {
             if scan_type != "ping" {
                 match ports.as_str() {
                     "top100" => builder = builder.arg("--top-ports", "100"),
-                    "top1000" => {}, // Default, no flag needed
+                    "top1000" => {} // Default, no flag needed
                     "all" => builder = builder.flag("-p-"),
                     _ => builder = builder.arg("-p", &ports),
                 }
@@ -249,9 +249,9 @@ fn parse_host_xml(xml: &str) -> Value {
 
     // Extract open ports
     let mut ports = Vec::new();
-    let port_re = regex::Regex::new(
-        r#"<port\s+protocol="([^"]+)"\s+portid="([^"]+)"[^>]*>(.*?)</port>"#
-    ).unwrap();
+    let port_re =
+        regex::Regex::new(r#"<port\s+protocol="([^"]+)"\s+portid="([^"]+)"[^>]*>(.*?)</port>"#)
+            .unwrap();
 
     for port_match in port_re.captures_iter(xml) {
         let protocol = port_match.get(1).map(|m| m.as_str()).unwrap_or("");

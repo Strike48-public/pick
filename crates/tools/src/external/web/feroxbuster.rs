@@ -117,11 +117,19 @@ impl PentestTool for FeroxbusterTool {
                 ));
             }
 
-            let wordlist = param_str_or(&params, "wordlist", "/usr/share/seclists/Discovery/Web-Content/common.txt");
+            let wordlist = param_str_or(
+                &params,
+                "wordlist",
+                "/usr/share/seclists/Discovery/Web-Content/common.txt",
+            );
             let extensions = param_str_opt(&params, "extensions");
             let threads = crate::util::param_u64(&params, "threads", 50);
             let depth = crate::util::param_u64(&params, "depth", 4);
-            let status_codes = param_str_or(&params, "status_codes", "200,204,301,302,307,308,401,403,405");
+            let status_codes = param_str_or(
+                &params,
+                "status_codes",
+                "200,204,301,302,307,308,401,403,405",
+            );
             let filter_status = param_str_opt(&params, "filter_status");
             let timeout = crate::util::param_u64(&params, "timeout", 7);
             let quiet = param_bool(&params, "quiet", true);

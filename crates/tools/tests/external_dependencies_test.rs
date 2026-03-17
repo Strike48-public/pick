@@ -8,12 +8,21 @@ fn test_external_tools_declare_dependencies() {
 
     // External tools that should have dependencies
     let external_tools = vec![
-        "nmap", "ffuf", "gobuster", "rustscan", "masscan",
-        "nikto", "dirb", "enum4linux", "hydra", "john"
+        "nmap",
+        "ffuf",
+        "gobuster",
+        "rustscan",
+        "masscan",
+        "nikto",
+        "dirb",
+        "enum4linux",
+        "hydra",
+        "john",
     ];
 
     for tool_name in &external_tools {
-        let tool = registry.get(tool_name)
+        let tool = registry
+            .get(tool_name)
             .unwrap_or_else(|| panic!("{} tool should be registered", tool_name));
 
         let schema = tool.schema();
@@ -48,10 +57,16 @@ fn test_external_tools_declare_dependencies() {
             tool_name
         );
 
-        println!("✅ {} declares dependency: {} ({})", tool_name, dep.binary_name, dep.description);
+        println!(
+            "✅ {} declares dependency: {} ({})",
+            tool_name, dep.binary_name, dep.description
+        );
     }
 
-    println!("\n✅ All {} external tools properly declare their dependencies!", external_tools.len());
+    println!(
+        "\n✅ All {} external tools properly declare their dependencies!",
+        external_tools.len()
+    );
 }
 
 #[test]
@@ -89,7 +104,8 @@ fn test_dependency_json_serialization() {
         "JSON schema should include external_dependencies field"
     );
 
-    let deps = json_schema["external_dependencies"].as_array()
+    let deps = json_schema["external_dependencies"]
+        .as_array()
         .expect("external_dependencies should be an array");
 
     assert!(!deps.is_empty(), "nmap should have at least one dependency");
@@ -100,5 +116,8 @@ fn test_dependency_json_serialization() {
     assert!(!dep["description"].as_str().unwrap().is_empty());
 
     println!("✅ External dependencies properly serialize to JSON");
-    println!("JSON output: {}", serde_json::to_string_pretty(&json_schema).unwrap());
+    println!(
+        "JSON output: {}",
+        serde_json::to_string_pretty(&json_schema).unwrap()
+    );
 }

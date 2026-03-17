@@ -30,11 +30,21 @@ impl PentestTool for XsstrikeTool {
             .external_dependency(ExternalDependency::new(
                 "xsstrike",
                 "xsstrike",
-                "XSS detection tool (Python-based)"
+                "XSS detection tool (Python-based)",
             ))
             .param(ToolParam::required("url", ParamType::String, "Target URL"))
-            .param(ToolParam::optional("data", ParamType::String, "POST data", json!("")))
-            .param(ToolParam::optional("timeout", ParamType::Integer, "Timeout in seconds", json!(300)))
+            .param(ToolParam::optional(
+                "data",
+                ParamType::String,
+                "POST data",
+                json!(""),
+            ))
+            .param(ToolParam::optional(
+                "timeout",
+                ParamType::Integer,
+                "Timeout in seconds",
+                json!(300),
+            ))
             .platforms(vec![Platform::Desktop, Platform::Tui])
     }
 
@@ -49,7 +59,9 @@ impl PentestTool for XsstrikeTool {
 
             let url = param_str_or(&params, "url", "");
             if url.is_empty() {
-                return Err(pentest_core::error::Error::InvalidParams("url required".into()));
+                return Err(pentest_core::error::Error::InvalidParams(
+                    "url required".into(),
+                ));
             }
 
             let data = param_str_opt(&params, "data");
@@ -64,7 +76,9 @@ impl PentestTool for XsstrikeTool {
 
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            let result = platform.execute_command("xsstrike", &args_refs, Duration::from_secs(timeout_secs)).await?;
+            let result = platform
+                .execute_command("xsstrike", &args_refs, Duration::from_secs(timeout_secs))
+                .await?;
 
             let vulnerable = result.stdout.contains("Vulnerable") || result.stdout.contains("XSS");
             Ok(json!({

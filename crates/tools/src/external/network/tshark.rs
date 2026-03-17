@@ -27,12 +27,41 @@ impl PentestTool for TsharkTool {
 
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new("tshark", "wireshark-cli", "Packet analyzer"))
-            .param(ToolParam::optional("interface", ParamType::String, "Network interface", json!("")))
-            .param(ToolParam::optional("capture_file", ParamType::String, "Read from capture file", json!("")))
-            .param(ToolParam::optional("filter", ParamType::String, "Display filter", json!("")))
-            .param(ToolParam::optional("count", ParamType::Integer, "Packet count", json!(100)))
-            .param(ToolParam::optional("timeout", ParamType::Integer, "Timeout", json!(60)))
+            .external_dependency(ExternalDependency::new(
+                "tshark",
+                "wireshark-cli",
+                "Packet analyzer",
+            ))
+            .param(ToolParam::optional(
+                "interface",
+                ParamType::String,
+                "Network interface",
+                json!(""),
+            ))
+            .param(ToolParam::optional(
+                "capture_file",
+                ParamType::String,
+                "Read from capture file",
+                json!(""),
+            ))
+            .param(ToolParam::optional(
+                "filter",
+                ParamType::String,
+                "Display filter",
+                json!(""),
+            ))
+            .param(ToolParam::optional(
+                "count",
+                ParamType::Integer,
+                "Packet count",
+                json!(100),
+            ))
+            .param(ToolParam::optional(
+                "timeout",
+                ParamType::Integer,
+                "Timeout",
+                json!(60),
+            ))
             .platforms(vec![Platform::Desktop, Platform::Tui])
     }
 
@@ -73,7 +102,9 @@ impl PentestTool for TsharkTool {
 
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            let result = platform.execute_command("tshark", &args_refs, Duration::from_secs(timeout_secs)).await?;
+            let result = platform
+                .execute_command("tshark", &args_refs, Duration::from_secs(timeout_secs))
+                .await?;
 
             Ok(json!({"packets": result.stdout, "success": result.exit_code == 0}))
         })

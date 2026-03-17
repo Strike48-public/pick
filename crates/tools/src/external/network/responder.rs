@@ -31,7 +31,7 @@ impl PentestTool for ResponderTool {
             .external_dependency(ExternalDependency::new(
                 "responder",
                 "responder",
-                "Network poisoning tool (Python-based)"
+                "Network poisoning tool (Python-based)",
             ))
             .param(ToolParam::required(
                 "interface",
@@ -93,8 +93,7 @@ impl PentestTool for ResponderTool {
             let fingerprint = param_bool(&params, "fingerprint", false);
             let timeout_secs = crate::util::param_u64(&params, "timeout", 600);
 
-            let mut builder = CommandBuilder::new()
-                .arg("-I", &interface);
+            let mut builder = CommandBuilder::new().arg("-I", &interface);
 
             if analyze {
                 builder = builder.flag("-A");

@@ -31,7 +31,7 @@ impl PentestTool for CommixTool {
             .external_dependency(ExternalDependency::new(
                 "commix",
                 "commix",
-                "Command injection exploitation tool (Python-based)"
+                "Command injection exploitation tool (Python-based)",
             ))
             .param(ToolParam::required(
                 "url",
@@ -120,7 +120,8 @@ impl PentestTool for CommixTool {
                 .execute_command("commix", &args_refs, Duration::from_secs(timeout_secs))
                 .await?;
 
-            let vulnerable = result.stdout.contains("is vulnerable") || result.stdout.contains("injectable");
+            let vulnerable =
+                result.stdout.contains("is vulnerable") || result.stdout.contains("injectable");
 
             Ok(json!({
                 "url": url,

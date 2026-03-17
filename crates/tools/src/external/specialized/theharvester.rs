@@ -71,9 +71,7 @@ impl PentestTool for TheHarvesterTool {
             let source = param_str_or(&params, "source", "all");
             let timeout_secs = crate::util::param_u64(&params, "timeout", 300);
 
-            let builder = CommandBuilder::new()
-                .arg("-d", &domain)
-                .arg("-b", &source);
+            let builder = CommandBuilder::new().arg("-d", &domain).arg("-b", &source);
 
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
