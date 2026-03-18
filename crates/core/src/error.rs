@@ -50,6 +50,9 @@ pub enum Error {
     #[error("matrix: {0}")]
     Matrix(String),
 
+    #[error("Serialization error: {0}")]
+    Serialization(String),
+
     #[error("Unknown error: {0}")]
     Unknown(String),
 }

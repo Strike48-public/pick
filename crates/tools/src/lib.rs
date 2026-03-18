@@ -13,6 +13,7 @@ pub mod external; // NEW: External tool integrations (BlackArch)
 pub mod lateral_movement;
 pub mod list_files;
 pub mod network_discover;
+pub mod parsers;
 pub mod port_scan;
 pub mod read_file;
 pub mod screenshot;
@@ -204,4 +205,9 @@ pub fn tool_names() -> Vec<String> {
         .into_iter()
         .map(String::from)
         .collect()
+}
+
+/// Create an output parser registry with all available parsers
+pub fn create_parser_registry() -> parsers::OutputParserRegistry {
+    parsers::OutputParserRegistry::new()
 }

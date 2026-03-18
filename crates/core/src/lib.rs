@@ -9,6 +9,7 @@ pub mod error;
 pub mod file_browser;
 pub mod logging;
 pub mod matrix;
+pub mod output_parser;
 pub mod rendering;
 pub mod settings;
 pub mod state;
