@@ -7,8 +7,10 @@ pub mod autopwn;
 pub mod cve_lookup;
 pub mod default_creds;
 pub mod device_info;
+pub mod credential_harvest;
 pub mod execute_command;
 pub mod external; // NEW: External tool integrations (BlackArch)
+pub mod lateral_movement;
 pub mod list_files;
 pub mod network_discover;
 pub mod port_scan;
@@ -27,7 +29,11 @@ pub mod write_file;
 use pentest_core::tools::ToolRegistry;
 
 pub use arp_table::ArpTableTool;
-pub use autopwn::{AutoPwnCaptureTool, AutoPwnCrackTool, AutoPwnPlanTool, WebAppToolchain};
+pub use autopwn::{
+    AutoPwnCaptureTool, AutoPwnCrackTool, AutoPwnNetworkPlanTool, AutoPwnOrchestratorTool,
+    AutoPwnPlanTool, WebAppToolchain,
+};
+pub use credential_harvest::CredentialHarvestTool;
 pub use cve_lookup::CveLookupTool;
 pub use default_creds::DefaultCredsTool;
 pub use device_info::DeviceInfoTool;
@@ -47,6 +53,7 @@ pub use external::{
     TheHarvesterTool, TsharkTool, UnicornscanTool, Wafw00fTool, WaybackurlsTool, WfuzzTool,
     WhatwebTool, WhoisTool, WpscanTool, XsstrikeTool,
 }; // External tools
+pub use lateral_movement::LateralMovementTool;
 pub use list_files::ListFilesTool;
 pub use network_discover::NetworkDiscoverTool;
 pub use port_scan::PortScanTool;

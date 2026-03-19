@@ -6,6 +6,8 @@
 
 mod capture;
 mod crack;
+mod network_plan;
+mod orchestrator;
 mod strategy;
 mod types;
 mod vendor_intel;
@@ -15,6 +17,8 @@ pub mod toolchain;
 
 pub use capture::AutoPwnCaptureTool;
 pub use crack::AutoPwnCrackTool;
+pub use network_plan::AutoPwnNetworkPlanTool;
+pub use orchestrator::AutoPwnOrchestratorTool;
 pub use toolchain::WebAppToolchain;
 pub use types::*;
 
