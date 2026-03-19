@@ -4,10 +4,10 @@
 
 pub mod arp_table;
 pub mod autopwn;
+pub mod credential_harvest;
 pub mod cve_lookup;
 pub mod default_creds;
 pub mod device_info;
-pub mod credential_harvest;
 pub mod execute_command;
 pub mod external; // NEW: External tool integrations (BlackArch)
 pub mod lateral_movement;
