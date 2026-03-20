@@ -1,5 +1,7 @@
 use dioxus::prelude::*;
 
+use super::session_uptime::SessionUptime;
+
 /// A hint displayed in the status bar (e.g., "? Help").
 #[derive(Clone, PartialEq)]
 pub struct ShortcutHint {
@@ -40,8 +42,10 @@ pub fn StatusBar(props: StatusBarProps) -> Element {
             // Left side: status or error message
             span { class: "{msg_class}", "{message}" }
 
-            // Right side: keyboard shortcut hints
+            // Right side: session uptime + keyboard shortcut hints
             div { class: "status-bar-hints",
+                SessionUptime {}
+
                 for hint in props.shortcut_hints.iter() {
                     span { class: "status-bar-hint",
                         kbd { "{hint.keys}" }

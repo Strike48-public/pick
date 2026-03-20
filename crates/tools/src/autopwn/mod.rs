@@ -1,9 +1,8 @@
-//! Automated WiFi penetration testing tools
+//! Automated penetration testing tools
 //!
-//! This module provides tools for automated WiFi network attacks:
-//! - `autopwn_plan`: Analyze target and recommend attack strategy
-//! - `autopwn_capture`: Capture handshake or IVs
-//! - `autopwn_crack`: Crack captured data
+//! This module provides tools for automated penetration testing:
+//! - WiFi attacks: `autopwn_plan`, `autopwn_capture`, `autopwn_crack`
+//! - Toolchain execution: `autopwn_webapp` for automated web app assessments
 
 mod capture;
 mod crack;
@@ -14,10 +13,13 @@ mod types;
 mod vendor_intel;
 mod wordlist;
 
+pub mod toolchain;
+
 pub use capture::AutoPwnCaptureTool;
 pub use crack::AutoPwnCrackTool;
 pub use network_plan::AutoPwnNetworkPlanTool;
 pub use orchestrator::AutoPwnOrchestratorTool;
+pub use toolchain::WebAppToolchain;
 pub use types::*;
 
 use async_trait::async_trait;

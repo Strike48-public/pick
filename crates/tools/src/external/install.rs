@@ -2,11 +2,17 @@
 //!
 //! Provides utilities for ensuring external tools are available in the sandbox
 //! environment, installing them via pacman if necessary.
+//!
+//! When sandbox is disabled (DISABLE_SANDBOX=true), assumes tools are already
+//! installed on the host system and skips pacman installation.
 
 use pentest_core::error::{Error, Result};
 use pentest_platform::CommandExec;
 use std::time::Duration;
 use tracing::{info, warn};
+
+#[cfg(not(target_os = "android"))]
+use pentest_platform::is_sandbox_enabled;
 
 /// Check if a tool binary is available in the sandbox, install if not.
 ///
@@ -44,7 +50,22 @@ pub async fn ensure_tool_installed(
         return Ok(());
     }
 
-    // Install via pacman
+    // If sandbox is disabled, tools should be pre-installed on the host
+    #[cfg(not(target_os = "android"))]
+    {
+        if !is_sandbox_enabled() {
+            warn!(
+                "Tool '{}' not found on host system (sandbox disabled). Please install it manually: sudo apt-get install {}",
+                binary_name, binary_name
+            );
+            return Err(Error::ToolExecution(format!(
+                "Tool '{}' not found. When sandbox is disabled, tools must be pre-installed on the host system.",
+                binary_name
+            )));
+        }
+    }
+
+    // Install via pacman (only when sandbox is enabled)
     info!(
         "Installing '{}' via pacman package '{}'...",
         binary_name, pacman_package
@@ -100,6 +121,18 @@ pub async fn check_tools_installed(
 pub async fn install_tools_batch(platform: &impl CommandExec, packages: &[&str]) -> Result<()> {
     if packages.is_empty() {
         return Ok(());
+    }
+
+    // If sandbox is disabled, skip batch installation
+    #[cfg(not(target_os = "android"))]
+    {
+        if !is_sandbox_enabled() {
+            warn!(
+                "Sandbox disabled - skipping batch install of {} packages (tools should be pre-installed on host)",
+                packages.len()
+            );
+            return Ok(());
+        }
     }
 
     info!("Batch installing {} packages...", packages.len());

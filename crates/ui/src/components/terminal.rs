@@ -3,15 +3,20 @@
 use dioxus::prelude::*;
 use pentest_core::terminal::{LogLevel, TerminalLine};
 
-/// Terminal output component
+/// Terminal output component with auto-scroll to bottom
+///
+/// Lines are displayed in chronological order (oldest first, newest last).
+/// Auto-scrolls to bottom when new lines are added so the latest logs are visible.
 #[component]
 pub fn Terminal(lines: Vec<TerminalLine>) -> Element {
     let mut line_count = use_signal(|| 0usize);
 
+    // Track line count changes to trigger scroll
     if lines.len() != *line_count.read() {
         line_count.set(lines.len());
     }
 
+    // Auto-scroll to bottom when lines change
     use_effect(move || {
         let _count = *line_count.read();
         spawn(async move {

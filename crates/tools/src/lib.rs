@@ -31,7 +31,7 @@ use pentest_core::tools::ToolRegistry;
 pub use arp_table::ArpTableTool;
 pub use autopwn::{
     AutoPwnCaptureTool, AutoPwnCrackTool, AutoPwnNetworkPlanTool, AutoPwnOrchestratorTool,
-    AutoPwnPlanTool,
+    AutoPwnPlanTool, WebAppToolchain,
 };
 pub use credential_harvest::CredentialHarvestTool;
 pub use cve_lookup::CveLookupTool;
@@ -39,16 +39,19 @@ pub use default_creds::DefaultCredsTool;
 pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
 pub use external::{
-    AircrackngTool, AmassTool, ArjunTool, ArpScanTool, AssetfinderTool, BettercapTool, CewlTool,
-    CommixTool, CrackmapexecTool, CrunchTool, DirbTool, DirsearchTool, DnsenumTool, DnsreconTool,
-    Enum4linuxNgTool, Enum4linuxTool, EvilwinrmTool, ExiftoolTool, FeroxbusterTool, FfufDnsTool,
-    FfufTool, FierceTool, GauTool, GobusterTool, GospiderTool, HakrawlerTool, HashcatTool,
+    AircrackngTool, AmassTool, ArjunTool, ArpScanTool, ArpingTool, AssetfinderTool, BettercapTool,
+    CewlTool, ChangemeTool, CommixTool, CrackmapexecTool, CrunchTool, DalfoxTool, DirbTool,
+    DirsearchTool, DnsenumTool, DnsreconTool, DroopescanTool, Enum4linuxNgTool, Enum4linuxTool,
+    EvilwinrmTool, ExiftoolTool, EyewitnessTool, FeroxbusterTool, FfufDnsTool, FfufTool,
+    FierceTool, GauTool, GobusterTool, GospiderTool, HakrawlerTool, HashcatTool, Hping3Tool,
     HttpprobeTool, HydraTool, ImpacketGetuserspnsTool, ImpacketPsexecTool, ImpacketSecretsdumpTool,
-    ImpacketWmiexecTool, JohnTool, KatanaTool, LinpeasTool, MasscanFastTool, MasscanTool,
-    NbtscanTool, NcatTool, NetdiscoverTool, NiktoTool, NmapTool, NmapVulnTool, NucleiTool,
-    ParamspiderTool, ResponderTool, RustScanTool, SearchsploitTool, SmbmapTool, SocatTool,
-    SqlmapTool, SslscanTool, SubfinderTool, Sublist3rTool, TestsslTool, TheHarvesterTool,
-    TsharkTool, WaybackurlsTool, WfuzzTool, WhoisTool, WpscanTool, XsstrikeTool,
+    ImpacketWmiexecTool, JohnTool, JoomscanTool, KatanaTool, LdapsearchTool, LinpeasTool,
+    MasscanFastTool, MasscanTool, NbtscanTool, NcatTool, NetdiscoverTool, NiktoNgTool, NiktoTool,
+    NmapTool, NmapVulnTool, NucleiTool, OnesixtyoneTool, ParamspiderTool, ReconNgTool,
+    ResponderTool, RustScanTool, SearchsploitTool, SkipfishTool, SmbmapTool, SnmpwalkTool,
+    SocatTool, SpiderfootTool, SqlmapTool, SslscanTool, SubfinderTool, Sublist3rTool, TestsslTool,
+    TheHarvesterTool, TsharkTool, UnicornscanTool, Wafw00fTool, WaybackurlsTool, WfuzzTool,
+    WhatwebTool, WhoisTool, WpscanTool, XsstrikeTool,
 }; // External tools
 pub use lateral_movement::LateralMovementTool;
 pub use list_files::ListFilesTool;
@@ -85,12 +88,6 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(AutoPwnCaptureTool);
     registry.register(AutoPwnCrackTool);
 
-    // Network autopwn (fallback when WiFi pentest unavailable)
-    registry.register(AutoPwnNetworkPlanTool);
-
-    // Intelligent autopwn orchestrator (detects hardware and chooses strategy)
-    registry.register(AutoPwnOrchestratorTool);
-
     // Vulnerability assessment
     registry.register(ServiceBannerTool);
     registry.register(CveLookupTool);
@@ -126,14 +123,15 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(GospiderTool); // Fast web spider
     registry.register(KatanaTool); // Next-gen crawler
     registry.register(ParamspiderTool); // Parameter discovery
+    registry.register(DalfoxTool); // XSS scanner
+    registry.register(JoomscanTool); // Joomla scanner
+    registry.register(DroopescanTool); // CMS scanner
+    registry.register(WhatwebTool); // Technology identifier
+    registry.register(Wafw00fTool); // WAF detector
 
     // Credential attacks (External tools)
     registry.register(HydraTool); // Login bruteforcer (50+ protocols)
     registry.register(JohnTool); // Password cracker
-
-    // Post-exploitation
-    registry.register(CredentialHarvestTool);
-    registry.register(LateralMovementTool);
 
     // Phase 4: Post-Exploitation & Lateral Movement
     registry.register(ImpacketSecretsdumpTool); // Windows credential extraction
@@ -153,6 +151,9 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(NmapVulnTool); // Nmap vulnerability scanning
     registry.register(ArpScanTool); // ARP scanner
     registry.register(NbtscanTool); // NetBIOS scanner
+    registry.register(Hping3Tool); // Packet assembler
+    registry.register(ArpingTool); // ARP ping
+    registry.register(UnicornscanTool); // Network stimulus tool
 
     // Forensics
     registry.register(ExiftoolTool); // Metadata extraction
@@ -176,6 +177,15 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(TestsslTool); // TLS/SSL testing
     registry.register(Enum4linuxNgTool); // Next-gen SMB enum
     registry.register(SmbmapTool); // SMB share enumeration
+    registry.register(LdapsearchTool); // LDAP query
+    registry.register(SnmpwalkTool); // SNMP enumeration
+    registry.register(OnesixtyoneTool); // SNMP scanner
+    registry.register(ChangemeTool); // Default credential scanner
+    registry.register(EyewitnessTool); // Screenshot tool
+    registry.register(NiktoNgTool); // Web scanner (extended)
+    registry.register(SkipfishTool); // Active web recon
+    registry.register(ReconNgTool); // Recon framework
+    registry.register(SpiderfootTool); // Automated OSINT
 
     // Device and system info
     registry.register(DeviceInfoTool);
@@ -193,6 +203,9 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(ReadFileTool);
     registry.register(WriteFileTool);
     registry.register(ListFilesTool);
+
+    // Automated toolchains
+    registry.register(WebAppToolchain::new());
 
     registry
 }

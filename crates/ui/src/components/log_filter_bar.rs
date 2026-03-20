@@ -9,6 +9,7 @@ use std::collections::HashSet;
 pub fn LogFilterBar(
     lines: Signal<Vec<TerminalLine>>,
     filtered_lines: Signal<Vec<TerminalLine>>,
+    #[props(default)] on_clear: Option<EventHandler<()>>,
 ) -> Element {
     // Track which log levels are enabled (all enabled by default)
     let mut enabled_levels = use_signal(|| {
@@ -78,7 +79,7 @@ pub fn LogFilterBar(
         counts
     });
 
-    // Filter lines based on enabled levels
+    // Filter lines based on enabled levels (chronological order - oldest first, newest last)
     use_effect(move || {
         let enabled = enabled_levels.read();
         let all_lines = lines.read();
@@ -158,12 +159,13 @@ pub fn LogFilterBar(
         style { {include_str!("css/log_filter_bar.css")} }
 
         div { class: "log-filter-bar",
-            button {
-                class: if all_enabled { "log-filter-btn all active" } else { "log-filter-btn all" },
-                onclick: toggle_all,
-                span { class: "log-filter-label", "All" }
-                span { class: "log-filter-count", "({total_count})" }
-            }
+            div { class: "log-filter-group",
+                button {
+                    class: if all_enabled { "log-filter-btn all active" } else { "log-filter-btn all" },
+                    onclick: toggle_all,
+                    span { class: "log-filter-label", "All" }
+                    span { class: "log-filter-count", "({total_count})" }
+                }
 
             button {
                 class: if debug_enabled { "log-filter-btn debug active" } else { "log-filter-btn debug" },
@@ -198,6 +200,16 @@ pub fn LogFilterBar(
                 onclick: move |_| toggle_level(LogLevel::Error),
                 span { class: "log-filter-label", "Error" }
                 span { class: "log-filter-count", "({error_count})" }
+            }
+            }
+
+            if let Some(clear_handler) = on_clear {
+                button {
+                    class: "log-filter-btn clear",
+                    onclick: move |_| clear_handler.call(()),
+                    title: "Clear all logs",
+                    "Clear"
+                }
             }
         }
     }
