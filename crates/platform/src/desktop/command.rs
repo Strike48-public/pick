@@ -16,7 +16,23 @@ use tokio::time::timeout;
 
 /// Global flag to control whether to use sandbox for command execution.
 /// When false, commands execute directly on the host system.
+/// Can be disabled via DISABLE_SANDBOX=true environment variable.
 static USE_SANDBOX: AtomicBool = AtomicBool::new(true);
+
+/// Initialize sandbox state from environment on first access
+fn init_sandbox_from_env() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+
+    INIT.call_once(|| {
+        if let Ok(val) = std::env::var("DISABLE_SANDBOX") {
+            if val.to_lowercase() == "true" || val == "1" {
+                USE_SANDBOX.store(false, Ordering::SeqCst);
+                tracing::info!("Sandbox disabled via DISABLE_SANDBOX environment variable");
+            }
+        }
+    });
+}
 
 /// Set whether to use sandbox for command execution.
 /// Call this based on the user's ShellMode setting.
@@ -30,6 +46,7 @@ pub fn set_use_sandbox(use_sandbox: bool) {
 
 /// Check if sandbox is enabled
 pub fn is_sandbox_enabled() -> bool {
+    init_sandbox_from_env();
     USE_SANDBOX.load(Ordering::SeqCst)
 }
 

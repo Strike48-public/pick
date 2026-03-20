@@ -87,7 +87,7 @@ pub struct WorkspacePagesProps {
 pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
     let page = props.active_page;
     let workspace = props.workspace;
-    let terminal_lines = props.terminal_lines;
+    let mut terminal_lines = props.terminal_lines;
     let on_open_chat = props.on_open_chat;
     let on_open_shell = props.on_open_shell;
 
@@ -165,6 +165,9 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
                     LogFilterBar {
                         lines: terminal_lines,
                         filtered_lines,
+                        on_clear: move |_| {
+                            terminal_lines.write().clear();
+                        }
                     }
                     div { class: "flex-scroll",
                         Terminal { lines: filtered_lines.read().clone() }

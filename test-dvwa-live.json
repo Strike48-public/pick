@@ -1,0 +1,9 @@
+{
+  "tool": "autopwn_webapp",
+  "params": {
+    "target": "http://localhost:8080",
+    "execution_mode": "autonomous",
+    "attack_profile": "normal",
+    "session_id": "dvwa_test_2026"
+  }
+}

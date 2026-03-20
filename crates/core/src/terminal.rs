@@ -109,7 +109,7 @@ impl TerminalLine {
 
     /// Format the line for display
     pub fn format(&self) -> String {
-        let time = self.timestamp.format("%H:%M:%S");
+        let time = self.timestamp.format("%Y-%m-%d %H:%M:%S");
         match &self.source {
             Some(src) => format!(
                 "{} {} [{}] {}",
