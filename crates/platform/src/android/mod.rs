@@ -13,7 +13,7 @@ mod wifi;
 
 use crate::traits::*;
 use async_trait::async_trait;
-use pentest_core::error::Result;
+use pentest_core::error::{Error, Result};
 use std::time::Duration;
 
 /// Android application home directory inside the app's private storage.
