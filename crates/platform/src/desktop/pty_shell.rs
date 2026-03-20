@@ -858,7 +858,7 @@ mod tests {
         println!("\n=== Test 1: Simple command ===");
         let output = Command::new("bwrap")
             .args(&bwrap_args)
-            .args(&["/bin/bash", "-c", "echo BWRAP_WORKS"])
+            .args(["/bin/bash", "-c", "echo BWRAP_WORKS"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -874,7 +874,7 @@ mod tests {
         println!("\n=== Test 2: Pacman version ===");
         let output = Command::new("bwrap")
             .args(&bwrap_args)
-            .args(&["/bin/bash", "-c", "pacman --version 2>&1"])
+            .args(["/bin/bash", "-c", "pacman --version 2>&1"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -898,7 +898,7 @@ mod tests {
         println!("\n=== Test 3: Check /var is writable ===");
         let output = Command::new("bwrap")
             .args(&bwrap_args)
-            .args(&["/bin/bash", "-c", "touch /var/test_writable && rm /var/test_writable && echo VAR_WRITABLE || echo VAR_READONLY"])
+            .args(["/bin/bash", "-c", "touch /var/test_writable && rm /var/test_writable && echo VAR_WRITABLE || echo VAR_READONLY"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -914,7 +914,7 @@ mod tests {
         println!("\n=== Test 4: Install which package ===");
         let output = Command::new("bwrap")
             .args(&bwrap_args)
-            .args(&["/bin/bash", "-c", "pacman -S --noconfirm --needed which 2>&1 && echo INSTALL_SUCCESS || echo INSTALL_FAILED"])
+            .args(["/bin/bash", "-c", "pacman -S --noconfirm --needed which 2>&1 && echo INSTALL_SUCCESS || echo INSTALL_FAILED"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -942,7 +942,7 @@ mod tests {
         println!("\n=== Test 5: Verify which is in package database ===");
         let output = Command::new("bwrap")
             .args(&bwrap_args)
-            .args(&[
+            .args([
                 "/bin/bash",
                 "-c",
                 "pacman -Q which 2>&1 && echo PACKAGE_FOUND || echo PACKAGE_NOT_FOUND",

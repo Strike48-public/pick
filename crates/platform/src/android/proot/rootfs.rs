@@ -5,7 +5,7 @@
 
 use pentest_core::error::{Error, Result};
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
@@ -327,7 +327,7 @@ pub async fn ensure_rootfs_with_progress(
                     Error::ToolExecution(format!("unpack {}: {}", stripped.display(), e))
                 })?;
                 count += 1;
-                if count % 5000 == 0 {
+                if count.is_multiple_of(5000) {
                     tracing::info!("Extracted {} files...", count);
                     if let Some(ref tx) = extract_progress {
                         let _ = tx.blocking_send(format!("\r\x1b[K  Extracted {} files...", count));

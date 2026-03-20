@@ -112,7 +112,7 @@ fn create_pty_pair(cols: u16, rows: u16) -> Result<(RawFd, RawFd)> {
 /// Build the proot argument list: root emulation, bind mounts, working
 /// directory, and the login shell invocation.
 fn build_proot_args(
-    proot: &Path,
+    _proot: &Path,
     rootfs: &Path,
     _data_dir: &Path,
     working_dir: &str,
@@ -185,6 +185,7 @@ impl PtyShell {
     /// Spawn a new interactive shell.
     /// - ShellMode::Proot: Runs inside the proot BlackArch environment
     /// - ShellMode::Native: Runs directly on the Android device (limited functionality)
+    ///
     /// If a progress sender is provided, setup status messages are sent through it.
     /// If `cwd` is provided, the workspace will be bind-mounted to `/workspace` inside proot.
     pub async fn spawn(
