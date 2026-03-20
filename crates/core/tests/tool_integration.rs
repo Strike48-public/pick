@@ -596,7 +596,7 @@ fn required_params_in_required_array() {
         // required array is nested inside "parameters"
         let params_schema = json_schema
             .get("parameters")
-            .expect(&format!("tool '{}': missing parameters key", schema.name));
+            .unwrap_or_else(|| panic!("tool '{}': missing parameters key", schema.name));
         let required: Vec<&str> = params_schema
             .get("required")
             .and_then(|v| v.as_array())
