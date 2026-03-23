@@ -1,7 +1,7 @@
 # Login screen with Advanced panel expanded
 name = "login-advanced"
 description = "Login screen showing the advanced server host override field"
-output = "captures/{theme}/02-login-advanced.png"
+output = "captures/02-login-advanced.png"
 depends_on = "01-login"
 
 [setup]

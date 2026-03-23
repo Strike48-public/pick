@@ -1,7 +1,7 @@
 # Connecting screen — after tapping Sign In
 name = "connecting"
 description = "Connecting screen with step indicator and auth flow"
-output = "captures/{theme}/03-connecting.png"
+output = "captures/03-connecting.png"
 
 [setup]
 # Fresh launch then tap Sign In

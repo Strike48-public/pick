@@ -1,7 +1,7 @@
 # Login screen — fresh launch, no saved settings
 name = "login"
 description = "Login screen with Strike48 logo and Sign In button"
-output = "captures/{theme}/01-login.png"
+output = "captures/01-login.png"
 
 [setup]
 commands = [

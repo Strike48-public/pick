@@ -1,7 +1,7 @@
 # Chrome Custom Tab — auth redirect page
 name = "chrome-auth"
 description = "Chrome Custom Tab showing the OAuth login redirect"
-output = "captures/{theme}/04-chrome-auth.png"
+output = "captures/04-chrome-auth.png"
 depends_on = "03-connecting"
 
 [setup]
