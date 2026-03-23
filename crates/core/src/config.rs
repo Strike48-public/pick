@@ -57,7 +57,7 @@ fn default_connector_name() -> String {
 impl Default for ConnectorConfig {
     fn default() -> Self {
         Self {
-            host: String::new(),
+            host: crate::build_defaults::DEFAULT_CONNECTOR_HOST.to_string(),
             tenant_id: "default".to_string(),
             auth_token: String::new(),
             instance_id: Uuid::new_v4().to_string(),
@@ -98,9 +98,6 @@ impl ConnectorConfig {
         if self.host.is_empty() {
             return Err("Strike48 host is required".to_string());
         }
-        if self.tenant_id.is_empty() {
-            return Err("Tenant ID is required".to_string());
-        }
         Ok(())
     }
 
@@ -109,24 +106,40 @@ impl ConnectorConfig {
         !self.auth_token.is_empty()
     }
 
-    /// Strip any URL scheme prefix from the host and return the bare `host:port`.
+    /// Validate and normalize the host string.
     ///
-    /// Handles `grpc://`, `grpcs://`, `http://`, `https://`, `ws://`, `wss://`.
-    /// Returns `Err` if the result is empty or missing a port (no `:`).
+    /// Accepts either a full URL with scheme (e.g. `grpcs://host.example.com`)
+    /// or a bare `host:port` pair (e.g. `localhost:50061`).
+    ///
+    /// The scheme is preserved so that [`to_sdk_config`] can pass it to the
+    /// SDK's `parse_url`, which uses it to infer transport type, TLS, and
+    /// default port.
     pub fn normalize_host(host: &str) -> Result<String, String> {
-        let schemes = [
-            "grpc://", "grpcs://", "http://", "https://", "ws://", "wss://",
-        ];
-        let mut h = host.trim();
-        for scheme in &schemes {
-            if let Some(stripped) = h.strip_prefix(scheme) {
-                h = stripped;
-                break;
-            }
+        let h = host.trim();
+        if h.is_empty() {
+            return Err("Host is required".to_string());
         }
 
-        if h.is_empty() || !h.contains(':') {
-            return Err("Invalid host format. Use host:port (e.g., localhost:50061)".to_string());
+        // If it has a scheme, let the SDK's parse_url handle the rest.
+        let known_schemes = [
+            "grpc://", "grpcs://", "http://", "https://", "ws://", "wss://",
+        ];
+        let has_scheme = known_schemes.iter().any(|s| h.starts_with(s));
+
+        if has_scheme {
+            // Just make sure there's something after the scheme.
+            let after_scheme = h.split("://").nth(1).unwrap_or("");
+            if after_scheme.is_empty() {
+                return Err("Host is required after scheme".to_string());
+            }
+            return Ok(h.to_string());
+        }
+
+        // Bare host:port — require the port.
+        if !h.contains(':') {
+            return Err(
+                "Invalid host format. Use scheme://host (e.g., grpcs://connectors.example.com) or host:port (e.g., localhost:50061)".to_string(),
+            );
         }
         Ok(h.to_string())
     }
