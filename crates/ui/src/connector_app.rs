@@ -18,8 +18,9 @@ use pentest_core::tools::ToolRegistry;
 
 use crate::components::icons::MessageCircle;
 use crate::components::{
-    AppLayout, ChatPanel, ConfigForm, ConnectingScreen, ConnectingStep, Dashboard, FileBrowser,
-    InteractiveShell, NavPage, SettingsPage, Terminal, ToolsPage, STRIKE48_SIDEBAR_LOGO_SVG,
+    AppLayout, ChatPanel, ConnectingScreen, ConnectingStep, Dashboard, FileBrowser,
+    InteractiveShell, LoginScreen, NavPage, SettingsPage, Terminal, ToolsPage,
+    STRIKE48_SIDEBAR_LOGO_SVG,
 };
 use crate::download_manager::is_blackarch_ready;
 use crate::{
@@ -239,7 +240,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         }
         s
     });
-    let initial_auto_connect = settings.peek().auto_connect;
     let device_id = settings.peek().device_id.clone();
     let initial_config = settings
         .peek()
@@ -408,8 +408,8 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
 
     // ---- auto-connect ----
     use_effect(move || {
-        if initial_auto_connect {
-            if let Some(saved_config) = settings.read().last_config.clone() {
+        if let Some(saved_config) = settings.read().last_config.clone() {
+            if !saved_config.auth_token.is_empty() || settings.read().auto_connect {
                 terminal_lines
                     .write()
                     .push(TerminalLine::info("Auto-connecting with saved settings..."));
@@ -533,11 +533,10 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                             class: "connect-subtitle",
                             "{platform_name}"
                         }
-                        ConfigForm {
+                        LoginScreen {
                             config: config.read().clone(),
                             on_connect: on_connect,
                             is_connecting: false,
-                            remember: settings.read().auto_connect,
                         }
                     }
                 },
