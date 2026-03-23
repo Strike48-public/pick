@@ -1,0 +1,20 @@
+# Connecting screen — after tapping Sign In
+name = "connecting"
+description = "Connecting screen with step indicator and auth flow"
+output = "captures/{theme}/03-connecting.png"
+
+[setup]
+# Fresh launch then tap Sign In
+commands = [
+    "adb shell am force-stop com.strike48.pentest_connector",
+    "adb shell rm -rf /data/data/com.strike48.pentest_connector/files/.config/pentest-connector/",
+    "adb shell am start -n com.strike48.pentest_connector/dev.dioxus.main.MainActivity",
+]
+wait_ms = 8000
+
+[setup.then]
+# Tap Sign In
+commands = [
+    "adb shell input tap 540 1600",
+]
+wait_ms = 3000

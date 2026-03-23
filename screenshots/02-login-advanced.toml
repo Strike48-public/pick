@@ -1,0 +1,12 @@
+# Login screen with Advanced panel expanded
+name = "login-advanced"
+description = "Login screen showing the advanced server host override field"
+output = "captures/{theme}/02-login-advanced.png"
+depends_on = "01-login"
+
+[setup]
+# Tap the "Advanced" toggle
+commands = [
+    "adb shell input tap 540 1830",
+]
+wait_ms = 1000

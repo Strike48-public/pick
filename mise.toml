@@ -1,0 +1,19 @@
+[tasks.screenshots]
+description = "Capture Android screenshots (all, both themes by default)"
+run = "./screenshots/capture.sh {{arg(name='target', default='')}}"
+
+[tasks."screenshots:dark"]
+description = "Capture screenshots in dark theme only"
+run = "./screenshots/capture.sh --theme dark {{arg(name='target', default='')}}"
+
+[tasks."screenshots:light"]
+description = "Capture screenshots in light theme only"
+run = "./screenshots/capture.sh --theme light {{arg(name='target', default='')}}"
+
+[tasks."screenshots:list"]
+description = "List available screenshot manifests"
+run = "./screenshots/capture.sh --list"
+
+[tasks."screenshots:open"]
+description = "Open all captured screenshots in eog"
+run = "./screenshots/capture.sh --open"

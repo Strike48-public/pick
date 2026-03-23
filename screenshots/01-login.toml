@@ -1,0 +1,12 @@
+# Login screen — fresh launch, no saved settings
+name = "login"
+description = "Login screen with Strike48 logo and Sign In button"
+output = "captures/{theme}/01-login.png"
+
+[setup]
+commands = [
+    "adb shell am force-stop com.strike48.pentest_connector",
+    "adb shell rm -rf /data/data/com.strike48.pentest_connector/files/.config/pentest-connector/",
+    "adb shell am start -n com.strike48.pentest_connector/dev.dioxus.main.MainActivity",
+]
+wait_ms = 8000
