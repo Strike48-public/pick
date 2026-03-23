@@ -1,117 +1,91 @@
-//! Connection configuration form component
-
 use dioxus::prelude::*;
 use pentest_core::config::ConnectorConfig;
+use pentest_core::build_defaults::{DEFAULT_CONNECTOR_HOST, DEFAULT_ENV_LABEL};
 
-/// Connection configuration form
+/// Props for the login screen.
+#[derive(Props, Clone, PartialEq)]
+pub struct LoginScreenProps {
+    /// Current config (may have host override from settings).
+    pub config: ConnectorConfig,
+    /// Called with (config, remember=true) when user taps Sign In.
+    pub on_connect: EventHandler<(ConnectorConfig, bool)>,
+    /// Whether a connection attempt is in progress.
+    #[props(default = false)]
+    pub is_connecting: bool,
+}
+
+/// Minimal login screen with optional advanced host override.
 #[component]
-pub fn ConfigForm(
-    config: ConnectorConfig,
-    on_connect: EventHandler<(ConnectorConfig, bool)>,
-    is_connecting: bool,
-    #[props(default = false)] remember: bool,
-) -> Element {
-    let mut host = use_signal(|| config.host.clone());
-    let mut tenant_id = use_signal(|| config.tenant_id.clone());
-    let mut auth_token = use_signal(|| config.auth_token.clone());
-    let mut error_msg = use_signal(|| None::<String>);
-    let mut remember = use_signal(move || remember);
-
-    let handle_submit = move |_| {
-        let url = host.read().clone();
-        let tenant = tenant_id.read().clone();
-        let token = auth_token.read().clone();
-
-        // Validation
-        if url.is_empty() {
-            error_msg.set(Some("Strike48 host is required".into()));
-            return;
+pub fn LoginScreen(props: LoginScreenProps) -> Element {
+    let mut show_advanced = use_signal(|| false);
+    let mut host_override = use_signal(|| {
+        let h = &props.config.host;
+        if h == DEFAULT_CONNECTOR_HOST || h.is_empty() {
+            String::new()
+        } else {
+            h.clone()
         }
+    });
 
-        error_msg.set(None);
+    let has_override = !host_override.read().is_empty();
 
-        let new_config = ConnectorConfig::new(url)
-            .tenant_id(tenant)
-            .auth_token(token);
-
-        on_connect.call((new_config, *remember.read()));
+    let on_sign_in = move |_| {
+        let mut config = props.config.clone();
+        if has_override {
+            config.host = host_override.read().clone();
+        } else {
+            config.host = DEFAULT_CONNECTOR_HOST.to_string();
+        }
+        props.on_connect.call((config, true));
     };
 
     rsx! {
-        div { class: "config-form",
-            h3 { "Connect to Strike48" }
+        style { {include_str!("css/login_screen.css")} }
 
-            // Error message
-            if let Some(err) = error_msg.read().as_ref() {
-                div {
-                    class: "error-banner",
-                    "{err}"
+        div { class: "login-screen",
+            // Logo
+            div { class: "login-logo", "S48" }
+
+            // App name
+            div { class: "login-title", "Strike48" }
+
+            // Environment badge
+            div {
+                class: if DEFAULT_ENV_LABEL == "Development" { "login-env-badge dev" } else { "login-env-badge prod" },
+                "{DEFAULT_ENV_LABEL}"
+            }
+
+            // Host override label (only shown when overridden)
+            if has_override {
+                div { class: "login-host-label", "{host_override}" }
+            }
+
+            // Sign In button
+            button {
+                class: "login-button",
+                disabled: props.is_connecting,
+                onclick: on_sign_in,
+                if props.is_connecting { "Connecting..." } else { "Sign In" }
+            }
+
+            // Advanced toggle
+            div { class: "login-advanced-toggle",
+                span {
+                    onclick: move |_| show_advanced.toggle(),
+                    if *show_advanced.read() { "Hide Advanced" } else { "Advanced" }
                 }
             }
 
-            div { class: "form-row",
-                div { class: "input-group",
-                    label { "Strike48 Host" }
+            // Advanced panel
+            if *show_advanced.read() {
+                div { class: "login-advanced-panel",
+                    label { "Server Host" }
                     input {
                         r#type: "text",
-                        placeholder: "grpc://localhost:50061",
-                        value: "{host}",
-                        disabled: is_connecting,
-                        oninput: move |e| host.set(e.value()),
+                        placeholder: "{DEFAULT_CONNECTOR_HOST}",
+                        value: "{host_override}",
+                        oninput: move |e| host_override.set(e.value()),
                     }
-                }
-            }
-
-            div { class: "form-row",
-                div { class: "input-group",
-                    label { "Tenant ID" }
-                    input {
-                        r#type: "text",
-                        placeholder: "default",
-                        value: "{tenant_id}",
-                        disabled: is_connecting,
-                        oninput: move |e| tenant_id.set(e.value()),
-                    }
-                }
-            }
-
-            div { class: "form-row",
-                div { class: "input-group",
-                    label { "Auth Token" }
-                    input {
-                        r#type: "password",
-                        placeholder: "ott_xxx or JWT token",
-                        value: "{auth_token}",
-                        disabled: is_connecting,
-                        oninput: move |e| auth_token.set(e.value()),
-                    }
-                    span {
-                        class: "form-hint",
-                        "Leave empty for post-approval authentication"
-                    }
-                }
-            }
-
-            div { class: "form-row",
-                label {
-                    class: "checkbox-label",
-                    input {
-                        r#type: "checkbox",
-                        checked: *remember.read(),
-                        disabled: is_connecting,
-                        oninput: move |e: Event<FormData>| remember.set(e.value() == "true"),
-                    }
-                    "Remember connection"
-                }
-            }
-
-            div { class: "form-row",
-                button {
-                    r#type: "button",
-                    class: "success",
-                    disabled: is_connecting,
-                    onclick: handle_submit,
-                    if is_connecting { "Connecting..." } else { "Connect" }
                 }
             }
         }
