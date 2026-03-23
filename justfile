@@ -110,6 +110,10 @@ avd := env_var_or_default("AVD", "PentestDev")
 emulator:
     #!/usr/bin/env bash
     set -euo pipefail
+    if adb devices 2>/dev/null | grep -q "emulator.*device"; then
+        echo "Emulator already running."
+        exit 0
+    fi
     MESA_LOADER_DRIVER_OVERRIDE=zink "${ANDROID_HOME}/emulator/emulator" -avd {{avd}} -gpu auto -writable-system &
     echo "Emulator starting {{avd}}... (PID: $!)"
     echo "Waiting for device to boot..."
@@ -125,6 +129,10 @@ emulator:
 emulator-headless:
     #!/usr/bin/env bash
     set -euo pipefail
+    if adb devices 2>/dev/null | grep -q "emulator.*device"; then
+        echo "Emulator already running."
+        exit 0
+    fi
     "${ANDROID_HOME}/emulator/emulator" -avd {{avd}} -no-window -gpu swiftshader_indirect -writable-system &
     echo "Headless emulator starting {{avd}}... (PID: $!)"
     adb wait-for-device
