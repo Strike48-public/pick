@@ -36,6 +36,18 @@ pub fn init() {
         let _ = std::fs::create_dir_all(&keys_dir);
         std::env::set_var("STRIKE48_KEYS_DIR", &keys_dir);
 
+        // Set TLS insecure mode from build-time defaults.
+        // Dev builds accept self-signed certs; prod builds require valid certs.
+        if std::env::var("MATRIX_TLS_INSECURE").is_err() {
+            let insecure = if pentest_core::build_defaults::DEFAULT_TLS_INSECURE {
+                "true"
+            } else {
+                "false"
+            };
+            std::env::set_var("MATRIX_TLS_INSECURE", insecure);
+            std::env::set_var("MATRIX_INSECURE", insecure);
+        }
+
         tracing::info!(
             "Android init: HOME={}, STRIKE48_KEYS_DIR={keys_dir}",
             std::env::var("HOME").unwrap_or_default()
