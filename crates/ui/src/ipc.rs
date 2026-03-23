@@ -24,7 +24,18 @@ impl std::fmt::Display for IpcAddr {
 impl IpcAddr {
     /// Generate a PID-based address for standalone mode.
     pub fn for_agent(pid: u32) -> Self {
-        #[cfg(unix)]
+        #[cfg(target_os = "android")]
+        {
+            // Android doesn't have /tmp — use the app's cache directory instead.
+            // The HOME env var is set by pentest_platform::android::init().
+            let base = std::env::var("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("/data/local/tmp"));
+            return Self {
+                inner: base.join(format!("pentest-agent-{}.sock", pid)),
+            };
+        }
+        #[cfg(all(unix, not(target_os = "android")))]
         return Self {
             inner: std::path::PathBuf::from(format!("/tmp/pentest-agent-{}.sock", pid)),
         };

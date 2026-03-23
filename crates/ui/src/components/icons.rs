@@ -14,3 +14,4 @@ pub use lucide_dioxus::{
 // ---------------------------------------------------------------------------
 
 pub const STRIKE48_SIDEBAR_LOGO_SVG: &str = include_str!("../assets/icons/strike48-logo.svg");
+pub const STRIKE48_APPICON_SVG: &str = include_str!("../assets/icons/strike48-appicon.svg");

@@ -1,6 +1,7 @@
 [application]
 name = "pentest-connector"
 default_platform = "android"
+android_main_activity = "android/MainActivity.kt"
 
 [bundle]
 identifier = "com.strike48.pentest_connector"

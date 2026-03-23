@@ -1,6 +1,8 @@
 use dioxus::prelude::*;
-use pentest_core::config::ConnectorConfig;
 use pentest_core::build_defaults::{DEFAULT_CONNECTOR_HOST, DEFAULT_ENV_LABEL};
+use pentest_core::config::ConnectorConfig;
+
+use super::icons::STRIKE48_APPICON_SVG;
 
 /// Props for the login screen.
 #[derive(Props, Clone, PartialEq)]
@@ -43,8 +45,8 @@ pub fn LoginScreen(props: LoginScreenProps) -> Element {
         style { {include_str!("css/login_screen.css")} }
 
         div { class: "login-screen",
-            // Logo
-            div { class: "login-logo", "S48" }
+            // Logo — real Strike48 app icon
+            div { class: "login-logo", dangerous_inner_html: STRIKE48_APPICON_SVG }
 
             // App name
             div { class: "login-title", "Strike48" }

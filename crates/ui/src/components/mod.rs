@@ -55,7 +55,7 @@ pub use loading_spinner::{LoadingSpinner, SpinnerSize};
 pub use log_filter_bar::LogFilterBar;
 // #[cfg(feature = "liveview")]
 // pub use router::{Route, WorkspaceRouter};
-pub use icons::STRIKE48_SIDEBAR_LOGO_SVG;
+pub use icons::{STRIKE48_APPICON_SVG, STRIKE48_SIDEBAR_LOGO_SVG};
 pub use scroll_area::ScrollArea;
 pub use selectable_list::{ListItem, SelectableList};
 pub use session_uptime::SessionUptime;
