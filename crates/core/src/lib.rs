@@ -15,6 +15,7 @@ pub mod state;
 pub mod terminal;
 pub mod tools;
 pub mod workspace;
+pub mod build_defaults;
 
 pub mod prelude {
     pub use crate::config::{

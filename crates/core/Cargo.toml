@@ -8,6 +8,8 @@ license.workspace = true
 [features]
 default = []
 browser-auth = ["dep:axum", "dep:open"]
+dev-defaults = []
+prod-defaults = []
 
 [dependencies]
 # Async
