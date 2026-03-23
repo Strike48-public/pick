@@ -9,6 +9,10 @@ license.workspace = true
 name = "pentest-mobile"
 path = "src/main.rs"
 
+[features]
+dev-defaults = ["pentest-core/dev-defaults"]
+prod-defaults = ["pentest-core/prod-defaults"]
+
 [dependencies]
 # Crates
 pentest-core = { workspace = true, features = ["browser-auth"] }

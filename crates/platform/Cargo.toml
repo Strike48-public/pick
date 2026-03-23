@@ -14,6 +14,8 @@ desktop-mdns = ["desktop", "mdns-sd"]
 desktop-pcap = ["desktop", "pcap"]
 android = ["dep:jni", "dep:ndk-context", "dep:reqwest", "dep:portable-pty", "dep:libc", "dep:tar", "dep:xz2", "dep:sha2"]
 ios = []
+dev-defaults = ["pentest-core/dev-defaults"]
+prod-defaults = ["pentest-core/prod-defaults"]
 
 [dependencies]
 # Core

@@ -239,7 +239,7 @@ build-android:
     # Unset global CC/CXX that would override the target-specific ones
     unset CC CXX
 
-    {{dx}} build --platform android --package pentest-mobile
+    {{dx}} build --platform android --package pentest-mobile --features dev-defaults
     just _inject-android-lib target/dx/pentest-mobile/debug/android/app
     cd target/dx/pentest-mobile/debug/android/app && ./gradlew assembleDebug
 
@@ -266,7 +266,7 @@ build-android-release:
     # Unset global CC/CXX that would override the target-specific ones
     unset CC CXX
 
-    {{dx}} build --platform android --package pentest-mobile --release
+    {{dx}} build --platform android --package pentest-mobile --release --features prod-defaults
     just _inject-android-lib target/dx/pentest-mobile/release/android/app
     cd target/dx/pentest-mobile/release/android/app && ./gradlew assembleRelease
 
