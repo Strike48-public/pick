@@ -105,10 +105,19 @@
         },
     });
 
+    // Wait for the container to have real dimensions before opening.
+    // On Android/mobile, the Dioxus WebView layout may not be settled yet,
+    // causing restty to create a 1x1 canvas and constantly re-resize.
+    for (var waitAttempt = 0; waitAttempt < 20; waitAttempt++) {
+        var rect = container.getBoundingClientRect();
+        if (rect.width > 10 && rect.height > 10) break;
+        await new Promise(function(r) { setTimeout(r, 100); });
+    }
+
     term.open(container);
 
     // Let layout fully settle before connecting
-    await new Promise(function(r) { setTimeout(r, 500); });
+    await new Promise(function(r) { setTimeout(r, 200); });
 
     try {
         if (term.restty) {

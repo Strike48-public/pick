@@ -5,9 +5,19 @@
 .shell-container {
     width: 100%;
     height: 100%;
+    min-height: 200px;
     background: var(--background);
     overflow: hidden;
     position: relative;
+}
+
+/* Ensure shell-container fills the content area pane */
+.shell-pane-active .shell-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
 }
 
 .shell-loading {
