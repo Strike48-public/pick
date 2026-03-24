@@ -442,6 +442,21 @@ pub async fn ensure_rootfs_with_progress(
     tokio::fs::write(&resolv_conf, "nameserver 8.8.8.8\nnameserver 8.8.4.4\n").await?;
     tracing::info!("Wrote resolv.conf with Google DNS");
 
+    // Sync package databases so tools can install packages on first use
+    tracing::info!("Syncing pacman package databases...");
+    send_progress(&progress, "  Syncing package databases...\r\n").await;
+    match run_in_rootfs(&rootfs, "pacman", &["-Sy", "--noconfirm"]).await {
+        Ok(output) => {
+            tracing::info!("pacman -Sy completed: {}", String::from_utf8_lossy(&output.stdout));
+            send_progress(&progress, "  Package databases synced.\r\n").await;
+        }
+        Err(e) => {
+            // Non-fatal — tools will try again on first use
+            tracing::warn!("pacman -Sy failed (non-fatal): {}", e);
+            send_progress(&progress, "  Warning: package database sync failed, tools may need manual sync.\r\n").await;
+        }
+    }
+
     // Mark setup as complete
     tokio::fs::write(rootfs.join(".setup-complete"), "1").await?;
 
@@ -449,4 +464,69 @@ pub async fn ensure_rootfs_with_progress(
     send_progress(&progress, "  Launching shell...\r\n\r\n").await;
 
     Ok(rootfs)
+}
+
+/// Run a command inside the proot rootfs during setup (before .setup-complete exists).
+/// Unlike execute_in_proot, this doesn't call ensure_rootfs (avoiding recursion).
+async fn run_in_rootfs(
+    rootfs: &std::path::Path,
+    cmd: &str,
+    args: &[&str],
+) -> Result<std::process::Output> {
+    let (proot, _) = ensure_binaries()?;
+    let lib_dir = get_native_lib_dir()?;
+    let tmp_dir = rootfs.parent().unwrap_or(rootfs).join("proot-tmp");
+    tokio::fs::create_dir_all(&tmp_dir).await.ok();
+
+    let loader = proot.parent().map(|d| d.join("libproot_loader.so"));
+    let talloc = proot.parent().map(|d| d.join("libtalloc.so"));
+    let compat = rootfs.join("usr/local/lib/syscall_compat.so");
+
+    let mut command = tokio::process::Command::new(&proot);
+    if let Some(ref ldr) = loader {
+        if ldr.exists() {
+            command.env("PROOT_LOADER", ldr);
+        }
+    }
+    if let Some(ref t) = talloc {
+        if t.exists() {
+            let ld_path = format!(
+                "{}:{}",
+                t.parent().unwrap().display(),
+                lib_dir.display()
+            );
+            command.env("LD_LIBRARY_PATH", ld_path);
+        }
+    }
+    if compat.exists() {
+        command.env("LD_PRELOAD", &compat);
+    }
+    command.env("PROOT_TMP_DIR", &tmp_dir);
+
+    command
+        .arg("-0") // fake root
+        .arg("-r").arg(rootfs)
+        .arg("-b").arg("/dev")
+        .arg("-b").arg("/proc")
+        .arg("-b").arg("/sys")
+        .arg("-w").arg("/root")
+        .arg(cmd)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        command.output(),
+    )
+    .await
+    .map_err(|_| Error::ToolExecution("pacman -Sy timed out after 120s".to_string()))?
+    .map_err(|e| Error::ToolExecution(format!("proot exec failed: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!("Command {cmd} failed: {stderr}");
+    }
+
+    Ok(output)
 }
