@@ -18,8 +18,8 @@ mod values {
 #[cfg(not(feature = "dev-defaults"))]
 mod values {
     // Prod defaults: used for prod-defaults feature OR when no feature is specified (safe fallback)
-    pub const DEFAULT_CONNECTOR_HOST: &str = "grpcs://connectors-studio.strike48.com";
-    pub const DEFAULT_TLS_INSECURE: bool = false;
+    pub const DEFAULT_CONNECTOR_HOST: &str = "wss://studio.strike48.com";
+    pub const DEFAULT_TLS_INSECURE: bool = true; // TODO: set to false once prod has a valid TLS cert
     pub const DEFAULT_ENV_LABEL: &str = "Production";
     pub const DEFAULT_TENANT_ID: &str = "default";
 }
