@@ -34,13 +34,34 @@ class MainActivity : WryActivity() {
         setTheme(androidx.appcompat.R.style.Theme_AppCompat_DayNight_NoActionBar)
         super.onCreate(savedInstanceState)
 
-        // Request screen capture consent at startup so screenshots work in the
-        // background.  The consent dialog may briefly appear under Chrome if
-        // browser OAuth launches, but the user can grant it when they return.
-        requestScreenCaptureConsent()
+        // Register this Activity and screen capture callback with ConnectorBridge
+        // so that JNI calls can trigger the consent dialog via registerForActivityResult
+        // instead of launching a separate Activity (which crashes Dioxus).
+        // Uses reflection to avoid compile-time dependency on android-lib.
+        registerWithBridge()
     }
 
-    private fun requestScreenCaptureConsent() {
+    /**
+     * Register this Activity and the screen capture callback with ConnectorBridge
+     * via reflection to avoid compile-time dependency on android-lib.
+     */
+    private fun registerWithBridge() {
+        try {
+            val bridgeClass = Class.forName("com.strike48.pentest_connector.ConnectorBridge")
+
+            // ConnectorBridge.setActivity(this)
+            val setActivity = bridgeClass.getMethod("setActivity", android.app.Activity::class.java)
+            setActivity.invoke(null, this)
+
+            // ConnectorBridge.setScreenCaptureCallback(Runnable { requestScreenCaptureConsent() })
+            val setCallback = bridgeClass.getMethod("setScreenCaptureCallback", Runnable::class.java)
+            setCallback.invoke(null, Runnable { requestScreenCaptureConsent() })
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "Failed to register with ConnectorBridge", e)
+        }
+    }
+
+    fun requestScreenCaptureConsent() {
         val projectionManager =
             getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         screenCaptureLauncher.launch(projectionManager.createScreenCaptureIntent())

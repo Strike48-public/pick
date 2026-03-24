@@ -100,6 +100,12 @@ pub struct ConnectorPagesProps {
     /// Callback when the user changes the WiFi adapter.
     #[props(default)]
     on_wifi_adapter_change: EventHandler<Option<String>>,
+    /// Whether screen capture is enabled (Android).
+    #[props(default)]
+    screen_capture_enabled: bool,
+    /// Callback when the user toggles screen capture.
+    #[props(default)]
+    on_screen_capture_toggle: EventHandler<bool>,
     /// Matrix API URL for chat.
     api_url: String,
     /// Auth token for chat.
@@ -208,6 +214,8 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                     on_shell_mode_change: move |mode: ShellMode| props.on_shell_mode_change.call(mode),
                     wifi_adapter: props.wifi_adapter.clone(),
                     on_wifi_adapter_change: move |adapter: Option<String>| props.on_wifi_adapter_change.call(adapter),
+                    screen_capture_enabled: props.screen_capture_enabled,
+                    on_screen_capture_toggle: move |enabled: bool| props.on_screen_capture_toggle.call(enabled),
                 }
             }
         }
@@ -675,6 +683,15 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                     let mut s = settings.write();
                                     s.wifi_adapter = adapter;
                                     let _ = save_settings(&s);
+                                },
+                                screen_capture_enabled: settings.read().screen_capture_enabled,
+                                on_screen_capture_toggle: move |enabled: bool| {
+                                    let mut s = settings.write();
+                                    s.screen_capture_enabled = enabled;
+                                    let _ = save_settings(&s);
+                                    if enabled {
+                                        crate::platform_helper::request_screen_capture();
+                                    }
                                 },
                                 api_url: chat_api_url,
                                 auth_token: matrix_auth_token.read().clone(),

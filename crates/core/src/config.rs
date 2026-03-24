@@ -221,6 +221,11 @@ pub struct AppSettings {
     /// Selected WiFi adapter for scanning (interface name, e.g., "wlan1")
     /// If None, will use first available adapter
     pub wifi_adapter: Option<String>,
+
+    /// Whether screen capture (MediaProjection) is enabled (Android only).
+    /// When true, the app requests screen capture permission.
+    #[serde(default)]
+    pub screen_capture_enabled: bool,
 }
 
 impl Default for AppSettings {
@@ -235,6 +240,7 @@ impl Default for AppSettings {
             shell_mode: ShellMode::default(),
             download_state: DownloadState::default(),
             wifi_adapter: None,
+            screen_capture_enabled: false,
         }
     }
 }

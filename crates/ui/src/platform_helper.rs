@@ -6,7 +6,16 @@ use pentest_platform::WifiConnectionStatus;
 ///
 /// # Arguments
 /// * `selected_adapter` - User's chosen WiFi interface (e.g., "wlan1")
-#[cfg(any(feature = "desktop", feature = "android", feature = "ios"))]
+#[cfg(any(
+    feature = "desktop",
+    feature = "android",
+    feature = "ios",
+    target_os = "android",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows",
+))]
 pub async fn check_wifi_status(
     selected_adapter: Option<String>,
 ) -> Result<WifiConnectionStatus, String> {
@@ -20,12 +29,20 @@ pub async fn check_wifi_status(
 }
 
 /// Check WiFi connection status (fallback for other platforms)
-#[cfg(not(any(feature = "desktop", feature = "android", feature = "ios")))]
+#[cfg(not(any(
+    feature = "desktop",
+    feature = "android",
+    feature = "ios",
+    target_os = "android",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows",
+)))]
 pub async fn check_wifi_status(
     selected_adapter: Option<String>,
 ) -> Result<WifiConnectionStatus, String> {
-    let _ = selected_adapter; // Suppress unused warning
-                              // Return safe by default for unsupported platforms
+    let _ = selected_adapter;
     Ok(WifiConnectionStatus {
         connected_via_wifi: false,
         active_interface: None,
@@ -39,7 +56,16 @@ pub async fn check_wifi_status(
 ///
 /// # Arguments
 /// * `adapter` - WiFi interface to test (e.g., "wlan1")
-#[cfg(any(feature = "desktop", feature = "android", feature = "ios"))]
+#[cfg(any(
+    feature = "desktop",
+    feature = "android",
+    feature = "ios",
+    target_os = "android",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows",
+))]
 pub async fn test_wifi_adapter(adapter: Option<String>) -> Result<String, String> {
     use pentest_platform::{get_platform, SystemInfo as _};
 
@@ -62,8 +88,27 @@ pub async fn test_wifi_adapter(adapter: Option<String>) -> Result<String, String
 }
 
 /// Test WiFi adapter functionality (fallback for other platforms)
-#[cfg(not(any(feature = "desktop", feature = "android", feature = "ios")))]
+#[cfg(not(any(
+    feature = "desktop",
+    feature = "android",
+    feature = "ios",
+    target_os = "android",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows",
+)))]
 pub async fn test_wifi_adapter(adapter: Option<String>) -> Result<String, String> {
     let _ = adapter;
     Err("WiFi adapter testing not supported on this platform".to_string())
 }
+
+/// Request screen capture permission (Android MediaProjection consent dialog).
+#[cfg(target_os = "android")]
+pub fn request_screen_capture() {
+    pentest_platform::android::request_screen_capture();
+}
+
+/// Request screen capture permission (no-op on non-Android).
+#[cfg(not(target_os = "android"))]
+pub fn request_screen_capture() {}

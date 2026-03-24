@@ -22,6 +22,8 @@ pub fn SettingsPage(
     on_shell_mode_change: EventHandler<ShellMode>,
     #[props(default)] wifi_adapter: Option<String>,
     #[props(default)] on_wifi_adapter_change: EventHandler<Option<String>>,
+    #[props(default)] screen_capture_enabled: bool,
+    #[props(default)] on_screen_capture_toggle: EventHandler<bool>,
 ) -> Element {
     // -----------------------------------------------------------------------
     // Auto-save on toggle with visual feedback
@@ -395,6 +397,38 @@ pub fn SettingsPage(
                 }
             }
 
+            // Screen Capture card (Android only — uses MediaProjection)
+            if cfg!(target_os = "android") {
+                div { class: "settings-card dashboard-card",
+                    div { class: "settings-card-header",
+                        span { class: "settings-card-icon", Settings { size: 16 } }
+                        h2 { "Screen Capture" }
+                    }
+                    div { class: "settings-card-body",
+                        div { class: "setting-row",
+                            div { class: "setting-label",
+                                div { class: "setting-name", "Allow Screenshots" }
+                                div { class: "text-dim-xs",
+                                    if screen_capture_enabled {
+                                        "Screen capture permission granted. The agent can take screenshots."
+                                    } else {
+                                        "Enable to allow the agent to capture screenshots of this device."
+                                    }
+                                }
+                            }
+                            div { class: "setting-controls",
+                                button {
+                                    class: if screen_capture_enabled { "toggle-btn active" } else { "toggle-btn" },
+                                    onclick: move |_| {
+                                        on_screen_capture_toggle.call(!screen_capture_enabled);
+                                    },
+                                    if screen_capture_enabled { "Enabled" } else { "Disabled" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             }
         }
