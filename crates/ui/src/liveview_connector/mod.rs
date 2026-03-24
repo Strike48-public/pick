@@ -468,6 +468,10 @@ impl LiveViewConnector {
         #[cfg(target_os = "android")]
         pentest_platform::android::request_permissions();
 
+        // Request screen capture consent so the screenshot tool works immediately.
+        #[cfg(target_os = "android")]
+        pentest_platform::android::request_screen_capture();
+
         // Start the Android foreground service to prevent the OS from killing us
         // when the app goes to the background. Acquires wake + WiFi locks.
         #[cfg(target_os = "android")]

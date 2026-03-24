@@ -47,6 +47,21 @@ fn build_tool_configs(names: &[String]) -> serde_json::Value {
 pub fn default_pentest_agent_input(tenant_id: &str, connector_name: &str) -> CreateAgentInput {
     let connector_key = format!("{}.{}.*", tenant_id, connector_name);
     let tool_names = crate::session::get_tool_names();
+
+    // Build platform-aware system prompt
+    let platform_context = if cfg!(target_os = "android") {
+        "\n\n## Platform: Android Mobile\n\
+         This connector is running on an Android device with a built-in WiFi adapter (wlan0).\n\
+         - WiFi scanning uses the Android WifiManager API — no monitor mode needed\n\
+         - The device has cellular/mobile data as a fallback network connection\n\
+         - Disconnecting from WiFi for scanning is safe — the device will use mobile data to stay connected to Strike48\n\
+         - Use `wifi_scan` freely — it will not disrupt the connector's connection\n\
+         - Screen capture is available via Android MediaProjection API\n\
+         - Tools run inside a proot BlackArch environment on the device\n"
+    } else {
+        ""
+    };
+    let system_message = format!("{}{}", RED_TEAM_SYSTEM_PROMPT, platform_context);
     tracing::info!(
         "default_pentest_agent_input: tenant={}, connector_name={}, connector_key={}, tool_names({})={:?}",
         tenant_id,
@@ -70,7 +85,7 @@ pub fn default_pentest_agent_input(tenant_id: &str, connector_name: &str) -> Cre
     CreateAgentInput {
         name: connector_name.to_string(),
         description: Some("Red team operational agent for penetration testing".to_string()),
-        system_message: Some(RED_TEAM_SYSTEM_PROMPT.to_string()),
+        system_message: Some(system_message),
         agent_greeting: Some("Ready for red team operations. What's the target?".to_string()),
         context: Some(serde_json::json!({
             "created_by": connector_name,

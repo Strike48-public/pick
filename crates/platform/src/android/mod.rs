@@ -139,15 +139,16 @@ impl SystemInfo for AndroidPlatform {
         &self,
         selected_adapter: Option<String>,
     ) -> Result<WifiConnectionStatus> {
-        let _ = selected_adapter; // Suppress unused warning
-                                  // Android doesn't have the same WiFi adapter issues as desktop
-                                  // Return safe by default
+        let _ = selected_adapter;
+        // Android has a built-in WiFi adapter (wlan0) and mobile data fallback,
+        // so it's always safe to scan — disconnecting from WiFi won't lose
+        // connectivity because the device will fall back to cellular.
         Ok(WifiConnectionStatus {
-            connected_via_wifi: false,
-            active_interface: None,
+            connected_via_wifi: true,
+            active_interface: Some("wlan0".to_string()),
             total_adapters: 1,
             safe_to_scan: true,
-            all_wifi_interfaces: vec![],
+            all_wifi_interfaces: vec!["wlan0".to_string()],
         })
     }
 }

@@ -36,11 +36,21 @@ pub fn distros_dir() -> PathBuf {
 pub fn is_blackarch_ready() -> bool {
     let data_dir = sandbox_data_dir();
 
-    // Check bwrap/proot sentinel (Linux/macOS)
+    // Check bwrap/proot sentinel (Linux/macOS desktop)
     let rootfs_ready = data_dir
         .join("blackarch-rootfs")
         .join(".rootfs_version")
         .exists();
+
+    // Android: rootfs is at $HOME/blackarch-rootfs with .setup-complete marker
+    let android_ready = if let Ok(home) = std::env::var("HOME") {
+        std::path::Path::new(&home)
+            .join("blackarch-rootfs")
+            .join(".setup-complete")
+            .exists()
+    } else {
+        false
+    };
 
     // On Windows, also check the host-side WSL marker written after ensure_distro()
     #[cfg(target_os = "windows")]
@@ -51,7 +61,7 @@ pub fn is_blackarch_ready() -> bool {
     // On macOS, Docker image existence counts as ready
     let docker_ready = is_docker_image_ready();
 
-    rootfs_ready || wsl_ready || docker_ready
+    rootfs_ready || android_ready || wsl_ready || docker_ready
 }
 
 /// Check if the Docker pentest image exists (non-blocking best-effort).
