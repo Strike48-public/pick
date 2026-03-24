@@ -268,10 +268,15 @@ pub fn WorkspaceApp() -> Element {
     // chat state — initialise from env vars / session store (same pattern as KubeStudio)
     let mut matrix_api_url = use_signal(|| {
         // StrikeHub sets STRIKE48_API_URL on the connector process
-        std::env::var("STRIKE48_API_URL")
+        let url = std::env::var("STRIKE48_API_URL")
             .or_else(|_| std::env::var("MATRIX_API_URL"))
             .or_else(|_| std::env::var("MATRIX_URL"))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Fall back to the connector's global (set by set_matrix_credentials after OAuth)
+        if url.is_empty() {
+            return crate::liveview_server::get_matrix_api_url();
+        }
+        url
     });
     let mut matrix_auth_token = use_signal(|| {
         let session_token = crate::session::get_auth_token();
