@@ -451,12 +451,17 @@ impl LiveViewConnector {
             }
         }
 
-        // On Android (no K8s secrets / OTT), if we still have no auth token,
-        // run browser OAuth + tenant resolution BEFORE connecting so the first
-        // registration message uses the correct tenant_id.
-        if self.config.auth_token.is_empty() && cfg!(target_os = "android") {
-            tracing::info!("[ConnectAndRun] No auth token on Android, running early browser auth");
-            self.try_early_browser_auth().await;
+        // On Android, run browser OAuth to get a session token for GraphQL (chat).
+        // When we have no auth_token at all, this also handles initial registration.
+        // When we DO have a saved connector JWT, we still need a browser session token
+        // for the chat panel (the connector JWT is a client_credentials grant, not a
+        // user session token).
+        if cfg!(target_os = "android") {
+            let session_token = crate::session::get_auth_token();
+            if session_token.is_empty() {
+                tracing::info!("[ConnectAndRun] Running browser auth for session token");
+                self.try_early_browser_auth().await;
+            }
         }
 
         // Request runtime permissions (WiFi scanning needs ACCESS_FINE_LOCATION etc.)
