@@ -58,7 +58,7 @@ impl Default for ConnectorConfig {
     fn default() -> Self {
         Self {
             host: crate::build_defaults::DEFAULT_CONNECTOR_HOST.to_string(),
-            tenant_id: "default".to_string(),
+            tenant_id: crate::build_defaults::DEFAULT_TENANT_ID.to_string(),
             auth_token: String::new(),
             instance_id: Uuid::new_v4().to_string(),
             connector_name: default_connector_name(),

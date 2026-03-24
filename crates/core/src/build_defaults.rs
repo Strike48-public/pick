@@ -12,6 +12,7 @@ mod values {
     pub const DEFAULT_CONNECTOR_HOST: &str = "grpcs://connectors-studio.strike48.test";
     pub const DEFAULT_TLS_INSECURE: bool = true;
     pub const DEFAULT_ENV_LABEL: &str = "Development";
+    pub const DEFAULT_TENANT_ID: &str = "non-prod";
 }
 
 #[cfg(not(feature = "dev-defaults"))]
@@ -20,6 +21,7 @@ mod values {
     pub const DEFAULT_CONNECTOR_HOST: &str = "grpcs://connectors-studio.strike48.com";
     pub const DEFAULT_TLS_INSECURE: bool = false;
     pub const DEFAULT_ENV_LABEL: &str = "Production";
+    pub const DEFAULT_TENANT_ID: &str = "default";
 }
 
 pub use values::*;
