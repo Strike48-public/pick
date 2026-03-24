@@ -458,11 +458,19 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
 
         spawn(async move {
             #[cfg(all(feature = "shell-ws", not(target_os = "android")))]
+            let result = match pentest_platform::desktop::sandbox::get_sandbox_manager().await {
+                Ok(manager) => manager.ensure_ready().await.map_err(|e| format!("{}", e)),
+                Err(e) => Err(format!("{}", e)),
+            };
+
+            #[cfg(target_os = "android")]
+            let result = pentest_platform::android::proot::ensure_rootfs()
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("{}", e));
+
+            #[cfg(any(target_os = "android", feature = "shell-ws"))]
             {
-                let result = match pentest_platform::desktop::sandbox::get_sandbox_manager().await {
-                    Ok(manager) => manager.ensure_ready().await.map_err(|e| format!("{}", e)),
-                    Err(e) => Err(format!("{}", e)),
-                };
                 crate::download_manager::set_global_progress(None);
                 download_progress.set(None);
                 match result {

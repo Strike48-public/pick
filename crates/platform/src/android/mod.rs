@@ -4,7 +4,7 @@ mod device_enrichment;
 mod jni_bridge;
 mod mdns;
 mod network;
-mod proot;
+pub mod proot;
 pub mod pty_shell;
 mod screenshot;
 mod system;

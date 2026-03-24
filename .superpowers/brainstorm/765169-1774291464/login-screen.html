@@ -1,0 +1,86 @@
+<h2>Login Screen — First Launch</h2>
+<p class="subtitle">What should the default mobile login experience look like? Click to select your preference.</p>
+
+<div class="cards">
+  <div class="card" data-choice="clean" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#1a1a2e;color:#e0e0e0;padding:40px 24px;border-radius:8px;font-family:system-ui;min-height:480px;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+        <!-- Status bar mock -->
+        <div style="width:100%;display:flex;justify-content:space-between;font-size:11px;color:#888;margin-bottom:auto;padding:0 4px;">
+          <span>9:41</span>
+          <span>⦿ ▸ 🔋</span>
+        </div>
+
+        <!-- Logo area -->
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;width:100%;">
+          <div style="width:64px;height:64px;background:linear-gradient(135deg,#22c55e,#16a34a);border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:bold;color:white;">S48</div>
+          <div style="font-size:22px;font-weight:600;color:#f0f0f0;">Strike48</div>
+          <div style="font-size:13px;color:#22c55e;background:rgba(34,197,94,0.1);padding:4px 12px;border-radius:12px;">Development</div>
+
+          <div style="width:100%;max-width:280px;margin-top:32px;">
+            <button style="width:100%;padding:14px;background:#22c55e;color:white;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;">Sign In</button>
+          </div>
+
+          <div style="font-size:12px;color:#666;margin-top:8px;">connectors-studio.strike48.test</div>
+        </div>
+
+        <!-- Advanced link -->
+        <div style="margin-top:auto;padding:12px 0;">
+          <span style="font-size:13px;color:#888;border-bottom:1px dashed #555;">Advanced</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Clean & Minimal</h3>
+      <p>Logo, environment badge, sign-in button. Host shown as subtle text. Advanced settings hidden below.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="informative" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#1a1a2e;color:#e0e0e0;padding:40px 24px;border-radius:8px;font-family:system-ui;min-height:480px;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+        <!-- Status bar mock -->
+        <div style="width:100%;display:flex;justify-content:space-between;font-size:11px;color:#888;margin-bottom:auto;padding:0 4px;">
+          <span>9:41</span>
+          <span>⦿ ▸ 🔋</span>
+        </div>
+
+        <!-- Logo area -->
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;width:100%;">
+          <div style="width:56px;height:56px;background:linear-gradient(135deg,#22c55e,#16a34a);border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:bold;color:white;">S48</div>
+          <div style="font-size:20px;font-weight:600;color:#f0f0f0;">Pentest Connector</div>
+          <div style="font-size:13px;color:#999;">Mobile</div>
+
+          <!-- Info card -->
+          <div style="width:100%;max-width:280px;background:rgba(255,255,255,0.05);border-radius:10px;padding:16px;margin-top:16px;">
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px;">
+              <span style="color:#888;">Environment</span>
+              <span style="color:#22c55e;">Development</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px;">
+              <span style="color:#888;">Server</span>
+              <span style="color:#ccc;">studio.strike48.test</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;">
+              <span style="color:#888;">Tenant</span>
+              <span style="color:#ccc;">non-prod</span>
+            </div>
+          </div>
+
+          <div style="width:100%;max-width:280px;margin-top:20px;">
+            <button style="width:100%;padding:14px;background:#22c55e;color:white;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;">Sign In</button>
+          </div>
+        </div>
+
+        <!-- Advanced link -->
+        <div style="margin-top:auto;padding:12px 0;">
+          <span style="font-size:13px;color:#888;border-bottom:1px dashed #555;">⚙ Advanced Settings</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Informative Card</h3>
+      <p>Shows environment, server, and tenant in a summary card before login. More context at a glance for pentesters switching between environments.</p>
+    </div>
+  </div>
+</div>
