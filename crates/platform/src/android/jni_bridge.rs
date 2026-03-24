@@ -140,6 +140,28 @@ pub fn request_permissions() {
     });
 }
 
+/// Start the foreground service to keep the connector alive in the background.
+///
+/// Calls `ConnectorService.start(context)` which acquires wake locks and WiFi locks,
+/// and displays a persistent notification as required by Android foreground service rules.
+pub fn start_foreground_service() {
+    let result = with_activity(|env, activity| {
+        let cls = find_app_class(env, "com/strike48/pentest_connector/ConnectorService")?;
+        env.call_static_method(
+            &cls,
+            "start",
+            "(Landroid/content/Context;)V",
+            &[JValue::Object(activity)],
+        )
+        .map_err(|e| Error::ToolExecution(format!("ConnectorService.start: {e}")))?;
+        Ok(())
+    });
+    match result {
+        Ok(()) => tracing::info!("[Android] Foreground service started"),
+        Err(e) => tracing::warn!("[Android] Failed to start foreground service: {}", e),
+    }
+}
+
 /// Launch the screen capture consent dialog (MediaProjection).
 /// This must be called before `capture_screenshot` will work.
 /// The consent dialog is an OS-level Activity that returns a MediaProjection token.

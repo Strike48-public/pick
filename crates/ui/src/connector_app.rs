@@ -27,6 +27,7 @@ use crate::{
     compute_screen, mobile_css, run_event_loop, theme_css, utils_css, AppScreen, EventLoopSignals,
     LiveViewConnector,
 };
+use crate::liveview_connector::ShutdownHandle;
 
 // ---------------------------------------------------------------------------
 // Platform configuration
@@ -306,6 +307,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     });
 
     let connector: Signal<Option<Arc<RwLock<LiveViewConnector>>>> = use_signal(|| None);
+    let shutdown_handle: Signal<Option<ShutdownHandle>> = use_signal(|| None);
 
     // ---- connect handler ----
     let mut on_connect = move |(mut new_config, remember): (ConnectorConfig, bool)| {
@@ -335,6 +337,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         }
 
         let mut connector = connector;
+        let mut shutdown_handle = shutdown_handle;
         let mut status = status;
         let mut terminal_lines = terminal_lines;
         let connecting_step = connecting_step;
@@ -343,6 +346,10 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         spawn(async move {
             let tools = (cfg.create_tools)();
             let mut lv_connector = LiveViewConnector::new(new_config, tools);
+
+            // Store shutdown handle BEFORE the write lock is taken — this
+            // allows the cancel button to signal shutdown without deadlocking.
+            shutdown_handle.set(Some(lv_connector.shutdown_handle()));
 
             // Extract workspace path
             let ws_path = lv_connector
@@ -419,27 +426,21 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     });
 
     // ---- disconnect handler ----
-    let on_disconnect = move |_: ()| {
+    let mut on_disconnect = move |_: ()| {
         let mut s = load_settings();
         s.auto_connect = false;
         let _ = save_settings(&s);
 
-        let connector = connector;
-        let mut status = status;
-        let mut terminal_lines = terminal_lines;
-        let mut connecting_step = connecting_step;
-
-        spawn(async move {
-            if let Some(conn) = connector.peek().as_ref() {
-                let conn = conn.read().await;
-                conn.shutdown();
-            }
-            status.set(ConnectorStatus::Disconnected);
-            connecting_step.set(None);
-            terminal_lines
-                .write()
-                .push(TerminalLine::info("Disconnected"));
-        });
+        // Use the lock-free shutdown handle — connect_and_run holds the
+        // write lock, so trying to acquire a read lock would deadlock.
+        if let Some(handle) = shutdown_handle.peek().as_ref() {
+            handle.shutdown();
+        }
+        status.set(ConnectorStatus::Disconnected);
+        connecting_step.set(None);
+        terminal_lines
+            .write()
+            .push(TerminalLine::info("Disconnected"));
     };
 
     // ---- setup handler ----

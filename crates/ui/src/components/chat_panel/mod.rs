@@ -197,7 +197,19 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     if !effective_token.is_empty() && !api_url.is_empty() && !agents_loaded() && !fetch_started() {
         fetch_started.set(true);
         let client = make_client();
-        let tenant_id = props.tenant_id.clone();
+        // Prefer session store tenant (updated by connector after OAuth tenant
+        // resolution) over the prop which may still hold the initial "default".
+        let session_tenant = crate::session::get_tenant_id();
+        let prop_tenant = props.tenant_id.clone();
+        let tenant_id = if !session_tenant.is_empty() && session_tenant != "default" {
+            session_tenant.clone()
+        } else {
+            prop_tenant.clone()
+        };
+        tracing::info!(
+            "[chat] tenant resolution: session='{}' prop='{}' -> using='{}'",
+            session_tenant, prop_tenant, tenant_id,
+        );
         let log_url = api_url.clone();
         crate::liveview_server::push_terminal_line(TerminalLine::info(format!(
             "[chat] fetching agents from {}",
@@ -215,12 +227,16 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     let auto = list.iter().find(|a| a.name == connector_name).cloned();
 
                     if let Some(agent) = auto {
-                        tracing::info!(
-                            "ChatPanel: auto-selected agent: {}, updating tool configs",
-                            agent.name
-                        );
                         // Update the existing agent's tool configs with current tools
                         let fresh_input = default_pentest_agent_input(&tenant_id, &connector_name);
+                        let tool_count = fresh_input.tools.as_ref()
+                            .and_then(|t| t.get("connectors"))
+                            .map(|c| format!("{}", c))
+                            .unwrap_or_default();
+                        tracing::info!(
+                            "ChatPanel: updating agent {} tools (tenant={}, connectors={})",
+                            agent.name, tenant_id, tool_count,
+                        );
                         let update_input = UpdateAgentInput {
                             id: agent.id.clone(),
                             tools: fresh_input.tools,

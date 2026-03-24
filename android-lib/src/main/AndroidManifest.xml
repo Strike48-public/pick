@@ -5,7 +5,11 @@
 
     <!-- WiFi scanning (bd-20) -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Android 13+ requires NEARBY_WIFI_DEVICES for WiFi scanning -->
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
 
     <!-- Foreground service (bd-19) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

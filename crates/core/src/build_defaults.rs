@@ -9,10 +9,10 @@ compile_error!("Features `dev-defaults` and `prod-defaults` are mutually exclusi
 
 #[cfg(feature = "dev-defaults")]
 mod values {
-    pub const DEFAULT_CONNECTOR_HOST: &str = "grpcs://connectors-studio.strike48.test";
+    pub const DEFAULT_CONNECTOR_HOST: &str = "wss://studio.strike48.com";
     pub const DEFAULT_TLS_INSECURE: bool = true;
     pub const DEFAULT_ENV_LABEL: &str = "Development";
-    pub const DEFAULT_TENANT_ID: &str = "non-prod";
+    pub const DEFAULT_TENANT_ID: &str = "default";
 }
 
 #[cfg(not(feature = "dev-defaults"))]

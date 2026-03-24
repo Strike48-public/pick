@@ -98,10 +98,26 @@ pub async fn run_event_loop(
                     auth_token,
                     api_url,
                 } => {
-                    tracing::info!("Saving connector JWT to settings");
-                    let mut s = signals.settings.peek().clone();
+                    // Sync the resolved tenant_id from the session store into
+                    // the config signal + saved settings so restarts use the
+                    // real tenant instead of "default".
+                    let session_tenant = crate::session::get_tenant_id();
                     let mut c = signals.config.peek().clone();
+                    if !session_tenant.is_empty() && session_tenant != "default" && c.tenant_id != session_tenant {
+                        tracing::info!(
+                            "Updating config tenant: '{}' -> '{}'",
+                            c.tenant_id, session_tenant
+                        );
+                        c.tenant_id = session_tenant;
+                        signals.config.set(c.clone());
+                    }
                     c.auth_token = auth_token.clone();
+
+                    tracing::info!(
+                        "Saving connector JWT to settings (tenant={}, token_len={})",
+                        c.tenant_id, auth_token.len(),
+                    );
+                    let mut s = signals.settings.peek().clone();
                     s.last_config = Some(c);
                     let _ = save_settings(&s);
                     // Only set the API URL here — the auth_token is a connector JWT
@@ -122,8 +138,19 @@ pub async fn run_event_loop(
                         signals.matrix_api_url.set(api_url);
                         signals.matrix_auth_token.set(auth_token.clone());
                         crate::session::set_auth_token(&auth_token);
-                        crate::session::set_tenant_id(&signals.config.peek().tenant_id);
-                        crate::session::set_connector_name(&signals.config.peek().connector_name);
+                        // Only set tenant/connector from config signal if the
+                        // session store doesn't already have a resolved value.
+                        // The connector's try_early_browser_auth sets the real
+                        // tenant UUID before emitting this event; reading from
+                        // the config *signal* here would clobber it with "default".
+                        let current_tenant = crate::session::get_tenant_id();
+                        if current_tenant.is_empty() || current_tenant == "default" {
+                            crate::session::set_tenant_id(&signals.config.peek().tenant_id);
+                        }
+                        let current_name = crate::session::get_connector_name();
+                        if current_name.is_empty() {
+                            crate::session::set_connector_name(&signals.config.peek().connector_name);
+                        }
                     }
                 }
                 ConnectorEvent::ToolStarted { tool_name, params } => {

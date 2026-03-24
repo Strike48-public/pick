@@ -55,6 +55,12 @@ pub fn init() {
     });
 }
 
+/// Start the foreground service to prevent Android from killing the connector.
+/// Call once after the app is fully initialized and the connector is about to run.
+pub fn start_foreground_service() {
+    jni_bridge::start_foreground_service();
+}
+
 /// Request all required Android runtime permissions.
 /// Call once at app startup.
 pub fn request_permissions() {

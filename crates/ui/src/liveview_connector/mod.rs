@@ -69,6 +69,20 @@ pub(crate) struct WsConnectionState {
     to_backend_tx: mpsc::Sender<WsMessage>,
 }
 
+/// Lock-free shutdown handle — can be called without holding the connector RwLock.
+pub struct ShutdownHandle {
+    flag: Arc<AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl ShutdownHandle {
+    /// Signal the connector to shut down immediately.
+    pub fn shutdown(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+}
+
 /// Event emitted during connector operations
 #[derive(Debug, Clone)]
 pub enum ConnectorEvent {
@@ -114,6 +128,7 @@ pub struct LiveViewConnector {
     pub(crate) matrix_tx: Arc<RwLock<Option<mpsc::UnboundedSender<StreamMessage>>>>,
     pub(crate) event_tx: broadcast::Sender<ConnectorEvent>,
     pub(crate) shutdown: Arc<AtomicBool>,
+    pub(crate) shutdown_notify: Arc<tokio::sync::Notify>,
     pub(crate) liveview_handle: Option<LiveViewHandle>,
     pub(crate) liveview_port: u16,
     pub(crate) ott_provider: Arc<RwLock<Option<OttProvider>>>,
@@ -151,6 +166,7 @@ impl LiveViewConnector {
             matrix_tx: Arc::new(RwLock::new(None)),
             event_tx,
             shutdown: Arc::new(AtomicBool::new(false)),
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             liveview_handle: None,
             liveview_port: DEFAULT_LIVEVIEW_PORT,
             ott_provider: Arc::new(RwLock::new(None)),
@@ -161,6 +177,17 @@ impl LiveViewConnector {
     /// Subscribe to connector events
     pub fn event_rx(&self) -> broadcast::Receiver<ConnectorEvent> {
         self.event_tx.subscribe()
+    }
+
+    /// Get a shutdown handle that can trigger shutdown without holding the RwLock.
+    ///
+    /// This is critical because `connect_and_run` holds the write lock for its
+    /// entire lifetime, so calling `shutdown()` through a read lock would deadlock.
+    pub fn shutdown_handle(&self) -> ShutdownHandle {
+        ShutdownHandle {
+            flag: self.shutdown.clone(),
+            notify: self.shutdown_notify.clone(),
+        }
     }
 
     /// Get the workspace path
@@ -345,6 +372,25 @@ impl LiveViewConnector {
         );
         if !self.config.auth_token.is_empty() {
             tracing::info!("[ConnectAndRun] Emitting CredentialsUpdated from saved token");
+
+            // If tenant is still "default", try to resolve from saved OTT credentials
+            // which contain the real tenant_id from the original registration.
+            if self.config.tenant_id == "default" || self.config.tenant_id.is_empty() {
+                let connector_type = "pentest-connector".to_string();
+                let instance_id = self.config.instance_id.clone();
+                let mut ott_provider =
+                    OttProvider::new(Some(connector_type.clone()), Some(instance_id.clone()));
+                if let Some(creds) = ott_provider.load_saved_credentials(&connector_type, Some(&instance_id)) {
+                    tracing::info!(
+                        "[ConnectAndRun] Resolved tenant from saved credentials: '{}' -> '{}'",
+                        self.config.tenant_id, creds.tenant_id,
+                    );
+                    self.config.tenant_id = creds.tenant_id;
+                    crate::session::set_tenant_id(&self.config.tenant_id);
+                    *self.ott_provider.write().await = Some(ott_provider);
+                }
+            }
+
             self.send_event(ConnectorEvent::CredentialsUpdated {
                 auth_token: self.config.auth_token.clone(),
                 api_url: self.derive_matrix_api_url(),
@@ -404,6 +450,23 @@ impl LiveViewConnector {
                 *self.ott_provider.write().await = Some(ott_provider);
             }
         }
+
+        // On Android (no K8s secrets / OTT), if we still have no auth token,
+        // run browser OAuth + tenant resolution BEFORE connecting so the first
+        // registration message uses the correct tenant_id.
+        if self.config.auth_token.is_empty() && cfg!(target_os = "android") {
+            tracing::info!("[ConnectAndRun] No auth token on Android, running early browser auth");
+            self.try_early_browser_auth().await;
+        }
+
+        // Request runtime permissions (WiFi scanning needs ACCESS_FINE_LOCATION etc.)
+        #[cfg(target_os = "android")]
+        pentest_platform::android::request_permissions();
+
+        // Start the Android foreground service to prevent the OS from killing us
+        // when the app goes to the background. Acquires wake + WiFi locks.
+        #[cfg(target_os = "android")]
+        pentest_platform::android::start_foreground_service();
 
         let mut connection_failures: u32 = 0;
 
@@ -471,7 +534,10 @@ impl LiveViewConnector {
                     connection_failures, e
                 ))));
                 self.send_event(ConnectorEvent::StatusChanged(ConnectorStatus::Reconnecting));
-                tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(delay)) => {}
+                    _ = self.shutdown_notify.notified() => { break; }
+                }
                 continue;
             }
 
@@ -482,6 +548,14 @@ impl LiveViewConnector {
             tracing::info!("Connected to {}, starting stream...", self.config.host);
 
             let registration_msg = self.build_registration_message().await;
+
+            // Log registration details for debugging
+            if let Some(Message::RegisterRequest(ref req)) = registration_msg.message {
+                tracing::info!(
+                    "Registering: tenant={} type={} instance={} jwt_len={}",
+                    req.tenant_id, req.connector_type, req.instance_id, req.jwt_token.len(),
+                );
+            }
 
             // SDK handles stream setup and spawns automatic 30s keepalive heartbeats
             let (tx, rx) = match client
@@ -503,7 +577,10 @@ impl LiveViewConnector {
                         connection_failures, e
                     ))));
                     self.send_event(ConnectorEvent::StatusChanged(ConnectorStatus::Reconnecting));
-                    tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(tokio::time::Duration::from_millis(delay)) => {}
+                        _ = self.shutdown_notify.notified() => { break; }
+                    }
                     continue;
                 }
             };
@@ -535,7 +612,10 @@ impl LiveViewConnector {
                 "Connection closed, reconnecting...",
             )));
             self.send_event(ConnectorEvent::StatusChanged(ConnectorStatus::Reconnecting));
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {}
+                _ = self.shutdown_notify.notified() => { break; }
+            }
         }
 
         self.send_event(ConnectorEvent::StatusChanged(ConnectorStatus::Disconnected));
@@ -633,6 +713,12 @@ impl LiveViewConnector {
             tokio::select! {
                 biased;
 
+                // Immediate shutdown when cancel is pressed
+                _ = self.shutdown_notify.notified() => {
+                    tracing::info!("Shutdown notification received, exiting message loop");
+                    return;
+                }
+
                 // Proactive JWT refresh before Keycloak token expires
                 _ = &mut refresh_timer, if has_jwt_auth => {
                     tracing::info!("Proactive JWT refresh triggered");
@@ -703,10 +789,15 @@ impl LiveViewConnector {
                             } else {
                                 tracing::error!("Registration failed: {}", resp.error);
 
-                                // If auth failed (expired/invalid token), clear it and retry
-                                if resp.error.contains("expired") || resp.error.contains("invalid") ||
-                                   resp.error.contains("auth") || resp.error.contains("jwt") {
-                                    tracing::info!("Auth token expired/invalid, clearing and will retry");
+                                // If we sent a JWT and registration failed, the token is likely
+                                // stale or invalid. Clear it so the next attempt can do fresh
+                                // auth (browser OAuth or OTT). Also match specific error keywords
+                                // for backward compat.
+                                let has_stale_token = !self.config.auth_token.is_empty();
+                                let error_hints_auth = resp.error.contains("expired") || resp.error.contains("invalid") ||
+                                   resp.error.contains("auth") || resp.error.contains("jwt");
+                                if has_stale_token || error_hints_auth {
+                                    tracing::info!("Registration failed with token (len={}), clearing for retry", self.config.auth_token.len());
                                     self.config.auth_token.clear();
                                     // Clear the OTT provider so we don't try to refresh stale credentials
                                     *self.ott_provider.write().await = None;
@@ -1037,6 +1128,7 @@ impl LiveViewConnector {
     /// Signal shutdown
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
+        self.shutdown_notify.notify_waiters();
         if let Some(handle) = &self.liveview_handle {
             handle.shutdown();
         }

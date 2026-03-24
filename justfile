@@ -251,7 +251,7 @@ build-android:
     # Unset global CC/CXX that would override the target-specific ones
     unset CC CXX
 
-    {{dx}} build --platform android --package pentest-mobile --features dev-defaults
+    {{dx}} build --platform android --package pentest-mobile --features dev-defaults --target aarch64-linux-android
     just _inject-android-lib target/dx/pentest-mobile/debug/android/app
     cd target/dx/pentest-mobile/debug/android/app && ./gradlew assembleDebug
 
@@ -342,6 +342,7 @@ build-syscall-compat:
 # Termux package versions
 proot_version := "5.1.107-70"
 talloc_version := "2.4.3"
+busybox_version := "1.37.0-3"
 termux_repo := "https://packages.termux.dev/apt/termux-main/pool/main"
 
 # Download Termux proot + dependencies for Android (x86_64 + arm64)
@@ -388,6 +389,30 @@ fetch-proot:
         # Android only packages lib*.so files, so rename libtalloc.so.2 -> libtalloc.so
         cp -f "./data/data/com.termux/files/usr/lib/libtalloc.so.2" "$dest/libtalloc.so"
         echo "  -> libtalloc.so ($(wc -c < "$dest/libtalloc.so") bytes)"
+
+        # Download and extract busybox (wrapper + shared lib)
+        echo "Downloading busybox {{busybox_version}}..."
+        curl -sL "{{termux_repo}}/b/busybox/busybox_{{busybox_version}}_${arch}.deb" -o "$TMP/busybox_${arch}.deb"
+        mkdir -p "$TMP/busybox_${arch}"
+        cd "$TMP/busybox_${arch}"
+        ar x "../busybox_${arch}.deb"
+        tar xf data.tar.xz
+        # The wrapper binary links to libbusybox.so.1.37.0 — rename to libbusybox_impl.so
+        # and patch the NEEDED entry so Android can load it (no versioned .so on Android)
+        cp -f "./data/data/com.termux/files/usr/lib/libbusybox.so.1.37.0" "$dest/libbusybox_impl.so"
+        cp -f "./data/data/com.termux/files/usr/bin/busybox" "$dest/libbusybox.so"
+        if command -v patchelf &>/dev/null; then
+            patchelf --replace-needed libbusybox.so.1.37.0 libbusybox_impl.so "$dest/libbusybox.so"
+            echo "  ✓ Patched libbusybox.so: libbusybox.so.1.37.0 -> libbusybox_impl.so"
+        elif command -v nix-shell &>/dev/null; then
+            nix-shell -p patchelf --run "patchelf --replace-needed libbusybox.so.1.37.0 libbusybox_impl.so '$dest/libbusybox.so'"
+            echo "  ✓ Patched libbusybox.so: libbusybox.so.1.37.0 -> libbusybox_impl.so (via nix)"
+        else
+            echo "  ⚠ WARNING: patchelf not found, libbusybox.so.1.37.0 won't resolve at runtime"
+        fi
+        echo "  -> libbusybox.so ($(wc -c < "$dest/libbusybox.so") bytes)"
+        echo "  -> libbusybox_impl.so ($(wc -c < "$dest/libbusybox_impl.so") bytes)"
+        cd - > /dev/null
 
         # Use patchelf to change NEEDED from libtalloc.so.2 to libtalloc.so
         # This avoids needing symlinks at runtime (Android's /data/app is read-only)
