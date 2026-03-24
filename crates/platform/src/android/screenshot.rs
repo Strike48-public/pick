@@ -58,6 +58,13 @@ fn capture_screenshot_blocking() -> Result<Vec<u8>> {
         .map_err(|e| Error::ToolExecution(format!("Screenshot JSON parse: {e}")))?;
 
     if let Some(err) = resp.get("error").and_then(|e| e.as_str()) {
+        // If MediaProjection isn't available, request consent and tell user to retry.
+        if err.contains("MediaProjection") {
+            super::jni_bridge::request_screen_capture();
+            return Err(Error::ToolExecution(
+                "Screen capture permission requested. Please grant the permission in the dialog and retry.".into(),
+            ));
+        }
         return Err(Error::ToolExecution(format!("Screenshot error: {err}")));
     }
 

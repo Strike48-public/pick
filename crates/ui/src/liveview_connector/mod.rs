@@ -468,9 +468,11 @@ impl LiveViewConnector {
         #[cfg(target_os = "android")]
         pentest_platform::android::request_permissions();
 
-        // Request screen capture consent so the screenshot tool works immediately.
-        #[cfg(target_os = "android")]
-        pentest_platform::android::request_screen_capture();
+        // NOTE: Do NOT call request_screen_capture() here — it launches a new
+        // Activity (ScreenCaptureConsentActivity) which causes Dioxus's
+        // WryActivity to be recreated, triggering a panic in the JNI onCreate.
+        // Screen capture consent is requested lazily when the screenshot tool
+        // is first invoked.
 
         // Start the Android foreground service to prevent the OS from killing us
         // when the app goes to the background. Acquires wake + WiFi locks.
