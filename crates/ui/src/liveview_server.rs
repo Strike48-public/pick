@@ -361,6 +361,42 @@ pub async fn start_liveview_server(
     let listener = IpcListener::bind(&addr)?;
     tracing::info!("LiveView server listening on {}", addr);
 
+    // On Android, also start a TCP listener so the WebView can reach assets
+    // and WebSocket endpoints (the WebView can't connect to unix sockets).
+    #[cfg(target_os = "android")]
+    {
+        let tcp_router = router.clone();
+        let tcp_shutdown = shutdown.clone();
+        let tcp_port = port;
+        tokio::spawn(async move {
+            let bind_addr = format!("127.0.0.1:{}", tcp_port);
+            match tokio::net::TcpListener::bind(&bind_addr).await {
+                Ok(tcp_listener) => {
+                    tracing::info!("LiveView TCP server listening on {}", bind_addr);
+                    let server =
+                        axum::serve(tcp_listener, tcp_router.into_make_service());
+                    tokio::select! {
+                        result = server => {
+                            if let Err(e) = result {
+                                tracing::error!("LiveView TCP server error: {}", e);
+                            }
+                        }
+                        _ = async {
+                            while !tcp_shutdown.load(Ordering::SeqCst) {
+                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                            }
+                        } => {
+                            tracing::info!("LiveView TCP server shutting down");
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to bind TCP listener on {}: {}", bind_addr, e);
+                }
+            }
+        });
+    }
+
     let addr_clone = addr.clone();
     tokio::spawn(async move {
         tracing::info!("LiveView server task started");

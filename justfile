@@ -207,6 +207,10 @@ _inject-android-lib proj:
         cp -n "$arch"lib*.so "$dest/" 2>/dev/null || true
         cp -n "$arch"lib*.so.* "$dest/" 2>/dev/null || true
     done
+    # Copy restty.js into WebView assets so the asset loader can serve it
+    assets_dir="{{proj}}/app/src/main/assets/assets"
+    mkdir -p "$assets_dir"
+    cp crates/ui/src/assets/restty.js "$assets_dir/restty.js"
 
 # Helper to set up Android NDK environment - prints the NDK bin path
 _android-ndk-bin:

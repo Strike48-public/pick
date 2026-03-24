@@ -25,6 +25,15 @@ class MainActivity : WryActivity() {
     override fun onWebViewCreate(webView: WebView) {
         super.onWebViewCreate(webView)
 
+        // Allow the WebView to load resources from localhost (127.0.0.1:3030).
+        // The Dioxus WebView uses a custom dioxus:// scheme; without these settings,
+        // cross-origin requests to the local LiveView TCP server are blocked.
+        webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        @Suppress("DEPRECATION")
+        webView.settings.allowUniversalAccessFromFileURLs = true
+        webView.settings.allowContentAccess = true
+        webView.settings.allowFileAccess = true
+
         // Enable the WebView to respect prefers-color-scheme based on system dark mode.
         if (Build.VERSION.SDK_INT >= 33) {
             if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
