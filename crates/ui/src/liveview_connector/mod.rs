@@ -226,6 +226,7 @@ impl LiveViewConnector {
                 );
                 crate::liveview_server::set_matrix_credentials(api_url, auth_token);
                 crate::session::set_auth_token(auth_token);
+
                 crate::session::set_tenant_id(&self.config.tenant_id);
             }
         }

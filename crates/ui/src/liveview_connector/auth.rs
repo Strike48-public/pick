@@ -8,6 +8,45 @@ use strike48_proto::proto::CredentialsIssued;
 use super::{ConnectorEvent, LiveViewConnector};
 use crate::components::ConnectingStep;
 
+/// Fetch the tenant ID from the Matrix API using a `userDetails` GraphQL query.
+/// Same approach as StrikeHub — extracts `details.domain.id` from the response.
+async fn fetch_tenant_id(api_url: &str, token: &str) -> Option<String> {
+    let tls_insecure = std::env::var("MATRIX_TLS_INSECURE")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(tls_insecure)
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+
+    let url = format!("{}/api/v1alpha/graphql", api_url.trim_end_matches('/'));
+    let query = serde_json::json!({ "query": "query { userDetails { details } }" });
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&query)
+        .send()
+        .await
+        .ok()?;
+
+    let body = resp.text().await.ok()?;
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let details = v.pointer("/data/userDetails/details")?;
+    let details = if let Some(s) = details.as_str() {
+        serde_json::from_str::<serde_json::Value>(s).ok()?
+    } else {
+        details.clone()
+    };
+    let tenant = details.pointer("/domain/id")?.as_str().map(String::from);
+    if let Some(ref t) = tenant {
+        tracing::info!("[fetch_tenant_id] resolved: {}", t);
+    }
+    tenant
+}
+
 impl LiveViewConnector {
     /// Fallback: fetch a Matrix chat token via browser-based OAuth login.
     pub(crate) async fn try_fetch_matrix_token_fallback(&mut self) {
@@ -26,6 +65,14 @@ impl LiveViewConnector {
                     "[FetchTokenFallback] Got token via browser OAuth (len={})",
                     token.len(),
                 );
+
+                // Resolve tenant from the API using the fresh token
+                if let Some(tenant) = fetch_tenant_id(&api_url, &token).await {
+                    tracing::info!("[FetchTokenFallback] Resolved tenant: {}", tenant);
+                    self.config.tenant_id = tenant.clone();
+                    crate::session::set_tenant_id(&tenant);
+                }
+
                 crate::liveview_server::set_matrix_credentials(&api_url, &token);
                 crate::session::set_auth_token(&token);
                 self.send_event(ConnectorEvent::Log(TerminalLine::success(
