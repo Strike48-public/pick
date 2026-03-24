@@ -29,10 +29,19 @@ pub fn settings_path() -> PathBuf {
 /// Load settings from disk. Returns defaults on any error (missing file, corrupt JSON, etc.).
 pub fn load_settings() -> AppSettings {
     let path = settings_path();
-    match fs::read_to_string(&path) {
+    let mut settings = match fs::read_to_string(&path) {
         Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
         Err(_) => AppSettings::default(),
+    };
+
+    // On Android, default to wlan0 if no adapter is explicitly configured.
+    // Android always has a built-in WiFi adapter and cellular fallback.
+    #[cfg(target_os = "android")]
+    if settings.wifi_adapter.is_none() {
+        settings.wifi_adapter = Some("wlan0".to_string());
     }
+
+    settings
 }
 
 /// Save settings to disk. Uses atomic write (tmp + rename) to prevent corruption.
