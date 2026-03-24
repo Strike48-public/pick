@@ -301,7 +301,11 @@ pub fn WorkspaceApp() -> Element {
 
                                 if !token.is_empty() {
                                     let current = crate::session::get_auth_token();
-                                    if token != current {
+                                    // Only pick up the browser token if we don't already
+                                    // have a connector-issued token. The connector's OAuth
+                                    // token (len ~997) should not be overwritten by the
+                                    // Studio proxy session token (len ~498).
+                                    if current.is_empty() {
                                         tracing::info!(
                                             "[WorkspaceApp] picked up session token from browser (len={})",
                                             token.len()
@@ -310,9 +314,12 @@ pub fn WorkspaceApp() -> Element {
                                         matrix_auth_token.set(token.to_string());
                                     }
                                 }
-                                if !url.is_empty() && matrix_api_url.peek().is_empty() {
-                                    tracing::info!("[WorkspaceApp] picked up API URL from browser: {}", url);
-                                    matrix_api_url.set(url.to_string());
+                                if !url.is_empty() {
+                                    let current_url = matrix_api_url.peek().clone();
+                                    if current_url.is_empty() {
+                                        tracing::info!("[WorkspaceApp] picked up API URL from browser: {}", url);
+                                        matrix_api_url.set(url.to_string());
+                                    }
                                 }
                             }
                         }
