@@ -92,6 +92,9 @@ pub fn default_pentest_agent_input(tenant_id: &str, connector_name: &str) -> Cre
             },
             "mcp_servers": {},
             "connectors": connectors,
+            // "connector_tools" is the key the server's apply_consent_mode_overrides reads
+            // for per-tool consent. "connectors" is for enable/disable and registration.
+            "connector_tools": tool_configs,
             "workflow_tools": {}
         })),
     }
