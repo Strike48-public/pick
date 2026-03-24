@@ -254,16 +254,11 @@ pub async fn start_liveview_server(
     // Set the global workspace path for the FileBrowser component
     let _ = WORKSPACE_PATH.set(config.workspace_path.clone());
 
-    // On non-Android platforms, `.with_app()` creates a LiveViewPool that calls
+    // `.with_app()` creates a LiveViewPool that calls
     // `dioxus_html::set_event_converter()` — required for onclick and other
-    // event handlers to work in the LiveView context.
-    // On Android, the native Dioxus WebView handles rendering — we only need
-    // the asset/WebSocket routes. Calling set_event_converter would clobber the
-    // native event converter and crash on onmounted events.
-    #[cfg(not(target_os = "android"))]
+    // event handlers to work in the LiveView context AND for the Studio proxy
+    // to render the connector's liveview UI.
     let router = Router::new().with_app("/", LiveViewApp);
-    #[cfg(target_os = "android")]
-    let router = Router::new();
 
     let router = router
         .route("/health", get(|| async { "OK" }))

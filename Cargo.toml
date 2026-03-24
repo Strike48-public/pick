@@ -96,3 +96,6 @@ pentest-tools = { path = "crates/tools", default-features = false }
 lto = true
 opt-level = "z"
 codegen-units = 1
+
+[patch.crates-io]
+dioxus-liveview = { path = "patches/dioxus-liveview" }
