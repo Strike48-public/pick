@@ -457,11 +457,49 @@ pub async fn ensure_rootfs_with_progress(
         }
     }
 
+    // Install essential pentest packages
+    tracing::info!("Installing essential pentest tools...");
+    send_progress(&progress, "  Installing pentest tools (aircrack-ng, nmap, etc.)...\r\n").await;
+    match run_in_rootfs(
+        &rootfs,
+        "pacman",
+        &[
+            "-S",
+            "--noconfirm",
+            "--needed",
+            "aircrack-ng",
+            "iw",
+            "nmap",
+            "macchanger",
+            "tcpdump",
+            "wireless_tools",
+        ],
+    )
+    .await
+    {
+        Ok(output) => {
+            tracing::info!(
+                "Package install completed: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            send_progress(&progress, "  Pentest tools installed.\r\n").await;
+        }
+        Err(e) => {
+            // Non-fatal — user can install manually later
+            tracing::warn!("Package install failed (non-fatal): {}", e);
+            send_progress(
+                &progress,
+                "  Warning: some tools failed to install. You can install them manually.\r\n",
+            )
+            .await;
+        }
+    }
+
     // Mark setup as complete
     tokio::fs::write(rootfs.join(".setup-complete"), "1").await?;
 
     tracing::info!("BlackArch rootfs setup complete");
-    send_progress(&progress, "  Launching shell...\r\n\r\n").await;
+    send_progress(&progress, "  Setup complete!\r\n\r\n").await;
 
     Ok(rootfs)
 }

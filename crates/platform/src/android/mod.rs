@@ -10,10 +10,11 @@ mod screenshot;
 mod system;
 mod traffic;
 mod wifi;
+mod wifi_attack;
 
 use crate::traits::*;
 use async_trait::async_trait;
-use pentest_core::error::{Error, Result};
+use pentest_core::error::Result;
 use std::time::Duration;
 
 /// Android application home directory inside the app's private storage.
@@ -192,101 +193,6 @@ impl CommandExec for AndroidPlatform {
     }
 }
 
-#[async_trait]
-impl WifiAttackOps for AndroidPlatform {
-    async fn enable_monitor_mode(
-        &self,
-        _interface: &str,
-        _allow_kill_network_manager: bool,
-    ) -> Result<(String, bool)> {
-        Err(Error::PlatformNotSupported(
-            "WiFi attacks not supported on Android without root".into(),
-        ))
-    }
-
-    async fn disable_monitor_mode(
-        &self,
-        _interface: &str,
-        _restart_network_manager: bool,
-    ) -> Result<()> {
-        Err(Error::PlatformNotSupported(
-            "WiFi attacks not supported on Android".into(),
-        ))
-    }
-
-    async fn clone_mac(&self, _interface: &str, _target_mac: &str) -> Result<()> {
-        Err(Error::PlatformNotSupported(
-            "WiFi attacks not supported on Android".into(),
-        ))
-    }
-
-    async fn test_injection(&self, _interface: &str) -> Result<InjectionCapability> {
-        Ok(InjectionCapability {
-            supported: false,
-            success_rate: 0.0,
-        })
-    }
-
-    async fn start_capture(
-        &self,
-        _interface: &str,
-        _bssid: &str,
-        _channel: u8,
-        _output_file: &str,
-    ) -> Result<WifiCaptureHandle> {
-        Err(Error::PlatformNotSupported(
-            "WiFi attacks not supported on Android".into(),
-        ))
-    }
-
-    async fn stop_capture(&self, _handle: WifiCaptureHandle) -> Result<()> {
-        Ok(())
-    }
-
-    async fn get_capture_stats(&self, _handle: &WifiCaptureHandle) -> Result<WifiCaptureStats> {
-        Ok(WifiCaptureStats {
-            packets: 0,
-            ivs: 0,
-            has_handshake: false,
-            data_packets: 0,
-        })
-    }
-
-    async fn fake_auth(&self, _interface: &str, _bssid: &str) -> Result<()> {
-        Err(Error::PlatformNotSupported(
-            "WiFi attacks not supported on Android".into(),
-        ))
-    }
-
-    async fn start_arp_replay(&self, _interface: &str, _bssid: &str) -> Result<ArpReplayHandle> {
-        Err(Error::PlatformNotSupported(
-            "WiFi attacks not supported on Android".into(),
-        ))
-    }
-
-    async fn stop_arp_replay(&self, _handle: ArpReplayHandle) -> Result<()> {
-        Ok(())
-    }
-
-    async fn deauth_attack(
-        &self,
-        _interface: &str,
-        _bssid: &str,
-        _client: Option<&str>,
-        _count: u8,
-    ) -> Result<()> {
-        Err(Error::PlatformNotSupported(
-            "WiFi attacks not supported on Android".into(),
-        ))
-    }
-
-    async fn verify_handshake(&self, _capture_file: &str, _bssid: &str) -> Result<bool> {
-        Ok(false)
-    }
-
-    async fn crack_wep(&self, _capture_file: &str, _bssid: &str) -> Result<Option<String>> {
-        Ok(None)
-    }
-}
+// WifiAttackOps is implemented in wifi_attack.rs using `su -c` for root access.
 
 impl PlatformProvider for AndroidPlatform {}
