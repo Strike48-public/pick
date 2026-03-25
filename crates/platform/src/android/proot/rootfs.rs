@@ -553,15 +553,31 @@ async fn run_in_rootfs(
     }
     command.env("PROOT_TMP_DIR", &tmp_dir);
 
+    let rootfs_lossy = rootfs.to_string_lossy().to_string();
+    let l2s_dir = rootfs.join(".l2s");
+    std::fs::create_dir_all(&l2s_dir).ok();
+
     command
         .arg("-0") // fake root
+        .arg("--link2symlink")
+        .arg("--kill-on-exit")
+        .arg("--sysvipc")
         .arg("-r").arg(rootfs)
         .arg("-b").arg("/dev")
         .arg("-b").arg("/proc")
         .arg("-b").arg("/sys")
+        .arg("-b").arg("/dev/urandom:/dev/random")
+        .arg("-b").arg("/proc/self/fd:/dev/fd")
         .arg("-w").arg("/root")
-        .arg(cmd)
-        .args(args)
+        .env("HOME", "/root")
+        .env("USER", "root")
+        .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        .env("TERM", "xterm-256color")
+        .env("TMPDIR", &tmp_dir)
+        .env("PROOT_L2S_DIR", l2s_dir.to_string_lossy().as_ref())
+        .arg("/bin/bash")
+        .arg("-c")
+        .arg(format!("{} {}", cmd, args.join(" ")))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
@@ -579,4 +595,49 @@ async fn run_in_rootfs(
     }
 
     Ok(output)
+}
+
+/// Install one or more packages via pacman inside the proot rootfs.
+///
+/// Returns Ok with stdout on success, Err with stderr on failure.
+/// Requires the rootfs to be fully set up (`.setup-complete` marker exists).
+pub async fn install_packages(packages: &[&str]) -> Result<String> {
+    let rootfs = ensure_rootfs().await?;
+
+    let mut args = vec!["-Sy", "--noconfirm", "--needed", "--overwrite", "*"];
+    args.extend(packages);
+
+    let output = run_in_rootfs(&rootfs, "pacman", &args).await?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if output.status.success() {
+        Ok(stdout)
+    } else {
+        Err(Error::ToolExecution(format!(
+            "pacman install failed: {}",
+            stderr
+        )))
+    }
+}
+
+/// Check which packages from a list are already installed.
+///
+/// Returns a Vec of package names that are installed.
+pub async fn check_installed_packages(packages: &[&str]) -> Vec<String> {
+    let rootfs = match get_rootfs_dir() {
+        Ok(r) if r.join(".setup-complete").exists() => r,
+        _ => return vec![],
+    };
+
+    let mut installed = Vec::new();
+    for &pkg in packages {
+        match run_in_rootfs(&rootfs, "pacman", &["-Q", pkg]).await {
+            Ok(output) if output.status.success() => {
+                installed.push(pkg.to_string());
+            }
+            _ => {}
+        }
+    }
+    installed
 }

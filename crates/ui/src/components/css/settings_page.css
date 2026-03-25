@@ -478,3 +478,132 @@
     font-weight: 600;
     font-family: var(--font-mono);
 }
+
+/* Tool installation list (Android) */
+.tool-install-section {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.tool-install-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted-foreground);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+
+.tool-install-all-btn {
+    padding: 4px 12px;
+    border: 1px solid var(--primary);
+    border-radius: 4px;
+    background: var(--primary);
+    color: var(--primary-foreground);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+    cursor: pointer;
+    transition: opacity 0.15s;
+}
+
+.tool-install-all-btn:hover:not(:disabled) {
+    opacity: 0.85;
+}
+
+.tool-install-all-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.tool-install-badge.pending {
+    color: var(--muted-foreground);
+    opacity: 0.4;
+}
+
+.tool-install-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: var(--background);
+    gap: 8px;
+}
+
+.tool-install-info {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    flex: 1;
+    min-width: 0;
+}
+
+.tool-install-name {
+    font-size: 12px;
+    font-weight: 500;
+    font-family: var(--font-mono);
+    color: var(--foreground);
+}
+
+.tool-install-desc {
+    font-size: 10px;
+    color: var(--muted-foreground);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tool-install-btn {
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--primary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color 0.15s, border-color 0.15s;
+}
+
+.tool-install-btn:hover {
+    background: var(--primary);
+    color: var(--primary-foreground);
+    border-color: var(--primary);
+}
+
+.tool-install-badge {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    padding: 4px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+.tool-install-badge.installed {
+    color: #10b981;
+}
+
+.tool-install-badge.installing {
+    color: var(--muted-foreground);
+    animation: pulse-opacity 1.2s ease-in-out infinite;
+}
+
+.tool-install-badge.failed {
+    color: #ef4444;
+    font-size: 10px;
+}
+
+@keyframes pulse-opacity {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+}

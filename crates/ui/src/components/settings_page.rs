@@ -8,6 +8,22 @@ use pentest_platform::WifiConnectionStatus;
 use super::icons::{Download, Settings, Wifi};
 use crate::platform_helper;
 
+/// Tools available for on-demand installation via pacman in the BlackArch proot.
+const INSTALLABLE_TOOLS: &[(&str, &str)] = &[
+    ("aircrack-ng", "WiFi WEP/WPA cracking"),
+    ("hashcat", "GPU-accelerated password recovery"),
+    ("john", "John the Ripper password cracker (JtR)"),
+    ("hydra", "Network login brute-forcer"),
+    ("reaver", "WPS brute-force attack tool"),
+    ("wifite", "Automated WiFi auditing"),
+    ("bettercap", "Network attack & monitoring"),
+    ("hcxdumptool", "Capture PMKID/handshakes from WiFi"),
+    ("hcxtools", "Convert captures for hashcat"),
+    ("cowpatty", "WPA-PSK dictionary attack"),
+    ("mdk4", "WiFi exploitation / DoS testing"),
+    ("pixiewps", "Offline WPS brute-force via pixie dust"),
+];
+
 #[component]
 pub fn SettingsPage(
     #[props(default = true)] show_connection: bool,
@@ -25,6 +41,14 @@ pub fn SettingsPage(
     #[props(default)] on_wifi_adapter_change: EventHandler<Option<String>>,
     #[props(default)] screen_capture_enabled: bool,
     #[props(default)] on_screen_capture_toggle: EventHandler<bool>,
+    /// Callback to install a package by name (Android proot only).
+    #[props(default)] on_install_package: EventHandler<String>,
+    /// Set of package names currently being installed.
+    #[props(default)] installing_packages: Vec<String>,
+    /// Set of package names already installed.
+    #[props(default)] installed_packages: Vec<String>,
+    /// Set of package names that failed to install.
+    #[props(default)] failed_packages: Vec<String>,
 ) -> Element {
     // -----------------------------------------------------------------------
     // Auto-save on toggle with visual feedback
@@ -178,6 +202,56 @@ pub fn SettingsPage(
                             span { class: "text-dim-xs", "Ready" }
                         }
                         div { class: "i-use-arch-btw", "i use arch btw" }
+
+                        // Tool installation list
+                        if cfg!(target_os = "android") {
+                            {
+                                let any_installing = !installing_packages.is_empty();
+                                let all_installed = INSTALLABLE_TOOLS.iter().all(|(pkg, _)| installed_packages.contains(&pkg.to_string()));
+                                rsx! {
+                                    div { class: "tool-install-section",
+                                        div { class: "tool-install-header",
+                                            span { "Tools" }
+                                            if !all_installed {
+                                                button {
+                                                    class: "tool-install-all-btn",
+                                                    disabled: any_installing,
+                                                    onclick: move |_| on_install_package.call(String::new()),
+                                                    if any_installing { "Installing..." } else { "Install All" }
+                                                }
+                                            }
+                                        }
+                                        {INSTALLABLE_TOOLS.iter().map(|(pkg, desc)| {
+                                            let pkg_name = pkg.to_string();
+                                            let is_installed = installed_packages.contains(&pkg_name);
+                                            let is_installing = installing_packages.contains(&pkg_name);
+                                            let is_failed = failed_packages.contains(&pkg_name);
+                                            rsx! {
+                                                div { class: "tool-install-row",
+                                                    key: "{pkg}",
+                                                    div { class: "tool-install-info",
+                                                        span { class: "tool-install-name", "{pkg}" }
+                                                        span { class: "tool-install-desc", "{desc}" }
+                                                    }
+                                                    if is_installed {
+                                                        span { class: "tool-install-badge installed", "\u{2713}" }
+                                                    } else if is_installing {
+                                                        span { class: "tool-install-badge installing", "Installing..." }
+                                                    } else if is_failed {
+                                                        span { class: "tool-install-badge failed", "Failed" }
+                                                    } else if any_installing {
+                                                        span { class: "tool-install-badge pending", "Queued" }
+                                                    } else {
+                                                        span { class: "tool-install-badge pending", "-" }
+                                                    }
+                                                }
+                                            }
+                                        })}
+                                    }
+                                }
+                            }
+                        }
+
                         button {
                             class: "sidebar-download-btn reinstall-btn",
                             onclick: move |_| on_reinstall_blackarch.call(()),

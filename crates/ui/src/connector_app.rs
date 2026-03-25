@@ -109,6 +109,18 @@ pub struct ConnectorPagesProps {
     /// Callback when the user toggles screen capture.
     #[props(default)]
     on_screen_capture_toggle: EventHandler<bool>,
+    /// Callback to install a package by name (Android proot only).
+    #[props(default)]
+    on_install_package: EventHandler<String>,
+    /// Set of package names currently being installed.
+    #[props(default)]
+    installing_packages: Vec<String>,
+    /// Set of package names already installed.
+    #[props(default)]
+    installed_packages: Vec<String>,
+    /// Set of package names that failed to install.
+    #[props(default)]
+    failed_packages: Vec<String>,
     /// Matrix API URL for chat.
     api_url: String,
     /// Auth token for chat.
@@ -221,6 +233,10 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                     on_wifi_adapter_change: move |adapter: Option<String>| props.on_wifi_adapter_change.call(adapter),
                     screen_capture_enabled: props.screen_capture_enabled,
                     on_screen_capture_toggle: move |enabled: bool| props.on_screen_capture_toggle.call(enabled),
+                    on_install_package: move |pkg: String| props.on_install_package.call(pkg),
+                    installing_packages: props.installing_packages.clone(),
+                    installed_packages: props.installed_packages.clone(),
+                    failed_packages: props.failed_packages.clone(),
                 }
             }
         }
@@ -282,6 +298,27 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         use_signal(crate::download_manager::get_download_progress);
     let mut blackarch_downloaded = use_signal(is_blackarch_ready);
     let mut setup_error: Signal<Option<String>> = use_signal(|| None);
+
+    // Tool installation state (Android proot)
+    let mut installing_packages: Signal<Vec<String>> = use_signal(Vec::new);
+    let mut installed_packages: Signal<Vec<String>> = use_signal(Vec::new);
+    let mut failed_packages: Signal<Vec<String>> = use_signal(Vec::new);
+
+    // Check which tools are already installed when BlackArch is ready
+    #[cfg(target_os = "android")]
+    use_effect(move || {
+        if !*blackarch_downloaded.read() {
+            return;
+        }
+        spawn(async move {
+            let all_pkgs: Vec<&str> = vec![
+                "aircrack-ng", "hashcat", "john", "hydra", "reaver", "wifite",
+                "bettercap", "hcxdumptool", "hcxtools", "cowpatty", "mdk4", "pixiewps",
+            ];
+            let found = pentest_platform::android::proot::check_installed_packages(&all_pkgs).await;
+            installed_packages.set(found);
+        });
+    });
 
     // Poll global progress + readiness — survives liveview reconnects.
     use_future(move || async move {
@@ -382,16 +419,18 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
 
             if !ws_path.is_empty() {
                 workspace_path.set(Some(ws_path.clone()));
+            }
 
-                #[cfg(feature = "shell-ws")]
-                if cfg.start_liveview_server {
-                    tracing::debug!("starting liveview server");
-                    if let Err(e) = lv_connector
-                        .start_liveview_server(crate::shell_ws::shell_routes(cfg.shell_route_mode))
-                        .await
-                    {
-                        tracing::error!("LiveView server failed: {}", e);
-                    }
+            // Start the liveview server (shell WebSocket, assets) regardless
+            // of whether a workspace path exists — the shell needs it.
+            #[cfg(feature = "shell-ws")]
+            if cfg.start_liveview_server {
+                tracing::debug!("starting liveview server");
+                if let Err(e) = lv_connector
+                    .start_liveview_server(crate::shell_ws::shell_routes(cfg.shell_route_mode))
+                    .await
+                {
+                    tracing::error!("LiveView server failed: {}", e);
                 }
             }
 
@@ -759,6 +798,47 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                         crate::platform_helper::request_screen_capture();
                                     }
                                 },
+                                on_install_package: move |_pkg: String| {
+                                    // Install all remaining tools one by one so the UI
+                                    // shows progress on each package individually.
+                                    let all_tools: Vec<String> = vec![
+                                        "aircrack-ng", "hashcat", "john", "hydra", "reaver", "wifite",
+                                        "bettercap", "hcxdumptool", "hcxtools", "cowpatty", "mdk4", "pixiewps",
+                                    ].into_iter().map(String::from).collect();
+                                    let already = installed_packages.read().clone();
+                                    let to_install: Vec<String> = all_tools.iter()
+                                        .filter(|t| !already.contains(*t))
+                                        .cloned()
+                                        .collect();
+                                    if to_install.is_empty() {
+                                        return;
+                                    }
+                                    failed_packages.set(vec![]);
+                                    spawn(async move {
+                                        for pkg in &to_install {
+                                            // Show this package as currently installing
+                                            installing_packages.set(vec![pkg.clone()]);
+                                            #[cfg(target_os = "android")]
+                                            {
+                                                let pkgs = [pkg.as_str()];
+                                                match pentest_platform::android::proot::install_packages(&pkgs).await {
+                                                    Ok(output) => {
+                                                        tracing::info!("Installed {}: {}", pkg, output);
+                                                        installed_packages.write().push(pkg.clone());
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::error!("Failed to install {}: {}", pkg, e);
+                                                        failed_packages.write().push(pkg.clone());
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        installing_packages.set(vec![]);
+                                    });
+                                },
+                                installing_packages: installing_packages.read().clone(),
+                                installed_packages: installed_packages.read().clone(),
+                                failed_packages: failed_packages.read().clone(),
                                 api_url: chat_api_url,
                                 auth_token: matrix_auth_token.read().clone(),
                                 tenant_id: config.read().tenant_id.clone(),

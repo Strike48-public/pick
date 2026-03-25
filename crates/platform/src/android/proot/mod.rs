@@ -18,7 +18,10 @@ use std::time::{Duration, Instant};
 
 // Re-export public API from submodules
 pub use pacman::ensure_pacman_compatible;
-pub use rootfs::{destroy_rootfs, ensure_rootfs, ensure_rootfs_with_progress};
+pub use rootfs::{
+    check_installed_packages, destroy_rootfs, ensure_rootfs, ensure_rootfs_with_progress,
+    install_packages,
+};
 
 /// Get the app's native library directory (where .so files from jniLibs live).
 pub(super) fn get_native_lib_dir() -> Result<PathBuf> {
