@@ -121,6 +121,9 @@ pub struct ConnectorPagesProps {
     /// Set of package names that failed to install.
     #[props(default)]
     failed_packages: Vec<String>,
+    /// Whether root/su access is granted (Android).
+    #[props(default)]
+    root_granted: bool,
     /// Matrix API URL for chat.
     api_url: String,
     /// Auth token for chat.
@@ -157,6 +160,8 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                     on_open_shell: move |_| on_open_shell.call(()),
                     recent_lines: terminal_lines.read().clone(),
                     wifi_adapter: props.wifi_adapter.clone(),
+                    shell_mode: shell_mode.clone(),
+                    root_granted: props.root_granted,
                 }
             }
 
@@ -303,6 +308,18 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     let mut installing_packages: Signal<Vec<String>> = use_signal(Vec::new);
     let mut installed_packages: Signal<Vec<String>> = use_signal(Vec::new);
     let mut failed_packages: Signal<Vec<String>> = use_signal(Vec::new);
+
+    // Root status (Android)
+    let mut root_granted: Signal<bool> = use_signal(|| false);
+    use_effect(move || {
+        if !cfg!(target_os = "android") {
+            return;
+        }
+        spawn(async move {
+            let status = crate::platform_helper::check_root_status().await;
+            root_granted.set(status.su_granted);
+        });
+    });
 
     // Check which tools are already installed when BlackArch is ready
     #[cfg(target_os = "android")]
@@ -839,6 +856,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                 installing_packages: installing_packages.read().clone(),
                                 installed_packages: installed_packages.read().clone(),
                                 failed_packages: failed_packages.read().clone(),
+                                root_granted: *root_granted.read(),
                                 api_url: chat_api_url,
                                 auth_token: matrix_auth_token.read().clone(),
                                 tenant_id: config.read().tenant_id.clone(),

@@ -51,13 +51,25 @@ pub fn default_pentest_agent_input(tenant_id: &str, connector_name: &str) -> Cre
     // Build platform-aware system prompt
     let platform_context = if cfg!(target_os = "android") {
         "\n\n## Platform: Android Mobile\n\
-         This connector is running on an Android device with a built-in WiFi adapter (wlan0).\n\
-         - WiFi scanning uses the Android WifiManager API — no monitor mode needed\n\
+         This connector is running on an Android device.\n\
+         \n\
+         ### Execution Model (CRITICAL)\n\
+         Commands are routed through TWO execution paths:\n\
+         1. **Proot (BlackArch sandbox)**: General tools (pacman, hashcat, john, python, etc.) run inside a proot BlackArch Linux environment. These have fake root (uid=0 via proot namespace) but NO real kernel access.\n\
+         2. **su (host root)**: Hardware/network commands (airmon-ng, airodump-ng, aireplay-ng, aircrack-ng, iw, ip, ifconfig, wifite, reaver, bettercap, hcxdumptool, mdk4, rfkill, modprobe, iptables) are automatically routed via `su -c` on the Android host with real root privileges and full kernel access.\n\
+         \n\
+         This routing is AUTOMATIC — you do not need to prefix commands with `su -c`. Just use `execute_command` with the tool name and the platform handles routing.\n\
+         \n\
+         ### WiFi\n\
+         - WiFi scanning uses the Android WifiManager API — no monitor mode needed for basic scans\n\
+         - Monitor mode, packet injection, and captures require root (su) + a compatible USB WiFi adapter\n\
          - The device has cellular/mobile data as a fallback network connection\n\
          - Disconnecting from WiFi for scanning is safe — the device will use mobile data to stay connected to Strike48\n\
-         - Use `wifi_scan` freely — it will not disrupt the connector's connection\n\
-         - Screen capture is available via Android MediaProjection API\n\
-         - Tools run inside a proot BlackArch environment on the device\n"
+         \n\
+         ### Capabilities\n\
+         - Screen capture: available via Android MediaProjection API\n\
+         - Package manager: pacman (inside proot) for installing additional tools\n\
+         - If root is not granted, hardware commands will fail with 'Permission denied' — user must grant su access in Magisk\n"
     } else {
         ""
     };
