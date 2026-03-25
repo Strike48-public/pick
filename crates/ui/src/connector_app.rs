@@ -179,6 +179,7 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                 class: if page == NavPage::Shell { "shell-pane-active" } else { "hidden" },
                 InteractiveShell {
                     shell_mode: shell_mode.clone(),
+                    active: page == NavPage::Shell,
                 }
             }
 

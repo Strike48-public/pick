@@ -25,15 +25,30 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
     let agent_thinking = props.agent_thinking;
     let disabled = is_sending() || agent_thinking();
 
+    // Track textarea value in Dioxus state so we can submit from the Rust side
+    // without relying on JS form extraction (which can fail on Android WebView).
+    let mut input_text = use_signal(String::new);
+
     let send_from_form = {
         let on_send = props.on_send;
         move |evt: Event<FormData>| {
             evt.prevent_default();
-            let text = match evt.get_first("message") {
-                Some(FormValue::Text(s)) => s,
-                _ => String::new(),
+            // Prefer Dioxus-tracked state over form extraction for Android compat
+            let text = {
+                let tracked = input_text.peek().clone();
+                if !tracked.is_empty() {
+                    tracked
+                } else {
+                    match evt.get_first("message") {
+                        Some(FormValue::Text(s)) => s,
+                        _ => String::new(),
+                    }
+                }
             };
-            on_send.call(text);
+            if !text.trim().is_empty() {
+                on_send.call(text);
+                input_text.set(String::new());
+            }
 
             // Reset textarea height back to minimum after submit
             spawn(async move {
@@ -41,6 +56,7 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
                     r#"
                     var el = document.querySelector('.chat-textarea');
                     if (el) {
+                        el.value = '';
                         el.style.height = '40px';
                     }
                 "#,
@@ -55,16 +71,32 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
             evt.prevent_default();
             // Use requestSubmit() so the form's onsubmit handler fires
             // (which calls prevent_default and processes the message).
+            // Guard against submitForm not being loaded yet.
             spawn(async move {
-                if let Err(e) = document::eval("submitForm('.chat-input-form')").await {
+                if let Err(e) = document::eval(
+                    r#"
+                    var form = document.querySelector('.chat-input-form');
+                    if (form && typeof form.requestSubmit === 'function') {
+                        form.requestSubmit();
+                    } else if (typeof submitForm === 'function') {
+                        submitForm('.chat-input-form');
+                    }
+                    "#,
+                )
+                .await
+                {
                     tracing::warn!("JS eval failed (form submit): {e}");
                 }
             });
         }
     };
 
-    let on_input = move |_evt: Event<FormData>| {
-        // Auto-resize: reset to auto then clamp between 40px and 200px
+    let on_input = move |evt: Event<FormData>| {
+        // Track the value in Dioxus state for reliable form submission
+        input_text.set(evt.value());
+
+        // Auto-resize: reset to auto then clamp between 40px and 200px.
+        // Fire-and-forget — don't await to avoid blocking the input handler.
         spawn(async move {
             let _ = document::eval(
                 r#"
@@ -93,6 +125,7 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
                 style: "min-height: 40px; max-height: 200px; overflow-y: auto; resize: none;",
                 placeholder: if disabled { "Waiting for response..." } else { "Type a message..." },
                 disabled: disabled,
+                value: "{input_text}",
                 onkeydown: on_keydown,
                 oninput: on_input,
             }

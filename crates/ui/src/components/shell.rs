@@ -33,6 +33,10 @@ pub fn InteractiveShell(
     /// Shell mode: "native" for host shell, "proot" for BlackArch environment
     #[props(default = "native".to_string())]
     shell_mode: String,
+    /// Whether the shell tab is currently visible. When this transitions to true,
+    /// the terminal will be (re-)initialized if it hasn't been set up yet.
+    #[props(default = false)]
+    active: bool,
 ) -> Element {
     // Track mode in a signal so the effect re-runs when it changes.
     let mut mode = use_signal(|| shell_mode.clone());
@@ -40,8 +44,29 @@ pub fn InteractiveShell(
         mode.set(shell_mode.clone());
     }
 
+    // Track whether we have successfully initialized the terminal.
+    let mut initialized = use_signal(|| false);
+
+    // Track active state as a signal so the effect can depend on it.
+    let mut is_active = use_signal(|| active);
+    if *is_active.read() != active {
+        is_active.set(active);
+    }
+
     use_effect(move || {
         let current_mode = mode.read().clone();
+        let active_now = is_active();
+        let already_init = initialized();
+
+        // Defer initialization until the shell tab is actually visible.
+        // This avoids trying to load restty.js before the liveview server
+        // starts (the server only starts during connection).
+        // Re-initialize when: first activation, mode change after init, or
+        // re-activation after a previous init failure.
+        if !active_now && !already_init {
+            return;
+        }
+
         let js = SHELL_INIT_JS
             .replace("__LIVEVIEW_BASE__", LIVEVIEW_BASE)
             .replace("__SHELL_MODE__", &current_mode);
@@ -62,11 +87,13 @@ pub fn InteractiveShell(
             .await;
             match document::eval(&js).await {
                 Ok(_) => {
+                    initialized.set(true);
                     crate::liveview_server::push_terminal_line(TerminalLine::success(
                         "[shell] terminal connected".to_string(),
                     ));
                 }
                 Err(e) => {
+                    initialized.set(false);
                     tracing::warn!("JS eval failed (shell init): {e}");
                     crate::liveview_server::push_terminal_line(TerminalLine::error(format!(
                         "[shell] init failed: {e}"

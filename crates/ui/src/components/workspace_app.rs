@@ -142,6 +142,7 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
                         ShellMode::Native => "native".to_string(),
                         ShellMode::Proot => "proot".to_string(),
                     },
+                    active: page == NavPage::Shell,
                 }
             }
 
