@@ -29,6 +29,7 @@ pub fn settings_path() -> PathBuf {
 /// Load settings from disk. Returns defaults on any error (missing file, corrupt JSON, etc.).
 pub fn load_settings() -> AppSettings {
     let path = settings_path();
+    #[allow(unused_mut)]
     let mut settings = match fs::read_to_string(&path) {
         Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
         Err(_) => AppSettings::default(),

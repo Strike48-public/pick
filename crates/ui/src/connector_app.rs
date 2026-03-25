@@ -90,6 +90,9 @@ pub struct ConnectorPagesProps {
     on_disconnect: EventHandler<()>,
     /// Callback to start the BlackArch ISO download.
     on_start_download: EventHandler<()>,
+    /// Callback to destroy and reinstall BlackArch rootfs.
+    #[props(default)]
+    on_reinstall_blackarch: EventHandler<()>,
     /// Current shell mode enum for the Settings page.
     settings_shell_mode: ShellMode,
     /// Callback when the user changes the shell mode in Settings.
@@ -210,6 +213,7 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                     download_progress: props.download_progress,
                     setup_error: props.setup_error.clone(),
                     on_start_download: move |_| props.on_start_download.call(()),
+                    on_reinstall_blackarch: move |_| props.on_reinstall_blackarch.call(()),
                     shell_mode: props.settings_shell_mode,
                     on_shell_mode_change: move |mode: ShellMode| props.on_shell_mode_change.call(mode),
                     wifi_adapter: props.wifi_adapter.clone(),
@@ -669,6 +673,67 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                 },
                                 on_disconnect: move |_| on_disconnect(()),
                                 on_start_download: on_start_download,
+                                on_reinstall_blackarch: move |_| {
+                                    let mut download_progress = download_progress;
+                                    let mut terminal_lines = terminal_lines;
+                                    let mut blackarch_downloaded = blackarch_downloaded;
+
+                                    setup_error.set(None);
+                                    blackarch_downloaded.set(false);
+                                    terminal_lines.write().push(TerminalLine::info(
+                                        "Reinstalling BlackArch environment...".to_string(),
+                                    ));
+                                    crate::download_manager::set_global_progress(Some(-1.0));
+                                    download_progress.set(Some(-1.0));
+
+                                    spawn(async move {
+                                        // Destroy existing rootfs
+                                        #[cfg(target_os = "android")]
+                                        {
+                                            if let Err(e) = pentest_platform::android::proot::destroy_rootfs().await {
+                                                tracing::warn!("Failed to destroy rootfs: {}", e);
+                                            }
+                                        }
+
+                                        // Re-run setup
+                                        #[cfg(target_os = "android")]
+                                        let result = pentest_platform::android::proot::ensure_rootfs()
+                                            .await
+                                            .map(|_| ())
+                                            .map_err(|e| format!("{}", e));
+
+                                        #[cfg(not(target_os = "android"))]
+                                        let result: std::result::Result<(), String> = {
+                                            // Desktop: re-setup sandbox
+                                            #[cfg(feature = "shell-ws")]
+                                            match pentest_platform::desktop::sandbox::get_sandbox_manager().await {
+                                                Ok(manager) => {
+                                                    manager.ensure_ready().await.map_err(|e| format!("{}", e))
+                                                }
+                                                Err(e) => Err(format!("{}", e)),
+                                            }
+                                            #[cfg(not(feature = "shell-ws"))]
+                                            Ok(())
+                                        };
+
+                                        crate::download_manager::set_global_progress(None);
+                                        download_progress.set(None);
+                                        match result {
+                                            Ok(()) => {
+                                                blackarch_downloaded.set(true);
+                                                terminal_lines.write().push(TerminalLine::success(
+                                                    "BlackArch environment reinstalled.".to_string(),
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                setup_error.set(Some(e.clone()));
+                                                terminal_lines.write().push(TerminalLine::error(
+                                                    format!("Reinstall failed: {}", e),
+                                                ));
+                                            }
+                                        }
+                                    });
+                                },
                                 settings_shell_mode: settings.read().shell_mode,
                                 on_shell_mode_change: move |mode: ShellMode| {
                                     let mut s = settings.write();

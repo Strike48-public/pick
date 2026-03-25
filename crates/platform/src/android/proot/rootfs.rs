@@ -66,6 +66,18 @@ pub(crate) fn is_rootfs_ready() -> bool {
     }
 }
 
+/// Delete the entire rootfs so the next `ensure_rootfs` call rebuilds from scratch.
+pub async fn destroy_rootfs() -> Result<()> {
+    let rootfs = get_rootfs_dir()?;
+    if rootfs.exists() {
+        tracing::info!("Destroying rootfs at {}", rootfs.display());
+        tokio::fs::remove_dir_all(&rootfs).await.map_err(|e| {
+            Error::ToolExecution(format!("Failed to remove rootfs: {}", e))
+        })?;
+    }
+    Ok(())
+}
+
 /// Detect the device architecture
 fn detect_arch() -> &'static str {
     let arch = std::env::consts::ARCH;

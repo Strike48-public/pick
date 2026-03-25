@@ -17,6 +17,7 @@ pub fn SettingsPage(
     blackarch_downloaded: bool,
     download_progress: Option<f64>,
     on_start_download: EventHandler<()>,
+    #[props(default)] on_reinstall_blackarch: EventHandler<()>,
     #[props(default)] setup_error: Option<String>,
     shell_mode: ShellMode,
     on_shell_mode_change: EventHandler<ShellMode>,
@@ -177,6 +178,11 @@ pub fn SettingsPage(
                             span { class: "text-dim-xs", "Ready" }
                         }
                         div { class: "i-use-arch-btw", "i use arch btw" }
+                        button {
+                            class: "sidebar-download-btn reinstall-btn",
+                            onclick: move |_| on_reinstall_blackarch.call(()),
+                            "Reinstall BlackArch"
+                        }
                     } else if download_progress.is_some() {
                         div { class: "sidebar-download-status",
                             span { "Setting up BlackArch..." }

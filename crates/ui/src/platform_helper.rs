@@ -2,7 +2,7 @@
 
 use pentest_platform::WifiConnectionStatus;
 
-/// Check WiFi connection status (desktop/android/ios platforms)
+/// Check WiFi connection status
 ///
 /// # Arguments
 /// * `selected_adapter` - User's chosen WiFi interface (e.g., "wlan1")
@@ -12,18 +12,12 @@ use pentest_platform::WifiConnectionStatus;
     feature = "ios",
     target_os = "android",
     target_os = "ios",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "windows",
 ))]
 pub async fn check_wifi_status(
     selected_adapter: Option<String>,
 ) -> Result<WifiConnectionStatus, String> {
-    use pentest_platform::{get_platform, SystemInfo as _};
-
-    let platform = get_platform();
-    platform
-        .check_wifi_connection_status(selected_adapter)
+    let platform = pentest_platform::get_platform();
+    pentest_platform::SystemInfo::check_wifi_connection_status(&platform, selected_adapter)
         .await
         .map_err(|e| e.to_string())
 }
@@ -35,14 +29,10 @@ pub async fn check_wifi_status(
     feature = "ios",
     target_os = "android",
     target_os = "ios",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "windows",
 )))]
 pub async fn check_wifi_status(
-    selected_adapter: Option<String>,
+    _selected_adapter: Option<String>,
 ) -> Result<WifiConnectionStatus, String> {
-    let _ = selected_adapter;
     Ok(WifiConnectionStatus {
         connected_via_wifi: false,
         active_interface: None,
@@ -52,7 +42,7 @@ pub async fn check_wifi_status(
     })
 }
 
-/// Test WiFi adapter functionality (desktop/android/ios platforms)
+/// Test WiFi adapter functionality
 ///
 /// # Arguments
 /// * `adapter` - WiFi interface to test (e.g., "wlan1")
@@ -62,19 +52,15 @@ pub async fn check_wifi_status(
     feature = "ios",
     target_os = "android",
     target_os = "ios",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "windows",
 ))]
 pub async fn test_wifi_adapter(adapter: Option<String>) -> Result<String, String> {
-    use pentest_platform::{get_platform, SystemInfo as _};
-
-    let platform = get_platform();
+    let platform = pentest_platform::get_platform();
 
     match adapter {
         Some(ref iface) => {
-            // Test by attempting to scan with this specific adapter
-            match platform.get_wifi_networks(Some(iface.clone())).await {
+            match pentest_platform::SystemInfo::get_wifi_networks(&platform, Some(iface.clone()))
+                .await
+            {
                 Ok(networks) => Ok(format!(
                     "Adapter '{}' is working - found {} network(s)",
                     iface,
@@ -94,9 +80,6 @@ pub async fn test_wifi_adapter(adapter: Option<String>) -> Result<String, String
     feature = "ios",
     target_os = "android",
     target_os = "ios",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "windows",
 )))]
 pub async fn test_wifi_adapter(adapter: Option<String>) -> Result<String, String> {
     let _ = adapter;
