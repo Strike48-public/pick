@@ -49,66 +49,26 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
                 on_send.call(text);
                 input_text.set(String::new());
             }
-
-            // Reset textarea height back to minimum after submit
-            spawn(async move {
-                let _ = document::eval(
-                    r#"
-                    var el = document.querySelector('.chat-textarea');
-                    if (el) {
-                        el.value = '';
-                        el.style.height = '40px';
-                    }
-                "#,
-                )
-                .await;
-            });
         }
     };
 
-    let on_keydown = move |evt: Event<KeyboardData>| {
-        if evt.key() == Key::Enter && !evt.modifiers().shift() {
-            evt.prevent_default();
-            // Use requestSubmit() so the form's onsubmit handler fires
-            // (which calls prevent_default and processes the message).
-            // Guard against submitForm not being loaded yet.
-            spawn(async move {
-                if let Err(e) = document::eval(
-                    r#"
-                    var form = document.querySelector('.chat-input-form');
-                    if (form && typeof form.requestSubmit === 'function') {
-                        form.requestSubmit();
-                    } else if (typeof submitForm === 'function') {
-                        submitForm('.chat-input-form');
-                    }
-                    "#,
-                )
-                .await
-                {
-                    tracing::warn!("JS eval failed (form submit): {e}");
+    let on_keydown = {
+        let on_send = props.on_send;
+        move |evt: Event<KeyboardData>| {
+            if evt.key() == Key::Enter && !evt.modifiers().shift() {
+                evt.prevent_default();
+                let text = input_text.peek().clone();
+                if !text.trim().is_empty() {
+                    on_send.call(text);
+                    input_text.set(String::new());
                 }
-            });
+            }
         }
     };
 
     let on_input = move |evt: Event<FormData>| {
         // Track the value in Dioxus state for reliable form submission
         input_text.set(evt.value());
-
-        // Auto-resize: reset to auto then clamp between 40px and 200px.
-        // Fire-and-forget — don't await to avoid blocking the input handler.
-        spawn(async move {
-            let _ = document::eval(
-                r#"
-                var el = document.querySelector('.chat-textarea');
-                if (el) {
-                    el.style.height = 'auto';
-                    el.style.height = Math.min(Math.max(el.scrollHeight, 40), 200) + 'px';
-                }
-            "#,
-            )
-            .await;
-        });
     };
 
     rsx! {
@@ -122,7 +82,7 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
                 class: "chat-input chat-textarea",
                 name: "message",
                 rows: "1",
-                style: "min-height: 40px; max-height: 200px; overflow-y: auto; resize: none;",
+                style: "min-height: 40px; max-height: 200px; overflow-y: auto; resize: none; field-sizing: content;",
                 placeholder: if disabled { "Waiting for response..." } else { "Type a message..." },
                 disabled: disabled,
                 value: "{input_text}",
