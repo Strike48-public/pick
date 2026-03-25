@@ -14,7 +14,7 @@ mod wifi_attack;
 
 use crate::traits::*;
 use async_trait::async_trait;
-use pentest_core::error::Result;
+use pentest_core::error::{Error, Result};
 use std::time::Duration;
 
 /// Android application home directory inside the app's private storage.
@@ -256,6 +256,88 @@ impl CaptureOps for AndroidPlatform {
     }
 }
 
+/// Commands that require real hardware / kernel access and must run via `su -c`
+/// on the host rather than inside the proot sandbox.
+const ROOT_COMMANDS: &[&str] = &[
+    "airmon-ng", "airodump-ng", "aireplay-ng", "aircrack-ng", "airbase-ng",
+    "airdecap-ng", "airdecloak-ng", "airolib-ng", "airserv-ng", "airtun-ng",
+    "besside-ng", "packetforge-ng", "tkiptun-ng", "wesside-ng",
+    "iw", "iwconfig", "iwlist", "ifconfig",
+    "wifite", "reaver", "bully", "pixiewps", "mdk4", "bettercap",
+    "hcxdumptool", "hcxpcapngtool",
+    "ip", "tc", "iptables", "nftables",
+    "modprobe", "insmod", "rmmod", "lsmod",
+    "rfkill", "iwpriv",
+];
+
+/// Check if a command needs root / host hardware access.
+fn needs_root_execution(cmd: &str) -> bool {
+    // Extract base command name from full path
+    let base = cmd.rsplit('/').next().unwrap_or(cmd);
+    ROOT_COMMANDS.contains(&base)
+}
+
+/// Execute a command via `su -c` for real root + hardware access.
+async fn execute_via_su(
+    cmd: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<CommandResult> {
+    use std::time::Instant;
+    use tokio::process::Command;
+
+    let full_cmd = if args.is_empty() {
+        cmd.to_string()
+    } else {
+        // Shell-escape args
+        let escaped: Vec<String> = args.iter().map(|a| {
+            if a.contains(' ') || a.contains('\'') || a.contains('"') {
+                format!("'{}'", a.replace('\'', "'\\''"))
+            } else {
+                a.to_string()
+            }
+        }).collect();
+        format!("{} {}", cmd, escaped.join(" "))
+    };
+
+    tracing::debug!("execute_via_su: su -c '{}'", full_cmd);
+    let start = Instant::now();
+
+    let result = tokio::time::timeout(
+        timeout,
+        Command::new("su")
+            .args(["-c", &full_cmd])
+            .output(),
+    )
+    .await;
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    match result {
+        Ok(Ok(output)) => {
+            let exit_code = output.status.code().unwrap_or(-1);
+            tracing::debug!("execute_via_su: exit_code={} for '{}'", exit_code, cmd);
+            Ok(CommandResult::success(
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+                exit_code,
+                duration_ms,
+            ))
+        }
+        Ok(Err(e)) => {
+            tracing::error!("execute_via_su: failed for '{}': {}", cmd, e);
+            Err(Error::ToolExecution(format!(
+                "su execution failed (is the device rooted?): {}", e
+            )))
+        }
+        Err(_) => Ok(CommandResult::timeout(
+            String::new(),
+            "Command timed out".to_string(),
+            duration_ms,
+        )),
+    }
+}
+
 #[async_trait]
 impl CommandExec for AndroidPlatform {
     async fn execute_command(
@@ -264,7 +346,12 @@ impl CommandExec for AndroidPlatform {
         args: &[&str],
         timeout: Duration,
     ) -> Result<CommandResult> {
-        proot::execute_command(cmd, args, timeout).await
+        if needs_root_execution(cmd) {
+            tracing::debug!("execute_command: routing '{}' via su (needs hardware/root)", cmd);
+            execute_via_su(cmd, args, timeout).await
+        } else {
+            proot::execute_command(cmd, args, timeout).await
+        }
     }
 
     fn is_command_exec_supported(&self) -> bool {

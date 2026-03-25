@@ -553,7 +553,6 @@ async fn run_in_rootfs(
     }
     command.env("PROOT_TMP_DIR", &tmp_dir);
 
-    let rootfs_lossy = rootfs.to_string_lossy().to_string();
     let l2s_dir = rootfs.join(".l2s");
     std::fs::create_dir_all(&l2s_dir).ok();
 
