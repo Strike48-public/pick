@@ -51,6 +51,25 @@ pub fn SettingsPage(
     #[props(default)] failed_packages: Vec<String>,
 ) -> Element {
     // -----------------------------------------------------------------------
+    // Root status check (Android only)
+    // -----------------------------------------------------------------------
+    let mut root_status = use_signal(|| None::<crate::platform_helper::RootStatusInfo>);
+    let mut root_checking = use_signal(|| false);
+
+    // Check root status on mount (Android only)
+    use_effect(move || {
+        if !cfg!(target_os = "android") {
+            return;
+        }
+        spawn(async move {
+            root_checking.set(true);
+            let status = crate::platform_helper::check_root_status().await;
+            root_status.set(Some(status));
+            root_checking.set(false);
+        });
+    });
+
+    // -----------------------------------------------------------------------
     // Auto-save on toggle with visual feedback
     // -----------------------------------------------------------------------
 
@@ -505,6 +524,71 @@ pub fn SettingsPage(
                                     if screen_capture_enabled { "Enabled" } else { "Disabled" }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            // Root Access card (Android only)
+            if cfg!(target_os = "android") {
+                div { class: "settings-card dashboard-card",
+                    div { class: "settings-card-header",
+                        span { class: "settings-card-icon", Settings { size: 16 } }
+                        h2 { "Root Access" }
+                    }
+                    div { class: "settings-card-body",
+                        if root_checking() {
+                            div { class: "text-dim-xs", "Checking root status..." }
+                        } else if let Some(status) = root_status.read().as_ref() {
+                            div { class: "root-status-row",
+                                div {
+                                    class: if status.su_granted { "status-dot connected" } else { "status-dot disconnected" },
+                                }
+                                div { class: "root-status-text",
+                                    div { class: "setting-name",
+                                        if status.su_granted { "Root Granted" } else if status.su_available { "Root Available" } else { "No Root" }
+                                    }
+                                    div { class: "text-dim-xs", "{status.summary}" }
+                                    if let Some(ref ver) = status.magisk_version {
+                                        div { class: "text-dim-xs", "Magisk: {ver}" }
+                                    }
+                                }
+                            }
+                            if !status.su_granted {
+                                div { class: "root-help-info",
+                                    if status.su_available {
+                                        div {
+                                            "To grant root access:"
+                                            ol { class: "root-steps",
+                                                li { "Open the Magisk app" }
+                                                li { "Go to Superuser tab" }
+                                                li { "Find \"Strike48 Pentest Connector\" and enable access" }
+                                                li { "Return here and tap \"Re-check\"" }
+                                            }
+                                        }
+                                    } else {
+                                        div {
+                                            "WiFi attacks (monitor mode, packet injection) require root. "
+                                            "Install Magisk to root your device."
+                                        }
+                                    }
+                                }
+                            }
+                            button {
+                                class: "sidebar-download-btn",
+                                disabled: root_checking(),
+                                onclick: move |_| {
+                                    spawn(async move {
+                                        root_checking.set(true);
+                                        let status = crate::platform_helper::check_root_status().await;
+                                        root_status.set(Some(status));
+                                        root_checking.set(false);
+                                    });
+                                },
+                                "Re-check"
+                            }
+                        } else {
+                            div { class: "text-dim-xs", "Root status not checked" }
                         }
                     }
                 }

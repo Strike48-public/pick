@@ -95,3 +95,35 @@ pub fn request_screen_capture() {
 /// Request screen capture permission (no-op on non-Android).
 #[cfg(not(target_os = "android"))]
 pub fn request_screen_capture() {}
+
+/// Root status info for the UI.
+#[derive(Clone, Default)]
+pub struct RootStatusInfo {
+    pub su_available: bool,
+    pub su_granted: bool,
+    pub magisk_version: Option<String>,
+    pub summary: String,
+}
+
+/// Check root/su status on the device.
+#[cfg(target_os = "android")]
+pub async fn check_root_status() -> RootStatusInfo {
+    let status = pentest_platform::android::check_root_status().await;
+    RootStatusInfo {
+        su_available: status.su_binary_found,
+        su_granted: status.su_access_granted,
+        magisk_version: status.magisk_version,
+        summary: status.summary,
+    }
+}
+
+/// Check root/su status (non-Android).
+#[cfg(not(target_os = "android"))]
+pub async fn check_root_status() -> RootStatusInfo {
+    RootStatusInfo {
+        su_available: false,
+        su_granted: false,
+        magisk_version: None,
+        summary: "Root not applicable on this platform".to_string(),
+    }
+}

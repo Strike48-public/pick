@@ -84,6 +84,85 @@ pub fn set_oauth_callback_port(port: u16) -> Result<()> {
     jni_bridge::set_oauth_callback_port(port)
 }
 
+/// Root access status for the device.
+#[derive(Debug, Clone)]
+pub struct RootStatus {
+    /// Whether `su` binary exists on the device.
+    pub su_binary_found: bool,
+    /// Whether `su -c id` succeeds (Magisk has granted access).
+    pub su_access_granted: bool,
+    /// Magisk version string, if detected.
+    pub magisk_version: Option<String>,
+    /// Output of `id` via su (e.g. "uid=0(root)").
+    pub su_id_output: Option<String>,
+    /// Human-readable summary.
+    pub summary: String,
+}
+
+/// Check root/su availability on this Android device.
+///
+/// Tests whether `su` exists, whether Magisk grants access, and returns
+/// a structured status the UI can display.
+pub async fn check_root_status() -> RootStatus {
+    use tokio::process::Command;
+
+    // Check su binary
+    let su_exists = Command::new("which")
+        .arg("su")
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    // Check Magisk version
+    let magisk_ver = Command::new("magisk")
+        .arg("-c")
+        .output()
+        .await
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        });
+
+    // Try su -c id (this triggers the Magisk su grant dialog)
+    let su_result = Command::new("su")
+        .args(["-c", "id"])
+        .output()
+        .await;
+
+    let (su_granted, su_id) = match su_result {
+        Ok(output) if output.status.success() => {
+            let id_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            (id_str.contains("uid=0"), Some(id_str))
+        }
+        _ => (false, None),
+    };
+
+    let summary = if su_granted {
+        "Root access granted".to_string()
+    } else if su_exists {
+        if magisk_ver.is_some() {
+            "Magisk installed but su access denied — open Magisk app and grant access to Strike48".to_string()
+        } else {
+            "su binary found but access denied — grant superuser access to Strike48".to_string()
+        }
+    } else {
+        "No root detected — WiFi attacks require a rooted device".to_string()
+    };
+
+    RootStatus {
+        su_binary_found: su_exists,
+        su_access_granted: su_granted,
+        magisk_version: magisk_ver,
+        su_id_output: su_id,
+        summary,
+    }
+}
+
 /// Android platform provider
 pub struct AndroidPlatform;
 

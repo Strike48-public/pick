@@ -607,3 +607,44 @@
     0%, 100% { opacity: 0.4; }
     50% { opacity: 1; }
 }
+
+/* Root Access card */
+.root-status-row {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 4px 0;
+}
+
+.root-status-row .status-dot {
+    margin-top: 4px;
+    flex-shrink: 0;
+}
+
+.root-status-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.root-help-info {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: rgba(255, 152, 0, 0.08);
+    border-left: 3px solid #ff9800;
+    border-radius: 3px;
+    font-size: 12px;
+    color: var(--foreground);
+    line-height: 1.5;
+}
+
+.root-steps {
+    margin: 6px 0 0 0;
+    padding-left: 20px;
+    font-size: 12px;
+}
+
+.root-steps li {
+    margin-bottom: 4px;
+}
