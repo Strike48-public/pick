@@ -9,6 +9,76 @@ use pentest_platform::{get_platform, WifiAttackOps};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
+/// Cleanup guard that ensures NetworkManager is restored even on error/panic
+struct CleanupGuard {
+    mon_interface: String,
+    killed_network_manager: bool,
+    cleaned: bool,
+}
+
+impl CleanupGuard {
+    fn new(mon_interface: String, killed_network_manager: bool) -> Self {
+        Self {
+            mon_interface,
+            killed_network_manager,
+            cleaned: false,
+        }
+    }
+
+    /// Manually trigger cleanup (also happens automatically on Drop)
+    async fn cleanup(mut self) {
+        // Manual cleanup - mark as cleaned so Drop won't run again
+        self.run_cleanup().await;
+        self.cleaned = true;
+    }
+
+    async fn run_cleanup(&self) {
+        tracing::info!("🧹 Cleaning up and restoring network...");
+        let platform = get_platform();
+        if let Err(e) = platform
+            .disable_monitor_mode(&self.mon_interface, self.killed_network_manager)
+            .await
+        {
+            tracing::warn!("Failed to disable monitor mode: {}", e);
+        }
+    }
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        if self.cleaned {
+            return; // Already cleaned up manually
+        }
+
+        // If cleanup() wasn't called manually, we need to restore network
+        // This happens on panic or early return
+        tracing::warn!(
+            "⚠️  CleanupGuard dropped without manual cleanup - restoring network synchronously"
+        );
+
+        // We can't use async in Drop, so we spawn a blocking task
+        // This is a best-effort attempt to restore network on panic/early exit
+        let mon_interface = self.mon_interface.clone();
+        let killed_nm = self.killed_network_manager;
+
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let platform = get_platform();
+                tracing::info!("🧹 Emergency cleanup - restoring network...");
+                if let Err(e) = platform
+                    .disable_monitor_mode(&mon_interface, killed_nm)
+                    .await
+                {
+                    tracing::error!("Failed to restore network in Drop: {}", e);
+                } else {
+                    tracing::info!("✓ Network restored via emergency cleanup");
+                }
+            });
+        });
+    }
+}
+
 /// Capture WiFi handshake or IVs for cracking
 pub struct AutoPwnCaptureTool;
 
@@ -145,14 +215,8 @@ impl PentestTool for AutoPwnCaptureTool {
                 tracing::warn!("⚠️  NetworkManager was killed to enable monitor mode");
             }
 
-            // Set up cleanup on error or completion
-            let cleanup_mon_interface = mon_interface.clone();
-            let cleanup = async {
-                tracing::info!("🧹 Cleaning up and restoring network...");
-                if let Err(e) = platform.disable_monitor_mode(&cleanup_mon_interface, killed_network_manager).await {
-                    tracing::warn!("Failed to disable monitor mode: {}", e);
-                }
-            };
+            // Set up cleanup guard that ALWAYS runs
+            let cleanup_guard = CleanupGuard::new(mon_interface.clone(), killed_network_manager);
 
             // Create output directory
             let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
@@ -190,7 +254,6 @@ impl PentestTool for AutoPwnCaptureTool {
                     .await
                 }
                 _ => {
-                    cleanup.await;
                     return Err(Error::InvalidParams(format!(
                         "{} security not supported",
                         sec_type.as_str()
@@ -198,12 +261,12 @@ impl PentestTool for AutoPwnCaptureTool {
                 }
             };
 
-            // Cleanup and restore network (always runs)
+            // Cleanup and restore network (cleanup_guard handles restoration)
             tracing::info!("");
             tracing::info!("═══════════════════════════════════════════════════");
             tracing::info!("📡 Restoring Network Connectivity");
             tracing::info!("═══════════════════════════════════════════════════");
-            cleanup.await;
+            cleanup_guard.cleanup().await;
             tracing::info!("✓ Network restoration complete");
             tracing::info!("═══════════════════════════════════════════════════");
             tracing::info!("");
