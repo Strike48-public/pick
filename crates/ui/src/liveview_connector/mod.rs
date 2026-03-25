@@ -363,34 +363,61 @@ impl LiveViewConnector {
 
             if ott_provider.has_direct_config() {
                 tracing::info!("Direct configuration detected (cert-manager/direct auth mode)");
-                if let Ok(creds) = ott_provider.initialize_from_direct_config() {
-                    tracing::info!("Direct config initialized: {}", creds.client_id);
-                    if let Ok(token) = ott_provider.get_token().await {
-                        self.config.auth_token = token.clone();
-                        self.send_event(ConnectorEvent::CredentialsUpdated {
-                            auth_token: token,
-                            api_url: self.derive_matrix_api_url(),
-                        });
-                        *self.ott_provider.write().await = Some(ott_provider);
+                match ott_provider.initialize_from_direct_config() {
+                    Ok(creds) => {
+                        tracing::info!("Direct config initialized: {}", creds.client_id);
+                        match ott_provider.get_token().await {
+                            Ok(token) => {
+                                self.config.auth_token = token.clone();
+                                self.send_event(ConnectorEvent::CredentialsUpdated {
+                                    auth_token: token,
+                                    api_url: self.derive_matrix_api_url(),
+                                });
+                                *self.ott_provider.write().await = Some(ott_provider);
+                            }
+                            Err(e) => {
+                                tracing::error!("Direct config get_token() failed: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Direct config initialization failed: {}", e);
                     }
                 }
             } else if ott_provider.has_ott() {
                 tracing::info!("Pre-approval OTT detected, attempting registration");
-                if let Ok(creds) = ott_provider
+                match ott_provider
                     .register_with_ott(&connector_type, Some(&instance_id))
                     .await
                 {
-                    tracing::info!(
-                        "OTT pre-approval registration successful: {}",
-                        creds.client_id
-                    );
-                    if let Ok(token) = ott_provider.get_token().await {
-                        self.config.auth_token = token.clone();
-                        self.send_event(ConnectorEvent::CredentialsUpdated {
-                            auth_token: token,
-                            api_url: self.derive_matrix_api_url(),
-                        });
-                        *self.ott_provider.write().await = Some(ott_provider);
+                    Ok(creds) => {
+                        tracing::info!(
+                            "OTT pre-approval registration successful: {}",
+                            creds.client_id
+                        );
+                        match ott_provider.get_token().await {
+                            Ok(token) => {
+                                self.config.auth_token = token.clone();
+                                self.send_event(ConnectorEvent::CredentialsUpdated {
+                                    auth_token: token,
+                                    api_url: self.derive_matrix_api_url(),
+                                });
+                                *self.ott_provider.write().await = Some(ott_provider);
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "OTT registration succeeded but get_token() failed: {}",
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "OTT pre-approval registration failed: {}. \
+                             Falling through to gRPC registration (will require admin approval).",
+                            e
+                        );
                     }
                 }
             } else if ott_provider
