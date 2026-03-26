@@ -488,6 +488,174 @@ pub fn tailwind_css() -> &'static str {
 // Theme System - WinAMP-style Theming
 // ============================================================================
 
+/// Metadata for a custom theme file
+#[derive(Debug, Clone)]
+pub struct ThemeMetadata {
+    pub name: String,
+    pub author: Option<String>,
+    pub version: Option<String>,
+    pub description: Option<String>,
+}
+
+/// A parsed custom theme file with metadata and CSS content
+#[derive(Debug, Clone)]
+pub struct CustomTheme {
+    pub metadata: ThemeMetadata,
+    pub css_variables: String,
+    pub custom_css: Option<String>,
+}
+
+/// Parse a custom theme CSS file with metadata comments
+///
+/// Format:
+/// ```css
+/// /* Theme: My Custom Theme */
+/// /* Author: John Doe */
+/// /* Version: 1.0.0 */
+/// /* Description: A beautiful custom theme */
+///
+/// :root {
+///   --background: oklch(0.1 0 0);
+///   --foreground: oklch(0.9 0 0);
+///   /* ... other variables ... */
+/// }
+///
+/// /* Optional: Custom component styles */
+/// .custom-button {
+///   border: 2px solid var(--primary);
+/// }
+/// ```
+pub fn parse_theme_file(content: &str) -> Result<CustomTheme, String> {
+    let mut metadata = ThemeMetadata {
+        name: String::new(),
+        author: None,
+        version: None,
+        description: None,
+    };
+
+    let mut css_variables = String::new();
+    let mut custom_css = String::new();
+    let mut in_root_block = false;
+    let mut root_brace_count = 0;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Parse metadata comments
+        if let Some(comment) = trimmed.strip_prefix("/*").and_then(|s| s.strip_suffix("*/")) {
+            let comment = comment.trim();
+            if let Some(name) = comment.strip_prefix("Theme:") {
+                metadata.name = name.trim().to_string();
+            } else if let Some(author) = comment.strip_prefix("Author:") {
+                metadata.author = Some(author.trim().to_string());
+            } else if let Some(version) = comment.strip_prefix("Version:") {
+                metadata.version = Some(version.trim().to_string());
+            } else if let Some(desc) = comment.strip_prefix("Description:") {
+                metadata.description = Some(desc.trim().to_string());
+            }
+            continue;
+        }
+
+        // Track :root { } block
+        if trimmed.starts_with(":root") {
+            in_root_block = true;
+            css_variables.push_str(line);
+            css_variables.push('\n');
+            continue;
+        }
+
+        if in_root_block {
+            css_variables.push_str(line);
+            css_variables.push('\n');
+
+            // Count braces to detect end of :root block
+            root_brace_count += line.matches('{').count() as i32;
+            root_brace_count -= line.matches('}').count() as i32;
+
+            if root_brace_count == 0 {
+                in_root_block = false;
+            }
+        } else if !trimmed.is_empty() && !trimmed.starts_with("/*") {
+            // Anything outside :root block is custom CSS
+            custom_css.push_str(line);
+            custom_css.push('\n');
+        }
+    }
+
+    // Validate required metadata
+    if metadata.name.is_empty() {
+        return Err("Theme file must include /* Theme: ... */ comment".to_string());
+    }
+
+    if css_variables.is_empty() {
+        return Err("Theme file must include :root { } block with CSS variables".to_string());
+    }
+
+    Ok(CustomTheme {
+        metadata,
+        css_variables,
+        custom_css: if custom_css.trim().is_empty() {
+            None
+        } else {
+            Some(custom_css)
+        },
+    })
+}
+
+/// Validate custom CSS against security blocklist
+///
+/// Blocks dangerous properties that could:
+/// - Execute code (behavior, -moz-binding)
+/// - Load external resources (url(), @import)
+/// - Inject content (expression())
+pub fn validate_custom_css(css: &str) -> Result<(), Vec<String>> {
+    let dangerous_patterns = [
+        ("javascript:", "JavaScript URLs"),
+        ("data:text/html", "HTML data URLs"),
+        ("behavior:", "IE behavior property"),
+        ("-moz-binding:", "Mozilla XBL bindings"),
+        ("expression(", "CSS expressions"),
+        ("@import", "CSS imports"),
+        ("<script", "Script tags in CSS"),
+        ("eval(", "JavaScript eval"),
+        ("Function(", "JavaScript Function constructor"),
+    ];
+
+    let mut errors = Vec::new();
+
+    for (pattern, description) in &dangerous_patterns {
+        if css.to_lowercase().contains(&pattern.to_lowercase()) {
+            errors.push(format!("Blocked: {} (found '{}')", description, pattern));
+        }
+    }
+
+    // Check for url() with non-CSS resources
+    if let Some(url_start) = css.find("url(") {
+        let url_content = &css[url_start + 4..];
+        if let Some(closing) = url_content.find(')') {
+            let url_value = url_content[..closing].trim().trim_matches(|c| c == '\'' || c == '"');
+
+            // Allow data:image/ URLs but block everything else with external protocols
+            if url_value.starts_with("http://")
+                || url_value.starts_with("https://")
+                || url_value.starts_with("ftp://")
+                || (url_value.starts_with("data:") && !url_value.starts_with("data:image/"))
+            {
+                errors.push(format!(
+                    "Blocked: External resource loading (url({})). Only local paths and data:image/ URLs are allowed.",
+                    url_value
+                ));
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ThemeColors {
     color_scheme: &'static str,
