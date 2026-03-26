@@ -80,26 +80,33 @@ pub fn load_theme_file(path: &PathBuf) -> Result<String> {
 pub fn import_theme_file(source_path: &str) -> Result<PathBuf> {
     let source = PathBuf::from(source_path);
 
-    // Validate source file exists
-    if !source.exists() {
-        return Err(Error::Config(format!(
-            "Theme file not found: {}",
-            source_path
-        )));
-    }
+    // Security: Canonicalize path to prevent path traversal
+    let source = source.canonicalize().map_err(|_| {
+        Error::Config("Invalid theme file path".to_string())
+    })?;
 
     // Validate it's a file (not a directory)
     if !source.is_file() {
-        return Err(Error::Config(format!(
-            "Path is not a file: {}",
-            source_path
-        )));
+        return Err(Error::Config(
+            "Path must be a file".to_string(),
+        ));
     }
 
     // Validate .css extension
     if source.extension().and_then(|s| s.to_str()) != Some("css") {
         return Err(Error::Config(
             "Theme file must have .css extension".to_string(),
+        ));
+    }
+
+    // Security: Limit file size to prevent DoS (100KB max)
+    let metadata = fs::metadata(&source).map_err(|_| {
+        Error::Config("Cannot read theme file".to_string())
+    })?;
+
+    if metadata.len() > 100 * 1024 {
+        return Err(Error::Config(
+            "Theme file too large (max 100KB)".to_string(),
         ));
     }
 

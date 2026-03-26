@@ -526,6 +526,18 @@ pub struct CustomTheme {
 /// }
 /// ```
 pub fn parse_theme_file(content: &str) -> Result<CustomTheme, String> {
+    // Security: Limit file size to prevent DoS
+    const MAX_FILE_SIZE: usize = 100 * 1024; // 100KB
+    const MAX_LINE_LENGTH: usize = 1000;
+
+    if content.len() > MAX_FILE_SIZE {
+        return Err(format!(
+            "Theme file too large: {} bytes (max {}KB)",
+            content.len(),
+            MAX_FILE_SIZE / 1024
+        ));
+    }
+
     let mut metadata = ThemeMetadata {
         name: String::new(),
         author: None,
@@ -539,6 +551,14 @@ pub fn parse_theme_file(content: &str) -> Result<CustomTheme, String> {
     let mut root_brace_count = 0;
 
     for line in content.lines() {
+        // Security: Limit line length to prevent DoS
+        if line.len() > MAX_LINE_LENGTH {
+            return Err(format!(
+                "Line too long: {} chars (max {})",
+                line.len(),
+                MAX_LINE_LENGTH
+            ));
+        }
         let trimmed = line.trim();
 
         // Parse metadata comments
@@ -619,6 +639,9 @@ pub fn validate_custom_css(css: &str) -> Result<(), Vec<String>> {
         ("<script", "Script tags in CSS"),
         ("eval(", "JavaScript eval"),
         ("Function(", "JavaScript Function constructor"),
+        ("@font-face", "External font loading"),
+        ("@charset", "Charset declarations"),
+        ("\\0", "Null byte escapes"),
     ];
 
     let mut errors = Vec::new();
@@ -634,12 +657,13 @@ pub fn validate_custom_css(css: &str) -> Result<(), Vec<String>> {
         let url_content = &css[url_start + 4..];
         if let Some(closing) = url_content.find(')') {
             let url_value = url_content[..closing].trim().trim_matches(|c| c == '\'' || c == '"');
+            let url_lower = url_value.to_lowercase();
 
             // Allow data:image/ URLs but block everything else with external protocols
-            if url_value.starts_with("http://")
-                || url_value.starts_with("https://")
-                || url_value.starts_with("ftp://")
-                || (url_value.starts_with("data:") && !url_value.starts_with("data:image/"))
+            if url_lower.starts_with("http://")
+                || url_lower.starts_with("https://")
+                || url_lower.starts_with("ftp://")
+                || (url_lower.starts_with("data:") && !url_lower.starts_with("data:image/"))
             {
                 errors.push(format!(
                     "Blocked: External resource loading (url({})). Only local paths and data:image/ URLs are allowed.",
