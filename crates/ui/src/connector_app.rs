@@ -528,8 +528,13 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     let blackarch_ready = *blackarch_downloaded.read();
 
     // ---- optional inline CSS (mobile only) ----
+    // Reactive CSS generation - regenerates when theme signals change
     let css_block = if cfg.inject_css {
-        let css = crate::theme::generate_theme_css(*theme.read(), *border_radius.read(), *density.read());
+        let theme_val = *theme.read();
+        let radius_val = *border_radius.read();
+        let density_val = *density.read();
+
+        let css = crate::theme::generate_theme_css(theme_val, radius_val, density_val);
         let mcss = mobile_css();
         let ucss = utils_css();
         rsx! {

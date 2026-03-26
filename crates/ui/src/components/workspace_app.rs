@@ -352,9 +352,14 @@ pub fn WorkspaceApp() -> Element {
     }
 
     // Build the combined CSS (theme variables + responsive/sidebar classes + tailwind)
+    // Generate CSS dynamically based on current theme settings
+    let theme_val = *theme.read();
+    let radius_val = *border_radius.read();
+    let density_val = *density.read();
+
     let combined_css = format!(
         "{}\n{}\n{}\n{}",
-        theme_css(),
+        crate::theme::generate_theme_css(theme_val, radius_val, density_val),
         responsive_css(),
         utils_css(),
         tailwind_css()
