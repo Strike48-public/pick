@@ -2,6 +2,7 @@
 
 use dioxus::prelude::*;
 use pentest_core::matrix::{ChatMessage, MessagePart, ToolCallStatus};
+use pentest_tools::registry::{ActionStyle, QuickAction};
 
 /// Props for [`NextStepsActions`].
 #[derive(Props, Clone, PartialEq)]
@@ -14,118 +15,86 @@ pub struct NextStepsActionsProps {
 
 /// Renders contextual action buttons after specific tool completions.
 ///
-/// Currently supports:
-/// - `wifi_scan` → "Detailed Scan" button to run wifi_scan_detailed
-/// - `wifi_scan_detailed` → Network autopwn options if no pentest adapter available
+/// Uses the quick action registry to dynamically provide context-aware actions
+/// based on tool output.
 #[component]
 pub fn NextStepsActions(props: NextStepsActionsProps) -> Element {
     let messages = props.messages.read();
 
-    // Find the last agent message
-    let last_agent_msg = messages.iter().rev().find(|msg| msg.sender_type != "USER");
-
-    // Check if it contains a successful wifi_scan tool call
-    let has_wifi_scan = last_agent_msg
-        .and_then(|msg| {
-            msg.parts.iter().find_map(|part| {
-                if let MessagePart::ToolCall(tc) = part {
-                    if tc.name == "wifi_scan" && tc.status == ToolCallStatus::Success {
-                        return Some(());
-                    }
+    // Find the last agent message with a successful tool call
+    let last_tool_call = messages.iter().rev().find_map(|msg| {
+        if msg.sender_type == "USER" {
+            return None;
+        }
+        msg.parts.iter().find_map(|part| {
+            if let MessagePart::ToolCall(tc) = part {
+                if tc.status == ToolCallStatus::Success {
+                    return Some((tc.name.clone(), tc.result.clone().unwrap_or_default()));
                 }
-                None
-            })
+            }
+            None
         })
-        .is_some();
+    });
 
-    // Check if it contains a successful wifi_scan_detailed tool call
-    let has_wifi_scan_detailed = last_agent_msg
-        .and_then(|msg| {
-            msg.parts.iter().find_map(|part| {
-                if let MessagePart::ToolCall(tc) = part {
-                    if tc.name == "wifi_scan_detailed" && tc.status == ToolCallStatus::Success {
-                        return Some(());
-                    }
-                }
-                None
-            })
-        })
-        .is_some();
+    // Get actions from registry
+    let actions = if let Some((tool_name, result_json)) = last_tool_call {
+        let registry = crate::session::get_action_registry();
+        registry.get_actions(&tool_name, &result_json)
+    } else {
+        vec![]
+    };
 
-    if has_wifi_scan {
-        return render_wifi_scan_actions(props.on_send);
+    if actions.is_empty() {
+        return rsx! {};
     }
 
-    if has_wifi_scan_detailed {
-        return render_wifi_detailed_actions(props.on_send);
-    }
-
-    rsx! {}
+    render_quick_actions(&actions, props.on_send)
 }
 
-/// Render actions after basic wifi_scan
-fn render_wifi_scan_actions(on_send: EventHandler<String>) -> Element {
+/// Render quick actions from registry
+fn render_quick_actions(actions: &[QuickAction], on_send: EventHandler<String>) -> Element {
     rsx! {
         style { {include_str!("css/next_steps.css")} }
+        style { {include_str!("../../../assets/tabler-icons/tabler-icons.css")} }
 
         div { class: "next-steps-container",
             div { class: "next-steps-header", "Next Steps" }
             div { class: "next-steps-actions",
-                button {
-                    class: "next-steps-btn",
-                    onclick: move |_| {
-                        on_send.call(
-                            "Run a detailed WiFi scan with client detection (~30 seconds). \
-                             This will show how many devices are connected to each network, \
-                             which helps identify easier targets for WPA/WPA2/WPA3 attacks.".to_string()
-                        );
-                    },
-                    span { class: "next-steps-icon", "🔍" }
-                    span { class: "next-steps-label", "Detailed Scan" }
-                    span { class: "next-steps-desc", "Show client counts (~30s)" }
+                for action in actions {
+                    {render_action_button(action, on_send)}
                 }
             }
         }
     }
 }
 
-/// Render actions after wifi_scan_detailed (offer network autopwn as fallback)
-fn render_wifi_detailed_actions(on_send: EventHandler<String>) -> Element {
-    rsx! {
-        style { {include_str!("css/next_steps.css")} }
+/// Render a single action button
+fn render_action_button(action: &QuickAction, on_send: EventHandler<String>) -> Element {
+    let prompt = action.prompt.clone();
+    let style_class = match action.style {
+        ActionStyle::Primary => "next-steps-btn-primary",
+        ActionStyle::Secondary => "next-steps-btn-secondary",
+        ActionStyle::Danger => "next-steps-btn-danger",
+        ActionStyle::Info => "next-steps-btn-info",
+    };
 
-        div { class: "next-steps-container",
-            div { class: "next-steps-header", "Next Steps" }
-            div { class: "next-steps-text",
-                "If you don't have a WiFi pentesting adapter, you can pivot to network-based attacks:"
+    let icon_class = action.icon.to_class();
+    let icon_fallback = action.icon.emoji_fallback();
+
+    rsx! {
+        button {
+            class: format!("next-steps-btn {}", style_class),
+            onclick: move |_| {
+                on_send.call(prompt.clone());
+            },
+            // Use Tabler icon if class is not empty, otherwise fallback to emoji
+            if !icon_class.is_empty() {
+                span { class: format!("next-steps-icon {}", icon_class) }
+            } else {
+                span { class: "next-steps-icon", {icon_fallback} }
             }
-            div { class: "next-steps-actions",
-                button {
-                    class: "next-steps-btn",
-                    onclick: move |_| {
-                        on_send.call(
-                            "Plan a full network penetration test sequence. This will create an \
-                             automated attack plan covering: network discovery, port scanning, \
-                             service enumeration, vulnerability assessment, and exploitation planning.".to_string()
-                        );
-                    },
-                    span { class: "next-steps-icon", "🌐" }
-                    span { class: "next-steps-label", "Full Network Pentest" }
-                    span { class: "next-steps-desc", "Complete attack sequence (~30 min)" }
-                }
-                button {
-                    class: "next-steps-btn",
-                    onclick: move |_| {
-                        on_send.call(
-                            "Plan a quick network reconnaissance scan. This will discover live hosts, \
-                             advertised services, and perform a light port scan without active exploitation.".to_string()
-                        );
-                    },
-                    span { class: "next-steps-icon", "🗺️" }
-                    span { class: "next-steps-label", "Network Recon" }
-                    span { class: "next-steps-desc", "Discovery only (~5 min)" }
-                }
-            }
+            span { class: "next-steps-label", {action.label.clone()} }
+            span { class: "next-steps-desc", {action.description.clone()} }
         }
     }
 }
