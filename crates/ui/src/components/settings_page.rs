@@ -29,6 +29,7 @@ pub fn SettingsPage(
     on_border_radius_change: EventHandler<BorderRadius>,
     density: Density,
     on_density_change: EventHandler<Density>,
+    #[props(default)] on_theme_imported: EventHandler<()>,
 ) -> Element {
     // -----------------------------------------------------------------------
     // Auto-save on toggle with visual feedback
@@ -76,6 +77,11 @@ pub fn SettingsPage(
     });
 
     let wifi_adapter_changed = local_wifi_adapter() != original_wifi_adapter;
+
+    // Theme import state
+    let mut theme_import_path = use_signal(|| String::new());
+    let mut theme_import_status = use_signal(|| None::<Result<String, String>>);
+    let mut theme_importing = use_signal(|| false);
 
     // Check if save is safe (not selecting active connection)
     let save_wifi_disabled = if wifi_adapter_changed {
@@ -252,8 +258,93 @@ pub fn SettingsPage(
                         }
                     }
 
+                    // Import custom theme
+                    div { class: "input-group", style: "margin-top: 16px; border-top: 1px solid var(--border); padding-top: 16px;",
+                        label { "Import Custom Theme" }
+                        div { style: "display: flex; gap: 8px;",
+                            input {
+                                r#type: "text",
+                                placeholder: "/path/to/theme.css",
+                                value: "{theme_import_path}",
+                                disabled: theme_importing(),
+                                oninput: move |e| theme_import_path.set(e.value()),
+                            }
+                            button {
+                                disabled: theme_importing() || theme_import_path().is_empty(),
+                                onclick: move |_| {
+                                    let path = theme_import_path();
+                                    if path.is_empty() {
+                                        return;
+                                    }
+
+                                    theme_importing.set(true);
+                                    theme_import_status.set(None);
+
+                                    spawn(async move {
+                                        // Import and validate theme file (blocking I/O in spawn)
+                                        let result = match pentest_core::theme_loader::import_theme_file(&path) {
+                                            Ok(dest_path) => {
+                                                // Validate the imported theme
+                                                match pentest_core::theme_loader::load_theme_file(&dest_path) {
+                                                    Ok(content) => {
+                                                        match crate::theme::parse_theme_file(&content) {
+                                                            Ok(theme) => {
+                                                                // Validate CSS security
+                                                                if let Some(custom_css) = &theme.custom_css {
+                                                                    if let Err(errors) = crate::theme::validate_custom_css(custom_css) {
+                                                                        let _ = std::fs::remove_file(&dest_path);
+                                                                        Err(format!("Theme validation failed:\n{}", errors.join("\n")))
+                                                                    } else {
+                                                                        Ok(format!("Theme '{}' imported successfully!", theme.metadata.name))
+                                                                    }
+                                                                } else {
+                                                                    Ok(format!("Theme '{}' imported successfully!", theme.metadata.name))
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                let _ = std::fs::remove_file(&dest_path);
+                                                                Err(format!("Invalid theme format: {}", e))
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => Err(format!("Failed to read theme: {}", e)),
+                                                }
+                                            }
+                                            Err(e) => Err(format!("Import failed: {}", e)),
+                                        };
+
+                                        theme_import_status.set(Some(result.clone()));
+                                        theme_importing.set(false);
+                                        theme_import_path.set(String::new());
+
+                                        if result.is_ok() {
+                                            on_theme_imported.call(());
+                                        }
+                                    });
+                                },
+                                if theme_importing() {
+                                    "Importing..."
+                                } else {
+                                    "Import"
+                                }
+                            }
+                        }
+
+                        // Show import status
+                        if let Some(status) = theme_import_status() {
+                            match status {
+                                Ok(msg) => div { class: "text-success-xs", style: "margin-top: 4px;", "{msg}" },
+                                Err(err) => div { class: "text-error-xs", style: "margin-top: 4px; white-space: pre-wrap;", "{err}" },
+                            }
+                        }
+
+                        div { class: "text-dim-xs", style: "margin-top: 4px;",
+                            "Import .css theme files from disk. See themes/README.md for format."
+                        }
+                    }
+
                     // Info text
-                    div { class: "text-dim-xs", style: "margin-top: 8px;",
+                    div { class: "text-dim-xs", style: "margin-top: 12px;",
                         "Theme changes apply instantly"
                     }
                 }
