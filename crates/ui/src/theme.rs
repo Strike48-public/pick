@@ -731,9 +731,9 @@ fn get_theme_colors(theme: Theme) -> ThemeColors {
     match theme {
         Theme::Dark => dark_theme(),
         Theme::Light => light_theme(),
-        Theme::Rust => rust_theme(),
-        Theme::Chrome => chrome_theme(),
-        Theme::Rainbow => rainbow_theme(),
+        Theme::Dracula => dracula_theme(),
+        Theme::Gruvbox => gruvbox_theme(),
+        Theme::TokyoNight => tokyo_night_theme(),
         Theme::Matrix => matrix_theme(),
         Theme::Cyberpunk => cyberpunk_theme(),
         Theme::Nord => nord_theme(),
@@ -857,117 +857,117 @@ fn light_theme() -> ThemeColors {
     }
 }
 
-fn rust_theme() -> ThemeColors {
+fn dracula_theme() -> ThemeColors {
     ThemeColors {
         color_scheme: "dark",
-        background: "oklch(0.15 0.05 40)",      // Deep brown
-        foreground: "oklch(0.95 0.02 40)",      // Warm off-white
-        card: "oklch(0.18 0.05 40)",
-        popover: "oklch(0.18 0.05 40)",
-        primary: "oklch(0.65 0.2 40)",          // Rust orange
-        primary_foreground: "oklch(0.95 0.02 40)",
-        secondary: "oklch(0.25 0.08 40)",       // Burnt orange
-        secondary_foreground: "oklch(0.95 0.02 40)",
-        muted: "oklch(0.30 0.05 40)",
-        muted_foreground: "oklch(0.70 0.05 40)",
-        accent: "oklch(0.55 0.18 35)",          // Copper
-        accent_foreground: "oklch(0.95 0.02 40)",
-        destructive: "oklch(0.50 0.20 25)",
-        border: "oklch(0.30 0.05 40)",
-        input: "oklch(0.20 0.05 40)",
-        ring: "oklch(0.50 0.15 40)",
-        sidebar: "oklch(0.12 0.05 40)",
-        sidebar_foreground: "oklch(0.95 0.02 40)",
-        sidebar_primary: "oklch(0.65 0.2 40)",
-        sidebar_primary_foreground: "oklch(0.95 0.02 40)",
-        sidebar_accent: "oklch(0.25 0.08 40)",
-        sidebar_accent_foreground: "oklch(0.95 0.02 40)",
-        sidebar_border: "oklch(0.25 0.05 40)",
-        sidebar_ring: "oklch(0.50 0.15 40)",
-        chart_1: "oklch(0.65 0.2 40)",
-        chart_2: "oklch(0.60 0.18 50)",
-        chart_3: "oklch(0.70 0.15 30)",
-        chart_4: "oklch(0.55 0.18 35)",
-        chart_5: "oklch(0.60 0.16 45)",
-        success: "oklch(0.70 0.15 140)",
-        warning: "oklch(0.75 0.18 70)",
-        info: "oklch(0.65 0.12 240)",
+        background: "oklch(0.053 0.006 260)",    // Near-black #0E0D11
+        foreground: "oklch(0.971 0.009 260)",    // Off-white #F8F8F2
+        card: "oklch(0.08 0.01 260)",
+        popover: "oklch(0.08 0.01 260)",
+        primary: "oklch(0.608 0.179 8)",         // Neon pink #FF79C6
+        primary_foreground: "oklch(0.971 0.009 260)",
+        secondary: "oklch(0.35 0.05 260)",       // Dark purple-gray
+        secondary_foreground: "oklch(0.971 0.009 260)",
+        muted: "oklch(0.30 0.04 260)",
+        muted_foreground: "oklch(0.75 0.05 260)",
+        accent: "oklch(0.82 0.15 180)",          // Cyan #8BE9FD
+        accent_foreground: "oklch(0.053 0.006 260)",
+        destructive: "oklch(0.55 0.22 25)",
+        border: "oklch(0.25 0.03 260)",
+        input: "oklch(0.15 0.02 260)",
+        ring: "oklch(0.608 0.179 8)",
+        sidebar: "oklch(0.04 0.005 260)",
+        sidebar_foreground: "oklch(0.971 0.009 260)",
+        sidebar_primary: "oklch(0.608 0.179 8)",
+        sidebar_primary_foreground: "oklch(0.971 0.009 260)",
+        sidebar_accent: "oklch(0.35 0.05 260)",
+        sidebar_accent_foreground: "oklch(0.971 0.009 260)",
+        sidebar_border: "oklch(0.20 0.03 260)",
+        sidebar_ring: "oklch(0.608 0.179 8)",
+        chart_1: "oklch(0.608 0.179 8)",         // Pink
+        chart_2: "oklch(0.78 0.18 145)",         // Green #50FA7B
+        chart_3: "oklch(0.82 0.15 180)",         // Cyan
+        chart_4: "oklch(0.75 0.20 60)",          // Yellow #F1FA8C
+        chart_5: "oklch(0.72 0.18 280)",         // Purple #BD93F9
+        success: "oklch(0.78 0.18 145)",
+        warning: "oklch(0.80 0.18 70)",
+        info: "oklch(0.72 0.18 280)",
     }
 }
 
-fn chrome_theme() -> ThemeColors {
+fn gruvbox_theme() -> ThemeColors {
     ThemeColors {
         color_scheme: "dark",
-        background: "oklch(0.20 0.02 240)",     // Charcoal
-        foreground: "oklch(0.95 0.01 240)",     // Cool white
-        card: "oklch(0.24 0.02 240)",
-        popover: "oklch(0.24 0.02 240)",
-        primary: "oklch(0.60 0.15 240)",        // Chrome blue
-        primary_foreground: "oklch(0.95 0.01 240)",
-        secondary: "oklch(0.35 0.03 240)",      // Steel gray
-        secondary_foreground: "oklch(0.95 0.01 240)",
-        muted: "oklch(0.40 0.02 240)",
-        muted_foreground: "oklch(0.70 0.02 240)",
-        accent: "oklch(0.55 0.12 220)",         // Silver blue
-        accent_foreground: "oklch(0.95 0.01 240)",
-        destructive: "oklch(0.50 0.20 25)",
-        border: "oklch(0.35 0.02 240)",
-        input: "oklch(0.25 0.02 240)",
-        ring: "oklch(0.50 0.10 240)",
-        sidebar: "oklch(0.18 0.02 240)",
-        sidebar_foreground: "oklch(0.95 0.01 240)",
-        sidebar_primary: "oklch(0.60 0.15 240)",
-        sidebar_primary_foreground: "oklch(0.95 0.01 240)",
-        sidebar_accent: "oklch(0.35 0.03 240)",
-        sidebar_accent_foreground: "oklch(0.95 0.01 240)",
-        sidebar_border: "oklch(0.30 0.02 240)",
-        sidebar_ring: "oklch(0.50 0.10 240)",
-        chart_1: "oklch(0.60 0.15 240)",
-        chart_2: "oklch(0.65 0.12 220)",
-        chart_3: "oklch(0.55 0.18 260)",
-        chart_4: "oklch(0.58 0.14 200)",
-        chart_5: "oklch(0.62 0.16 250)",
-        success: "oklch(0.70 0.15 160)",
-        warning: "oklch(0.75 0.15 80)",
-        info: "oklch(0.65 0.15 240)",
+        background: "oklch(0.157 0.000 260)",    // Dark warm gray #282828
+        foreground: "oklch(0.861 0.069 26)",     // Warm beige #ebdbb2
+        card: "oklch(0.20 0.01 26)",
+        popover: "oklch(0.20 0.01 26)",
+        primary: "oklch(0.578 0.256 36)",        // Gruvbox orange #fe8019
+        primary_foreground: "oklch(0.157 0.000 260)",
+        secondary: "oklch(0.35 0.08 26)",        // Warm dark
+        secondary_foreground: "oklch(0.861 0.069 26)",
+        muted: "oklch(0.40 0.04 26)",
+        muted_foreground: "oklch(0.72 0.06 26)",
+        accent: "oklch(0.75 0.18 60)",           // Yellow #fabd2f
+        accent_foreground: "oklch(0.157 0.000 260)",
+        destructive: "oklch(0.52 0.22 20)",
+        border: "oklch(0.35 0.03 26)",
+        input: "oklch(0.22 0.02 26)",
+        ring: "oklch(0.578 0.256 36)",
+        sidebar: "oklch(0.12 0.01 26)",
+        sidebar_foreground: "oklch(0.861 0.069 26)",
+        sidebar_primary: "oklch(0.578 0.256 36)",
+        sidebar_primary_foreground: "oklch(0.157 0.000 260)",
+        sidebar_accent: "oklch(0.35 0.08 26)",
+        sidebar_accent_foreground: "oklch(0.861 0.069 26)",
+        sidebar_border: "oklch(0.30 0.03 26)",
+        sidebar_ring: "oklch(0.578 0.256 36)",
+        chart_1: "oklch(0.578 0.256 36)",        // Orange
+        chart_2: "oklch(0.72 0.15 130)",         // Green #b8bb26
+        chart_3: "oklch(0.75 0.18 60)",          // Yellow
+        chart_4: "oklch(0.65 0.20 255)",         // Blue #458588
+        chart_5: "oklch(0.68 0.16 300)",         // Purple #b16286
+        success: "oklch(0.72 0.15 130)",
+        warning: "oklch(0.75 0.18 60)",
+        info: "oklch(0.65 0.20 255)",
     }
 }
 
-fn rainbow_theme() -> ThemeColors {
+fn tokyo_night_theme() -> ThemeColors {
     ThemeColors {
         color_scheme: "dark",
-        background: "oklch(0.15 0.10 300)",     // Deep purple
-        foreground: "oklch(0.98 0.02 300)",     // Pure white
-        card: "oklch(0.18 0.12 300)",
-        popover: "oklch(0.18 0.12 300)",
-        primary: "oklch(0.70 0.30 330)",        // Vibrant magenta
-        primary_foreground: "oklch(0.98 0.02 300)",
-        secondary: "oklch(0.65 0.28 280)",      // Purple
-        secondary_foreground: "oklch(0.98 0.02 300)",
-        muted: "oklch(0.35 0.15 300)",
-        muted_foreground: "oklch(0.75 0.10 300)",
-        accent: "oklch(0.70 0.30 180)",         // Cyan
-        accent_foreground: "oklch(0.98 0.02 300)",
-        destructive: "oklch(0.55 0.30 25)",
-        border: "oklch(0.35 0.15 300)",
-        input: "oklch(0.22 0.12 300)",
-        ring: "oklch(0.60 0.25 330)",
-        sidebar: "oklch(0.12 0.12 300)",
-        sidebar_foreground: "oklch(0.98 0.02 300)",
-        sidebar_primary: "oklch(0.70 0.30 330)",
-        sidebar_primary_foreground: "oklch(0.98 0.02 300)",
-        sidebar_accent: "oklch(0.65 0.28 280)",
-        sidebar_accent_foreground: "oklch(0.98 0.02 300)",
-        sidebar_border: "oklch(0.30 0.15 300)",
-        sidebar_ring: "oklch(0.60 0.25 330)",
-        chart_1: "oklch(0.70 0.30 0)",          // Red
-        chart_2: "oklch(0.75 0.28 120)",        // Green
-        chart_3: "oklch(0.70 0.30 240)",        // Blue
-        chart_4: "oklch(0.75 0.28 60)",         // Yellow
-        chart_5: "oklch(0.70 0.30 180)",        // Cyan
-        success: "oklch(0.75 0.25 150)",
-        warning: "oklch(0.80 0.25 80)",
-        info: "oklch(0.70 0.25 240)",
+        background: "oklch(0.108 0.017 260)",    // Deep blue-black #1a1b26
+        foreground: "oklch(0.796 0.068 258)",    // Light blue #c0caf5
+        card: "oklch(0.14 0.02 260)",
+        popover: "oklch(0.14 0.02 260)",
+        primary: "oklch(0.626 0.149 254)",       // Tokyo blue #7aa2f7
+        primary_foreground: "oklch(0.108 0.017 260)",
+        secondary: "oklch(0.28 0.04 260)",       // Dark blue-gray
+        secondary_foreground: "oklch(0.796 0.068 258)",
+        muted: "oklch(0.35 0.03 260)",
+        muted_foreground: "oklch(0.70 0.06 258)",
+        accent: "oklch(0.705 0.114 266)",        // Purple #bb9af7
+        accent_foreground: "oklch(0.108 0.017 260)",
+        destructive: "oklch(0.54 0.20 25)",
+        border: "oklch(0.30 0.025 260)",
+        input: "oklch(0.18 0.02 260)",
+        ring: "oklch(0.626 0.149 254)",
+        sidebar: "oklch(0.08 0.015 260)",
+        sidebar_foreground: "oklch(0.796 0.068 258)",
+        sidebar_primary: "oklch(0.626 0.149 254)",
+        sidebar_primary_foreground: "oklch(0.108 0.017 260)",
+        sidebar_accent: "oklch(0.28 0.04 260)",
+        sidebar_accent_foreground: "oklch(0.796 0.068 258)",
+        sidebar_border: "oklch(0.24 0.025 260)",
+        sidebar_ring: "oklch(0.626 0.149 254)",
+        chart_1: "oklch(0.626 0.149 254)",       // Blue
+        chart_2: "oklch(0.705 0.114 266)",       // Purple
+        chart_3: "oklch(0.78 0.15 180)",         // Cyan #7dcfff
+        chart_4: "oklch(0.75 0.18 120)",         // Green #9ece6a
+        chart_5: "oklch(0.72 0.20 50)",          // Orange #ff9e64
+        success: "oklch(0.75 0.18 120)",
+        warning: "oklch(0.75 0.18 60)",
+        info: "oklch(0.626 0.149 254)",
     }
 }
 

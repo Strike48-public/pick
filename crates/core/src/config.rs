@@ -19,9 +19,9 @@ pub enum Theme {
     #[default]
     Dark,
     Light,
-    Rust,
-    Chrome,
-    Rainbow,
+    Dracula,
+    Gruvbox,
+    TokyoNight,
     Matrix,
     Cyberpunk,
     Nord,

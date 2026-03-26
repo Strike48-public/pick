@@ -191,9 +191,9 @@ pub fn SettingsPage(
                                 let new_theme = match theme_str.as_str() {
                                     "Dark" => Theme::Dark,
                                     "Light" => Theme::Light,
-                                    "Rust" => Theme::Rust,
-                                    "Chrome" => Theme::Chrome,
-                                    "Rainbow" => Theme::Rainbow,
+                                    "Dracula" => Theme::Dracula,
+                                    "Gruvbox" => Theme::Gruvbox,
+                                    "TokyoNight" => Theme::TokyoNight,
                                     "Matrix" => Theme::Matrix,
                                     "Cyberpunk" => Theme::Cyberpunk,
                                     "Nord" => Theme::Nord,
@@ -203,12 +203,12 @@ pub fn SettingsPage(
                             },
                             option { value: "Dark", "Dark" }
                             option { value: "Light", "Light" }
-                            option { value: "Rust", "Rust 🦀" }
-                            option { value: "Chrome", "Chrome 🔷" }
-                            option { value: "Rainbow", "Rainbow 🌈" }
-                            option { value: "Matrix", "Matrix 💚" }
-                            option { value: "Cyberpunk", "Cyberpunk 💜" }
-                            option { value: "Nord", "Nord ❄️" }
+                            option { value: "Dracula", "Dracula" }
+                            option { value: "Gruvbox", "Gruvbox" }
+                            option { value: "TokyoNight", "Tokyo Night" }
+                            option { value: "Matrix", "Matrix" }
+                            option { value: "Cyberpunk", "Cyberpunk" }
+                            option { value: "Nord", "Nord" }
                         }
                     }
 
