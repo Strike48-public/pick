@@ -205,6 +205,10 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
                     on_border_radius_change: move |r: BorderRadius| props.on_border_radius_change.call(r),
                     density: props.density,
                     on_density_change: move |d: Density| props.on_density_change.call(d),
+                    on_theme_imported: move |_| {
+                        // Theme imported - could trigger UI refresh here if needed
+                        tracing::info!("Custom theme imported successfully");
+                    },
                 }
             }
         }

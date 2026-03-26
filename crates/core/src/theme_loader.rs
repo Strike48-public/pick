@@ -70,6 +70,67 @@ pub fn load_theme_file(path: &PathBuf) -> Result<String> {
     })
 }
 
+/// Import a theme file from an external path to the user's themes directory
+///
+/// This function:
+/// 1. Validates the source file exists and is readable
+/// 2. Extracts the filename
+/// 3. Copies the file to ~/.config/pentest-connector/themes/
+/// 4. Returns the new path
+pub fn import_theme_file(source_path: &str) -> Result<PathBuf> {
+    let source = PathBuf::from(source_path);
+
+    // Validate source file exists
+    if !source.exists() {
+        return Err(Error::Config(format!(
+            "Theme file not found: {}",
+            source_path
+        )));
+    }
+
+    // Validate it's a file (not a directory)
+    if !source.is_file() {
+        return Err(Error::Config(format!(
+            "Path is not a file: {}",
+            source_path
+        )));
+    }
+
+    // Validate .css extension
+    if source.extension().and_then(|s| s.to_str()) != Some("css") {
+        return Err(Error::Config(
+            "Theme file must have .css extension".to_string(),
+        ));
+    }
+
+    // Get filename
+    let file_name = source
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| Error::Config("Invalid file name".to_string()))?;
+
+    // Get destination directory
+    let themes_dir = get_themes_dir()?;
+    let dest_path = themes_dir.join(file_name);
+
+    // Check if file already exists
+    if dest_path.exists() {
+        return Err(Error::Config(format!(
+            "Theme '{}' already exists. Please rename the file or delete the existing theme.",
+            file_name
+        )));
+    }
+
+    // Copy file to themes directory
+    fs::copy(&source, &dest_path).map_err(|e| {
+        Error::Config(format!("Failed to copy theme file: {}", e))
+    })?;
+
+    tracing::info!("Imported theme: {} -> {:?}", source_path, dest_path);
+
+    Ok(dest_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
