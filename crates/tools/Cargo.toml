@@ -15,6 +15,7 @@ ios = ["pentest-platform/ios"]
 # Core
 pentest-core = { workspace = true }
 pentest-platform = { workspace = true, default-features = false }
+pentest-cyberchef = { path = "../cyberchef" }
 
 # Async
 tokio = { workspace = true }
