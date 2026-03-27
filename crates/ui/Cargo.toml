@@ -21,9 +21,9 @@ connector = [
     "dep:tracing-subscriber",
 ]
 shell-ws = ["liveview", "dep:futures"]
-desktop = ["pentest-platform/desktop"]
-android = ["pentest-platform/android"]
-ios = ["pentest-platform/ios"]
+desktop = ["pentest-platform/desktop", "pentest-tools/desktop"]
+android = ["pentest-platform/android", "pentest-tools/android"]
+ios = ["pentest-platform/ios", "pentest-tools/ios"]
 
 [lib]
 name = "pentest_ui"
@@ -38,6 +38,7 @@ required-features = ["connector"]
 # Core
 pentest-core = { workspace = true }
 pentest-platform = { workspace = true }
+pentest-tools = { workspace = true, default-features = false }
 
 # Dioxus (renderer chosen by app)
 dioxus = { workspace = true }

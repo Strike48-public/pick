@@ -1,0 +1,81 @@
+/* Theme: Example Custom Theme */
+/* Author: Pick Project */
+/* Version: 1.0.0 */
+/* Description: An example custom theme showing the file format */
+
+:root {
+    /* Base colors - REQUIRED */
+    color-scheme: dark;
+    --background: oklch(0.12 0.05 280);
+    --foreground: oklch(0.95 0.02 280);
+    --card: oklch(0.15 0.05 280);
+    --popover: oklch(0.15 0.05 280);
+    --primary: oklch(0.70 0.25 280);
+    --primary-foreground: oklch(0.95 0.02 280);
+    --secondary: oklch(0.25 0.08 280);
+    --secondary-foreground: oklch(0.95 0.02 280);
+    --muted: oklch(0.30 0.05 280);
+    --muted-foreground: oklch(0.70 0.05 280);
+    --accent: oklch(0.60 0.20 260);
+    --accent-foreground: oklch(0.95 0.02 280);
+    --destructive: oklch(0.50 0.20 25);
+    --border: oklch(0.30 0.05 280);
+    --input: oklch(0.20 0.05 280);
+    --ring: oklch(0.50 0.15 280);
+
+    /* Sidebar colors - REQUIRED */
+    --sidebar: oklch(0.10 0.05 280);
+    --sidebar-foreground: oklch(0.95 0.02 280);
+    --sidebar-primary: oklch(0.70 0.25 280);
+    --sidebar-primary-foreground: oklch(0.95 0.02 280);
+    --sidebar-accent: oklch(0.25 0.08 280);
+    --sidebar-accent-foreground: oklch(0.95 0.02 280);
+    --sidebar-border: oklch(0.25 0.05 280);
+    --sidebar-ring: oklch(0.50 0.15 280);
+
+    /* Chart colors - REQUIRED (5 distinct colors for data visualization) */
+    --chart-1: oklch(0.70 0.25 280);
+    --chart-2: oklch(0.65 0.22 260);
+    --chart-3: oklch(0.72 0.20 300);
+    --chart-4: oklch(0.68 0.23 240);
+    --chart-5: oklch(0.66 0.24 320);
+
+    /* Status colors - REQUIRED */
+    --success: oklch(0.70 0.20 150);
+    --warning: oklch(0.75 0.20 80);
+    --info: oklch(0.68 0.18 260);
+
+    /* Shape tokens - OPTIONAL (will use defaults if not specified) */
+    --radius: 8px;
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --radius-xl: 12px;
+
+    /* Spacing tokens - OPTIONAL (will use defaults if not specified) */
+    --spacing-xs: 4px;
+    --spacing-sm: 8px;
+    --spacing-md: 12px;
+    --spacing-lg: 16px;
+    --spacing-xl: 24px;
+
+    /* Typography - OPTIONAL */
+    --font-size: 14px;
+}
+
+/* Optional: Custom component styles */
+/* These will be applied in addition to the base component styles */
+
+.dashboard-card {
+    box-shadow: 0 2px 8px oklch(0 0 0 / 0.2);
+}
+
+.dashboard-card:hover {
+    box-shadow: 0 4px 16px oklch(0 0 0 / 0.3);
+}
+
+button {
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
