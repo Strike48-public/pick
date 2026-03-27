@@ -398,34 +398,82 @@ pub fn SettingsPage(
                     h2 { "Appearance" }
                 }
                 div { class: "settings-card-body",
-                    // Theme selector
+                    // Keyboard shortcuts hint
+                    div {
+                        style: "padding: 8px 12px; background: var(--accent); border-radius: var(--radius-md); margin-bottom: 16px; font-size: 12px; color: var(--accent-foreground);",
+                        "💡 Tip: Press Ctrl+Shift+1-8 for quick theme switching"
+                    }
+                    // Theme selector with random button
                     div { class: "input-group",
                         label { "Theme" }
-                        select {
-                            value: "{theme:?}",
-                            onchange: move |e| {
-                                let theme_str = e.value();
-                                let new_theme = match theme_str.as_str() {
-                                    "Dark" => Theme::Dark,
-                                    "Light" => Theme::Light,
-                                    "Dracula" => Theme::Dracula,
-                                    "Gruvbox" => Theme::Gruvbox,
-                                    "TokyoNight" => Theme::TokyoNight,
-                                    "Matrix" => Theme::Matrix,
-                                    "Cyberpunk" => Theme::Cyberpunk,
-                                    "Nord" => Theme::Nord,
-                                    _ => Theme::Dark,
-                                };
-                                on_theme_change.call(new_theme);
-                            },
-                            option { value: "Dark", "Dark" }
-                            option { value: "Light", "Light" }
-                            option { value: "Dracula", "Dracula" }
-                            option { value: "Gruvbox", "Gruvbox" }
-                            option { value: "TokyoNight", "Tokyo Night" }
-                            option { value: "Matrix", "Matrix" }
-                            option { value: "Cyberpunk", "Cyberpunk" }
-                            option { value: "Nord", "Nord" }
+                        div { style: "display: flex; gap: 8px; align-items: center;",
+                            select {
+                                style: "flex: 1;",
+                                value: "{theme:?}",
+                                onchange: move |e| {
+                                    let theme_str = e.value();
+                                    let new_theme = match theme_str.as_str() {
+                                        "Dark" => Theme::Dark,
+                                        "Light" => Theme::Light,
+                                        "Dracula" => Theme::Dracula,
+                                        "Gruvbox" => Theme::Gruvbox,
+                                        "TokyoNight" => Theme::TokyoNight,
+                                        "Matrix" => Theme::Matrix,
+                                        "Cyberpunk" => Theme::Cyberpunk,
+                                        "Nord" => Theme::Nord,
+                                        _ => Theme::Dark,
+                                    };
+                                    on_theme_change.call(new_theme);
+                                },
+                                option { value: "Dark", "Dark" }
+                                option { value: "Light", "Light" }
+                                option { value: "Dracula", "Dracula" }
+                                option { value: "Gruvbox", "Gruvbox" }
+                                option { value: "TokyoNight", "Tokyo Night" }
+                                option { value: "Matrix", "Matrix" }
+                                option { value: "Cyberpunk", "Cyberpunk" }
+                                option { value: "Nord", "Nord" }
+                            }
+                            button {
+                                class: "button button-secondary",
+                                style: "padding: 8px 12px; min-width: auto;",
+                                title: "Random theme",
+                                onclick: move |_| {
+                                    let all_themes = [
+                                        Theme::Dark,
+                                        Theme::Light,
+                                        Theme::Dracula,
+                                        Theme::Gruvbox,
+                                        Theme::TokyoNight,
+                                        Theme::Matrix,
+                                        Theme::Cyberpunk,
+                                        Theme::Nord,
+                                    ];
+
+                                    // Get random theme different from current
+                                    let mut candidates: Vec<Theme> = all_themes
+                                        .iter()
+                                        .copied()
+                                        .filter(|t| *t != theme)
+                                        .collect();
+
+                                    if !candidates.is_empty() {
+                                        use std::collections::hash_map::RandomState;
+                                        use std::hash::{BuildHasher, Hash, Hasher};
+
+                                        // Simple pseudo-random using timestamp
+                                        let timestamp = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap()
+                                            .as_nanos();
+
+                                        let idx = (timestamp % candidates.len() as u128) as usize;
+                                        let new_theme = candidates[idx];
+                                        on_theme_change.call(new_theme);
+                                    }
+                                },
+                                "🎲"
+                            }
                         }
                     }
 

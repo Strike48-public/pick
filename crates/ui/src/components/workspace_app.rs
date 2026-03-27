@@ -358,11 +358,13 @@ pub fn WorkspaceApp() -> Element {
     let density_val = *density.read();
 
     let combined_css = format!(
-        "{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}\n{}",
         crate::theme::generate_theme_css(theme_val, radius_val, density_val),
         responsive_css(),
         utils_css(),
-        tailwind_css()
+        tailwind_css(),
+        crate::view_transitions::theme_transitions_css(),
+        crate::components::toast_css()
     );
 
     let page = *active_page.read();
@@ -406,7 +408,15 @@ pub fn WorkspaceApp() -> Element {
     rsx! {
         style { {combined_css} }
 
-        KeyboardShortcuts {
+        KonamiCodeWrapper {
+            on_konami: move |_| {
+                let mut s = settings.write();
+                s.theme = Theme::Matrix;
+                let _ = save_settings(&s);
+                theme.set(Theme::Matrix);
+            },
+
+            KeyboardShortcuts {
             on_navigate: move |nav_page: NavPage| {
                 if nav_page == NavPage::Logs {
                     last_seen_terminal_count.set(terminal_lines.read().len());
@@ -418,6 +428,12 @@ pub fn WorkspaceApp() -> Element {
             chat_visible: *active_page.read() == NavPage::Chat,
             on_close_help: move |_| help_visible.set(false),
             on_close_chat: move |_| {},
+            on_theme_change: move |t: Theme| {
+                let mut s = settings.write();
+                s.theme = t;
+                let _ = save_settings(&s);
+                theme.set(t);
+            },
 
             AppLayout {
                 active_page: page,
@@ -545,6 +561,7 @@ pub fn WorkspaceApp() -> Element {
                     },
                 }
             }
+        }
         }
 
         // Help modal — rendered outside the app-layout so it overlays everything

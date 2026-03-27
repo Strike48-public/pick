@@ -15,6 +15,7 @@ pub mod file_browser;
 pub mod help_modal;
 pub mod icons;
 pub mod keyboard_shortcuts;
+mod konami_code;
 pub mod loading_spinner;
 mod log_filter_bar;
 // router module requires dioxus-router dependency — kept as scaffolding reference
@@ -29,6 +30,7 @@ mod sidebar;
 pub mod status_bar;
 mod terminal;
 pub mod text_input;
+mod toast;
 pub mod tools_page;
 mod wifi_warning_dialog;
 #[cfg(feature = "liveview")]
@@ -51,6 +53,7 @@ pub use extension::{
 pub use file_browser::{FileBrowser, FileBrowserProps};
 pub use help_modal::HelpModal;
 pub use keyboard_shortcuts::KeyboardShortcuts;
+pub use konami_code::KonamiCodeWrapper;
 pub use loading_spinner::{LoadingSpinner, SpinnerSize};
 pub use log_filter_bar::LogFilterBar;
 // #[cfg(feature = "liveview")]
@@ -65,6 +68,7 @@ pub use sidebar::*;
 pub use status_bar::{ShortcutHint, StatusBar};
 pub use terminal::*;
 pub use text_input::TextInput;
+pub use toast::{toast_css, Toast, ToastContainer, ToastVariant};
 pub use tools_page::ToolsPage;
 pub use wifi_warning_dialog::WifiWarningDialog;
 #[cfg(feature = "liveview")]

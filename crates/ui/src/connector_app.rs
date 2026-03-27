@@ -537,10 +537,14 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         let css = crate::theme::generate_theme_css(theme_val, radius_val, density_val);
         let mcss = mobile_css();
         let ucss = utils_css();
+        let tcss = crate::view_transitions::theme_transitions_css();
+        let toast_css = crate::components::toast_css();
         rsx! {
             style { {css} }
             style { {mcss} }
             style { {ucss} }
+            style { {tcss} }
+            style { {toast_css} }
         }
     } else {
         rsx! {}

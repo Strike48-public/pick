@@ -7,6 +7,7 @@
 
 use super::sidebar::NavPage;
 use dioxus::prelude::*;
+use pentest_core::config::Theme;
 
 /// Props for [`KeyboardShortcuts`].
 #[derive(Props, Clone, PartialEq)]
@@ -23,6 +24,9 @@ pub struct KeyboardShortcutsProps {
     on_close_help: EventHandler<()>,
     /// Close the chat panel explicitly.
     on_close_chat: EventHandler<()>,
+    /// Change theme (optional, for Ctrl+Shift+1-8 shortcuts).
+    #[props(default)]
+    on_theme_change: Option<EventHandler<Theme>>,
     /// The wrapped application content.
     children: Element,
 }
@@ -35,12 +39,13 @@ pub struct KeyboardShortcutsProps {
 ///
 /// # Key bindings
 ///
-/// | Key     | Action               |
-/// |---------|----------------------|
-/// | `?`     | Toggle help modal    |
-/// | `1`-`6` | Navigate to page     |
-/// | `c`     | Toggle chat panel    |
-/// | `Esc`   | Close modal / panel  |
+/// | Key              | Action                    |
+/// |------------------|---------------------------|
+/// | `?`              | Toggle help modal         |
+/// | `1`-`6`          | Navigate to page          |
+/// | `c`              | Toggle chat panel         |
+/// | `Esc`            | Close modal / panel       |
+/// | `Ctrl+Shift+1-8` | Switch theme directly     |
 #[component]
 pub fn KeyboardShortcuts(props: KeyboardShortcutsProps) -> Element {
     // Auto-focus the wrapper div on mount so keydown events fire immediately.
@@ -66,6 +71,33 @@ pub fn KeyboardShortcuts(props: KeyboardShortcutsProps) -> Element {
             style: "outline: none; display: contents;",
             onkeydown: move |evt: Event<KeyboardData>| {
                 let key = evt.key();
+                let ctrl_key = evt.modifiers().ctrl();
+                let shift_key = evt.modifiers().shift();
+
+                // --- Ctrl+Shift+1-8: Theme switching ---
+                if ctrl_key && shift_key {
+                    if let Some(on_theme_change) = &props.on_theme_change {
+                        let theme_opt = match key {
+                            Key::Character(ref c) => match c.as_str() {
+                                "1" => Some(Theme::Dark),
+                                "2" => Some(Theme::Light),
+                                "3" => Some(Theme::Dracula),
+                                "4" => Some(Theme::Gruvbox),
+                                "5" => Some(Theme::TokyoNight),
+                                "6" => Some(Theme::Matrix),
+                                "7" => Some(Theme::Cyberpunk),
+                                "8" => Some(Theme::Nord),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+
+                        if let Some(theme) = theme_opt {
+                            on_theme_change.call(theme);
+                            return;
+                        }
+                    }
+                }
 
                 // --- Escape: close help first, then chat ---
                 if key == Key::Escape {
