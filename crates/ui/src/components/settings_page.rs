@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use pentest_core::config::{BorderRadius, Density, ShellMode, Theme};
 use pentest_platform::WifiConnectionStatus;
 
-use super::icons::Palette;
+use super::icons::{Download, Palette, Settings, Wifi};
 use crate::platform_helper;
 
 #[component]

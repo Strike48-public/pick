@@ -32,31 +32,7 @@ pub fn MatrixRainOverlay(props: MatrixRainOverlayProps) -> Element {
         return rsx! { div {} };
     }
 
-    rsx! {
-        div {
-            class: "matrix-rain-overlay",
-            onclick: move |_| props.on_dismiss.call(()),
-            onkeydown: move |_| props.on_dismiss.call(()),
-            tabindex: 0,
-
-            // Canvas for Matrix rain
-            canvas {
-                id: "matrix-rain-canvas",
-                class: "matrix-rain-canvas",
-            }
-
-            // "Follow the White Rabbit" text
-            if show_text() {
-                div {
-                    class: "matrix-rain-text matrix-text-fade-in",
-                    "Follow the White Rabbit"
-                }
-            }
-        }
-
-        // Initialize canvas animation
-        script {
-            dangerous_inner_html: r#"(function() {
+    let matrix_script = r#"(function() {
     const canvas = document.getElementById('matrix-rain-canvas');
     if (!canvas) return;
 
@@ -124,7 +100,33 @@ pub fn MatrixRainOverlay(props: MatrixRainOverlayProps) -> Element {
         canvas.width = window.innerWidth;
         canvas.height = window.innerHeight;
     });
-})();"#
+})();"#;
+
+    rsx! {
+        div {
+            class: "matrix-rain-overlay",
+            onclick: move |_| props.on_dismiss.call(()),
+            onkeydown: move |_| props.on_dismiss.call(()),
+            tabindex: 0,
+
+            // Canvas for Matrix rain
+            canvas {
+                id: "matrix-rain-canvas",
+                class: "matrix-rain-canvas",
+            }
+
+            // "Follow the White Rabbit" text
+            if show_text() {
+                div {
+                    class: "matrix-rain-text matrix-text-fade-in",
+                    "Follow the White Rabbit"
+                }
+            }
+        }
+
+        // Initialize canvas animation
+        script {
+            dangerous_inner_html: "{matrix_script}"
         }
     }
 }
