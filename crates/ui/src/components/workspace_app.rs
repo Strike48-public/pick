@@ -16,7 +16,6 @@ use super::file_browser::FileBrowser;
 use super::help_modal::HelpModal;
 use super::icons::MessageCircle;
 use super::keyboard_shortcuts::KeyboardShortcuts;
-use super::konami_code::KonamiCodeWrapper;
 use super::log_filter_bar::LogFilterBar;
 use super::matrix_rain::MatrixRainOverlay;
 use super::settings_page::SettingsPage;
@@ -414,19 +413,7 @@ pub fn WorkspaceApp() -> Element {
     rsx! {
         style { {combined_css} }
 
-        KonamiCodeWrapper {
-            on_konami: move |_| {
-                // Switch to Matrix theme immediately
-                let mut s = settings.write();
-                s.theme = Theme::Matrix;
-                let _ = save_settings(&s);
-                theme.set(Theme::Matrix);
-
-                // Show Matrix rain overlay
-                matrix_rain_visible.set(true);
-            },
-
-            KeyboardShortcuts {
+        KeyboardShortcuts {
             on_navigate: move |nav_page: NavPage| {
                 if nav_page == NavPage::Logs {
                     last_seen_terminal_count.set(terminal_lines.read().len());
@@ -443,6 +430,16 @@ pub fn WorkspaceApp() -> Element {
                 s.theme = t;
                 let _ = save_settings(&s);
                 theme.set(t);
+            },
+            on_konami: move |_| {
+                // Switch to Matrix theme immediately
+                let mut s = settings.write();
+                s.theme = Theme::Matrix;
+                let _ = save_settings(&s);
+                theme.set(Theme::Matrix);
+
+                // Show Matrix rain overlay
+                matrix_rain_visible.set(true);
             },
 
             AppLayout {
@@ -571,7 +568,6 @@ pub fn WorkspaceApp() -> Element {
                     },
                 }
             }
-        }
         }
 
         // Help modal — rendered outside the app-layout so it overlays everything
