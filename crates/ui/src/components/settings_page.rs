@@ -451,16 +451,13 @@ pub fn SettingsPage(
                                     ];
 
                                     // Get random theme different from current
-                                    let mut candidates: Vec<Theme> = all_themes
+                                    let candidates: Vec<Theme> = all_themes
                                         .iter()
                                         .copied()
                                         .filter(|t| *t != theme)
                                         .collect();
 
                                     if !candidates.is_empty() {
-                                        use std::collections::hash_map::RandomState;
-                                        use std::hash::{BuildHasher, Hash, Hasher};
-
                                         // Simple pseudo-random using timestamp
                                         let timestamp = std::time::SystemTime::now()
                                             .duration_since(std::time::UNIX_EPOCH)
