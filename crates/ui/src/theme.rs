@@ -562,7 +562,10 @@ pub fn parse_theme_file(content: &str) -> Result<CustomTheme, String> {
         let trimmed = line.trim();
 
         // Parse metadata comments
-        if let Some(comment) = trimmed.strip_prefix("/*").and_then(|s| s.strip_suffix("*/")) {
+        if let Some(comment) = trimmed
+            .strip_prefix("/*")
+            .and_then(|s| s.strip_suffix("*/"))
+        {
             let comment = comment.trim();
             if let Some(name) = comment.strip_prefix("Theme:") {
                 metadata.name = name.trim().to_string();
@@ -656,7 +659,9 @@ pub fn validate_custom_css(css: &str) -> Result<(), Vec<String>> {
     if let Some(url_start) = css.find("url(") {
         let url_content = &css[url_start + 4..];
         if let Some(closing) = url_content.find(')') {
-            let url_value = url_content[..closing].trim().trim_matches(|c| c == '\'' || c == '"');
+            let url_value = url_content[..closing]
+                .trim()
+                .trim_matches(|c| c == '\'' || c == '"');
             let url_lower = url_value.to_lowercase();
 
             // Allow data:image/ URLs but block everything else with external protocols
@@ -860,17 +865,17 @@ fn light_theme() -> ThemeColors {
 fn dracula_theme() -> ThemeColors {
     ThemeColors {
         color_scheme: "dark",
-        background: "oklch(0.053 0.006 260)",    // Near-black #0E0D11
-        foreground: "oklch(0.971 0.009 260)",    // Off-white #F8F8F2
+        background: "oklch(0.053 0.006 260)", // Near-black #0E0D11
+        foreground: "oklch(0.971 0.009 260)", // Off-white #F8F8F2
         card: "oklch(0.08 0.01 260)",
         popover: "oklch(0.08 0.01 260)",
-        primary: "oklch(0.608 0.179 8)",         // Neon pink #FF79C6
+        primary: "oklch(0.608 0.179 8)", // Neon pink #FF79C6
         primary_foreground: "oklch(0.971 0.009 260)",
-        secondary: "oklch(0.35 0.05 260)",       // Dark purple-gray
+        secondary: "oklch(0.35 0.05 260)", // Dark purple-gray
         secondary_foreground: "oklch(0.971 0.009 260)",
         muted: "oklch(0.30 0.04 260)",
         muted_foreground: "oklch(0.75 0.05 260)",
-        accent: "oklch(0.82 0.15 180)",          // Cyan #8BE9FD
+        accent: "oklch(0.82 0.15 180)", // Cyan #8BE9FD
         accent_foreground: "oklch(0.053 0.006 260)",
         destructive: "oklch(0.55 0.22 25)",
         border: "oklch(0.25 0.03 260)",
@@ -884,11 +889,11 @@ fn dracula_theme() -> ThemeColors {
         sidebar_accent_foreground: "oklch(0.971 0.009 260)",
         sidebar_border: "oklch(0.20 0.03 260)",
         sidebar_ring: "oklch(0.608 0.179 8)",
-        chart_1: "oklch(0.608 0.179 8)",         // Pink
-        chart_2: "oklch(0.78 0.18 145)",         // Green #50FA7B
-        chart_3: "oklch(0.82 0.15 180)",         // Cyan
-        chart_4: "oklch(0.75 0.20 60)",          // Yellow #F1FA8C
-        chart_5: "oklch(0.72 0.18 280)",         // Purple #BD93F9
+        chart_1: "oklch(0.608 0.179 8)", // Pink
+        chart_2: "oklch(0.78 0.18 145)", // Green #50FA7B
+        chart_3: "oklch(0.82 0.15 180)", // Cyan
+        chart_4: "oklch(0.75 0.20 60)",  // Yellow #F1FA8C
+        chart_5: "oklch(0.72 0.18 280)", // Purple #BD93F9
         success: "oklch(0.78 0.18 145)",
         warning: "oklch(0.80 0.18 70)",
         info: "oklch(0.72 0.18 280)",
@@ -898,17 +903,17 @@ fn dracula_theme() -> ThemeColors {
 fn gruvbox_theme() -> ThemeColors {
     ThemeColors {
         color_scheme: "dark",
-        background: "oklch(0.157 0.000 260)",    // Dark warm gray #282828
-        foreground: "oklch(0.861 0.069 26)",     // Warm beige #ebdbb2
+        background: "oklch(0.157 0.000 260)", // Dark warm gray #282828
+        foreground: "oklch(0.861 0.069 26)",  // Warm beige #ebdbb2
         card: "oklch(0.20 0.01 26)",
         popover: "oklch(0.20 0.01 26)",
-        primary: "oklch(0.578 0.256 36)",        // Gruvbox orange #fe8019
+        primary: "oklch(0.578 0.256 36)", // Gruvbox orange #fe8019
         primary_foreground: "oklch(0.157 0.000 260)",
-        secondary: "oklch(0.35 0.08 26)",        // Warm dark
+        secondary: "oklch(0.35 0.08 26)", // Warm dark
         secondary_foreground: "oklch(0.861 0.069 26)",
         muted: "oklch(0.40 0.04 26)",
         muted_foreground: "oklch(0.72 0.06 26)",
-        accent: "oklch(0.75 0.18 60)",           // Yellow #fabd2f
+        accent: "oklch(0.75 0.18 60)", // Yellow #fabd2f
         accent_foreground: "oklch(0.157 0.000 260)",
         destructive: "oklch(0.52 0.22 20)",
         border: "oklch(0.35 0.03 26)",
@@ -922,11 +927,11 @@ fn gruvbox_theme() -> ThemeColors {
         sidebar_accent_foreground: "oklch(0.861 0.069 26)",
         sidebar_border: "oklch(0.30 0.03 26)",
         sidebar_ring: "oklch(0.578 0.256 36)",
-        chart_1: "oklch(0.578 0.256 36)",        // Orange
-        chart_2: "oklch(0.72 0.15 130)",         // Green #b8bb26
-        chart_3: "oklch(0.75 0.18 60)",          // Yellow
-        chart_4: "oklch(0.65 0.20 255)",         // Blue #458588
-        chart_5: "oklch(0.68 0.16 300)",         // Purple #b16286
+        chart_1: "oklch(0.578 0.256 36)", // Orange
+        chart_2: "oklch(0.72 0.15 130)",  // Green #b8bb26
+        chart_3: "oklch(0.75 0.18 60)",   // Yellow
+        chart_4: "oklch(0.65 0.20 255)",  // Blue #458588
+        chart_5: "oklch(0.68 0.16 300)",  // Purple #b16286
         success: "oklch(0.72 0.15 130)",
         warning: "oklch(0.75 0.18 60)",
         info: "oklch(0.65 0.20 255)",
@@ -936,19 +941,19 @@ fn gruvbox_theme() -> ThemeColors {
 fn tokyo_night_theme() -> ThemeColors {
     ThemeColors {
         color_scheme: "dark",
-        background: "oklch(0.125 0.020 258)",    // Storm bg #24283b (slightly lighter)
-        foreground: "oklch(0.805 0.065 258)",    // Light blue #c0caf5 (brighter)
+        background: "oklch(0.125 0.020 258)", // Storm bg #24283b (slightly lighter)
+        foreground: "oklch(0.805 0.065 258)", // Light blue #c0caf5 (brighter)
         card: "oklch(0.16 0.022 258)",
         popover: "oklch(0.16 0.022 258)",
-        primary: "oklch(0.645 0.155 254)",       // Tokyo blue #7aa2f7 (brighter)
+        primary: "oklch(0.645 0.155 254)", // Tokyo blue #7aa2f7 (brighter)
         primary_foreground: "oklch(0.125 0.020 258)",
-        secondary: "oklch(0.32 0.035 258)",      // Dark blue-gray
+        secondary: "oklch(0.32 0.035 258)", // Dark blue-gray
         secondary_foreground: "oklch(0.805 0.065 258)",
         muted: "oklch(0.38 0.030 258)",
         muted_foreground: "oklch(0.72 0.055 258)",
-        accent: "oklch(0.720 0.120 268)",        // Purple #bb9af7 (signature color)
+        accent: "oklch(0.720 0.120 268)", // Purple #bb9af7 (signature color)
         accent_foreground: "oklch(0.125 0.020 258)",
-        destructive: "oklch(0.56 0.22 20)",      // Red #f7768e
+        destructive: "oklch(0.56 0.22 20)", // Red #f7768e
         border: "oklch(0.32 0.028 258)",
         input: "oklch(0.20 0.024 258)",
         ring: "oklch(0.645 0.155 254)",
@@ -960,13 +965,13 @@ fn tokyo_night_theme() -> ThemeColors {
         sidebar_accent_foreground: "oklch(0.805 0.065 258)",
         sidebar_border: "oklch(0.26 0.028 258)",
         sidebar_ring: "oklch(0.645 0.155 254)",
-        chart_1: "oklch(0.645 0.155 254)",       // Blue #7aa2f7
-        chart_2: "oklch(0.720 0.120 268)",       // Purple #bb9af7
-        chart_3: "oklch(0.795 0.145 195)",       // Cyan #7dcfff
-        chart_4: "oklch(0.780 0.165 135)",       // Green #9ece6a
-        chart_5: "oklch(0.745 0.185 45)",        // Orange #ff9e64
+        chart_1: "oklch(0.645 0.155 254)", // Blue #7aa2f7
+        chart_2: "oklch(0.720 0.120 268)", // Purple #bb9af7
+        chart_3: "oklch(0.795 0.145 195)", // Cyan #7dcfff
+        chart_4: "oklch(0.780 0.165 135)", // Green #9ece6a
+        chart_5: "oklch(0.745 0.185 45)",  // Orange #ff9e64
         success: "oklch(0.780 0.165 135)",
-        warning: "oklch(0.775 0.175 70)",        // Yellow #e0af68
+        warning: "oklch(0.775 0.175 70)", // Yellow #e0af68
         info: "oklch(0.645 0.155 254)",
     }
 }
@@ -974,17 +979,17 @@ fn tokyo_night_theme() -> ThemeColors {
 fn matrix_theme() -> ThemeColors {
     ThemeColors {
         color_scheme: "dark",
-        background: "oklch(0.05 0 0)",          // Pure black
-        foreground: "oklch(0.70 0.30 150)",     // Matrix green
+        background: "oklch(0.05 0 0)",      // Pure black
+        foreground: "oklch(0.70 0.30 150)", // Matrix green
         card: "oklch(0.08 0 0)",
         popover: "oklch(0.08 0 0)",
-        primary: "oklch(0.70 0.30 150)",        // Phosphor green
+        primary: "oklch(0.70 0.30 150)", // Phosphor green
         primary_foreground: "oklch(0.05 0 0)",
-        secondary: "oklch(0.15 0.10 150)",      // Dark green
+        secondary: "oklch(0.15 0.10 150)", // Dark green
         secondary_foreground: "oklch(0.70 0.30 150)",
         muted: "oklch(0.20 0.10 150)",
         muted_foreground: "oklch(0.50 0.20 150)",
-        accent: "oklch(0.75 0.35 140)",         // Lime
+        accent: "oklch(0.75 0.35 140)", // Lime
         accent_foreground: "oklch(0.05 0 0)",
         destructive: "oklch(0.50 0.25 25)",
         border: "oklch(0.20 0.10 150)",
@@ -1012,22 +1017,22 @@ fn matrix_theme() -> ThemeColors {
 fn cyberpunk_theme() -> ThemeColors {
     ThemeColors {
         color_scheme: "dark",
-        background: "oklch(0.06 0.01 300)",     // Very dark, nearly black
-        foreground: "oklch(0.95 0.015 300)",    // Clean white (low chroma for readability)
+        background: "oklch(0.06 0.01 300)", // Very dark, nearly black
+        foreground: "oklch(0.95 0.015 300)", // Clean white (low chroma for readability)
         card: "oklch(0.10 0.02 300)",
         popover: "oklch(0.10 0.02 300)",
-        primary: "oklch(0.70 0.35 340)",        // Neon pink (accents only)
+        primary: "oklch(0.70 0.35 340)", // Neon pink (accents only)
         primary_foreground: "oklch(0.95 0.015 300)",
-        secondary: "oklch(0.18 0.03 300)",      // Dark purple-gray (readable)
+        secondary: "oklch(0.18 0.03 300)", // Dark purple-gray (readable)
         secondary_foreground: "oklch(0.95 0.015 300)",
         muted: "oklch(0.25 0.03 300)",
         muted_foreground: "oklch(0.70 0.02 300)",
-        accent: "oklch(0.75 0.35 180)",         // Bright cyan (accents only)
+        accent: "oklch(0.75 0.35 180)", // Bright cyan (accents only)
         accent_foreground: "oklch(0.06 0.01 300)",
         destructive: "oklch(0.55 0.35 25)",
-        border: "oklch(0.30 0.25 340)",         // Neon pink border
+        border: "oklch(0.30 0.25 340)", // Neon pink border
         input: "oklch(0.12 0.02 300)",
-        ring: "oklch(0.70 0.35 340)",           // Neon pink ring
+        ring: "oklch(0.70 0.35 340)", // Neon pink ring
         sidebar: "oklch(0.04 0.01 300)",
         sidebar_foreground: "oklch(0.95 0.015 300)",
         sidebar_primary: "oklch(0.70 0.35 340)",
@@ -1036,11 +1041,11 @@ fn cyberpunk_theme() -> ThemeColors {
         sidebar_accent_foreground: "oklch(0.95 0.015 300)",
         sidebar_border: "oklch(0.25 0.25 180)", // Neon cyan border
         sidebar_ring: "oklch(0.70 0.35 340)",
-        chart_1: "oklch(0.70 0.35 340)",        // Neon pink
-        chart_2: "oklch(0.75 0.35 180)",        // Neon cyan
-        chart_3: "oklch(0.68 0.32 280)",        // Neon purple
-        chart_4: "oklch(0.72 0.35 200)",        // Neon blue
-        chart_5: "oklch(0.70 0.33 320)",        // Neon magenta
+        chart_1: "oklch(0.70 0.35 340)", // Neon pink
+        chart_2: "oklch(0.75 0.35 180)", // Neon cyan
+        chart_3: "oklch(0.68 0.32 280)", // Neon purple
+        chart_4: "oklch(0.72 0.35 200)", // Neon blue
+        chart_5: "oklch(0.70 0.33 320)", // Neon magenta
         success: "oklch(0.70 0.30 160)",
         warning: "oklch(0.80 0.28 80)",
         info: "oklch(0.75 0.35 180)",
@@ -1050,23 +1055,23 @@ fn cyberpunk_theme() -> ThemeColors {
 fn nord_theme() -> ThemeColors {
     ThemeColors {
         color_scheme: "dark",
-        background: "oklch(0.265 0.012 220)",   // Nord Polar Night #2e3440 (lighter)
-        foreground: "oklch(0.936 0.009 220)",   // Nord Snow Storm #eceff4 (brighter)
+        background: "oklch(0.265 0.012 220)", // Nord Polar Night #2e3440 (lighter)
+        foreground: "oklch(0.936 0.009 220)", // Nord Snow Storm #eceff4 (brighter)
         card: "oklch(0.30 0.014 220)",
         popover: "oklch(0.30 0.014 220)",
-        primary: "oklch(0.710 0.084 235)",      // Nord Frost #88c0d0 (signature blue)
+        primary: "oklch(0.710 0.084 235)", // Nord Frost #88c0d0 (signature blue)
         primary_foreground: "oklch(0.265 0.012 220)",
-        secondary: "oklch(0.42 0.02 220)",      // Lighter secondary
+        secondary: "oklch(0.42 0.02 220)", // Lighter secondary
         secondary_foreground: "oklch(0.936 0.009 220)",
         muted: "oklch(0.48 0.015 220)",
         muted_foreground: "oklch(0.78 0.01 220)",
-        accent: "oklch(0.640 0.070 230)",       // Nord Frost #5e81ac (frost blue)
+        accent: "oklch(0.640 0.070 230)", // Nord Frost #5e81ac (frost blue)
         accent_foreground: "oklch(0.936 0.009 220)",
-        destructive: "oklch(0.565 0.15 15)",    // Nord Aurora Red #bf616a
+        destructive: "oklch(0.565 0.15 15)", // Nord Aurora Red #bf616a
         border: "oklch(0.42 0.015 220)",
         input: "oklch(0.35 0.014 220)",
         ring: "oklch(0.710 0.084 235)",
-        sidebar: "oklch(0.23 0.012 220)",       // Nord darker #242933
+        sidebar: "oklch(0.23 0.012 220)", // Nord darker #242933
         sidebar_foreground: "oklch(0.936 0.009 220)",
         sidebar_primary: "oklch(0.710 0.084 235)",
         sidebar_primary_foreground: "oklch(0.265 0.012 220)",
@@ -1074,11 +1079,11 @@ fn nord_theme() -> ThemeColors {
         sidebar_accent_foreground: "oklch(0.936 0.009 220)",
         sidebar_border: "oklch(0.38 0.015 220)",
         sidebar_ring: "oklch(0.710 0.084 235)",
-        chart_1: "oklch(0.710 0.084 235)",      // Frost #88c0d0
-        chart_2: "oklch(0.640 0.070 230)",      // Frost #5e81ac
-        chart_3: "oklch(0.720 0.095 210)",      // Frost #81a1c1
-        chart_4: "oklch(0.770 0.12 155)",       // Aurora Green #a3be8c
-        chart_5: "oklch(0.780 0.15 85)",        // Aurora Yellow #ebcb8b
+        chart_1: "oklch(0.710 0.084 235)", // Frost #88c0d0
+        chart_2: "oklch(0.640 0.070 230)", // Frost #5e81ac
+        chart_3: "oklch(0.720 0.095 210)", // Frost #81a1c1
+        chart_4: "oklch(0.770 0.12 155)",  // Aurora Green #a3be8c
+        chart_5: "oklch(0.780 0.15 85)",   // Aurora Yellow #ebcb8b
         success: "oklch(0.770 0.12 155)",
         warning: "oklch(0.780 0.15 85)",
         info: "oklch(0.710 0.084 235)",

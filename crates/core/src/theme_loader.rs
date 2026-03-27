@@ -14,9 +14,8 @@ pub fn get_themes_dir() -> Result<PathBuf> {
 
     // Create directory if it doesn't exist
     if !themes_dir.exists() {
-        fs::create_dir_all(&themes_dir).map_err(|e| {
-            Error::Config(format!("Failed to create themes directory: {}", e))
-        })?;
+        fs::create_dir_all(&themes_dir)
+            .map_err(|e| Error::Config(format!("Failed to create themes directory: {}", e)))?;
     }
 
     Ok(themes_dir)
@@ -39,9 +38,8 @@ pub fn discover_custom_themes() -> Result<Vec<DiscoveredTheme>> {
         return Ok(themes);
     }
 
-    let entries = fs::read_dir(&themes_dir).map_err(|e| {
-        Error::Config(format!("Failed to read themes directory: {}", e))
-    })?;
+    let entries = fs::read_dir(&themes_dir)
+        .map_err(|e| Error::Config(format!("Failed to read themes directory: {}", e)))?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -65,9 +63,7 @@ pub fn discover_custom_themes() -> Result<Vec<DiscoveredTheme>> {
 
 /// Load a custom theme file's content
 pub fn load_theme_file(path: &PathBuf) -> Result<String> {
-    fs::read_to_string(path).map_err(|e| {
-        Error::Config(format!("Failed to read theme file: {}", e))
-    })
+    fs::read_to_string(path).map_err(|e| Error::Config(format!("Failed to read theme file: {}", e)))
 }
 
 /// Import a theme file from an external path to the user's themes directory
@@ -81,15 +77,13 @@ pub fn import_theme_file(source_path: &str) -> Result<PathBuf> {
     let source = PathBuf::from(source_path);
 
     // Security: Canonicalize path to prevent path traversal
-    let source = source.canonicalize().map_err(|_| {
-        Error::Config("Invalid theme file path".to_string())
-    })?;
+    let source = source
+        .canonicalize()
+        .map_err(|_| Error::Config("Invalid theme file path".to_string()))?;
 
     // Validate it's a file (not a directory)
     if !source.is_file() {
-        return Err(Error::Config(
-            "Path must be a file".to_string(),
-        ));
+        return Err(Error::Config("Path must be a file".to_string()));
     }
 
     // Validate .css extension
@@ -100,9 +94,8 @@ pub fn import_theme_file(source_path: &str) -> Result<PathBuf> {
     }
 
     // Security: Limit file size to prevent DoS (100KB max)
-    let metadata = fs::metadata(&source).map_err(|_| {
-        Error::Config("Cannot read theme file".to_string())
-    })?;
+    let metadata =
+        fs::metadata(&source).map_err(|_| Error::Config("Cannot read theme file".to_string()))?;
 
     if metadata.len() > 100 * 1024 {
         return Err(Error::Config(
@@ -129,9 +122,8 @@ pub fn import_theme_file(source_path: &str) -> Result<PathBuf> {
     }
 
     // Copy file to themes directory
-    fs::copy(&source, &dest_path).map_err(|e| {
-        Error::Config(format!("Failed to copy theme file: {}", e))
-    })?;
+    fs::copy(&source, &dest_path)
+        .map_err(|e| Error::Config(format!("Failed to copy theme file: {}", e)))?;
 
     tracing::info!("Imported theme: {} -> {:?}", source_path, dest_path);
 

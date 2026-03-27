@@ -28,17 +28,20 @@ impl QuickActionRegistry {
     }
 
     /// Register a static action provider (simple templates)
-    pub fn register_static(&mut self, tool_name: impl Into<String>, templates: Vec<ActionTemplate>) {
-        self.providers.insert(
-            tool_name.into(),
-            ActionProvider::Static(templates),
-        );
+    pub fn register_static(
+        &mut self,
+        tool_name: impl Into<String>,
+        templates: Vec<ActionTemplate>,
+    ) {
+        self.providers
+            .insert(tool_name.into(), ActionProvider::Static(templates));
     }
 
     /// Register a dynamic action provider (smart, output-parsing)
     pub fn register_dynamic(&mut self, provider: Box<dyn QuickActionProvider>) {
         let tool_name = provider.tool_name().to_string();
-        self.providers.insert(tool_name, ActionProvider::Dynamic(provider));
+        self.providers
+            .insert(tool_name, ActionProvider::Dynamic(provider));
     }
 
     /// Get actions for a tool based on its result
