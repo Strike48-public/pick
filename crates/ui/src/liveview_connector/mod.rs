@@ -781,10 +781,11 @@ impl LiveViewConnector {
                                 // Pass the Arc so the task uses the current sender after any reconnect.
                                 let tools = self.tools.clone();
                                 let workspace_path = self.workspace_path.clone();
+                                let instance_id = self.config.instance_id.clone();
                                 let matrix_tx = Arc::clone(&self.matrix_tx);
                                 let event_tx = self.event_tx.clone();
                                 tokio::spawn(async move {
-                                    handle_execute_impl(req, tools, workspace_path, matrix_tx, event_tx).await;
+                                    handle_execute_impl(req, tools, workspace_path, instance_id, matrix_tx, event_tx).await;
                                 });
                             }
                         }

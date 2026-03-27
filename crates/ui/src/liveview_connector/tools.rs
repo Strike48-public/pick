@@ -130,6 +130,7 @@ pub(crate) async fn handle_execute_impl(
     req: proto::ExecuteRequest,
     tools: Arc<RwLock<ToolRegistry>>,
     workspace_path: Option<PathBuf>,
+    instance_id: String,
     matrix_tx: Arc<RwLock<Option<mpsc::UnboundedSender<StreamMessage>>>>,
     event_tx: broadcast::Sender<ConnectorEvent>,
 ) {
@@ -158,10 +159,13 @@ pub(crate) async fn handle_execute_impl(
         );
 
         let start = std::time::Instant::now();
-        let ctx = match &workspace_path {
+        let mut ctx = match &workspace_path {
             Some(path) => ToolContext::default().with_workspace(path.clone()),
             None => ToolContext::default(),
         };
+        // Add instance_id to context metadata for tools to use
+        ctx.metadata
+            .insert("instance_id".to_string(), instance_id.clone());
 
         let tools = tools.read().await;
         let result = match tools.execute(tool_name, params, &ctx).await {
@@ -243,6 +247,7 @@ impl LiveViewConnector {
                 req,
                 self.tools.clone(),
                 self.workspace_path.clone(),
+                self.config.instance_id.clone(),
                 Arc::clone(&self.matrix_tx),
                 self.event_tx.clone(),
             )
