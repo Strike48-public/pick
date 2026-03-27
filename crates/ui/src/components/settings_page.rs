@@ -529,7 +529,7 @@ pub fn SettingsPage(
                             style: "display: flex; align-items: center; gap: 8px; cursor: pointer;",
                             onclick: move |_| advanced_expanded.set(!advanced_expanded()),
                             span {
-                                style: "transform: rotate({if *advanced_expanded.read() { 90 } else { 0 }}deg); transition: transform 0.2s;",
+                                style: format!("transform: rotate({}deg); transition: transform 0.2s;", if advanced_expanded() { 90 } else { 0 }),
                                 "▸"
                             }
                             label { style: "cursor: pointer; margin: 0;", "Advanced" }

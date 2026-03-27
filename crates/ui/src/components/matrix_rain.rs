@@ -56,8 +56,7 @@ pub fn MatrixRainOverlay(props: MatrixRainOverlayProps) -> Element {
 
         // Initialize canvas animation
         script {
-            dangerous_inner_html: "
-(function() {
+            dangerous_inner_html: r#"(function() {
     const canvas = document.getElementById('matrix-rain-canvas');
     if (!canvas) return;
 
@@ -125,8 +124,7 @@ pub fn MatrixRainOverlay(props: MatrixRainOverlayProps) -> Element {
         canvas.width = window.innerWidth;
         canvas.height = window.innerHeight;
     });
-})();
-"
+})();"#
         }
     }
 }
