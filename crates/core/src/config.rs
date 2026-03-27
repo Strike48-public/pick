@@ -30,12 +30,12 @@ pub enum Theme {
 /// Border radius style
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum BorderRadius {
-    Sharp,      // 0px
-    Minimal,    // 4px
+    Sharp,   // 0px
+    Minimal, // 4px
     #[default]
-    Rounded,    // 8px
-    Soft,       // 16px
-    Pill,       // 999px
+    Rounded, // 8px
+    Soft,    // 16px
+    Pill,    // 999px
 }
 
 /// UI density / spacing

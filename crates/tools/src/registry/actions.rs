@@ -1,6 +1,8 @@
 //! Central registration of all quick actions
 
-use super::{ActionStyle, ActionTemplate, QuickAction, QuickActionProvider, QuickActionRegistry, TablerIcon};
+use super::{
+    ActionStyle, ActionTemplate, QuickAction, QuickActionProvider, QuickActionRegistry, TablerIcon,
+};
 
 /// Register all tool quick actions
 pub fn register_all_actions(registry: &mut QuickActionRegistry) {
@@ -147,8 +149,9 @@ impl QuickActionProvider for PortScanActionProvider {
                         description: "Enumerate shares and users".into(),
                         icon: TablerIcon::Database,
                         style: ActionStyle::Primary,
-                        prompt: "Run SMB enumeration to discover shares, users, and domain information."
-                            .into(),
+                        prompt:
+                            "Run SMB enumeration to discover shares, users, and domain information."
+                                .into(),
                     }
                     .to_action(),
                 );
@@ -163,9 +166,10 @@ impl QuickActionProvider for PortScanActionProvider {
                         description: "Identify service versions".into(),
                         icon: TablerIcon::FileReport,
                         style: ActionStyle::Secondary,
-                        prompt: "Grab service banners from open ports to identify software versions \
+                        prompt:
+                            "Grab service banners from open ports to identify software versions \
                                  and potential vulnerabilities."
-                            .into(),
+                                .into(),
                     }
                     .to_action(),
                 );
@@ -205,7 +209,11 @@ impl QuickActionProvider for NetworkDiscoverActionProvider {
                 actions.push(
                     ActionTemplate {
                         id: "port_scan_all".into(),
-                        label: format!("Port Scan {} Host{}", host_count, if host_count == 1 { "" } else { "s" }),
+                        label: format!(
+                            "Port Scan {} Host{}",
+                            host_count,
+                            if host_count == 1 { "" } else { "s" }
+                        ),
                         description: "Scan for open ports".into(),
                         icon: TablerIcon::Target,
                         style: ActionStyle::Primary,
