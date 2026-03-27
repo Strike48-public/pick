@@ -15,23 +15,28 @@ pub struct MatrixRainOverlayProps {
 #[component]
 pub fn MatrixRainOverlay(props: MatrixRainOverlayProps) -> Element {
     let mut show_text = use_signal(|| false);
-    let visible = props.visible;
 
-    // Start text fade-in after 0.5 seconds when visible
-    use_effect(move || {
-        if visible {
-            tracing::info!("Matrix rain overlay visible, starting text fade-in timer");
-            show_text.set(false);
-            spawn(async move {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                tracing::info!("Matrix rain text should now appear");
-                show_text.set(true);
-            });
-        } else {
-            tracing::debug!("Matrix rain overlay hidden");
-            show_text.set(false);
-        }
-    });
+    // Track when visible becomes true and start the timer
+    let mut was_visible = use_signal(|| false);
+
+    if props.visible && !*was_visible.read() {
+        // Just became visible
+        tracing::info!("Matrix rain overlay visible, starting text fade-in timer");
+        was_visible.set(true);
+        show_text.set(false);
+
+        let mut show_text_clone = show_text;
+        spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            tracing::info!("Matrix rain text should now appear");
+            show_text_clone.set(true);
+        });
+    } else if !props.visible && *was_visible.read() {
+        // Just became hidden
+        tracing::debug!("Matrix rain overlay hidden");
+        was_visible.set(false);
+        show_text.set(false);
+    }
 
     if !props.visible {
         return rsx! { div {} };
