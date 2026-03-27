@@ -15,12 +15,14 @@ pub struct MatrixRainOverlayProps {
 #[component]
 pub fn MatrixRainOverlay(props: MatrixRainOverlayProps) -> Element {
     let mut show_text = use_signal(|| false);
+    let visible = props.visible;
 
-    // Start text fade-in after 1 second
+    // Start text fade-in after 0.5 seconds when visible
     use_effect(move || {
-        if props.visible {
+        if visible {
+            show_text.set(false);
             spawn(async move {
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
                 show_text.set(true);
             });
         } else {
