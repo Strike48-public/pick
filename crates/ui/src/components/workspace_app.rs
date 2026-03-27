@@ -24,7 +24,7 @@ use super::terminal::Terminal;
 use super::tools_page::ToolsPage;
 use super::WifiWarningDialog;
 use crate::liveview_server::{get_terminal_lines, get_workspace_path, terminal_lines_count};
-use crate::theme::{responsive_css, tailwind_css, theme_css, utils_css};
+use crate::theme::{responsive_css, tailwind_css, utils_css};
 use pentest_core::config::{BorderRadius, Density, ShellMode, Theme};
 use pentest_core::settings::{load_settings, save_settings};
 use pentest_core::terminal::TerminalLine;
