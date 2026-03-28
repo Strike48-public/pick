@@ -11,6 +11,7 @@ use dioxus::prelude::*;
 
 use super::app_layout::AppLayout;
 use super::chat_panel::ChatPanel;
+use super::cyberchef_page::CyberChefPage;
 use super::dashboard::Dashboard;
 use super::file_browser::FileBrowser;
 use super::help_modal::HelpModal;
@@ -132,6 +133,11 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
                 ToolsPage {
                     on_open_chat: move |msg: String| on_open_chat.call(msg),
                 }
+            }
+
+            // CyberChef
+            if page == NavPage::CyberChef {
+                CyberChefPage {}
             }
 
             // Files — always mounted so directory state is preserved

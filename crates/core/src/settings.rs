@@ -27,10 +27,31 @@ pub fn settings_path() -> PathBuf {
 }
 
 /// Load settings from disk. Returns defaults on any error (missing file, corrupt JSON, etc.).
+/// Automatically validates and clears expired JWT tokens.
 pub fn load_settings() -> AppSettings {
     let path = settings_path();
     match fs::read_to_string(&path) {
-        Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+        Ok(contents) => {
+            let mut settings: AppSettings = serde_json::from_str(&contents).unwrap_or_default();
+
+            // Validate and clear expired auth token
+            if let Some(last_config) = &mut settings.last_config {
+                if let Some(validated) = crate::jwt_validator::validate_token(&last_config.auth_token) {
+                    last_config.auth_token = validated;
+                } else {
+                    // Token is expired or invalid, clear it
+                    tracing::info!("Cleared expired/invalid auth token from settings");
+                    last_config.auth_token.clear();
+
+                    // Save the updated settings to persist the change
+                    if let Err(e) = save_settings(&settings) {
+                        tracing::warn!("Failed to save settings after clearing expired token: {}", e);
+                    }
+                }
+            }
+
+            settings
+        }
         Err(_) => AppSettings::default(),
     }
 }

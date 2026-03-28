@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::chat_panel::format_relative_time;
 use super::icons::{
-    Folder, House, MessageSquare, ScrollText, Settings, Terminal, Wrench,
+    Bolt, Folder, House, MessageSquare, ScrollText, Settings, Terminal, Wrench,
     STRIKE48_SIDEBAR_LOGO_SVG, X,
 };
 
@@ -15,6 +15,7 @@ use super::icons::{
 pub enum NavPage {
     Dashboard,
     Tools,
+    CyberChef,
     Files,
     Shell,
     Chat,
@@ -28,6 +29,7 @@ impl NavPage {
         match self {
             NavPage::Dashboard => rsx! { House { size } },
             NavPage::Tools => rsx! { Wrench { size } },
+            NavPage::CyberChef => rsx! { Bolt { size } },
             NavPage::Files => rsx! { Folder { size } },
             NavPage::Shell => rsx! { Terminal { size } },
             NavPage::Chat => rsx! { MessageSquare { size } },
@@ -40,6 +42,7 @@ impl NavPage {
         match self {
             NavPage::Dashboard => "Dashboard",
             NavPage::Tools => "Tools",
+            NavPage::CyberChef => "CyberChef",
             NavPage::Files => "Files",
             NavPage::Shell => "Shell",
             NavPage::Chat => "Chat",
@@ -50,9 +53,10 @@ impl NavPage {
 }
 
 /// Pages shown in the sidebar.
-pub const ALL_PAGES: [NavPage; 7] = [
+pub const ALL_PAGES: [NavPage; 8] = [
     NavPage::Dashboard,
     NavPage::Tools,
+    NavPage::CyberChef,
     NavPage::Files,
     NavPage::Shell,
     NavPage::Chat,
