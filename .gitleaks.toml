@@ -1,0 +1,16 @@
+# Gitleaks configuration for Pick
+# https://github.com/gitleaks/gitleaks
+
+title = "Gitleaks config for Pick"
+
+# Allowlist test/example JWT tokens
+[[rules]]
+id = "jwt-test-tokens"
+description = "Allowlist for test/example JWT tokens"
+regex = '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJ(zdWIiOiIxMjM0NTY3ODkwIn0|leHAiOjEsImlhdCI6MH0)\.'''
+[rules.allowlist]
+paths = [
+    '''crates/core/src/jwt_validator\.rs''',
+    '''crates/cyberchef/src/recipes/library\.rs''',
+    '''crates/ui/src/components/cyberchef_page\.rs'''
+]
