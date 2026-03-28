@@ -14,7 +14,9 @@ static TENANT_ID: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String
 static CONNECTOR_NAME: LazyLock<RwLock<String>> =
     LazyLock::new(|| RwLock::new("pentest-connector".to_string()));
 static TOOL_NAMES: LazyLock<RwLock<Vec<String>>> = LazyLock::new(|| RwLock::new(Vec::new()));
-static TOOL_REGISTRY: LazyLock<Arc<RwLock<Option<Arc<TokioRwLock<ToolRegistry>>>>>> =
+
+type SharedToolRegistry = Arc<RwLock<Option<Arc<TokioRwLock<ToolRegistry>>>>>;
+static TOOL_REGISTRY: LazyLock<SharedToolRegistry> =
     LazyLock::new(|| Arc::new(RwLock::new(None)));
 
 /// Read the current session auth token (Matrix access token for GraphQL).

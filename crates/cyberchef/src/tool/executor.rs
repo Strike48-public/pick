@@ -63,9 +63,9 @@ impl RecipeExecutor {
                 .ok_or_else(|| anyhow::anyhow!("Operation missing 'op' field"))?;
 
             current_data = match op_name {
-                "From Base64" => self.from_base64(&current_data)?,
+                "From Base64" => self.decode_base64(&current_data)?,
                 "To Base64" => self.to_base64(&current_data)?,
-                "From Hex" => self.from_hex(&current_data)?,
+                "From Hex" => self.decode_hex(&current_data)?,
                 "To Hex" => self.to_hex(&current_data)?,
                 "URL Decode" => self.url_decode(&current_data)?,
                 "URL Encode" => self.url_encode(&current_data)?,
@@ -74,7 +74,7 @@ impl RecipeExecutor {
                 "SHA2" => {
                     let args = op.get("args").and_then(|v| v.as_array());
                     let bits = args
-                        .and_then(|a| a.get(0))
+                        .and_then(|a| a.first())
                         .and_then(|v| v.as_str())
                         .unwrap_or("256");
                     self.sha2(&current_data, bits)?
@@ -104,7 +104,7 @@ impl RecipeExecutor {
 
     // Rust implementations of common operations
 
-    fn from_base64(&self, input: &str) -> Result<String> {
+    fn decode_base64(&self, input: &str) -> Result<String> {
         use base64::{engine::general_purpose, Engine};
         let bytes = general_purpose::STANDARD
             .decode(input.trim())
@@ -117,7 +117,7 @@ impl RecipeExecutor {
         Ok(general_purpose::STANDARD.encode(input.as_bytes()))
     }
 
-    fn from_hex(&self, input: &str) -> Result<String> {
+    fn decode_hex(&self, input: &str) -> Result<String> {
         let clean = input.trim().replace(" ", "").replace("0x", "");
         let bytes = hex::decode(&clean).map_err(|e| anyhow::anyhow!("Hex decode error: {}", e))?;
         Ok(String::from_utf8_lossy(&bytes).to_string())

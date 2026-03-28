@@ -168,6 +168,6 @@ mod tests {
         assert_eq!(schema.name, "cyberchef");
         assert!(!schema.description.is_empty());
         assert_eq!(schema.params.len(), 4);
-        assert!(schema.external_dependencies.len() > 0);
+        assert!(!schema.external_dependencies.is_empty());
     }
 }

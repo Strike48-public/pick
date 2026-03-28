@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn test_list_by_category() {
         let encoding = RecipeLibrary::list_by_category("Encoding");
-        assert!(encoding.len() > 0);
+        assert!(!encoding.is_empty());
         assert!(encoding.iter().all(|r| r.category == "Encoding"));
     }
 

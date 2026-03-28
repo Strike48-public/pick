@@ -161,7 +161,7 @@ const RECIPES: &[RecipeInfo] = &[
 /// CyberChef page - interactive data transformation tool with recipe chaining
 #[component]
 pub fn CyberChefPage() -> Element {
-    let mut recipe_chain = use_signal(|| Vec::<ChainItem>::new());
+    let mut recipe_chain = use_signal(Vec::<ChainItem>::new);
     let mut search_query = use_signal(String::new);
     let mut input_text = use_signal(String::new);
     let mut output_text = use_signal(String::new);
@@ -177,7 +177,7 @@ pub fn CyberChefPage() -> Element {
     let mut is_dragging_outside = use_signal(|| false); // Track if mouse is outside recipe area
 
     // Group recipes by category
-    let categories = vec![
+    let categories = [
         "Encoding",
         "Hashing",
         "Cryptography",
@@ -439,7 +439,7 @@ pub fn CyberChefPage() -> Element {
             let mut new_percentage = *resize_start_height.read() + delta_percentage;
 
             // Clamp between 20% and 80%
-            new_percentage = new_percentage.max(20.0).min(80.0);
+            new_percentage = new_percentage.clamp(20.0, 80.0);
 
             input_panel_height.set(new_percentage);
         }
@@ -574,7 +574,7 @@ pub fn CyberChefPage() -> Element {
                                             let item_index = index;
                                             let is_enabled = item.enabled;
                                             let is_dragging_this = dragging_item.read().as_ref()
-                                                .map_or(false, |d| matches!(d, DragItem::FromChain(i) if *i == item_index));
+                                                .is_some_and(|d| matches!(d, DragItem::FromChain(i) if *i == item_index));
                                             let slot_after = index + 1;
 
                                             rsx! {
@@ -661,7 +661,7 @@ pub fn CyberChefPage() -> Element {
                                 button {
                                     class: "btn btn-primary",
                                     onclick: move |_| execute_recipe_chain(),
-                                    disabled: is_executing.read().clone() || recipe_chain.read().is_empty(),
+                                    disabled: *is_executing.read() || recipe_chain.read().is_empty(),
                                     if *is_executing.read() { "Baking..." } else { "Bake!" }
                                 }
                             }
