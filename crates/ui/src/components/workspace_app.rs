@@ -17,6 +17,7 @@ use super::file_browser::FileBrowser;
 use super::help_modal::HelpModal;
 use super::icons::MessageCircle;
 use super::keyboard_shortcuts::KeyboardShortcuts;
+use super::licenses_page::LicensesPage;
 use super::log_filter_bar::LogFilterBar;
 use super::matrix_rain::MatrixRainOverlay;
 use super::settings_page::SettingsPage;
@@ -217,6 +218,11 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
                         tracing::info!("Custom theme imported successfully");
                     },
                 }
+            }
+
+            // Licenses
+            if page == NavPage::Licenses {
+                LicensesPage {}
             }
         }
     }

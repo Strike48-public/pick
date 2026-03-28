@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::chat_panel::format_relative_time;
 use super::icons::{
-    Bolt, Folder, House, MessageSquare, ScrollText, Settings, Terminal, Wrench,
+    Bolt, FileText, Folder, House, MessageSquare, ScrollText, Settings, Terminal, Wrench,
     STRIKE48_SIDEBAR_LOGO_SVG, X,
 };
 
@@ -21,6 +21,7 @@ pub enum NavPage {
     Chat,
     Logs,
     Settings,
+    Licenses,
 }
 
 impl NavPage {
@@ -35,6 +36,7 @@ impl NavPage {
             NavPage::Chat => rsx! { MessageSquare { size } },
             NavPage::Logs => rsx! { ScrollText { size } },
             NavPage::Settings => rsx! { Settings { size } },
+            NavPage::Licenses => rsx! { FileText { size } },
         }
     }
 
@@ -48,12 +50,13 @@ impl NavPage {
             NavPage::Chat => "Chat",
             NavPage::Logs => "Logs",
             NavPage::Settings => "Settings",
+            NavPage::Licenses => "Licenses",
         }
     }
 }
 
 /// Pages shown in the sidebar.
-pub const ALL_PAGES: [NavPage; 8] = [
+pub const ALL_PAGES: [NavPage; 9] = [
     NavPage::Dashboard,
     NavPage::Tools,
     NavPage::CyberChef,
@@ -62,6 +65,7 @@ pub const ALL_PAGES: [NavPage; 8] = [
     NavPage::Chat,
     NavPage::Logs,
     NavPage::Settings,
+    NavPage::Licenses,
 ];
 
 /// Sidebar component with flat top-level nav items.
