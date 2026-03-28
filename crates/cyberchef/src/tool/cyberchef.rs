@@ -8,8 +8,8 @@ use pentest_core::tools::{
 };
 use serde_json::{json, Value};
 
+use super::executor::{ExecutionResult, RecipeExecutor};
 use crate::recipes::RecipeLibrary;
-use super::executor::{RecipeExecutor, ExecutionResult};
 
 /// CyberChef tool for data transformation, encoding, decoding, and analysis
 pub struct CyberChefTool {
@@ -74,7 +74,11 @@ impl PentestTool for CyberChefTool {
 
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
         // Handle list_recipes flag
-        if params.get("list_recipes").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if params
+            .get("list_recipes")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             let recipes = RecipeLibrary::list();
             let categories = RecipeLibrary::categories();
 
@@ -118,7 +122,10 @@ impl PentestTool for CyberChefTool {
             };
 
             // Execute the recipe
-            let result: ExecutionResult = self.executor.execute(&recipe_json, input, input_type).await?;
+            let result: ExecutionResult = self
+                .executor
+                .execute(&recipe_json, input, input_type)
+                .await?;
 
             Ok(json!({
                 "output": result.output,

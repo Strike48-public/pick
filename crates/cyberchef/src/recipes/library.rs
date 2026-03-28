@@ -201,7 +201,15 @@ impl RecipeLibrary {
 
     /// Get all categories
     pub fn categories() -> Vec<&'static str> {
-        vec!["Encoding", "Hashing", "Cryptography", "Extraction", "Compression", "Analysis", "Web"]
+        vec![
+            "Encoding",
+            "Hashing",
+            "Cryptography",
+            "Extraction",
+            "Compression",
+            "Analysis",
+            "Web",
+        ]
     }
 }
 

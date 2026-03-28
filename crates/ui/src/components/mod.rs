@@ -7,11 +7,11 @@ pub mod app_state;
 pub mod button;
 pub mod chat_panel;
 mod config_form;
+mod connecting_screen;
+pub mod context_menu;
 mod cyberchef_page;
 #[cfg(test)]
 mod cyberchef_sortable_tests;
-mod connecting_screen;
-pub mod context_menu;
 mod dashboard;
 pub mod extension;
 pub mod file_browser;
@@ -47,9 +47,9 @@ pub use app_state::{provide_app_state, use_app_state, AppState};
 pub use button::{Button, ButtonSize, ButtonVariant};
 pub use chat_panel::*;
 pub use config_form::*;
-pub use cyberchef_page::CyberChefPage;
 pub use connecting_screen::*;
 pub use context_menu::{ContextMenu, ContextMenuItem};
+pub use cyberchef_page::CyberChefPage;
 pub use dashboard::*;
 pub use extension::{
     provide_view_registry, use_view_registry, ExtensionView, ViewCategory, ViewProvider,

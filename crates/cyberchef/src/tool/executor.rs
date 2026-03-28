@@ -45,9 +45,9 @@ impl RecipeExecutor {
 
         // Parse recipe to determine operations
         let recipe: serde_json::Value = serde_json::from_str(recipe_json)?;
-        let ops = recipe.as_array().ok_or_else(|| {
-            anyhow::anyhow!("Recipe must be an array of operations")
-        })?;
+        let ops = recipe
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("Recipe must be an array of operations"))?;
 
         if ops.is_empty() {
             bail!("Recipe contains no operations");
@@ -105,7 +105,7 @@ impl RecipeExecutor {
     // Rust implementations of common operations
 
     fn from_base64(&self, input: &str) -> Result<String> {
-        use base64::{Engine, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine};
         let bytes = general_purpose::STANDARD
             .decode(input.trim())
             .map_err(|e| anyhow::anyhow!("Base64 decode error: {}", e))?;
@@ -113,14 +113,13 @@ impl RecipeExecutor {
     }
 
     fn to_base64(&self, input: &str) -> Result<String> {
-        use base64::{Engine, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine};
         Ok(general_purpose::STANDARD.encode(input.as_bytes()))
     }
 
     fn from_hex(&self, input: &str) -> Result<String> {
         let clean = input.trim().replace(" ", "").replace("0x", "");
-        let bytes = hex::decode(&clean)
-            .map_err(|e| anyhow::anyhow!("Hex decode error: {}", e))?;
+        let bytes = hex::decode(&clean).map_err(|e| anyhow::anyhow!("Hex decode error: {}", e))?;
         Ok(String::from_utf8_lossy(&bytes).to_string())
     }
 
@@ -144,14 +143,14 @@ impl RecipeExecutor {
     }
 
     fn sha1(&self, input: &str) -> Result<String> {
-        use sha1::{Sha1, Digest};
+        use sha1::{Digest, Sha1};
         let mut hasher = Sha1::new();
         hasher.update(input.as_bytes());
         Ok(format!("{:x}", hasher.finalize()))
     }
 
     fn sha2(&self, input: &str, bits: &str) -> Result<String> {
-        use sha2::{Sha256, Sha512, Digest};
+        use sha2::{Digest, Sha256, Sha512};
 
         match bits {
             "256" => {
@@ -198,7 +197,10 @@ mod tests {
     async fn test_base64_decode() {
         let executor = RecipeExecutor::new();
         let recipe = r#"[{ "op": "From Base64", "args": [] }]"#;
-        let result = executor.execute(recipe, "SGVsbG8gV29ybGQ=", "string").await.unwrap();
+        let result = executor
+            .execute(recipe, "SGVsbG8gV29ybGQ=", "string")
+            .await
+            .unwrap();
         assert_eq!(result.output, "Hello World");
     }
 
@@ -206,7 +208,10 @@ mod tests {
     async fn test_base64_encode() {
         let executor = RecipeExecutor::new();
         let recipe = r#"[{ "op": "To Base64", "args": [] }]"#;
-        let result = executor.execute(recipe, "Hello World", "string").await.unwrap();
+        let result = executor
+            .execute(recipe, "Hello World", "string")
+            .await
+            .unwrap();
         assert_eq!(result.output, "SGVsbG8gV29ybGQ=");
     }
 
@@ -214,7 +219,10 @@ mod tests {
     async fn test_md5_hash() {
         let executor = RecipeExecutor::new();
         let recipe = r#"[{ "op": "MD5", "args": [] }]"#;
-        let result = executor.execute(recipe, "password123", "string").await.unwrap();
+        let result = executor
+            .execute(recipe, "password123", "string")
+            .await
+            .unwrap();
         assert_eq!(result.output.len(), 32); // MD5 is 32 hex chars
     }
 
@@ -233,7 +241,10 @@ mod tests {
     async fn test_rot13() {
         let executor = RecipeExecutor::new();
         let recipe = r#"[{ "op": "ROT13", "args": [] }]"#;
-        let result = executor.execute(recipe, "Hello World", "string").await.unwrap();
+        let result = executor
+            .execute(recipe, "Hello World", "string")
+            .await
+            .unwrap();
         assert_eq!(result.output, "Uryyb Jbeyq");
     }
 
@@ -244,7 +255,10 @@ mod tests {
             { "op": "URL Encode", "args": [] },
             { "op": "URL Decode", "args": [] }
         ]"#;
-        let result = executor.execute(recipe, "Hello World!", "string").await.unwrap();
+        let result = executor
+            .execute(recipe, "Hello World!", "string")
+            .await
+            .unwrap();
         assert_eq!(result.output, "Hello World!");
     }
 
@@ -254,6 +268,9 @@ mod tests {
         let recipe = r#"[{ "op": "Gunzip", "args": [] }]"#;
         let result = executor.execute(recipe, "test", "string").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("not yet implemented"));
     }
 }
