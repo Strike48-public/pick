@@ -186,6 +186,7 @@ impl RecipeLibrary {
                 name: "jwt_decode",
                 category: "Web",
                 description: "Decode JWT token and display header/payload",
+                // gitleaks:allow - Example JWT token for demonstration, not a real secret
                 example_input: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
             },
         ]
