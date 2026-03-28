@@ -36,7 +36,9 @@ pub fn load_settings() -> AppSettings {
 
             // Validate and clear expired auth token
             if let Some(last_config) = &mut settings.last_config {
-                if let Some(validated) = crate::jwt_validator::validate_token(&last_config.auth_token) {
+                if let Some(validated) =
+                    crate::jwt_validator::validate_token(&last_config.auth_token)
+                {
                     last_config.auth_token = validated;
                 } else {
                     // Token is expired or invalid, clear it
@@ -45,7 +47,10 @@ pub fn load_settings() -> AppSettings {
 
                     // Save the updated settings to persist the change
                     if let Err(e) = save_settings(&settings) {
-                        tracing::warn!("Failed to save settings after clearing expired token: {}", e);
+                        tracing::warn!(
+                            "Failed to save settings after clearing expired token: {}",
+                            e
+                        );
                     }
                 }
             }
