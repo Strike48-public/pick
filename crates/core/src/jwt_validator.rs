@@ -89,6 +89,7 @@ mod tests {
     #[test]
     fn test_expired_token() {
         // Token with exp: 1 (Jan 1, 1970) - definitely expired
+        // gitleaks:allow - This is a test JWT with fake signature, not a real secret
         let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjEsImlhdCI6MH0.signature";
         assert!(is_jwt_expired(token).unwrap());
     }
