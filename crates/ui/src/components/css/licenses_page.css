@@ -67,8 +67,8 @@
 
 .license-badge {
   padding: 0.25rem 0.75rem;
-  background: var(--primary);
-  color: white;
+  background: #2563eb;
+  color: #ffffff;
   border-radius: 4px;
   font-size: 0.75rem;
   font-weight: 500;
