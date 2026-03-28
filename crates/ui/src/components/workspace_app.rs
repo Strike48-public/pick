@@ -17,6 +17,7 @@ use super::file_browser::FileBrowser;
 use super::help_modal::HelpModal;
 use super::icons::MessageCircle;
 use super::keyboard_shortcuts::KeyboardShortcuts;
+use super::licenses_page::LicensesPage;
 use super::log_filter_bar::LogFilterBar;
 use super::settings_page::SettingsPage;
 use super::shell::InteractiveShell;
@@ -194,6 +195,11 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
                     wifi_adapter: props.wifi_adapter.clone(),
                     on_wifi_adapter_change: move |adapter: Option<String>| props.on_wifi_adapter_change.call(adapter),
                 }
+            }
+
+            // Licenses
+            if page == NavPage::Licenses {
+                LicensesPage {}
             }
         }
     }
