@@ -1,3 +1,3 @@
 mod library;
 
-pub use library::{RecipeLibrary, RecipeInfo};
+pub use library::{RecipeInfo, RecipeLibrary};

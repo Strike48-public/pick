@@ -209,7 +209,9 @@ pub fn CyberChefPage() -> Element {
         }
 
         if chain.is_empty() {
-            error_message.set(Some("No operations in recipe chain. Add operations from the left panel.".to_string()));
+            error_message.set(Some(
+                "No operations in recipe chain. Add operations from the left panel.".to_string(),
+            ));
             return;
         }
 
@@ -249,13 +251,20 @@ pub fn CyberChefPage() -> Element {
                         if let Some(output) = result.data.get("output").and_then(|v| v.as_str()) {
                             current_data = output.to_string();
                         } else if let Some(results) = result.data.get("results") {
-                            current_data = serde_json::to_string_pretty(&results).unwrap_or_default();
+                            current_data =
+                                serde_json::to_string_pretty(&results).unwrap_or_default();
                         } else {
-                            current_data = serde_json::to_string_pretty(&result.data).unwrap_or_default();
+                            current_data =
+                                serde_json::to_string_pretty(&result.data).unwrap_or_default();
                         }
                     }
                     Err(e) => {
-                        error_message.set(Some(format!("Step {} ({}) failed: {}", step_num + 1, recipe.name, e)));
+                        error_message.set(Some(format!(
+                            "Step {} ({}) failed: {}",
+                            step_num + 1,
+                            recipe.name,
+                            e
+                        )));
                         output_text.set(current_data);
                         is_executing.set(false);
                         return;
@@ -328,10 +337,13 @@ pub fn CyberChefPage() -> Element {
                     if !outside {
                         if let Some(insert_at) = slot {
                             let mut chain = recipe_chain.write();
-                            chain.insert(insert_at, ChainItem {
-                                recipe_idx,
-                                enabled: true,
-                            });
+                            chain.insert(
+                                insert_at,
+                                ChainItem {
+                                    recipe_idx,
+                                    enabled: true,
+                                },
+                            );
                             drop(chain);
                         } else {
                             // No slot, append to end

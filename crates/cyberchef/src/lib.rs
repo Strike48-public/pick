@@ -10,5 +10,5 @@ pub mod recipes;
 pub mod tool;
 
 // Re-exports for convenience
-pub use recipes::{RecipeLibrary, RecipeInfo};
+pub use recipes::{RecipeInfo, RecipeLibrary};
 pub use tool::CyberChefTool;
