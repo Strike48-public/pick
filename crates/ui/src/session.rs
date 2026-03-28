@@ -16,8 +16,7 @@ static CONNECTOR_NAME: LazyLock<RwLock<String>> =
 static TOOL_NAMES: LazyLock<RwLock<Vec<String>>> = LazyLock::new(|| RwLock::new(Vec::new()));
 
 type SharedToolRegistry = Arc<RwLock<Option<Arc<TokioRwLock<ToolRegistry>>>>>;
-static TOOL_REGISTRY: LazyLock<SharedToolRegistry> =
-    LazyLock::new(|| Arc::new(RwLock::new(None)));
+static TOOL_REGISTRY: LazyLock<SharedToolRegistry> = LazyLock::new(|| Arc::new(RwLock::new(None)));
 
 /// Read the current session auth token (Matrix access token for GraphQL).
 pub fn get_auth_token() -> String {
