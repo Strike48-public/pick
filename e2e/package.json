@@ -1,0 +1,16 @@
+{
+  "name": "pick-e2e-tests",
+  "version": "1.0.0",
+  "description": "End-to-end tests for Pick pentest connector",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:cyberchef": "playwright test cyberchef.spec.ts",
+    "test:debug": "playwright test --debug"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0",
+    "@types/node": "^20.10.0"
+  }
+}

@@ -400,12 +400,29 @@ When creating final penetration test reports, ALWAYS include:
 
 **CRITICAL: Saving Reports to Files**
 
-✅ **Use `write_file` tool to save reports** (NOT document_write or document_create)
-- Path: `reports/pentest-report-YYYY-MM-DD.md`
-- Creates file in workspace directory
-- User can access via "Files" tab in UI
+✅ **ONLY use `write_file` tool to save reports** - NEVER use document_write or document_create
 
-❌ **DO NOT use document_write** - it uses MDX parser that breaks on markdown tables with `<` or `>` symbols
+**Required report path format:**
+```
+reports/{instance_id}/pentest-report-YYYY-MM-DD-HHMM.md
+```
+
+Where `{instance_id}` is your connector instance ID (available in tool context metadata).
+
+**Why this matters:**
+- Creates file in THIS connector's workspace directory
+- User can access via "Files" tab in THIS connector's UI
+- Path includes instance_id to avoid conflicts between multiple connector instances
+- Reports are only visible in the connector instance that created them
+
+**Example paths:**
+- `reports/pick-local/pentest-report-2026-03-27-1430.md`
+- `reports/pick-remote/pentest-report-2026-03-27-1445.md`
+
+❌ **DO NOT use document_write** - That saves to Studio document storage (different location)
+- Not visible in Pick Files tab
+- Uses MDX parser that breaks on markdown tables with `<` or `>` symbols
+- Will cause user confusion about where reports are located
 
 **Markdown Table Escaping (CRITICAL):**
 
@@ -427,11 +444,17 @@ CORRECT: | Version | &gt;= 2.0 |
 
 **Report Workflow:**
 ```
-1. Generate complete report content
-2. Replace ALL < with &lt; and > with &gt; in tables
-3. Use write_file(path="reports/pentest-report-2026-03-12.md", content=escaped_content)
-4. Tell user: "Report saved to reports/pentest-report-2026-03-12.md"
+1. Get instance_id from tool context metadata
+2. Generate complete report content
+3. Replace ALL < with &lt; and > with &gt; in tables
+4. Build path: f"reports/{instance_id}/pentest-report-{date}-{time}.md"
+5. Use write_file(path=built_path, content=escaped_content)
+6. Tell user: "Report saved to {built_path}"
 ```
+
+**Getting instance_id:**
+The instance_id is available in your tool execution context metadata.
+Use it to build the correct report path.
 
 **Report Format Example:**
 \```markdown

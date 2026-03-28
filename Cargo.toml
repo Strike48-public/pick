@@ -5,6 +5,7 @@ members = [
     "crates/platform",
     "crates/ui",
     "crates/tools",
+    "crates/cyberchef",
     "apps/desktop",
     "apps/web",
     "apps/mobile",
@@ -66,6 +67,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
 dirs = "6"
+tempfile = "3.8"
 dns-lookup = "2"
 base64 = "0.22"
 tar = "0.4"

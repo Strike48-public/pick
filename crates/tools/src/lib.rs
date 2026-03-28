@@ -204,6 +204,9 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(WriteFileTool);
     registry.register(ListFilesTool);
 
+    // Data transformation and analysis
+    registry.register(pentest_cyberchef::CyberChefTool::new());
+
     // Automated toolchains
     registry.register(WebAppToolchain::new());
 

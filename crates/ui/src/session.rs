@@ -5,13 +5,18 @@
 //! The connector writes the Matrix access token here after browser OAuth
 //! succeeds; the ChatPanel reads it in `make_client`.
 
-use std::sync::{LazyLock, RwLock};
+use pentest_core::tools::ToolRegistry;
+use std::sync::{Arc, LazyLock, RwLock};
+use tokio::sync::RwLock as TokioRwLock;
 
 static AUTH_TOKEN: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
 static TENANT_ID: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
 static CONNECTOR_NAME: LazyLock<RwLock<String>> =
     LazyLock::new(|| RwLock::new("pentest-connector".to_string()));
 static TOOL_NAMES: LazyLock<RwLock<Vec<String>>> = LazyLock::new(|| RwLock::new(Vec::new()));
+
+type SharedToolRegistry = Arc<RwLock<Option<Arc<TokioRwLock<ToolRegistry>>>>>;
+static TOOL_REGISTRY: LazyLock<SharedToolRegistry> = LazyLock::new(|| Arc::new(RwLock::new(None)));
 
 /// Read the current session auth token (Matrix access token for GraphQL).
 pub fn get_auth_token() -> String {
@@ -61,4 +66,19 @@ pub fn get_tool_names() -> Vec<String> {
 pub fn set_tool_names(names: Vec<String>) {
     let mut guard = TOOL_NAMES.write().unwrap_or_else(|e| e.into_inner());
     *guard = names;
+}
+
+/// Store the tool registry for global access from UI components.
+pub fn set_tool_registry(registry: Arc<TokioRwLock<ToolRegistry>>) {
+    let mut guard = TOOL_REGISTRY.write().unwrap_or_else(|e| e.into_inner());
+    *guard = Some(registry);
+}
+
+/// Get a reference to the tool registry for executing tools from UI components.
+pub fn get_tool_registry() -> Option<Arc<TokioRwLock<ToolRegistry>>> {
+    TOOL_REGISTRY
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .cloned()
 }

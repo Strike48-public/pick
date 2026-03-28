@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::chat_panel::format_relative_time;
 use super::icons::{
-    Folder, House, MessageSquare, ScrollText, Settings, Terminal, Wrench,
+    Bolt, FileText, Folder, House, MessageSquare, ScrollText, Settings, Terminal, Wrench,
     STRIKE48_SIDEBAR_LOGO_SVG, X,
 };
 
@@ -15,11 +15,13 @@ use super::icons::{
 pub enum NavPage {
     Dashboard,
     Tools,
+    CyberChef,
     Files,
     Shell,
     Chat,
     Logs,
     Settings,
+    Licenses,
 }
 
 impl NavPage {
@@ -28,11 +30,13 @@ impl NavPage {
         match self {
             NavPage::Dashboard => rsx! { House { size } },
             NavPage::Tools => rsx! { Wrench { size } },
+            NavPage::CyberChef => rsx! { Bolt { size } },
             NavPage::Files => rsx! { Folder { size } },
             NavPage::Shell => rsx! { Terminal { size } },
             NavPage::Chat => rsx! { MessageSquare { size } },
             NavPage::Logs => rsx! { ScrollText { size } },
             NavPage::Settings => rsx! { Settings { size } },
+            NavPage::Licenses => rsx! { FileText { size } },
         }
     }
 
@@ -40,24 +44,28 @@ impl NavPage {
         match self {
             NavPage::Dashboard => "Dashboard",
             NavPage::Tools => "Tools",
+            NavPage::CyberChef => "CyberChef",
             NavPage::Files => "Files",
             NavPage::Shell => "Shell",
             NavPage::Chat => "Chat",
             NavPage::Logs => "Logs",
             NavPage::Settings => "Settings",
+            NavPage::Licenses => "Licenses",
         }
     }
 }
 
 /// Pages shown in the sidebar.
-pub const ALL_PAGES: [NavPage; 7] = [
+pub const ALL_PAGES: [NavPage; 9] = [
     NavPage::Dashboard,
     NavPage::Tools,
+    NavPage::CyberChef,
     NavPage::Files,
     NavPage::Shell,
     NavPage::Chat,
     NavPage::Logs,
     NavPage::Settings,
+    NavPage::Licenses,
 ];
 
 /// Sidebar component with flat top-level nav items.
