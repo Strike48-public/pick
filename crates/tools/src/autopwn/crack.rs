@@ -568,9 +568,22 @@ async fn crack_wpa_remote(
         capture_data.len() / 1024
     );
 
-    // Send to remote service
+    // Validate endpoint URL
+    let parsed_url = url::Url::parse(endpoint)
+        .map_err(|e| Error::InvalidParams(format!("Invalid endpoint URL: {}", e)))?;
+
+    if parsed_url.scheme() != "https" {
+        tracing::warn!("Insecure endpoint: using HTTP instead of HTTPS for {}", endpoint);
+    }
+
+    // Send to remote service with extended timeout for remote operations
+    let timeout_secs = std::env::var("REMOTE_CRACK_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(300); // Default 5 minutes for remote operations
+
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(timeout_secs))
         .build()
         .map_err(|e| Error::Network(format!("Failed to create HTTP client: {}", e)))?;
 

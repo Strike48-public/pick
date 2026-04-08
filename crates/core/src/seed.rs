@@ -383,6 +383,18 @@ impl SeedManager {
             return Ok(());
         }
 
+        // Validate path stays within base directory (path traversal prevention)
+        if let Ok(canonical_dest) = resource.destination.canonicalize() {
+            if let Ok(canonical_base) = self.base_dir.canonicalize() {
+                if !canonical_dest.starts_with(&canonical_base) {
+                    return Err(Error::InvalidParams(format!(
+                        "Security: Resource destination {} is outside base directory",
+                        resource.destination.display()
+                    )));
+                }
+            }
+        }
+
         // Create parent directory
         if let Some(parent) = resource.destination.parent() {
             fs::create_dir_all(parent)

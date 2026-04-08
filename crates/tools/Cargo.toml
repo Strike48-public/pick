@@ -40,4 +40,5 @@ regex = { workspace = true }
 chrono = { workspace = true }
 dns-lookup = { workspace = true }
 reqwest = { workspace = true }
+url = "2.5"
 urlencoding = "2.1"
