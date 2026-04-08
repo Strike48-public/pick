@@ -6,6 +6,7 @@
 pub mod config;
 pub mod connector;
 pub mod error;
+pub mod export;
 pub mod file_browser;
 pub mod jwt_validator;
 pub mod logging;
@@ -25,6 +26,9 @@ pub mod prelude {
     };
     pub use crate::connector::ToolEvent;
     pub use crate::error::{Error, Result};
+    pub use crate::export::{
+        EvidenceFile, Finding, SessionExport, SessionMetadata, Severity, ToolExecution,
+    };
     pub use crate::settings::{load_settings, save_settings};
     pub use crate::state::ConnectorStatus;
     pub use crate::terminal::{LogLevel, TerminalLine};
