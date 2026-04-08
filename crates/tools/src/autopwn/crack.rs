@@ -367,9 +367,10 @@ async fn crack_with_wordlist(
         })?;
 
     // Stream stdout for progress updates
-    let stdout = child.stdout.take().ok_or_else(|| {
-        Error::ToolExecution("Failed to capture stdout".into())
-    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::ToolExecution("Failed to capture stdout".into()))?;
     let mut reader = BufReader::new(stdout).lines();
 
     // Track progress
@@ -573,7 +574,10 @@ async fn crack_wpa_remote(
         .map_err(|e| Error::InvalidParams(format!("Invalid endpoint URL: {}", e)))?;
 
     if parsed_url.scheme() != "https" {
-        tracing::warn!("Insecure endpoint: using HTTP instead of HTTPS for {}", endpoint);
+        tracing::warn!(
+            "Insecure endpoint: using HTTP instead of HTTPS for {}",
+            endpoint
+        );
     }
 
     // Send to remote service with extended timeout for remote operations

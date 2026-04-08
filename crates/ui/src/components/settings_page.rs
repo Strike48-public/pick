@@ -611,7 +611,7 @@ pub fn SettingsPage(
                                             use tokio::sync::mpsc;
                                             let (tx, mut rx) = mpsc::unbounded_channel();
 
-                                            let mut seed_progress = seed_progress.clone();
+                                            let mut seed_progress = seed_progress;
                                             spawn(async move {
                                                 while let Some(progress) = rx.recv().await {
                                                     seed_progress.set(Some(progress));
