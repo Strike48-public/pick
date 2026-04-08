@@ -478,3 +478,150 @@
     font-weight: 600;
     font-family: var(--font-mono);
 }
+
+/* ==========================================================================
+   Seed Resources
+   ========================================================================== */
+
+.resource-description {
+    margin-bottom: 16px;
+}
+
+.seed-tiers {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.seed-tier {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.seed-tier-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+}
+
+.seed-tier-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.seed-tier-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--foreground);
+}
+
+.seed-tier-size {
+    font-size: 11px;
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+}
+
+.seed-tier-description {
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.seed-tier-status {
+    font-size: 11px;
+    font-family: var(--font-mono);
+}
+
+.seed-tier-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    background: var(--primary);
+    color: var(--primary-foreground);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.seed-tier-btn:hover:not(:disabled) {
+    background: var(--primary-hover);
+}
+
+.seed-tier-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.seed-loading {
+    padding: 16px;
+    text-align: center;
+}
+
+.seed-progress-info {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.seed-progress-name {
+    font-size: 13px;
+    color: var(--foreground);
+    font-weight: 500;
+}
+
+.seed-progress-bar {
+    width: 100%;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.seed-progress-fill {
+    height: 100%;
+    background: var(--primary);
+    transition: width 0.3s ease;
+}
+
+.seed-progress-text {
+    font-size: 11px;
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+}
+
+.seed-result-success {
+    padding: 8px 12px;
+    background: rgba(0, 255, 0, 0.1);
+    border: 1px solid rgba(0, 255, 0, 0.3);
+    border-radius: 4px;
+    color: #00ff00;
+    font-size: 12px;
+    margin-top: 8px;
+}
+
+.seed-result-error {
+    padding: 8px 12px;
+    background: rgba(255, 0, 0, 0.1);
+    border: 1px solid rgba(255, 0, 0, 0.3);
+    border-radius: 4px;
+    color: #ff4444;
+    font-size: 12px;
+    margin-top: 8px;
+}
+
+.seed-info {
+    margin-top: 12px;
+    font-size: 11px;
+    text-align: center;
+}
