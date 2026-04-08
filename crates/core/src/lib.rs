@@ -12,6 +12,7 @@ pub mod jwt_validator;
 pub mod logging;
 pub mod matrix;
 pub mod rendering;
+pub mod seed;
 pub mod settings;
 pub mod state;
 pub mod terminal;
@@ -28,6 +29,10 @@ pub mod prelude {
     pub use crate::error::{Error, Result};
     pub use crate::export::{
         EvidenceFile, Finding, SessionExport, SessionMetadata, Severity, ToolExecution,
+    };
+    pub use crate::seed::{
+        ProgressCallback, ResourceType, SeedManager, SeedProgress, SeedResource, SeedStatus,
+        SeedSummary,
     };
     pub use crate::settings::{load_settings, save_settings};
     pub use crate::state::ConnectorStatus;

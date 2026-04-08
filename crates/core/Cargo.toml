@@ -43,6 +43,7 @@ strike48-connector = { workspace = true }
 
 # HTTP client for LiveView proxy and Matrix chat
 reqwest = { workspace = true }
+futures = { workspace = true }
 
 # Browser-based OAuth login (optional, desktop only)
 open = { workspace = true, optional = true }
