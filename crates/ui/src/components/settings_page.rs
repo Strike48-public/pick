@@ -7,6 +7,7 @@ use pentest_platform::WifiConnectionStatus;
 
 use super::icons::{Download, Palette, Settings, Wifi};
 use crate::platform_helper;
+use pentest_core::seed::{SeedManager, SeedProgress, SeedTier};
 
 #[component]
 pub fn SettingsPage(
@@ -62,6 +63,21 @@ pub fn SettingsPage(
     let mut wifi_loading = use_signal(|| false);
     let mut wifi_test_result = use_signal(|| None::<Result<String, String>>);
     let mut wifi_testing = use_signal(|| false);
+
+    // Resource seeding state
+    let mut seed_status = use_signal(|| None::<Vec<(String, bool)>>);
+    let mut seed_loading = use_signal(|| false);
+    let mut seed_progress = use_signal(|| None::<SeedProgress>);
+    let mut seed_result = use_signal(|| None::<Result<String, String>>);
+
+    // Load seed status on mount
+    use_effect(move || {
+        spawn(async move {
+            let manager = SeedManager::new();
+            let status = manager.check_status().await;
+            seed_status.set(Some(status));
+        });
+    });
 
     // Load WiFi adapters on mount
     use_effect(move || {
@@ -644,8 +660,271 @@ pub fn SettingsPage(
                 }
             }
 
+            // Seed Resources card
+            div { class: "settings-card dashboard-card",
+                div { class: "settings-card-header",
+                    span { class: "settings-card-icon", Download { size: 16 } }
+                    h2 { "Seed Resources" }
+                }
+                div { class: "settings-card-body",
+                    div { class: "text-dim-xs resource-description",
+                        "Download wordlists and pentesting resources for offline use"
+                    }
+
+                    if seed_loading() {
+                        div { class: "seed-loading",
+                            if let Some(progress) = seed_progress() {
+                                div { class: "seed-progress-info",
+                                    div { class: "seed-progress-name", "{progress.resource_name}" }
+                                    div { class: "seed-progress-bar",
+                                        div {
+                                            class: "seed-progress-fill",
+                                            style: "width: {progress.percent}%"
+                                        }
+                                    }
+                                    div { class: "seed-progress-text",
+                                        "{progress.downloaded_mb:.1} MB / {progress.total_mb:.1} MB ({progress.percent}%)"
+                                    }
+                                }
+                            } else {
+                                div { class: "text-dim-xs", "Preparing to download..." }
+                            }
+                        }
+                    } else {
+                        div { class: "seed-tiers",
+                            // Basic tier
+                            div { class: "seed-tier",
+                                div { class: "seed-tier-info",
+                                    div { class: "seed-tier-header",
+                                        div { class: "seed-tier-name", "Basic" }
+                                        div { class: "seed-tier-size", "~150MB" }
+                                    }
+                                    div { class: "seed-tier-description text-dim-xs",
+                                        "Essential wordlists, payloads, and fuzzing data"
+                                    }
+                                    if let Some(ref status) = seed_status() {
+                                        div { class: "seed-tier-status text-dim-xs",
+                                            {count_seeded_in_tier(status, &[
+                                                "RockYou Wordlist",
+                                                "Common Passwords",
+                                                "Usernames",
+                                                "Web Directories",
+                                                "Reverse Shells",
+                                                "XSS Payloads",
+                                                "SQL Injection Payloads",
+                                                "MAC Vendor Lookup (OUI)"
+                                            ])}
+                                        }
+                                    }
+                                }
+                                button {
+                                    class: "seed-tier-btn",
+                                    disabled: seed_loading(),
+                                    onclick: move |_| {
+                                        seed_loading.set(true);
+                                        seed_result.set(None);
+
+                                        spawn(async move {
+                                            use tokio::sync::mpsc;
+
+                                            let (tx, mut rx) = mpsc::unbounded_channel();
+
+                                            // Progress listener task
+                                            spawn(async move {
+                                                while let Some(progress) = rx.recv().await {
+                                                    seed_progress.set(Some(progress));
+                                                }
+                                            });
+
+                                            let manager = SeedManager::new();
+                                            let result = manager.seed_tier(SeedTier::Basic, move |progress| {
+                                                let _ = tx.send(progress);
+                                            }).await;
+
+                                            seed_loading.set(false);
+                                            seed_progress.set(None);
+
+                                            match result {
+                                                Ok(summary) => {
+                                                    seed_result.set(Some(Ok(format!(
+                                                        "Seeded {} resources successfully",
+                                                        summary.succeeded.len()
+                                                    ))));
+                                                    let status = manager.check_status().await;
+                                                    seed_status.set(Some(status));
+                                                }
+                                                Err(e) => {
+                                                    seed_result.set(Some(Err(e.to_string())));
+                                                }
+                                            }
+                                        });
+                                    },
+                                    "Seed Basic"
+                                }
+                            }
+
+                            // Enhanced tier
+                            div { class: "seed-tier",
+                                div { class: "seed-tier-info",
+                                    div { class: "seed-tier-header",
+                                        div { class: "seed-tier-name", "Enhanced" }
+                                        div { class: "seed-tier-size", "~500MB" }
+                                    }
+                                    div { class: "seed-tier-description text-dim-xs",
+                                        "Nuclei templates, ExploitDB index, GeoIP database"
+                                    }
+                                    if let Some(ref status) = seed_status() {
+                                        div { class: "seed-tier-status text-dim-xs",
+                                            {count_seeded_in_tier(status, &[
+                                                "Nuclei Templates",
+                                                "ExploitDB Index",
+                                                "GeoIP Database",
+                                                "Subdomains Wordlist",
+                                                "API Endpoints"
+                                            ])}
+                                        }
+                                    }
+                                }
+                                button {
+                                    class: "seed-tier-btn",
+                                    disabled: seed_loading(),
+                                    onclick: move |_| {
+                                        seed_loading.set(true);
+                                        seed_result.set(None);
+
+                                        spawn(async move {
+                                            use tokio::sync::mpsc;
+
+                                            let (tx, mut rx) = mpsc::unbounded_channel();
+
+                                            spawn(async move {
+                                                while let Some(progress) = rx.recv().await {
+                                                    seed_progress.set(Some(progress));
+                                                }
+                                            });
+
+                                            let manager = SeedManager::new();
+                                            let result = manager.seed_tier(SeedTier::Enhanced, move |progress| {
+                                                let _ = tx.send(progress);
+                                            }).await;
+
+                                            seed_loading.set(false);
+                                            seed_progress.set(None);
+
+                                            match result {
+                                                Ok(summary) => {
+                                                    seed_result.set(Some(Ok(format!(
+                                                        "Seeded {} resources successfully",
+                                                        summary.succeeded.len()
+                                                    ))));
+                                                    let status = manager.check_status().await;
+                                                    seed_status.set(Some(status));
+                                                }
+                                                Err(e) => {
+                                                    seed_result.set(Some(Err(e.to_string())));
+                                                }
+                                            }
+                                        });
+                                    },
+                                    "Seed Enhanced"
+                                }
+                            }
+
+                            // Advanced tier
+                            div { class: "seed-tier",
+                                div { class: "seed-tier-info",
+                                    div { class: "seed-tier-header",
+                                        div { class: "seed-tier-name", "Advanced" }
+                                        div { class: "seed-tier-size", "~2GB+" }
+                                    }
+                                    div { class: "seed-tier-description text-dim-xs",
+                                        "Precompiled binaries, privilege escalation tools"
+                                    }
+                                    if let Some(ref status) = seed_status() {
+                                        div { class: "seed-tier-status text-dim-xs",
+                                            {count_seeded_in_tier(status, &[
+                                                "LinPEAS Binary",
+                                                "WinPEAS Binary",
+                                                "Nmap Service Probes"
+                                            ])}
+                                        }
+                                    }
+                                }
+                                button {
+                                    class: "seed-tier-btn",
+                                    disabled: seed_loading(),
+                                    onclick: move |_| {
+                                        seed_loading.set(true);
+                                        seed_result.set(None);
+                                        spawn(async move {
+                                            use tokio::sync::mpsc;
+                                            let (tx, mut rx) = mpsc::unbounded_channel();
+
+                                            let mut seed_progress = seed_progress.clone();
+                                            spawn(async move {
+                                                while let Some(progress) = rx.recv().await {
+                                                    seed_progress.set(Some(progress));
+                                                }
+                                            });
+
+                                            let manager = SeedManager::new();
+                                            let result = manager.seed_tier(SeedTier::Advanced, move |progress| {
+                                                let _ = tx.send(progress);
+                                            }).await;
+
+                                            seed_loading.set(false);
+                                            match result {
+                                                Ok(summary) => {
+                                                    seed_result.set(Some(Ok(format!(
+                                                        "Seeded {} resources successfully",
+                                                        summary.succeeded.len()
+                                                    ))));
+                                                    let status = manager.check_status().await;
+                                                    seed_status.set(Some(status));
+                                                }
+                                                Err(e) => {
+                                                    seed_result.set(Some(Err(e.to_string())));
+                                                }
+                                            }
+                                        });
+                                    },
+                                    "Seed Advanced"
+                                }
+                            }
+                        }
+
+                        if let Some(Ok(ref msg)) = seed_result() {
+                            div { class: "seed-result-success", "✓ {msg}" }
+                        }
+                        if let Some(Err(ref err)) = seed_result() {
+                            div { class: "seed-result-error", "✗ Error: {err}" }
+                        }
+
+                        div { class: "seed-info text-dim-xs",
+                            "Resources will be downloaded to ~/.pick/resources/"
+                        }
+                    }
+                }
+            }
 
             }
         }
+    }
+}
+
+/// Helper function to count how many resources in a tier are already seeded
+fn count_seeded_in_tier(status: &[(String, bool)], tier_resources: &[&str]) -> String {
+    let seeded = tier_resources
+        .iter()
+        .filter(|&&name| status.iter().any(|(s, exists)| s == name && *exists))
+        .count();
+    let total = tier_resources.len();
+
+    if seeded == 0 {
+        format!("Not seeded ({} resources)", total)
+    } else if seeded == total {
+        format!("✓ Complete ({}/{} seeded)", seeded, total)
+    } else {
+        format!("Partial ({}/{} seeded)", seeded, total)
     }
 }
