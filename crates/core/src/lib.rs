@@ -31,7 +31,7 @@ pub mod prelude {
     };
     pub use crate::seed::{
         ProgressCallback, ResourceType, SeedManager, SeedProgress, SeedResource, SeedStatus,
-        SeedSummary,
+        SeedSummary, SeedTier, TierSummary,
     };
     pub use crate::settings::{load_settings, save_settings};
     pub use crate::state::ConnectorStatus;

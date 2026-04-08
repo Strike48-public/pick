@@ -14,9 +14,24 @@ use tokio::io::AsyncWriteExt;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResourceType {
     Wordlist,
+    Payload,
+    Fuzzing,
+    Network,
+    Signature,
     ExploitDb,
-    PayloadTemplates,
-    CertificateAuthorities,
+    Binary,
+    Documentation,
+}
+
+/// Seed tier for organizing resources
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SeedTier {
+    /// Basic resources (wordlists, common payloads) ~150MB
+    Basic,
+    /// Enhanced resources (nuclei, exploitdb index, geoip) ~500MB
+    Enhanced,
+    /// Advanced resources (binaries, full databases, containers) ~2GB+
+    Advanced,
 }
 
 /// A seedable resource
@@ -24,6 +39,7 @@ pub enum ResourceType {
 pub struct SeedResource {
     pub name: String,
     pub resource_type: ResourceType,
+    pub tier: SeedTier,
     pub url: String,
     pub size_mb: u64,
     pub description: String,
@@ -76,49 +92,225 @@ impl SeedManager {
 
     /// Get default seedable resources
     fn default_resources(base_dir: &PathBuf) -> Vec<SeedResource> {
-        vec![
+        let mut resources = Vec::new();
+
+        // BASIC TIER (~150MB)
+        resources.extend(vec![
+            // Wordlists
             SeedResource {
                 name: "RockYou Wordlist".to_string(),
                 resource_type: ResourceType::Wordlist,
+                tier: SeedTier::Basic,
                 url: "https://download.weakpass.com/wordlists/90/rockyou.txt".to_string(),
                 size_mb: 134,
                 description: "14M passwords from RockYou breach".to_string(),
-                destination: base_dir.join("wordlists").join("rockyou.txt"),
+                destination: base_dir.join("wordlists/passwords/rockyou.txt"),
                 required: true,
             },
             SeedResource {
                 name: "Common Passwords".to_string(),
                 resource_type: ResourceType::Wordlist,
+                tier: SeedTier::Basic,
                 url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10k-most-common.txt".to_string(),
                 size_mb: 1,
                 description: "Top 10k most common passwords".to_string(),
-                destination: base_dir.join("wordlists").join("common-passwords.txt"),
+                destination: base_dir.join("wordlists/passwords/common-10k.txt"),
                 required: true,
             },
             SeedResource {
                 name: "Usernames".to_string(),
                 resource_type: ResourceType::Wordlist,
+                tier: SeedTier::Basic,
                 url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Usernames/top-usernames-shortlist.txt".to_string(),
                 size_mb: 1,
                 description: "Common usernames for brute force".to_string(),
-                destination: base_dir.join("wordlists").join("usernames.txt"),
+                destination: base_dir.join("wordlists/usernames/common.txt"),
                 required: false,
             },
             SeedResource {
                 name: "Web Directories".to_string(),
                 resource_type: ResourceType::Wordlist,
+                tier: SeedTier::Basic,
                 url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common.txt".to_string(),
                 size_mb: 1,
                 description: "Common web directories for scanning".to_string(),
-                destination: base_dir.join("wordlists").join("web-directories.txt"),
+                destination: base_dir.join("wordlists/web/directories.txt"),
                 required: false,
             },
-        ]
+            // Payloads
+            SeedResource {
+                name: "Reverse Shells".to_string(),
+                resource_type: ResourceType::Payload,
+                tier: SeedTier::Basic,
+                url: "https://raw.githubusercontent.com/swisskyrepo/PayloadsAllTheThings/master/Methodology%20and%20Resources/Reverse%20Shell%20Cheatsheet.md".to_string(),
+                size_mb: 1,
+                description: "Common reverse shell payloads (bash, python, php, etc)".to_string(),
+                destination: base_dir.join("payloads/shells/reverse-shells.md"),
+                required: false,
+            },
+            // Fuzzing
+            SeedResource {
+                name: "XSS Payloads".to_string(),
+                resource_type: ResourceType::Fuzzing,
+                tier: SeedTier::Basic,
+                url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Fuzzing/XSS/XSS-BruteLogic.txt".to_string(),
+                size_mb: 1,
+                description: "XSS payloads for testing".to_string(),
+                destination: base_dir.join("fuzzing/xss-payloads.txt"),
+                required: false,
+            },
+            SeedResource {
+                name: "SQL Injection Payloads".to_string(),
+                resource_type: ResourceType::Fuzzing,
+                tier: SeedTier::Basic,
+                url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Fuzzing/SQLi/Generic-SQLi.txt".to_string(),
+                size_mb: 1,
+                description: "SQL injection payloads for testing".to_string(),
+                destination: base_dir.join("fuzzing/sqli-payloads.txt"),
+                required: false,
+            },
+            // Network
+            SeedResource {
+                name: "MAC Vendor Lookup (OUI)".to_string(),
+                resource_type: ResourceType::Network,
+                tier: SeedTier::Basic,
+                url: "https://standards-oui.ieee.org/oui/oui.txt".to_string(),
+                size_mb: 5,
+                description: "MAC address vendor lookup database".to_string(),
+                destination: base_dir.join("network/oui.txt"),
+                required: false,
+            },
+        ]);
+
+        // ENHANCED TIER (~500MB)
+        resources.extend(vec![
+            SeedResource {
+                name: "Nuclei Templates".to_string(),
+                resource_type: ResourceType::Signature,
+                tier: SeedTier::Enhanced,
+                url: "https://github.com/projectdiscovery/nuclei-templates/archive/refs/heads/main.zip".to_string(),
+                size_mb: 50,
+                description: "Nuclei vulnerability detection templates".to_string(),
+                destination: base_dir.join("signatures/nuclei-templates.zip"),
+                required: false,
+            },
+            SeedResource {
+                name: "ExploitDB Index".to_string(),
+                resource_type: ResourceType::ExploitDb,
+                tier: SeedTier::Enhanced,
+                url: "https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv".to_string(),
+                size_mb: 5,
+                description: "ExploitDB searchable index (metadata only)".to_string(),
+                destination: base_dir.join("exploits/exploitdb-index.csv"),
+                required: false,
+            },
+            SeedResource {
+                name: "GeoIP Database".to_string(),
+                resource_type: ResourceType::Network,
+                tier: SeedTier::Enhanced,
+                url: "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-City.mmdb".to_string(),
+                size_mb: 100,
+                description: "IP geolocation database".to_string(),
+                destination: base_dir.join("network/geoip.mmdb"),
+                required: false,
+            },
+            SeedResource {
+                name: "Subdomains Wordlist".to_string(),
+                resource_type: ResourceType::Wordlist,
+                tier: SeedTier::Enhanced,
+                url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-110000.txt".to_string(),
+                size_mb: 10,
+                description: "Top 110k subdomains for enumeration".to_string(),
+                destination: base_dir.join("wordlists/dns/subdomains-110k.txt"),
+                required: false,
+            },
+            SeedResource {
+                name: "API Endpoints".to_string(),
+                resource_type: ResourceType::Wordlist,
+                tier: SeedTier::Enhanced,
+                url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/api/api-endpoints.txt".to_string(),
+                size_mb: 1,
+                description: "Common API endpoints and paths".to_string(),
+                destination: base_dir.join("wordlists/web/api-endpoints.txt"),
+                required: false,
+            },
+        ]);
+
+        // ADVANCED TIER (~2GB+)
+        resources.extend(vec![
+            SeedResource {
+                name: "LinPEAS Binary".to_string(),
+                resource_type: ResourceType::Binary,
+                tier: SeedTier::Advanced,
+                url: "https://github.com/carlospolop/PEASS-ng/releases/latest/download/linpeas.sh".to_string(),
+                size_mb: 1,
+                description: "Linux privilege escalation scanner".to_string(),
+                destination: base_dir.join("binaries/linux/linpeas.sh"),
+                required: false,
+            },
+            SeedResource {
+                name: "WinPEAS Binary".to_string(),
+                resource_type: ResourceType::Binary,
+                tier: SeedTier::Advanced,
+                url: "https://github.com/carlospolop/PEASS-ng/releases/latest/download/winPEASx64.exe".to_string(),
+                size_mb: 2,
+                description: "Windows privilege escalation scanner".to_string(),
+                destination: base_dir.join("binaries/windows/winpeas.exe"),
+                required: false,
+            },
+            SeedResource {
+                name: "Nmap Service Probes".to_string(),
+                resource_type: ResourceType::Signature,
+                tier: SeedTier::Advanced,
+                url: "https://raw.githubusercontent.com/nmap/nmap/master/nmap-service-probes".to_string(),
+                size_mb: 1,
+                description: "Nmap service detection signatures".to_string(),
+                destination: base_dir.join("signatures/nmap-service-probes"),
+                required: false,
+            },
+        ]);
+
+        resources
     }
 
     /// Get all seedable resources
     pub fn resources(&self) -> &[SeedResource] {
         &self.resources
+    }
+
+    /// Get resources for a specific tier
+    pub fn resources_for_tier(&self, tier: SeedTier) -> Vec<&SeedResource> {
+        self.resources
+            .iter()
+            .filter(|r| r.tier == tier)
+            .collect()
+    }
+
+    /// Get resources up to and including a tier (Basic includes Basic, Enhanced includes Basic+Enhanced, etc)
+    pub fn resources_up_to_tier(&self, tier: SeedTier) -> Vec<&SeedResource> {
+        self.resources
+            .iter()
+            .filter(|r| match tier {
+                SeedTier::Basic => r.tier == SeedTier::Basic,
+                SeedTier::Enhanced => {
+                    r.tier == SeedTier::Basic || r.tier == SeedTier::Enhanced
+                }
+                SeedTier::Advanced => true, // All resources
+            })
+            .collect()
+    }
+
+    /// Get tier summary (count and total size)
+    pub fn tier_summary(&self, tier: SeedTier) -> TierSummary {
+        let resources = self.resources_for_tier(tier);
+        let total_size_mb: u64 = resources.iter().map(|r| r.size_mb).sum();
+        let count = resources.len();
+
+        TierSummary {
+            tier,
+            count,
+            total_size_mb,
+        }
     }
 
     /// Check which resources are already seeded
@@ -136,9 +328,27 @@ impl SeedManager {
     where
         F: Fn(SeedProgress) + Send + Sync,
     {
+        let resources: Vec<&SeedResource> = self.resources.iter().collect();
+        self.seed_resources(&resources, progress_callback).await
+    }
+
+    /// Seed resources for a specific tier
+    pub async fn seed_tier<F>(&self, tier: SeedTier, progress_callback: F) -> Result<SeedSummary>
+    where
+        F: Fn(SeedProgress) + Send + Sync,
+    {
+        let resources: Vec<&SeedResource> = self.resources_up_to_tier(tier);
+        self.seed_resources(&resources, progress_callback).await
+    }
+
+    /// Internal method to seed a list of resources
+    async fn seed_resources<F>(&self, resources: &[&SeedResource], progress_callback: F) -> Result<SeedSummary>
+    where
+        F: Fn(SeedProgress) + Send + Sync,
+    {
         let mut summary = SeedSummary::default();
 
-        for resource in &self.resources {
+        for resource in resources {
             let result = self.seed_resource(resource, &progress_callback).await;
 
             match result {
@@ -287,6 +497,34 @@ impl SeedSummary {
     /// Get total resources processed
     pub fn total(&self) -> usize {
         self.succeeded.len() + self.failed.len() + self.skipped.len()
+    }
+}
+
+/// Summary of resources in a tier
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TierSummary {
+    pub tier: SeedTier,
+    pub count: usize,
+    pub total_size_mb: u64,
+}
+
+impl TierSummary {
+    /// Get a human-readable description
+    pub fn description(&self) -> String {
+        match self.tier {
+            SeedTier::Basic => format!(
+                "Basic tier: {} resources (~{}MB) - Essential wordlists, payloads, and fuzzing data",
+                self.count, self.total_size_mb
+            ),
+            SeedTier::Enhanced => format!(
+                "Enhanced tier: {} resources (~{}MB) - Nuclei templates, ExploitDB index, GeoIP",
+                self.count, self.total_size_mb
+            ),
+            SeedTier::Advanced => format!(
+                "Advanced tier: {} resources (~{}MB) - Precompiled binaries, full databases",
+                self.count, self.total_size_mb
+            ),
+        }
     }
 }
 
