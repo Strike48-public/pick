@@ -337,13 +337,15 @@ async fn crack_with_wordlist(
     wordlist: &str,
     timeout_secs: u64,
 ) -> Result<CrackResult> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
     let start = Instant::now();
 
     tracing::info!("📖 Wordlist: {}", wordlist);
     tracing::info!("🔍 Cracking...");
 
     // Run aircrack-ng with timeout
-    let child = Command::new("aircrack-ng")
+    let mut child = Command::new("aircrack-ng")
         .args(["-w", wordlist, "-b", bssid, capture_file])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -364,23 +366,26 @@ async fn crack_with_wordlist(
             ))
         })?;
 
-    // Get PID for killing if needed
-    let child_id = child.id();
+    // Stream stdout for progress updates
+    let stdout = child.stdout.take().ok_or_else(|| {
+        Error::ToolExecution("Failed to capture stdout".into())
+    })?;
+    let mut reader = BufReader::new(stdout).lines();
 
-    // Wait with timeout
-    let timeout = std::time::Duration::from_secs(timeout_secs);
-    let result = tokio::time::timeout(timeout, child.wait_with_output()).await;
+    // Track progress
+    let mut last_progress_log = std::time::Instant::now();
+    let progress_interval = std::time::Duration::from_secs(10); // Log every 10 seconds
+    let mut all_output = String::new();
+    let mut found_password: Option<String> = None;
 
-    let output = match result {
-        Ok(Ok(output)) => output,
-        Ok(Err(e)) => {
-            return Err(Error::ToolExecution(format!("aircrack-ng failed: {}", e)));
-        }
-        Err(_) => {
-            // Timeout - kill process
-            if let Some(pid) = child_id {
-                let _ = Command::new("kill").arg(pid.to_string()).output().await;
-            }
+    // Read output line by line with timeout
+    let deadline = start + std::time::Duration::from_secs(timeout_secs);
+
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            // Timeout reached
+            let _ = child.kill().await;
             tracing::warn!("⏱ Timeout reached ({}s)", timeout_secs);
 
             return Ok(CrackResult {
@@ -391,36 +396,72 @@ async fn crack_with_wordlist(
                 method: "Dictionary Attack (aircrack-ng)".to_string(),
             });
         }
-    };
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+        // Try to read next line with timeout
+        match tokio::time::timeout(std::time::Duration::from_secs(1), reader.next_line()).await {
+            Ok(Ok(Some(line))) => {
+                all_output.push_str(&line);
+                all_output.push('\n');
 
-    // Parse output for key
-    for line in stdout.lines() {
-        if line.contains("KEY FOUND!") {
-            // Extract password from line like "KEY FOUND! [ password123 ]"
-            if let Some(key_part) = line.split('[').nth(1) {
-                if let Some(password) = key_part.split(']').next() {
-                    let password = password.trim().to_string();
-                    let duration = start.elapsed().as_secs();
+                // Check for password found
+                if line.contains("KEY FOUND!") {
+                    if let Some(key_part) = line.split('[').nth(1) {
+                        if let Some(password) = key_part.split(']').next() {
+                            found_password = Some(password.trim().to_string());
+                            break;
+                        }
+                    }
+                }
 
-                    tracing::info!("");
-                    tracing::info!("✓ SUCCESS! Password Found");
-                    tracing::info!("═══════════════════════════════════════════════════");
-                    tracing::info!("  Password: {}", password);
-                    tracing::info!("  Time:     {}s", duration);
-                    tracing::info!("═══════════════════════════════════════════════════");
-
-                    return Ok(CrackResult {
-                        success: true,
-                        password: Some(password),
-                        attempts: 0, // Can't easily track from aircrack-ng output
-                        duration_sec: duration,
-                        method: "Dictionary Attack (aircrack-ng)".to_string(),
-                    });
+                // Log progress periodically (parse aircrack-ng progress line)
+                if line.contains("keys tested") && last_progress_log.elapsed() > progress_interval {
+                    // Extract progress info: "[00:01:23] 123456/1000000 keys tested (12345 k/s)"
+                    if let Some(progress_info) = extract_progress(&line) {
+                        tracing::info!("   Progress: {}", progress_info);
+                        last_progress_log = std::time::Instant::now();
+                    }
+                }
+            }
+            Ok(Ok(None)) => {
+                // Process ended
+                break;
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("Error reading output: {}", e);
+                break;
+            }
+            Err(_) => {
+                // Timeout reading line, continue (keeps connection alive)
+                if last_progress_log.elapsed() > progress_interval {
+                    let elapsed = start.elapsed().as_secs();
+                    tracing::info!("   Still cracking... ({}s elapsed)", elapsed);
+                    last_progress_log = std::time::Instant::now();
                 }
             }
         }
+    }
+
+    // Wait for process to finish
+    let _ = child.wait().await;
+
+    // Check if password was found during streaming
+    if let Some(password) = found_password {
+        let duration = start.elapsed().as_secs();
+
+        tracing::info!("");
+        tracing::info!("✓ SUCCESS! Password Found");
+        tracing::info!("═══════════════════════════════════════════════════");
+        tracing::info!("  Password: {}", password);
+        tracing::info!("  Time:     {}s", duration);
+        tracing::info!("═══════════════════════════════════════════════════");
+
+        return Ok(CrackResult {
+            success: true,
+            password: Some(password),
+            attempts: 0,
+            duration_sec: duration,
+            method: "Dictionary Attack (aircrack-ng)".to_string(),
+        });
     }
 
     tracing::warn!("✗ Password not found in wordlist");
@@ -478,6 +519,28 @@ async fn crack_wpa_mask(
         duration_sec: 0,
         method: "Mask Attack (not implemented)".to_string(),
     })
+}
+
+/// Extract progress information from aircrack-ng output line
+/// Example: "[00:01:23] 123456/1000000 keys tested (12345 k/s)"
+fn extract_progress(line: &str) -> Option<String> {
+    // Look for pattern: "X/Y keys tested (Z k/s)"
+    if let Some(keys_part) = line.split("keys tested").next() {
+        // Extract "X/Y" and speed
+        let parts: Vec<&str> = keys_part.split_whitespace().collect();
+        if let Some(keys) = parts.last() {
+            if keys.contains('/') {
+                // Also extract speed if available
+                if let Some(speed_part) = line.split('(').nth(1) {
+                    if let Some(speed) = speed_part.split(')').next() {
+                        return Some(format!("{} ({})", keys, speed));
+                    }
+                }
+                return Some(keys.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Send handshake to remote cracking service
