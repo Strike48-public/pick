@@ -121,8 +121,15 @@ impl PentestTool for AutoPwnCrackTool {
 
             // Verify capture file exists
             if !std::path::Path::new(capture_file).exists() {
+                tracing::error!("✗ Capture file not found: {}", capture_file);
+                tracing::error!("");
+                tracing::error!("Next steps:");
+                tracing::error!("  1. Verify the file path is correct");
+                tracing::error!("  2. Check if the file was moved or deleted");
+                tracing::error!("  3. Capture a new handshake with autopwn_scan");
+                tracing::error!("");
                 return Err(Error::InvalidParams(format!(
-                    "Capture file not found: {}",
+                    "Capture file not found: {}. See logs for next steps.",
                     capture_file
                 )));
             }
@@ -180,8 +187,17 @@ async fn crack_wep(capture_file: &str, bssid: &str) -> Result<CrackResult> {
         .output()
         .await
         .map_err(|e| {
+            tracing::error!("✗ Failed to run aircrack-ng: {}", e);
+            tracing::error!("");
+            tracing::error!("Next steps:");
+            tracing::error!("  1. Install aircrack-ng:");
+            tracing::error!("     sudo apt install aircrack-ng  (Debian/Ubuntu)");
+            tracing::error!("     sudo pacman -S aircrack-ng    (Arch)");
+            tracing::error!("     brew install aircrack-ng      (macOS)");
+            tracing::error!("  2. Verify it's in PATH: which aircrack-ng");
+            tracing::error!("");
             Error::ToolExecution(format!(
-                "Failed to run aircrack-ng (is it installed?): {}",
+                "Failed to run aircrack-ng (not installed?): {}. See logs for next steps.",
                 e
             ))
         })?;
@@ -333,8 +349,17 @@ async fn crack_with_wordlist(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| {
+            tracing::error!("✗ Failed to spawn aircrack-ng: {}", e);
+            tracing::error!("");
+            tracing::error!("Next steps:");
+            tracing::error!("  1. Install aircrack-ng:");
+            tracing::error!("     sudo apt install aircrack-ng  (Debian/Ubuntu)");
+            tracing::error!("     sudo pacman -S aircrack-ng    (Arch)");
+            tracing::error!("     brew install aircrack-ng      (macOS)");
+            tracing::error!("  2. Verify it's in PATH: which aircrack-ng");
+            tracing::error!("");
             Error::ToolExecution(format!(
-                "Failed to run aircrack-ng (is it installed?): {}",
+                "Failed to spawn aircrack-ng (not installed?): {}. See logs for next steps.",
                 e
             ))
         })?;
@@ -426,8 +451,18 @@ async fn crack_wpa_mask(
     let hashcat_check = Command::new("which").arg("hashcat").output().await.ok();
 
     if hashcat_check.is_none() || !hashcat_check.unwrap().status.success() {
+        tracing::error!("✗ Hashcat not found");
+        tracing::error!("");
+        tracing::error!("Next steps:");
+        tracing::error!("  1. Install hashcat:");
+        tracing::error!("     sudo apt install hashcat  (Debian/Ubuntu)");
+        tracing::error!("     sudo pacman -S hashcat    (Arch)");
+        tracing::error!("     brew install hashcat      (macOS)");
+        tracing::error!("  2. Or use 'dictionary' method instead of 'mask'");
+        tracing::error!("  3. Or use 'remote' method with a cracking service");
+        tracing::error!("");
         return Err(Error::ToolExecution(
-            "Mask attacks require hashcat (not installed). Use 'dictionary' method instead.".into(),
+            "Mask attacks require hashcat (not installed). See logs for next steps.".into(),
         ));
     }
 

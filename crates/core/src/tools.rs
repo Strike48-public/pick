@@ -403,7 +403,97 @@ impl ToolRegistry {
     ) -> Result<ToolResult> {
         match self.get(name) {
             Some(tool) => tool.execute(params, ctx).await,
-            None => Err(crate::error::Error::ToolNotFound(name.to_string())),
+            None => {
+                // Find similar tool names for suggestions
+                let suggestions = self.find_similar_tools(name);
+
+                tracing::error!("✗ Tool '{}' not found in registry", name);
+
+                if !suggestions.is_empty() {
+                    tracing::error!("");
+                    tracing::error!("Did you mean one of these?");
+                    for suggestion in &suggestions {
+                        tracing::error!("  - {}", suggestion);
+                    }
+                }
+
+                tracing::error!("");
+                tracing::error!("Available tools:");
+                let mut names: Vec<&str> = self.names();
+                names.sort();
+                for tool_name in names.iter().take(10) {
+                    tracing::error!("  - {}", tool_name);
+                }
+                if names.len() > 10 {
+                    tracing::error!("  ... and {} more", names.len() - 10);
+                }
+                tracing::error!("");
+
+                Err(crate::error::Error::ToolNotFound(format!(
+                    "Tool '{}' not found. See logs for available tools.",
+                    name
+                )))
+            }
         }
     }
+
+    /// Find similar tool names using Levenshtein distance
+    fn find_similar_tools(&self, name: &str) -> Vec<String> {
+        let mut scored: Vec<(String, usize)> = self
+            .names()
+            .iter()
+            .map(|&tool_name| {
+                let distance = levenshtein_distance(name, tool_name);
+                (tool_name.to_string(), distance)
+            })
+            .collect();
+
+        // Sort by distance (lower is better)
+        scored.sort_by_key(|(_, dist)| *dist);
+
+        // Return tools with distance <= 3 (close matches)
+        scored
+            .into_iter()
+            .filter(|(_, dist)| *dist <= 3)
+            .take(5)
+            .map(|(name, _)| name)
+            .collect()
+    }
+}
+
+/// Calculate Levenshtein distance between two strings
+fn levenshtein_distance(s1: &str, s2: &str) -> usize {
+    let len1 = s1.len();
+    let len2 = s2.len();
+
+    if len1 == 0 {
+        return len2;
+    }
+    if len2 == 0 {
+        return len1;
+    }
+
+    let mut matrix = vec![vec![0; len2 + 1]; len1 + 1];
+
+    for i in 0..=len1 {
+        matrix[i][0] = i;
+    }
+    for j in 0..=len2 {
+        matrix[0][j] = j;
+    }
+
+    for (i, c1) in s1.chars().enumerate() {
+        for (j, c2) in s2.chars().enumerate() {
+            let cost = if c1 == c2 { 0 } else { 1 };
+            matrix[i + 1][j + 1] = std::cmp::min(
+                std::cmp::min(
+                    matrix[i][j + 1] + 1,      // deletion
+                    matrix[i + 1][j] + 1,      // insertion
+                ),
+                matrix[i][j] + cost,            // substitution
+            );
+        }
+    }
+
+    matrix[len1][len2]
 }
