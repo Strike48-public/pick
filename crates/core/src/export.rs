@@ -115,16 +115,25 @@ impl SessionExport {
         let mut md = String::new();
 
         // Header
-        md.push_str(&format!("# Penetration Test Report\n\n"));
+        md.push_str("# Penetration Test Report\n\n");
         md.push_str(&format!("**Session ID:** {}\n\n", self.metadata.session_id));
-        md.push_str(&format!("**Start Time:** {}\n\n", self.metadata.start_time.format("%Y-%m-%d %H:%M:%S UTC")));
+        md.push_str(&format!(
+            "**Start Time:** {}\n\n",
+            self.metadata.start_time.format("%Y-%m-%d %H:%M:%S UTC")
+        ));
 
         if let Some(end_time) = self.metadata.end_time {
-            md.push_str(&format!("**End Time:** {}\n\n", end_time.format("%Y-%m-%d %H:%M:%S UTC")));
+            md.push_str(&format!(
+                "**End Time:** {}\n\n",
+                end_time.format("%Y-%m-%d %H:%M:%S UTC")
+            ));
         }
 
         md.push_str(&format!("**Platform:** {}\n\n", self.metadata.platform));
-        md.push_str(&format!("**Connector Version:** {}\n\n", self.metadata.connector_version));
+        md.push_str(&format!(
+            "**Connector Version:** {}\n\n",
+            self.metadata.connector_version
+        ));
 
         if let Some(target) = &self.metadata.target {
             md.push_str(&format!("**Target:** {}\n\n", target));
@@ -134,13 +143,32 @@ impl SessionExport {
 
         // Executive Summary
         md.push_str("## Executive Summary\n\n");
-        md.push_str(&format!("- **Total Tool Executions:** {}\n", self.tool_executions.len()));
+        md.push_str(&format!(
+            "- **Total Tool Executions:** {}\n",
+            self.tool_executions.len()
+        ));
         md.push_str(&format!("- **Findings:** {}\n", self.findings.len()));
 
-        let critical = self.findings.iter().filter(|f| matches!(f.severity, Severity::Critical)).count();
-        let high = self.findings.iter().filter(|f| matches!(f.severity, Severity::High)).count();
-        let medium = self.findings.iter().filter(|f| matches!(f.severity, Severity::Medium)).count();
-        let low = self.findings.iter().filter(|f| matches!(f.severity, Severity::Low)).count();
+        let critical = self
+            .findings
+            .iter()
+            .filter(|f| matches!(f.severity, Severity::Critical))
+            .count();
+        let high = self
+            .findings
+            .iter()
+            .filter(|f| matches!(f.severity, Severity::High))
+            .count();
+        let medium = self
+            .findings
+            .iter()
+            .filter(|f| matches!(f.severity, Severity::Medium))
+            .count();
+        let low = self
+            .findings
+            .iter()
+            .filter(|f| matches!(f.severity, Severity::Low))
+            .count();
 
         md.push_str(&format!("  - Critical: {}\n", critical));
         md.push_str(&format!("  - High: {}\n", high));
@@ -163,8 +191,16 @@ impl SessionExport {
                     Severity::Info => "ℹ️",
                 };
 
-                md.push_str(&format!("### {} {} - {}\n\n", severity_icon, severity_str(finding.severity), finding.title));
-                md.push_str(&format!("**Affected Target:** {}\n\n", finding.affected_target));
+                md.push_str(&format!(
+                    "### {} {} - {}\n\n",
+                    severity_icon,
+                    severity_str(finding.severity),
+                    finding.title
+                ));
+                md.push_str(&format!(
+                    "**Affected Target:** {}\n\n",
+                    finding.affected_target
+                ));
                 md.push_str(&format!("**Description:** {}\n\n", finding.description));
 
                 if !finding.evidence.is_empty() {
@@ -172,7 +208,7 @@ impl SessionExport {
                     for evidence in &finding.evidence {
                         md.push_str(&format!("- {}\n", evidence));
                     }
-                    md.push_str("\n");
+                    md.push('\n');
                 }
 
                 if let Some(rec) = &finding.recommendation {
@@ -190,7 +226,11 @@ impl SessionExport {
             md.push_str("|------|------|----------|--------|\n");
 
             for exec in &self.tool_executions {
-                let status = if exec.success { "✓ Success" } else { "✗ Failed" };
+                let status = if exec.success {
+                    "✓ Success"
+                } else {
+                    "✗ Failed"
+                };
                 md.push_str(&format!(
                     "| {} | {} | {}ms | {} |\n",
                     exec.timestamp.format("%H:%M:%S"),
@@ -221,7 +261,7 @@ impl SessionExport {
                 ));
             }
 
-            md.push_str("\n");
+            md.push('\n');
         }
 
         md
@@ -229,8 +269,7 @@ impl SessionExport {
 
     /// Save to file
     pub fn save_json(&self, path: impl Into<PathBuf>) -> std::io::Result<()> {
-        let json = self.to_json()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let json = self.to_json().map_err(std::io::Error::other)?;
         std::fs::write(path.into(), json)
     }
 

@@ -475,9 +475,11 @@ fn levenshtein_distance(s1: &str, s2: &str) -> usize {
 
     let mut matrix = vec![vec![0; len2 + 1]; len1 + 1];
 
-    for i in 0..=len1 {
-        matrix[i][0] = i;
+    #[allow(clippy::needless_range_loop)]
+    for (i, row) in matrix.iter_mut().enumerate().take(len1 + 1) {
+        row[0] = i;
     }
+    #[allow(clippy::needless_range_loop)]
     for j in 0..=len2 {
         matrix[0][j] = j;
     }
@@ -487,10 +489,10 @@ fn levenshtein_distance(s1: &str, s2: &str) -> usize {
             let cost = if c1 == c2 { 0 } else { 1 };
             matrix[i + 1][j + 1] = std::cmp::min(
                 std::cmp::min(
-                    matrix[i][j + 1] + 1,      // deletion
-                    matrix[i + 1][j] + 1,      // insertion
+                    matrix[i][j + 1] + 1, // deletion
+                    matrix[i + 1][j] + 1, // insertion
                 ),
-                matrix[i][j] + cost,            // substitution
+                matrix[i][j] + cost, // substitution
             );
         }
     }

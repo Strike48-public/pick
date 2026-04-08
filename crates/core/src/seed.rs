@@ -6,7 +6,7 @@
 use crate::error::{Error, Result};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
@@ -91,7 +91,7 @@ impl SeedManager {
     }
 
     /// Get default seedable resources
-    fn default_resources(base_dir: &PathBuf) -> Vec<SeedResource> {
+    fn default_resources(base_dir: &Path) -> Vec<SeedResource> {
         let mut resources = Vec::new();
 
         // BASIC TIER (~150MB)
@@ -280,10 +280,7 @@ impl SeedManager {
 
     /// Get resources for a specific tier
     pub fn resources_for_tier(&self, tier: SeedTier) -> Vec<&SeedResource> {
-        self.resources
-            .iter()
-            .filter(|r| r.tier == tier)
-            .collect()
+        self.resources.iter().filter(|r| r.tier == tier).collect()
     }
 
     /// Get resources up to and including a tier (Basic includes Basic, Enhanced includes Basic+Enhanced, etc)
@@ -292,9 +289,7 @@ impl SeedManager {
             .iter()
             .filter(|r| match tier {
                 SeedTier::Basic => r.tier == SeedTier::Basic,
-                SeedTier::Enhanced => {
-                    r.tier == SeedTier::Basic || r.tier == SeedTier::Enhanced
-                }
+                SeedTier::Enhanced => r.tier == SeedTier::Basic || r.tier == SeedTier::Enhanced,
                 SeedTier::Advanced => true, // All resources
             })
             .collect()
@@ -342,7 +337,11 @@ impl SeedManager {
     }
 
     /// Internal method to seed a list of resources
-    async fn seed_resources<F>(&self, resources: &[&SeedResource], progress_callback: F) -> Result<SeedSummary>
+    async fn seed_resources<F>(
+        &self,
+        resources: &[&SeedResource],
+        progress_callback: F,
+    ) -> Result<SeedSummary>
     where
         F: Fn(SeedProgress) + Send + Sync,
     {
@@ -417,11 +416,10 @@ impl SeedManager {
             .build()
             .map_err(|e| Error::Network(format!("Failed to create HTTP client: {}", e)))?;
 
-        let response = client
-            .get(&resource.url)
-            .send()
-            .await
-            .map_err(|e| Error::Network(format!("Failed to download {}: {}", resource.name, e)))?;
+        let response =
+            client.get(&resource.url).send().await.map_err(|e| {
+                Error::Network(format!("Failed to download {}: {}", resource.name, e))
+            })?;
 
         if !response.status().is_success() {
             return Err(Error::Network(format!(
@@ -441,7 +439,8 @@ impl SeedManager {
         let mut last_progress = 0;
 
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| Error::Network(format!("Download interrupted: {}", e)))?;
+            let chunk =
+                chunk.map_err(|e| Error::Network(format!("Download interrupted: {}", e)))?;
             file.write_all(&chunk)
                 .await
                 .map_err(|e| Error::ToolExecution(format!("Failed to write: {}", e)))?;
@@ -481,7 +480,7 @@ impl SeedManager {
     }
 
     /// Get the base resources directory
-    pub fn base_dir(&self) -> &PathBuf {
+    pub fn base_dir(&self) -> &Path {
         &self.base_dir
     }
 }

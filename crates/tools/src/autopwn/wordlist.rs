@@ -99,7 +99,11 @@ async fn decompress_wordlist(compressed_path: &PathBuf, filename: &str) -> Resul
         .await
         .map_err(|e| Error::ToolExecution(format!("Failed to create wordlist directory: {}", e)))?;
 
-    tracing::info!("⏳ Decompressing {} to {}", compressed_path.display(), output_path.display());
+    tracing::info!(
+        "⏳ Decompressing {} to {}",
+        compressed_path.display(),
+        output_path.display()
+    );
 
     // Decompress based on extension
     let success = if compressed_path.extension().and_then(|s| s.to_str()) == Some("gz") {
@@ -112,9 +116,9 @@ async fn decompress_wordlist(compressed_path: &PathBuf, filename: &str) -> Resul
             .map_err(|e| Error::ToolExecution(format!("Failed to run gunzip: {}", e)))?;
 
         if output.status.success() {
-            fs::write(&output_path, output.stdout)
-                .await
-                .map_err(|e| Error::ToolExecution(format!("Failed to write decompressed file: {}", e)))?;
+            fs::write(&output_path, output.stdout).await.map_err(|e| {
+                Error::ToolExecution(format!("Failed to write decompressed file: {}", e))
+            })?;
             true
         } else {
             false
@@ -129,9 +133,9 @@ async fn decompress_wordlist(compressed_path: &PathBuf, filename: &str) -> Resul
             .map_err(|e| Error::ToolExecution(format!("Failed to run bunzip2: {}", e)))?;
 
         if output.status.success() {
-            fs::write(&output_path, output.stdout)
-                .await
-                .map_err(|e| Error::ToolExecution(format!("Failed to write decompressed file: {}", e)))?;
+            fs::write(&output_path, output.stdout).await.map_err(|e| {
+                Error::ToolExecution(format!("Failed to write decompressed file: {}", e))
+            })?;
             true
         } else {
             false
@@ -206,7 +210,11 @@ pub async fn download_wordlist(wordlist: &Wordlist) -> Result<PathBuf> {
         tracing::error!("Next steps:");
         tracing::error!("  1. Check internet connection");
         tracing::error!("  2. Install wordlist manually:");
-        tracing::error!("     wget {} -O /usr/share/wordlists/{}", wordlist.url, wordlist.filename);
+        tracing::error!(
+            "     wget {} -O /usr/share/wordlists/{}",
+            wordlist.url,
+            wordlist.filename
+        );
         tracing::error!("  3. Or use a custom wordlist with 'wordlist' parameter");
         tracing::error!("");
 
