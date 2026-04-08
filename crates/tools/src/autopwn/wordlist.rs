@@ -41,29 +41,42 @@ pub fn get_wordlist_dir() -> PathBuf {
     PathBuf::from(home).join(".pick").join("wordlists")
 }
 
-/// Common system wordlist locations (in priority order)
-const SYSTEM_WORDLIST_PATHS: &[&str] = &[
-    "/usr/share/wordlists",
-    "/usr/share/seclists/Passwords",
-    "/opt/wordlists",
-    "/usr/local/share/wordlists",
-];
+/// Common wordlist locations (in priority order)
+/// Includes Pick's own resources directory first for seeded wordlists
+fn get_wordlist_search_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
 
-/// Search for wordlist in common system locations
+    // 1. Pick's resources directory (seeded wordlists)
+    if let Ok(home) = std::env::var("HOME") {
+        paths.push(PathBuf::from(home).join(".pick/resources/wordlists"));
+    }
+
+    // 2. System wordlist locations
+    paths.push(PathBuf::from("/usr/share/wordlists"));
+    paths.push(PathBuf::from("/usr/share/seclists/Passwords"));
+    paths.push(PathBuf::from("/opt/wordlists"));
+    paths.push(PathBuf::from("/usr/local/share/wordlists"));
+
+    paths
+}
+
+/// Search for wordlist in Pick's resources and system locations
 pub async fn find_system_wordlist(filename: &str) -> Option<PathBuf> {
+    let search_paths = get_wordlist_search_paths();
+
     // Try exact filename first
-    for base_path in SYSTEM_WORDLIST_PATHS {
-        let path = PathBuf::from(base_path).join(filename);
+    for base_path in &search_paths {
+        let path = base_path.join(filename);
         if path.exists() {
-            tracing::info!("✓ Found system wordlist: {}", path.display());
+            tracing::info!("✓ Found wordlist: {}", path.display());
             return Some(path);
         }
     }
 
     // Try compressed versions (.gz, .bz2)
-    for base_path in SYSTEM_WORDLIST_PATHS {
+    for base_path in &search_paths {
         for ext in &[".gz", ".bz2"] {
-            let compressed_path = PathBuf::from(base_path).join(format!("{}{}", filename, ext));
+            let compressed_path = base_path.join(format!("{}{}", filename, ext));
             if compressed_path.exists() {
                 tracing::info!("✓ Found compressed wordlist: {}", compressed_path.display());
                 // Decompress to Pick's wordlist directory
