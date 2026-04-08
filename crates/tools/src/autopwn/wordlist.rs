@@ -18,17 +18,21 @@ pub struct Wordlist {
 pub const ROCKYOU: Wordlist = Wordlist {
     name: "RockYou",
     filename: "rockyou.txt",
-    url: "https://github.com/brannondorsey/naive-hashcat/releases/download/data/rockyou.txt",
-    size_mb: 134,
+    // Note: This is a placeholder URL. Users should install wordlists locally:
+    // Debian/Ubuntu: sudo apt install wordlists
+    // Or download manually to /usr/share/wordlists/
+    url: "https://download.weakpass.com/wordlists/90/rockyou.txt.gz",
+    size_mb: 60,
     description: "14M passwords from RockYou breach (most common)",
 };
 
 pub const COMMON_PASSWORDS: Wordlist = Wordlist {
     name: "Common Passwords",
     filename: "common-passwords.txt",
-    url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10-million-password-list-top-100000.txt",
+    // Using a smaller, more reliable wordlist for quick testing
+    url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10k-most-common.txt",
     size_mb: 1,
-    description: "Top 100k most common passwords",
+    description: "Top 10k most common passwords",
 };
 
 /// Get wordlist directory
