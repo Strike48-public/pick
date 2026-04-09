@@ -6,6 +6,7 @@
 use crate::error::{Error, Result};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -406,6 +407,75 @@ impl SeedManager {
         Ok(summary)
     }
 
+    /// Validate URL for resource seeding (prevent SSRF attacks)
+    fn validate_seed_url(url_str: &str) -> Result<()> {
+        let url = reqwest::Url::parse(url_str)
+            .map_err(|e| Error::InvalidParams(format!("Invalid URL: {}", e)))?;
+
+        // Whitelist allowed schemes (only HTTP/HTTPS)
+        match url.scheme() {
+            "https" => {}
+            "http" => {
+                tracing::warn!("Insecure HTTP URL for resource: {}", url_str);
+            }
+            _ => {
+                return Err(Error::InvalidParams(format!(
+                    "Only HTTP/HTTPS URLs are allowed, got: {}",
+                    url.scheme()
+                )));
+            }
+        }
+
+        // Check for hostname presence
+        let host = url
+            .host_str()
+            .ok_or_else(|| Error::InvalidParams("Invalid URL: missing host".into()))?;
+
+        // Block localhost variants (including bracket notation for IPv6)
+        if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]" {
+            return Err(Error::InvalidParams(
+                "Security: Localhost URLs not allowed".into(),
+            ));
+        }
+
+        // Try to parse as IP address (handles both IPv4 and IPv6)
+        // For IPv6 URLs like http://[::1]/, host_str() returns "[::1]", so strip brackets
+        let ip_str = host.trim_start_matches('[').trim_end_matches(']');
+        if let Ok(addr) = ip_str.parse::<IpAddr>() {
+            if Self::is_private_ip(&addr) {
+                return Err(Error::InvalidParams(
+                    "Security: Private IP ranges not allowed".into(),
+                ));
+            }
+
+            // Additional check for cloud metadata IPs
+            if let IpAddr::V4(ipv4) = addr {
+                if ipv4.octets() == [169, 254, 169, 254] {
+                    return Err(Error::InvalidParams(
+                        "Security: Metadata service URLs not allowed".into(),
+                    ));
+                }
+            }
+        }
+
+        // Block cloud metadata hostnames
+        if host.ends_with(".metadata.google.internal") {
+            return Err(Error::InvalidParams(
+                "Security: Metadata service URLs not allowed".into(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Check if an IP address is in a private range
+    fn is_private_ip(addr: &IpAddr) -> bool {
+        match addr {
+            IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local(),
+            IpAddr::V6(ipv6) => ipv6.is_loopback() || ipv6.is_unspecified(),
+        }
+    }
+
     /// Seed a single resource
     #[allow(dead_code)]
     async fn seed_resource<F>(&self, resource: &SeedResource, progress_callback: F) -> Result<()>
@@ -439,16 +509,41 @@ impl SeedManager {
         }
 
         // Validate path stays within base directory (path traversal prevention)
-        if let Ok(canonical_dest) = resource.destination.canonicalize() {
-            if let Ok(canonical_base) = self.base_dir.canonicalize() {
-                if !canonical_dest.starts_with(&canonical_base) {
-                    return Err(Error::InvalidParams(format!(
-                        "Security: Resource destination {} is outside base directory",
-                        resource.destination.display()
-                    )));
-                }
-            }
+        // Must validate BEFORE file exists to prevent TOCTOU attacks
+        let canonical_base = self.base_dir.canonicalize().map_err(|e| {
+            Error::ToolExecution(format!("Failed to validate base directory: {}", e))
+        })?;
+
+        // Normalize the destination path WITHOUT requiring it to exist
+        let normalized_dest = if resource.destination.is_absolute() {
+            resource.destination.clone()
+        } else {
+            self.base_dir.join(&resource.destination)
+        };
+
+        // Additional check: reject paths with ".." components to prevent traversal
+        if normalized_dest
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(Error::InvalidParams(format!(
+                "Security: Path traversal detected in destination: {}",
+                resource.destination.display()
+            )));
         }
+
+        // Check that normalized path starts with base directory
+        // Use lexical comparison since dest doesn't exist yet
+        if !normalized_dest.starts_with(&canonical_base) {
+            return Err(Error::InvalidParams(format!(
+                "Security: Resource destination {} is outside base directory {}",
+                normalized_dest.display(),
+                canonical_base.display()
+            )));
+        }
+
+        // Validate URL to prevent SSRF attacks
+        Self::validate_seed_url(&resource.url)?;
 
         // Create parent directory
         if let Some(parent) = resource.destination.parent() {
@@ -654,5 +749,109 @@ mod tests {
         let rockyou = resources.iter().find(|r| r.name == "RockYou Wordlist");
         assert!(rockyou.is_some());
         assert!(rockyou.unwrap().required);
+    }
+
+    // Security Tests
+
+    #[test]
+    fn test_url_validation_rejects_file_scheme() {
+        let result = SeedManager::validate_seed_url("file:///etc/passwd");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Only HTTP/HTTPS URLs are allowed"));
+    }
+
+    #[test]
+    fn test_url_validation_rejects_localhost() {
+        let urls = vec![
+            "http://localhost/resource",
+            "https://127.0.0.1/secret",
+            "http://[::1]/data",
+        ];
+
+        for url in urls {
+            let result = SeedManager::validate_seed_url(url);
+            assert!(result.is_err(), "Should reject localhost URL: {}", url);
+            assert!(result.unwrap_err().to_string().contains("Localhost"));
+        }
+    }
+
+    #[test]
+    fn test_url_validation_rejects_private_ips() {
+        let private_ips = vec![
+            "http://10.0.0.1/internal",
+            "http://172.16.0.1/private",
+            "http://192.168.1.1/local",
+        ];
+
+        for url in private_ips {
+            let result = SeedManager::validate_seed_url(url);
+            assert!(result.is_err(), "Should reject private IP: {}", url);
+            assert!(result.unwrap_err().to_string().contains("Private IP"));
+        }
+    }
+
+    #[test]
+    fn test_url_validation_rejects_metadata_endpoint() {
+        let result = SeedManager::validate_seed_url("http://169.254.169.254/latest/meta-data/");
+        assert!(result.is_err());
+        // 169.254.x.x is link-local, caught by private IP check (which is correct)
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Private IP") || err_msg.contains("Metadata"),
+            "Expected private IP or metadata error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_url_validation_accepts_https() {
+        let result = SeedManager::validate_seed_url("https://github.com/danielmiessler/SecLists");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_url_validation_accepts_http_with_warning() {
+        // Should accept HTTP but log warning (test that it doesn't error)
+        let result = SeedManager::validate_seed_url("http://example.com/wordlist.txt");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_is_private_ip_ipv4() {
+        let private = vec!["10.0.0.1", "172.16.0.1", "192.168.1.1", "127.0.0.1"];
+        for ip_str in private {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                SeedManager::is_private_ip(&ip),
+                "{} should be private",
+                ip_str
+            );
+        }
+
+        let public = vec!["8.8.8.8", "1.1.1.1"];
+        for ip_str in public {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                !SeedManager::is_private_ip(&ip),
+                "{} should be public",
+                ip_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_private_ip_ipv6() {
+        let loopback: IpAddr = "::1".parse().unwrap();
+        assert!(SeedManager::is_private_ip(&loopback));
+
+        let unspecified: IpAddr = "::".parse().unwrap();
+        assert!(SeedManager::is_private_ip(&unspecified));
+
+        // Public IPv6 (Google DNS)
+        let public: IpAddr = "2001:4860:4860::8888".parse().unwrap();
+        assert!(!SeedManager::is_private_ip(&public));
     }
 }

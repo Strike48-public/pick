@@ -6,6 +6,10 @@
 use serde::Deserialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Maximum allowed size for JWT tokens (8KB)
+/// Real JWTs are typically < 2KB, this provides safety margin while preventing abuse
+const MAX_JWT_SIZE: usize = 8192;
+
 #[derive(Debug, Deserialize)]
 struct JwtClaims {
     exp: i64,
@@ -15,13 +19,26 @@ struct JwtClaims {
 
 /// Check if a JWT token is expired
 ///
+/// SECURITY WARNING: This function only validates the expiration timestamp.
+/// It does NOT verify the cryptographic signature. Use for client-side token
+/// cleanup only, never for authentication/authorization decisions.
+///
 /// Returns:
 /// - `Ok(true)` if token is expired
 /// - `Ok(false)` if token is still valid
-/// - `Err` if token cannot be parsed
+/// - `Err` if token cannot be parsed or exceeds size limit
 pub fn is_jwt_expired(token: &str) -> Result<bool, String> {
     if token.is_empty() {
         return Ok(true); // Empty token is considered expired
+    }
+
+    // Validate token size before processing (prevent memory exhaustion DoS)
+    if token.len() > MAX_JWT_SIZE {
+        return Err(format!(
+            "JWT token too large: {} bytes (max {})",
+            token.len(),
+            MAX_JWT_SIZE
+        ));
     }
 
     // JWT format: header.payload.signature
@@ -32,6 +49,12 @@ pub fn is_jwt_expired(token: &str) -> Result<bool, String> {
 
     // Decode payload (second part)
     let payload = parts[1];
+
+    // Check base64 size before decode (additional safety)
+    if payload.len() > MAX_JWT_SIZE / 2 {
+        return Err("JWT payload too large".to_string());
+    }
+
     use base64::Engine;
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload)
@@ -97,5 +120,24 @@ mod tests {
     #[test]
     fn test_validate_token_empty() {
         assert_eq!(validate_token(""), None);
+    }
+
+    #[test]
+    fn test_oversized_token_rejected() {
+        // Create a token larger than MAX_JWT_SIZE (8KB)
+        let large_token = "a".repeat(10000);
+        let result = is_jwt_expired(&large_token);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("too large"));
+    }
+
+    #[test]
+    fn test_oversized_payload_rejected() {
+        // Token with massive base64 payload (header.HUGE_PAYLOAD.signature)
+        let huge_payload = "a".repeat(5000);
+        let token = format!("header.{}.signature", huge_payload);
+        let result = is_jwt_expired(&token);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("too large"));
     }
 }
