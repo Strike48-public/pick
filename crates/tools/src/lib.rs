@@ -17,6 +17,7 @@ pub mod port_scan;
 pub mod read_file;
 pub mod screenshot;
 pub mod service_banner;
+pub mod session_export;
 pub mod smb_enum;
 pub mod ssdp_discover;
 pub mod traffic_capture;
@@ -60,6 +61,7 @@ pub use port_scan::PortScanTool;
 pub use read_file::ReadFileTool;
 pub use screenshot::ScreenshotTool;
 pub use service_banner::ServiceBannerTool;
+pub use session_export::SessionExportTool;
 pub use smb_enum::SmbEnumTool;
 pub use ssdp_discover::SsdpDiscoverTool;
 pub use traffic_capture::TrafficCaptureTool;
@@ -206,6 +208,9 @@ pub fn create_tool_registry() -> ToolRegistry {
 
     // Data transformation and analysis
     registry.register(pentest_cyberchef::CyberChefTool::new());
+
+    // Session management
+    registry.register(SessionExportTool);
 
     // Automated toolchains
     registry.register(WebAppToolchain::new());

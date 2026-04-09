@@ -101,7 +101,7 @@ impl SeedManager {
                 name: "RockYou Wordlist".to_string(),
                 resource_type: ResourceType::Wordlist,
                 tier: SeedTier::Basic,
-                url: "https://download.weakpass.com/wordlists/90/rockyou.txt".to_string(),
+                url: "https://github.com/brannondorsey/naive-hashcat/releases/download/data/rockyou.txt".to_string(),
                 size_mb: 134,
                 description: "14M passwords from RockYou breach".to_string(),
                 destination: base_dir.join("wordlists/passwords/rockyou.txt"),
@@ -153,7 +153,7 @@ impl SeedManager {
                 name: "XSS Payloads".to_string(),
                 resource_type: ResourceType::Fuzzing,
                 tier: SeedTier::Basic,
-                url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Fuzzing/XSS/XSS-BruteLogic.txt".to_string(),
+                url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Fuzzing/XSS/Polyglots/XSS-Polyglots.txt".to_string(),
                 size_mb: 1,
                 description: "XSS payloads for testing".to_string(),
                 destination: base_dir.join("fuzzing/xss-payloads.txt"),
@@ -163,7 +163,7 @@ impl SeedManager {
                 name: "SQL Injection Payloads".to_string(),
                 resource_type: ResourceType::Fuzzing,
                 tier: SeedTier::Basic,
-                url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Fuzzing/SQLi/Generic-SQLi.txt".to_string(),
+                url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Fuzzing/Databases/SQLi/Generic-SQLi.txt".to_string(),
                 size_mb: 1,
                 description: "SQL injection payloads for testing".to_string(),
                 destination: base_dir.join("fuzzing/sqli-payloads.txt"),
@@ -332,7 +332,8 @@ impl SeedManager {
     where
         F: Fn(SeedProgress) + Send + Sync,
     {
-        self.seed_tier_with_options(tier, false, progress_callback).await
+        self.seed_tier_with_options(tier, false, progress_callback)
+            .await
     }
 
     /// Seed resources for a specific tier with force re-download option
@@ -346,7 +347,8 @@ impl SeedManager {
         F: Fn(SeedProgress) + Send + Sync,
     {
         let resources: Vec<&SeedResource> = self.resources_up_to_tier(tier);
-        self.seed_resources_with_options(&resources, force, progress_callback).await
+        self.seed_resources_with_options(&resources, force, progress_callback)
+            .await
     }
 
     /// Internal method to seed a list of resources
@@ -358,7 +360,8 @@ impl SeedManager {
     where
         F: Fn(SeedProgress) + Send + Sync,
     {
-        self.seed_resources_with_options(resources, false, progress_callback).await
+        self.seed_resources_with_options(resources, false, progress_callback)
+            .await
     }
 
     /// Internal method to seed a list of resources with force option
@@ -374,15 +377,27 @@ impl SeedManager {
         let mut summary = SeedSummary::default();
 
         for resource in resources {
-            let result = self.seed_resource_with_options(resource, force, &progress_callback).await;
+            let result = self
+                .seed_resource_with_options(resource, force, &progress_callback)
+                .await;
 
             match result {
                 Ok(_) => summary.succeeded.push(resource.name.clone()),
                 Err(e) => {
                     if resource.required {
                         summary.failed.push((resource.name.clone(), e.to_string()));
+                        tracing::error!(
+                            "Failed to seed required resource '{}': {}",
+                            resource.name,
+                            e
+                        );
                     } else {
-                        summary.skipped.push(resource.name.clone());
+                        summary.failed.push((resource.name.clone(), e.to_string()));
+                        tracing::warn!(
+                            "Failed to seed optional resource '{}': {}",
+                            resource.name,
+                            e
+                        );
                     }
                 }
             }
@@ -397,7 +412,8 @@ impl SeedManager {
     where
         F: Fn(SeedProgress),
     {
-        self.seed_resource_with_options(resource, false, progress_callback).await
+        self.seed_resource_with_options(resource, false, progress_callback)
+            .await
     }
 
     /// Seed a single resource with force option
@@ -450,16 +466,45 @@ impl SeedManager {
             status: SeedStatus::Downloading,
         });
 
-        // Download with progress
+        // Download with progress and retry logic
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(600))
+            .redirect(reqwest::redirect::Policy::limited(10))
             .build()
             .map_err(|e| Error::Network(format!("Failed to create HTTP client: {}", e)))?;
 
-        let response =
-            client.get(&resource.url).send().await.map_err(|e| {
-                Error::Network(format!("Failed to download {}: {}", resource.name, e))
-            })?;
+        // Retry up to 3 times for transient network failures
+        let max_retries = 3;
+        let mut last_error = None;
+
+        let response = 'retry_loop: loop {
+            for attempt in 1..=max_retries {
+                match client.get(&resource.url).send().await {
+                    Ok(resp) => break 'retry_loop resp,
+                    Err(e) => {
+                        last_error = Some(e);
+                        if attempt < max_retries {
+                            tracing::warn!(
+                                "Download attempt {}/{} failed for '{}': {}. Retrying...",
+                                attempt,
+                                max_retries,
+                                resource.name,
+                                last_error.as_ref().unwrap()
+                            );
+                            tokio::time::sleep(std::time::Duration::from_secs(2 * attempt as u64))
+                                .await;
+                        }
+                    }
+                }
+            }
+            // All retries exhausted
+            return Err(Error::Network(format!(
+                "Failed to download {} after {} attempts: {}",
+                resource.name,
+                max_retries,
+                last_error.unwrap()
+            )));
+        };
 
         if !response.status().is_success() {
             return Err(Error::Network(format!(
