@@ -4,8 +4,8 @@
   justify-content: space-between;
   gap: 8px;
   padding: 12px 16px;
-  background: var(--bg-secondary, #1e1e1e);
-  border-bottom: 1px solid var(--border-color, #333);
+  background: var(--secondary);
+  border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
 
@@ -21,10 +21,10 @@
   align-items: center;
   gap: 4px;
   padding: 6px 12px;
-  border: 1px solid var(--border-color, #444);
+  border: 1px solid var(--border);
   border-radius: 16px;
   background: transparent;
-  color: var(--text-secondary, #999);
+  color: var(--muted-foreground);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -33,8 +33,8 @@
 }
 
 .log-filter-btn:hover {
-  background: var(--bg-hover, #2a2a2a);
-  border-color: var(--border-hover, #555);
+  background: var(--muted);
+  border-color: var(--muted-foreground);
 }
 
 .log-filter-label {
@@ -48,14 +48,13 @@
 
 /* Active state for All button */
 .log-filter-btn.all.active {
-  background: var(--primary-color, #0ea5e9);
-  border-color: var(--primary-color, #0ea5e9);
-  color: white;
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .log-filter-btn.all.active:hover {
-  background: var(--primary-hover, #0284c7);
-  border-color: var(--primary-hover, #0284c7);
+  opacity: 0.9;
 }
 
 /* Active state for Debug (gray) */
@@ -66,8 +65,7 @@
 }
 
 .log-filter-btn.debug.active:hover {
-  background: #999;
-  border-color: #999;
+  opacity: 0.9;
 }
 
 /* Active state for Info (cyan) */
@@ -78,8 +76,7 @@
 }
 
 .log-filter-btn.info.active:hover {
-  background: #00acc1;
-  border-color: #00acc1;
+  opacity: 0.9;
 }
 
 /* Active state for Success (green) */
@@ -90,8 +87,7 @@
 }
 
 .log-filter-btn.success.active:hover {
-  background: #66bb6a;
-  border-color: #66bb6a;
+  opacity: 0.9;
 }
 
 /* Active state for Warning (orange/yellow) */
@@ -102,8 +98,7 @@
 }
 
 .log-filter-btn.warning.active:hover {
-  background: #ffa726;
-  border-color: #ffa726;
+  opacity: 0.9;
 }
 
 /* Active state for Error (red) */
@@ -114,15 +109,14 @@
 }
 
 .log-filter-btn.error.active:hover {
-  background: #ef5350;
-  border-color: #ef5350;
+  opacity: 0.9;
 }
 
 /* Clear button styling */
 .log-filter-btn.clear {
-  background: var(--bg-tertiary, #2a2a2a);
-  border-color: var(--border-color, #444);
-  color: var(--text-secondary, #999);
+  background: var(--muted);
+  border-color: var(--border);
+  color: var(--muted-foreground);
   margin-left: auto;
 }
 
