@@ -110,9 +110,8 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
     let filtered_lines = use_signal(Vec::<TerminalLine>::new);
 
     rsx! {
-        div { class: "content-area",
-            // Dashboard
-            if page == NavPage::Dashboard {
+        // Dashboard
+        if page == NavPage::Dashboard {
                 {
                     let ws_display = if workspace.is_empty() { "No workspace path".to_string() } else { workspace.clone() };
                     let on_wifi_warning = props.on_wifi_warning;

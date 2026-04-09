@@ -57,12 +57,51 @@ fn reconnect_delay_ms(failures: u32) -> u64 {
     BASE_MS.saturating_mul(2u64.pow(exp)).min(MAX_MS)
 }
 
-/// Proactive JWT refresh interval. Keycloak default `accessTokenLifespan` is
-/// 300s (5 min). Refreshing at 240s leaves a 60s buffer before expiry.
-const JWT_REFRESH_INTERVAL_SECS: u64 = 240;
+/// How far before JWT expiry to refresh. We parse the real `exp` claim from
+/// the token and schedule the refresh this many seconds before it expires.
+const JWT_REFRESH_BUFFER_SECS: u64 = 60;
+
+/// Fallback refresh interval when we can't parse the token's `exp` claim.
+const JWT_REFRESH_FALLBACK_SECS: u64 = 240;
 
 /// Retry delay when a proactive JWT refresh fails.
 const JWT_REFRESH_RETRY_SECS: u64 = 30;
+
+/// Parse remaining seconds until expiry from a JWT (3-part `header.payload.signature`).
+fn jwt_remaining_secs(token: &str) -> Option<i64> {
+    let payload_b64 = token.split('.').nth(1)?;
+    let standard = payload_b64.replace('-', "+").replace('_', "/");
+    let padded = match standard.len() % 4 {
+        2 => format!("{}==", standard),
+        3 => format!("{}=", standard),
+        _ => standard,
+    };
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &padded).ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let exp = claims.get("exp")?.as_i64()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    Some(exp - now)
+}
+
+/// Compute how long to wait before the next JWT refresh.
+fn jwt_refresh_delay(token: &str) -> tokio::time::Duration {
+    if let Some(remaining) = jwt_remaining_secs(token) {
+        tracing::info!(
+            "JWT expires in {}s ({}m), will refresh in {}s",
+            remaining,
+            remaining / 60,
+            (remaining as u64).saturating_sub(JWT_REFRESH_BUFFER_SECS)
+        );
+        let secs = (remaining as u64).saturating_sub(JWT_REFRESH_BUFFER_SECS);
+        if secs > 0 {
+            return tokio::time::Duration::from_secs(secs);
+        }
+    }
+    tokio::time::Duration::from_secs(JWT_REFRESH_FALLBACK_SECS)
+}
 
 /// WebSocket connection state
 pub(crate) struct WsConnectionState {
@@ -634,13 +673,14 @@ impl LiveViewConnector {
     /// Run the message processing loop.
     /// Keepalive heartbeats are handled by the SDK's ConnectorClient automatically.
     async fn run_message_loop(&mut self, mut rx: mpsc::UnboundedReceiver<StreamMessage>) {
-        // Proactive JWT refresh: if we authenticated with OTT-based JWT,
-        // schedule a refresh before the token expires so the server doesn't
-        // drop the gRPC stream.
+        // Proactive JWT refresh: silently refresh the token before it expires.
+        // We do NOT reconnect — the existing stream stays alive. The fresh token
+        // is stored so that if the stream drops for any reason, the reconnect
+        // loop uses a valid token.
         let has_jwt_auth =
             !self.config.auth_token.is_empty() && self.ott_provider.read().await.is_some();
         let refresh_timer = tokio::time::sleep(if has_jwt_auth {
-            tokio::time::Duration::from_secs(JWT_REFRESH_INTERVAL_SECS)
+            jwt_refresh_delay(&self.config.auth_token)
         } else {
             // No OTT provider — disable refresh (effectively never fires)
             tokio::time::Duration::from_secs(365 * 86400)
@@ -653,7 +693,7 @@ impl LiveViewConnector {
                 return;
             }
 
-            // Check if we need to reconnect with JWT
+            // Check if we need to reconnect with JWT (initial auth only)
             if self.reconnect_with_jwt.load(Ordering::SeqCst) {
                 tracing::info!("Reconnect with JWT requested, breaking message loop");
                 return;
@@ -662,47 +702,41 @@ impl LiveViewConnector {
             tokio::select! {
                 biased;
 
-                // Proactive JWT refresh before Keycloak token expires
+                // Silent JWT refresh — no reconnect, just update the stored token
                 _ = &mut refresh_timer, if has_jwt_auth => {
-                    tracing::info!("Proactive JWT refresh triggered");
-                    // Take the OttProvider out of the lock to avoid holding
-                    // the write guard across the network call.
+                    tracing::info!("Proactive JWT refresh triggered (silent, no reconnect)");
                     let mut ott_taken = self.ott_provider.write().await.take();
-                    let refreshed = if let Some(ref mut ott) = ott_taken {
+                    let new_delay = if let Some(ref mut ott) = ott_taken {
                         match ott.get_token().await {
                             Ok(new_token) => {
-                                tracing::info!("JWT refreshed proactively (len={})", new_token.len());
+                                let delay = jwt_refresh_delay(&new_token);
+                                tracing::info!("JWT refreshed silently (len={})", new_token.len());
                                 self.config.auth_token = new_token.clone();
                                 self.send_event(ConnectorEvent::CredentialsUpdated {
                                     auth_token: new_token,
                                     api_url: self.derive_matrix_api_url(),
                                 });
-                                true
+                                Some(delay)
                             }
                             Err(e) => {
                                 tracing::warn!("Proactive JWT refresh failed: {}", e);
                                 self.send_event(ConnectorEvent::Log(
                                     TerminalLine::error(format!("JWT refresh failed: {}", e))
                                 ));
-                                false
+                                None
                             }
                         }
                     } else {
-                        false
+                        None
                     };
                     // Put the provider back
                     *self.ott_provider.write().await = ott_taken;
 
-                    if refreshed {
-                        self.reconnect_with_jwt.store(true, Ordering::SeqCst);
-                        return;
-                    } else {
-                        // Retry shortly
-                        refresh_timer.as_mut().reset(
-                            tokio::time::Instant::now()
-                                + tokio::time::Duration::from_secs(JWT_REFRESH_RETRY_SECS)
-                        );
-                    }
+                    // Schedule next refresh
+                    let next = new_delay.unwrap_or(
+                        tokio::time::Duration::from_secs(JWT_REFRESH_RETRY_SECS)
+                    );
+                    refresh_timer.as_mut().reset(tokio::time::Instant::now() + next);
                 }
 
                 msg_opt = rx.recv() => {
