@@ -1,11 +1,11 @@
-//! Settings page — Connection, Downloads, and Shell Mode controls
+//! Settings page — Connection, Downloads, Shell Mode, and Appearance controls
 //! with form change tracking (original/discard pattern).
 
 use dioxus::prelude::*;
-use pentest_core::config::ShellMode;
+use pentest_core::config::{BorderRadius, Density, ShellMode, Theme};
 use pentest_platform::WifiConnectionStatus;
 
-use super::icons::{Download, Settings, Wifi};
+use super::icons::{Download, Palette, Settings, Wifi};
 use crate::platform_helper;
 
 #[component]
@@ -22,6 +22,14 @@ pub fn SettingsPage(
     on_shell_mode_change: EventHandler<ShellMode>,
     #[props(default)] wifi_adapter: Option<String>,
     #[props(default)] on_wifi_adapter_change: EventHandler<Option<String>>,
+    // Appearance settings
+    theme: Theme,
+    on_theme_change: EventHandler<Theme>,
+    border_radius: BorderRadius,
+    on_border_radius_change: EventHandler<BorderRadius>,
+    density: Density,
+    on_density_change: EventHandler<Density>,
+    #[props(default)] on_theme_imported: EventHandler<()>,
 ) -> Element {
     // -----------------------------------------------------------------------
     // Auto-save on toggle with visual feedback
@@ -69,6 +77,12 @@ pub fn SettingsPage(
     });
 
     let wifi_adapter_changed = local_wifi_adapter() != original_wifi_adapter;
+
+    // Theme import state
+    let mut theme_import_path = use_signal(String::new);
+    let mut theme_import_status = use_signal(|| None::<Result<String, String>>);
+    let mut theme_importing = use_signal(|| false);
+    let mut advanced_expanded = use_signal(|| false);
 
     // Check if save is safe (not selecting active connection)
     let save_wifi_disabled = if wifi_adapter_changed {
@@ -373,6 +387,241 @@ pub fn SettingsPage(
                         }
                     } else {
                         div { class: "text-dim-xs", "Failed to load WiFi adapters" }
+                    }
+                }
+            }
+
+            // Appearance card
+            div { class: "settings-card dashboard-card",
+                div { class: "settings-card-header",
+                    span { class: "settings-card-icon", Palette { size: 16 } }
+                    h2 { "Appearance" }
+                }
+                div { class: "settings-card-body",
+                    // Keyboard shortcuts hint
+                    div {
+                        style: "padding: 8px 12px; background: var(--accent); border-radius: var(--radius-md); margin-bottom: 16px; font-size: 12px; color: var(--accent-foreground);",
+                        "💡 Tip: Press Ctrl+Shift+1-8 for quick theme switching"
+                    }
+                    // Theme selector with random button
+                    div { class: "input-group",
+                        label { "Theme" }
+                        div { style: "display: flex; gap: 8px; align-items: center;",
+                            select {
+                                style: "flex: 1;",
+                                value: "{theme:?}",
+                                onchange: move |e| {
+                                    let theme_str = e.value();
+                                    let new_theme = match theme_str.as_str() {
+                                        "Dark" => Theme::Dark,
+                                        "Light" => Theme::Light,
+                                        "Dracula" => Theme::Dracula,
+                                        "Gruvbox" => Theme::Gruvbox,
+                                        "TokyoNight" => Theme::TokyoNight,
+                                        "Matrix" => Theme::Matrix,
+                                        "Cyberpunk" => Theme::Cyberpunk,
+                                        "Nord" => Theme::Nord,
+                                        _ => Theme::Dark,
+                                    };
+                                    on_theme_change.call(new_theme);
+                                },
+                                option { value: "Dark", "Dark" }
+                                option { value: "Light", "Light" }
+                                option { value: "Dracula", "Dracula" }
+                                option { value: "Gruvbox", "Gruvbox" }
+                                option { value: "TokyoNight", "Tokyo Night" }
+                                option { value: "Matrix", "Matrix" }
+                                option { value: "Cyberpunk", "Cyberpunk" }
+                                option { value: "Nord", "Nord" }
+                            }
+                            button {
+                                class: "button button-secondary",
+                                style: "padding: 8px 12px; min-width: auto;",
+                                title: "Random theme",
+                                onclick: move |_| {
+                                    let all_themes = [
+                                        Theme::Dark,
+                                        Theme::Light,
+                                        Theme::Dracula,
+                                        Theme::Gruvbox,
+                                        Theme::TokyoNight,
+                                        Theme::Matrix,
+                                        Theme::Cyberpunk,
+                                        Theme::Nord,
+                                    ];
+
+                                    // Get random theme different from current
+                                    let candidates: Vec<Theme> = all_themes
+                                        .iter()
+                                        .copied()
+                                        .filter(|t| *t != theme)
+                                        .collect();
+
+                                    if !candidates.is_empty() {
+                                        // Simple pseudo-random using timestamp
+                                        let timestamp = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap()
+                                            .as_nanos();
+
+                                        let idx = (timestamp % candidates.len() as u128) as usize;
+                                        let new_theme = candidates[idx];
+                                        on_theme_change.call(new_theme);
+                                    }
+                                },
+                                "🎲"
+                            }
+                        }
+                    }
+
+                    // Border radius selector
+                    div { class: "input-group",
+                        label { "Border Radius" }
+                        select {
+                            value: "{border_radius:?}",
+                            onchange: move |e| {
+                                let radius_str = e.value();
+                                let new_radius = match radius_str.as_str() {
+                                    "Sharp" => BorderRadius::Sharp,
+                                    "Minimal" => BorderRadius::Minimal,
+                                    "Rounded" => BorderRadius::Rounded,
+                                    "Soft" => BorderRadius::Soft,
+                                    "Pill" => BorderRadius::Pill,
+                                    _ => BorderRadius::Rounded,
+                                };
+                                on_border_radius_change.call(new_radius);
+                            },
+                            option { value: "Sharp", "Sharp (0px)" }
+                            option { value: "Minimal", "Minimal (4px)" }
+                            option { value: "Rounded", "Rounded (8px)" }
+                            option { value: "Soft", "Soft (16px)" }
+                            option { value: "Pill", "Pill (999px)" }
+                        }
+                    }
+
+                    // Density selector
+                    div { class: "input-group",
+                        label { "Density" }
+                        select {
+                            value: "{density:?}",
+                            onchange: move |e| {
+                                let density_str = e.value();
+                                let new_density = match density_str.as_str() {
+                                    "Compact" => Density::Compact,
+                                    "Normal" => Density::Normal,
+                                    "Comfortable" => Density::Comfortable,
+                                    _ => Density::Normal,
+                                };
+                                on_density_change.call(new_density);
+                            },
+                            option { value: "Compact", "Compact" }
+                            option { value: "Normal", "Normal" }
+                            option { value: "Comfortable", "Comfortable" }
+                        }
+                    }
+
+                    // Advanced section (collapsible)
+                    div { class: "input-group", style: "margin-top: 16px; border-top: 1px solid var(--border); padding-top: 16px;",
+                        div {
+                            style: "display: flex; align-items: center; gap: 8px; cursor: pointer;",
+                            onclick: move |_| advanced_expanded.set(!advanced_expanded()),
+                            span {
+                                style: format!("transform: rotate({}deg); transition: transform 0.2s;", if advanced_expanded() { 90 } else { 0 }),
+                                "▸"
+                            }
+                            label { style: "cursor: pointer; margin: 0;", "Advanced" }
+                        }
+
+                        if advanced_expanded() {
+                            div { style: "margin-top: 12px;",
+                                label { "Import Custom Theme" }
+                                div { style: "display: flex; gap: 8px;",
+                                    input {
+                                        r#type: "text",
+                                        placeholder: "/path/to/theme.css",
+                                        value: "{theme_import_path}",
+                                        disabled: theme_importing(),
+                                        oninput: move |e| theme_import_path.set(e.value()),
+                                    }
+                                    button {
+                                        disabled: theme_importing() || theme_import_path().is_empty(),
+                                        onclick: move |_| {
+                                            let path = theme_import_path();
+                                            if path.is_empty() {
+                                                return;
+                                            }
+
+                                            theme_importing.set(true);
+                                            theme_import_status.set(None);
+
+                                            spawn(async move {
+                                                // Import and validate theme file (blocking I/O in spawn)
+                                                let result = match pentest_core::theme_loader::import_theme_file(&path) {
+                                                    Ok(dest_path) => {
+                                                        // Validate the imported theme
+                                                        match pentest_core::theme_loader::load_theme_file(&dest_path) {
+                                                            Ok(content) => {
+                                                                match crate::theme::parse_theme_file(&content) {
+                                                                    Ok(theme) => {
+                                                                        // Validate CSS security
+                                                                        if let Some(custom_css) = &theme.custom_css {
+                                                                            if let Err(errors) = crate::theme::validate_custom_css(custom_css) {
+                                                                                let _ = std::fs::remove_file(&dest_path);
+                                                                                Err(format!("Theme validation failed:\n{}", errors.join("\n")))
+                                                                            } else {
+                                                                                Ok(format!("Theme '{}' imported successfully!", theme.metadata.name))
+                                                                            }
+                                                                        } else {
+                                                                            Ok(format!("Theme '{}' imported successfully!", theme.metadata.name))
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        let _ = std::fs::remove_file(&dest_path);
+                                                                        Err(format!("Invalid theme format: {}", e))
+                                                                    }
+                                                                }
+                                                            }
+                                                            Err(e) => Err(format!("Failed to read theme: {}", e)),
+                                                        }
+                                                    }
+                                                    Err(e) => Err(format!("Import failed: {}", e)),
+                                                };
+
+                                                theme_import_status.set(Some(result.clone()));
+                                                theme_importing.set(false);
+                                                theme_import_path.set(String::new());
+
+                                                if result.is_ok() {
+                                                    on_theme_imported.call(());
+                                                }
+                                            });
+                                        },
+                                        if theme_importing() {
+                                            "Importing..."
+                                        } else {
+                                            "Import"
+                                        }
+                                    }
+                                }
+
+                                // Show import status
+                                if let Some(status) = theme_import_status() {
+                                    match status {
+                                        Ok(ref msg) => rsx! { div { class: "text-success-xs", style: "margin-top: 4px;", "{msg}" } },
+                                        Err(ref err) => rsx! { div { class: "text-error-xs", style: "margin-top: 4px; white-space: pre-wrap;", "{err}" } },
+                                    }
+                                }
+
+                                div { class: "text-dim-xs", style: "margin-top: 4px;",
+                                    "Import .css theme files from disk. See themes/README.md for format."
+                                }
+                            }
+                        }
+                    }
+
+                    // Info text
+                    div { class: "text-dim-xs", style: "margin-top: 12px;",
+                        "Theme changes apply instantly"
                     }
                 }
             }

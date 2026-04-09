@@ -4,7 +4,8 @@ use dioxus::desktop::{Config, LogicalSize, WindowBuilder};
 use dioxus::prelude::*;
 
 use pentest_core::config::ShellMode;
-use pentest_ui::{connector_app, mobile_css, theme_css, utils_css, ConnectorAppConfig};
+use pentest_core::settings::load_settings;
+use pentest_ui::{connector_app, mobile_css, utils_css, ConnectorAppConfig};
 
 const DESKTOP_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
     platform_name: "Desktop",
@@ -25,7 +26,13 @@ fn main() {
     tracing::info!("Log file: {}", log_path.display());
     tracing::info!("Starting Pentest Connector Desktop");
 
-    let css = theme_css();
+    // Load theme from settings
+    let settings = load_settings();
+    let css = pentest_ui::theme::generate_theme_css(
+        settings.theme,
+        settings.border_radius,
+        settings.density,
+    );
     let mcss = mobile_css();
     let ucss = utils_css();
 

@@ -7,6 +7,7 @@
 
 use super::sidebar::NavPage;
 use dioxus::prelude::*;
+use pentest_core::config::Theme;
 
 /// Props for [`KeyboardShortcuts`].
 #[derive(Props, Clone, PartialEq)]
@@ -23,6 +24,12 @@ pub struct KeyboardShortcutsProps {
     on_close_help: EventHandler<()>,
     /// Close the chat panel explicitly.
     on_close_chat: EventHandler<()>,
+    /// Change theme (optional, for Ctrl+Shift+1-8 shortcuts).
+    #[props(default)]
+    on_theme_change: Option<EventHandler<Theme>>,
+    /// Konami code callback (optional).
+    #[props(default)]
+    on_konami: Option<EventHandler<()>>,
     /// The wrapped application content.
     children: Element,
 }
@@ -35,24 +42,51 @@ pub struct KeyboardShortcutsProps {
 ///
 /// # Key bindings
 ///
-/// | Key     | Action               |
-/// |---------|----------------------|
-/// | `?`     | Toggle help modal    |
-/// | `1`-`6` | Navigate to page     |
-/// | `c`     | Toggle chat panel    |
-/// | `Esc`   | Close modal / panel  |
+/// | Key              | Action                    |
+/// |------------------|---------------------------|
+/// | `?`              | Toggle help modal         |
+/// | `1`-`6`          | Navigate to page          |
+/// | `c`              | Toggle chat panel         |
+/// | `Esc`            | Close modal / panel       |
+/// | `Ctrl+Shift+1-8` | Switch theme directly     |
+/// | Konami code      | Activate easter egg       |
+/// Konami code sequence: ↑ ↑ ↓ ↓ ← → ← → B A
+const KONAMI_SEQUENCE: &[&str] = &[
+    "ArrowUp",
+    "ArrowUp",
+    "ArrowDown",
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "ArrowLeft",
+    "ArrowRight",
+    "b",
+    "a",
+];
+
 #[component]
 pub fn KeyboardShortcuts(props: KeyboardShortcutsProps) -> Element {
-    // Auto-focus the wrapper div on mount so keydown events fire immediately.
+    // Konami code tracking
+    let mut konami_sequence = use_signal(Vec::<String>::new);
+    let mut last_konami_time = use_signal(std::time::Instant::now);
+
+    // Auto-focus the wrapper div on mount and keep re-focusing periodically
     use_effect(move || {
         spawn(async move {
-            let _ = document::eval(
-                r#"
-                let el = document.querySelector('[data-shortcut-root]');
-                if (el) el.focus();
-                "#,
-            )
-            .await;
+            // Try multiple times to ensure focus is captured
+            for _ in 0..5 {
+                let _ = document::eval(
+                    r#"
+                    let el = document.querySelector('[data-shortcut-root]');
+                    if (el) {
+                        el.focus();
+                        console.log('KeyboardShortcuts focused');
+                    }
+                    "#,
+                )
+                .await;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
         });
     });
 
@@ -63,9 +97,75 @@ pub fn KeyboardShortcuts(props: KeyboardShortcutsProps) -> Element {
         div {
             "data-shortcut-root": "true",
             tabindex: 0,
-            style: "outline: none; display: contents;",
+            style: "outline: none; width: 100%; height: 100%; display: flex; flex-direction: column;",
             onkeydown: move |evt: Event<KeyboardData>| {
                 let key = evt.key();
+                let ctrl_key = evt.modifiers().ctrl();
+                let shift_key = evt.modifiers().shift();
+
+                // --- Konami Code Detection ---
+                if let Some(on_konami) = &props.on_konami {
+                    let now = std::time::Instant::now();
+                    let mut seq = konami_sequence.write();
+
+                    // Reset if more than 2 seconds since last key
+                    if now.duration_since(*last_konami_time.read()) > std::time::Duration::from_secs(2) {
+                        seq.clear();
+                    }
+                    last_konami_time.set(now);
+
+                    // Add key to sequence
+                    let key_str = key.to_string();
+                    seq.push(key_str.clone());
+
+                    tracing::debug!("Konami: key={}, sequence len={}", key_str, seq.len());
+
+                    // Keep only last 10 keys
+                    if seq.len() > 10 {
+                        seq.remove(0);
+                    }
+
+                    // Check if sequence matches Konami code
+                    if seq.len() == KONAMI_SEQUENCE.len() {
+                        let matches = seq.iter().zip(KONAMI_SEQUENCE.iter()).all(|(a, b)| {
+                            let a_lower = a.to_lowercase();
+                            let b_lower = b.to_lowercase();
+                            a_lower == b_lower
+                        });
+
+                        if matches {
+                            tracing::info!("Konami code activated!");
+                            seq.clear();
+                            on_konami.call(());
+                            return; // Don't process other shortcuts
+                        }
+                    }
+                }
+
+                // --- Ctrl+Shift+1-8: Theme switching ---
+                if ctrl_key && shift_key {
+                    if let Some(on_theme_change) = &props.on_theme_change {
+                        let theme_opt = match key {
+                            Key::Character(ref c) => match c.as_str() {
+                                "1" => Some(Theme::Dark),
+                                "2" => Some(Theme::Light),
+                                "3" => Some(Theme::Dracula),
+                                "4" => Some(Theme::Gruvbox),
+                                "5" => Some(Theme::TokyoNight),
+                                "6" => Some(Theme::Matrix),
+                                "7" => Some(Theme::Cyberpunk),
+                                "8" => Some(Theme::Nord),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+
+                        if let Some(theme) = theme_opt {
+                            on_theme_change.call(theme);
+                            return;
+                        }
+                    }
+                }
 
                 // --- Escape: close help first, then chat ---
                 if key == Key::Escape {

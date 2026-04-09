@@ -36,6 +36,20 @@ A multiplatform penetration testing connector application built with [Dioxus](ht
 
 ## Features
 
+### UI Customization
+
+- **8 Built-in Themes**: Dark, Light, Dracula, Gruvbox, Tokyo Night, Matrix, Cyberpunk, Nord
+- **Custom Themes**: Import your own CSS themes with security validation
+- **Keyboard Shortcuts**: `Ctrl+Shift+1-8` for instant theme switching
+- **Shape Customization**: 5 border radius options (Sharp to Pill)
+- **Density Control**: Compact, Normal, or Comfortable spacing
+- **Smooth Transitions**: Animated theme changes with 300ms easing
+- **Easter Eggs**: Konami code (↑↑↓↓←→←→BA) activates Matrix rain animation
+
+See [`docs/UI_FEATURES.md`](docs/UI_FEATURES.md) for complete customization guide.
+
+### Penetration Testing Tools
+
 The connector implements 9 penetration testing tools:
 
 | Tool | Description |

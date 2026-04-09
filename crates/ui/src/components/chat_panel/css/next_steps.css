@@ -62,6 +62,43 @@
   transform: translateX(2px);
 }
 
+/* Action button style variants */
+.next-steps-btn-primary {
+  border-color: #0ea5e9;
+}
+
+.next-steps-btn-primary:hover {
+  background: rgba(14, 165, 233, 0.1);
+  border-color: #38bdf8;
+}
+
+.next-steps-btn-secondary {
+  border-color: #6b7280;
+}
+
+.next-steps-btn-secondary:hover {
+  background: rgba(107, 114, 128, 0.1);
+  border-color: #9ca3af;
+}
+
+.next-steps-btn-danger {
+  border-color: #ef4444;
+}
+
+.next-steps-btn-danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: #f87171;
+}
+
+.next-steps-btn-info {
+  border-color: #10b981;
+}
+
+.next-steps-btn-info:hover {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: #34d399;
+}
+
 .next-steps-icon {
   font-size: 20px;
   flex-shrink: 0;
