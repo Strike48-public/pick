@@ -729,39 +729,26 @@ impl LiveViewConnector {
                             } else {
                                 tracing::error!("Registration failed: {}", resp.error);
 
-                                // If auth failed (expired/invalid token), clear it and retry
-                                if resp.error.contains("expired") || resp.error.contains("invalid") ||
-                                   resp.error.contains("auth") || resp.error.contains("jwt") {
-                                    tracing::info!("Auth token expired/invalid, clearing and will retry");
-                                    self.config.auth_token.clear();
-                                    // Clear the OTT provider so we don't try to refresh stale credentials
-                                    *self.ott_provider.write().await = None;
-                                    // Delete stale saved credentials file to break the retry loop
-                                    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                                    let stale = format!(
-                                        "{}/.strike48/credentials/pentest-connector_{}.json",
-                                        home, self.config.instance_id
-                                    );
-                                    if std::fs::remove_file(&stale).is_ok() {
-                                        tracing::info!("Removed stale credentials file: {}", stale);
-                                    }
-                                    // Notify main app to clear saved token
-                                    self.send_event(ConnectorEvent::CredentialsUpdated {
-                                        auth_token: String::new(),
-                                        api_url: String::new(),
-                                    });
-                                    self.send_event(ConnectorEvent::Log(
-                                        TerminalLine::info("Token expired, will re-register for approval")
-                                    ));
-                                    // Don't return - let the reconnect loop handle it
-                                    return;
+                                // Registration failed — server doesn't trust our credentials.
+                                // Always clear stale auth and retry fresh rather than looping
+                                // with the same rejected token.
+                                tracing::info!("Registration rejected, clearing credentials and retrying");
+                                self.config.auth_token.clear();
+                                *self.ott_provider.write().await = None;
+                                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                                let stale = format!(
+                                    "{}/.strike48/credentials/pentest-connector_{}.json",
+                                    home, self.config.instance_id
+                                );
+                                if std::fs::remove_file(&stale).is_ok() {
+                                    tracing::info!("Removed stale credentials file: {}", stale);
                                 }
-
+                                self.send_event(ConnectorEvent::CredentialsUpdated {
+                                    auth_token: String::new(),
+                                    api_url: String::new(),
+                                });
                                 self.send_event(ConnectorEvent::Log(
-                                    TerminalLine::error(format!("Registration failed: {}", resp.error))
-                                ));
-                                self.send_event(ConnectorEvent::StatusChanged(
-                                    ConnectorStatus::Error(resp.error)
+                                    TerminalLine::info(format!("Registration failed ({}), clearing credentials and retrying", resp.error))
                                 ));
                                 return;
                             }
