@@ -332,8 +332,21 @@ impl SeedManager {
     where
         F: Fn(SeedProgress) + Send + Sync,
     {
+        self.seed_tier_with_options(tier, false, progress_callback).await
+    }
+
+    /// Seed resources for a specific tier with force re-download option
+    pub async fn seed_tier_with_options<F>(
+        &self,
+        tier: SeedTier,
+        force: bool,
+        progress_callback: F,
+    ) -> Result<SeedSummary>
+    where
+        F: Fn(SeedProgress) + Send + Sync,
+    {
         let resources: Vec<&SeedResource> = self.resources_up_to_tier(tier);
-        self.seed_resources(&resources, progress_callback).await
+        self.seed_resources_with_options(&resources, force, progress_callback).await
     }
 
     /// Internal method to seed a list of resources
@@ -345,10 +358,23 @@ impl SeedManager {
     where
         F: Fn(SeedProgress) + Send + Sync,
     {
+        self.seed_resources_with_options(resources, false, progress_callback).await
+    }
+
+    /// Internal method to seed a list of resources with force option
+    async fn seed_resources_with_options<F>(
+        &self,
+        resources: &[&SeedResource],
+        force: bool,
+        progress_callback: F,
+    ) -> Result<SeedSummary>
+    where
+        F: Fn(SeedProgress) + Send + Sync,
+    {
         let mut summary = SeedSummary::default();
 
         for resource in resources {
-            let result = self.seed_resource(resource, &progress_callback).await;
+            let result = self.seed_resource_with_options(resource, force, &progress_callback).await;
 
             match result {
                 Ok(_) => summary.succeeded.push(resource.name.clone()),
@@ -370,8 +396,21 @@ impl SeedManager {
     where
         F: Fn(SeedProgress),
     {
-        // Check if already exists
-        if resource.destination.exists() {
+        self.seed_resource_with_options(resource, false, progress_callback).await
+    }
+
+    /// Seed a single resource with force option
+    async fn seed_resource_with_options<F>(
+        &self,
+        resource: &SeedResource,
+        force: bool,
+        progress_callback: F,
+    ) -> Result<()>
+    where
+        F: Fn(SeedProgress),
+    {
+        // Check if already exists (skip if not forcing)
+        if !force && resource.destination.exists() {
             progress_callback(SeedProgress {
                 resource_name: resource.name.clone(),
                 downloaded_mb: resource.size_mb as f64,

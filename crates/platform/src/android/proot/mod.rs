@@ -153,29 +153,53 @@ pub async fn execute_in_proot(
     let l2s_dir = rootfs.join(".l2s");
     std::fs::create_dir_all(&l2s_dir).ok();
 
+    // Bind .pick/resources for shared wordlists/tools between host and proot
+    let files_dir = get_files_dir().unwrap_or_else(|_| PathBuf::from("/data/local/tmp"));
+    let host_resources = files_dir.join(".pick").join("resources");
+    // Create directory if it doesn't exist
+    if !host_resources.exists() {
+        let _ = std::fs::create_dir_all(&host_resources);
+    }
+
+    let mut args = vec![
+        "-0",
+        "--link2symlink",
+        "--kill-on-exit",
+        "--sysvipc", // emulate System V IPC (required for pacman locking)
+        "-r",
+        &rootfs_lossy,
+        "-b",
+        "/dev",
+        "-b",
+        "/proc",
+        "-b",
+        "/sys",
+        "-b",
+        "/dev/urandom:/dev/random",
+        "-b",
+        "/proc/self/fd:/dev/fd",
+    ];
+
+    // Add resources bind mount if directory exists
+    let resources_bind = if host_resources.exists() {
+        Some(format!("{}:/root/.pick/resources", host_resources.to_string_lossy()))
+    } else {
+        None
+    };
+    if let Some(ref bind) = resources_bind {
+        args.push("-b");
+        args.push(bind);
+    }
+
+    args.extend_from_slice(&[
+        "-w",
+        "/root",
+    ]);
+
     let result = tokio::time::timeout(
         timeout,
         command
-            .args([
-                "-0",
-                "--link2symlink",
-                "--kill-on-exit",
-                "--sysvipc", // emulate System V IPC (required for pacman locking)
-                "-r",
-                &rootfs_lossy,
-                "-b",
-                "/dev",
-                "-b",
-                "/proc",
-                "-b",
-                "/sys",
-                "-b",
-                "/dev/urandom:/dev/random",
-                "-b",
-                "/proc/self/fd:/dev/fd",
-                "-w",
-                "/root",
-            ])
+            .args(&args)
             .arg("/bin/bash")
             .arg("-c")
             .arg(&full_cmd)
