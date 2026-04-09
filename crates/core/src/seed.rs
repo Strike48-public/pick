@@ -392,6 +392,7 @@ impl SeedManager {
     }
 
     /// Seed a single resource
+    #[allow(dead_code)]
     async fn seed_resource<F>(&self, resource: &SeedResource, progress_callback: F) -> Result<()>
     where
         F: Fn(SeedProgress),
