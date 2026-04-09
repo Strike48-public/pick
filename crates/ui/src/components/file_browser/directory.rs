@@ -29,24 +29,30 @@ pub(super) fn DirectoryListing(props: DirectoryListingProps) -> Element {
     let path = props.rel_path.clone();
     let on_navigate = props.on_navigate;
 
-    // Load directory contents
-    use_effect(move || {
+    // Load directory contents and poll for changes every 2 seconds
+    {
         let ws = ws.clone();
         let path = path.clone();
-        spawn(async move {
-            loading.set(true);
-            match list_directory(Path::new(&ws), &path) {
-                Ok(e) => {
-                    entries.set(e);
-                    error.set(None);
-                }
-                Err(e) => {
-                    error.set(Some(e));
+        use_future(move || {
+            let ws = ws.clone();
+            let path = path.clone();
+            async move {
+                loop {
+                    match list_directory(Path::new(&ws), &path) {
+                        Ok(e) => {
+                            entries.set(e);
+                            error.set(None);
+                        }
+                        Err(e) => {
+                            error.set(Some(e));
+                        }
+                    }
+                    loading.set(false);
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 }
             }
-            loading.set(false);
         });
-    });
+    }
 
     // Parent directory link
     let rel_path = props.rel_path.clone();
