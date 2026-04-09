@@ -555,10 +555,48 @@
 }
 
 .seed-tier-btn:hover:not(:disabled) {
-    background: var(--primary-hover);
+    background: var(--ring);
+    opacity: 0.9;
 }
 
 .seed-tier-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.seed-tier-btn-group {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+
+.seed-tier-btn-seeded {
+    background: var(--secondary);
+    color: var(--muted-foreground);
+    opacity: 1;
+}
+
+.seed-tier-reseed-icon {
+    padding: 6px 10px;
+    font-size: 14px;
+    font-weight: 500;
+    background: transparent;
+    color: var(--muted-foreground);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.seed-tier-reseed-icon:hover:not(:disabled) {
+    background: var(--secondary);
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.seed-tier-reseed-icon:disabled {
     opacity: 0.5;
     cursor: not-allowed;
 }

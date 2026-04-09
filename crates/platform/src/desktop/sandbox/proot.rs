@@ -187,6 +187,19 @@ impl ProotExecutor {
             "/etc/resolv.conf".to_string(),
         ];
 
+        // Bind .pick/resources for shared wordlists/tools between host and proot
+        if let Ok(home) = std::env::var("HOME") {
+            let host_resources = PathBuf::from(&home).join(".pick").join("resources");
+            // Create directory if it doesn't exist
+            if !host_resources.exists() {
+                let _ = std::fs::create_dir_all(&host_resources);
+            }
+            if host_resources.exists() {
+                args.push("-b".to_string());
+                args.push(format!("{}:/root/.pick/resources", host_resources.to_string_lossy()));
+            }
+        }
+
         // Mount workspace if specified
         let workspace_mount = working_dir.or(self.config.workspace_dir.as_deref());
         if let Some(workspace) = workspace_mount {
