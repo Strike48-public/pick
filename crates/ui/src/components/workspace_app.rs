@@ -223,7 +223,6 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
             if page == NavPage::Licenses {
                 LicensesPage {}
             }
-        }
     }
 }
 
