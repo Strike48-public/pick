@@ -19,6 +19,76 @@ use tokio::process::Command;
 
 use crate::util::{dbm_to_bars, dbm_to_quality};
 
+/// Cleanup guard that ensures NetworkManager is restored even on error/panic
+struct CleanupGuard {
+    mon_interface: String,
+    killed_network_manager: bool,
+    cleaned: bool,
+}
+
+impl CleanupGuard {
+    fn new(mon_interface: String, killed_network_manager: bool) -> Self {
+        Self {
+            mon_interface,
+            killed_network_manager,
+            cleaned: false,
+        }
+    }
+
+    /// Manually trigger cleanup (also happens automatically on Drop)
+    async fn cleanup(mut self) {
+        // Manual cleanup - mark as cleaned so Drop won't run again
+        self.run_cleanup().await;
+        self.cleaned = true;
+    }
+
+    async fn run_cleanup(&self) {
+        tracing::info!("🧹 Cleaning up and restoring network...");
+        let platform = get_platform();
+        if let Err(e) = platform
+            .disable_monitor_mode(&self.mon_interface, self.killed_network_manager)
+            .await
+        {
+            tracing::warn!("Failed to disable monitor mode: {}", e);
+        }
+    }
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        if self.cleaned {
+            return; // Already cleaned up manually
+        }
+
+        // If cleanup() wasn't called manually, we need to restore network
+        // This happens on panic or early return
+        tracing::warn!(
+            "⚠️  CleanupGuard dropped without manual cleanup - restoring network synchronously"
+        );
+
+        // We can't use async in Drop, so we spawn a blocking task
+        // This is a best-effort attempt to restore network on panic/early exit
+        let mon_interface = self.mon_interface.clone();
+        let killed_nm = self.killed_network_manager;
+
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let platform = get_platform();
+                tracing::info!("🧹 Emergency cleanup - restoring network...");
+                if let Err(e) = platform
+                    .disable_monitor_mode(&mon_interface, killed_nm)
+                    .await
+                {
+                    tracing::error!("Failed to restore network in Drop: {}", e);
+                } else {
+                    tracing::info!("✓ Network restored via emergency cleanup");
+                }
+            });
+        });
+    }
+}
+
 /// Detailed WiFi scanning tool with client detection
 pub struct WifiScanDetailedTool;
 
@@ -113,15 +183,8 @@ impl PentestTool for WifiScanDetailedTool {
                 }
             };
 
-            // Set up cleanup
-            let cleanup_mon_interface = mon_interface.clone();
-            let cleanup = async {
-                tracing::info!("");
-                tracing::info!("🧹 Cleaning up and restoring network...");
-                if let Err(e) = platform.disable_monitor_mode(&cleanup_mon_interface, killed_network_manager).await {
-                    tracing::warn!("Failed to disable monitor mode: {}", e);
-                }
-            };
+            // Set up cleanup guard that ALWAYS runs
+            let cleanup_guard = CleanupGuard::new(mon_interface.clone(), killed_network_manager);
 
             // Step 3: Capture packets with airodump-ng
             tracing::info!("");
@@ -134,19 +197,12 @@ impl PentestTool for WifiScanDetailedTool {
 
             let output_file = format!("{}/scan", output_dir);
 
-            let client_counts = match capture_with_client_detection(&mon_interface, &output_file, duration_secs).await {
-                Ok(counts) => counts,
-                Err(e) => {
-                    tracing::warn!("Failed to detect clients: {}", e);
-                    cleanup.await;
-                    return Err(e);
-                }
-            };
+            let client_counts = capture_with_client_detection(&mon_interface, &output_file, duration_secs).await?;
 
-            // Step 4: Cleanup and merge results
+            // Step 4: Cleanup and merge results (cleanup_guard will handle restoration)
             tracing::info!("");
             tracing::info!("⚡ Step 4/4: Restoring network connectivity...");
-            cleanup.await;
+            cleanup_guard.cleanup().await;
             tracing::info!("✓ Network restored");
 
             // Merge client counts into network list
