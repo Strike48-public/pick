@@ -13,6 +13,40 @@ pub enum ShellMode {
     Proot,
 }
 
+/// UI theme
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+    Dracula,
+    Gruvbox,
+    TokyoNight,
+    Matrix,
+    Cyberpunk,
+    Nord,
+}
+
+/// Border radius style
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum BorderRadius {
+    Sharp,   // 0px
+    Minimal, // 4px
+    #[default]
+    Rounded, // 8px
+    Soft,    // 16px
+    Pill,    // 999px
+}
+
+/// UI density / spacing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Density {
+    Compact,
+    #[default]
+    Normal,
+    Comfortable,
+}
+
 /// Configuration for connecting to the Strike48 backend
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectorConfig {
@@ -197,7 +231,9 @@ pub struct AppSettings {
     pub terminal_max_lines: usize,
 
     /// Theme preference
-    pub dark_mode: bool,
+    pub theme: Theme,
+    pub border_radius: BorderRadius,
+    pub density: Density,
 
     /// Shell execution mode (native or proot)
     pub shell_mode: ShellMode,
@@ -218,7 +254,9 @@ impl Default for AppSettings {
             auto_connect: false,
             terminal_font_size: 14,
             terminal_max_lines: 10000,
-            dark_mode: true,
+            theme: Theme::default(),
+            border_radius: BorderRadius::default(),
+            density: Density::default(),
             shell_mode: ShellMode::default(),
             download_state: DownloadState::default(),
             wifi_adapter: None,
