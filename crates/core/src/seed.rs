@@ -477,33 +477,41 @@ impl SeedManager {
         let max_retries = 3;
         let mut last_error = None;
 
-        let response = 'retry_loop: loop {
-            for attempt in 1..=max_retries {
-                match client.get(&resource.url).send().await {
-                    Ok(resp) => break 'retry_loop resp,
-                    Err(e) => {
-                        last_error = Some(e);
-                        if attempt < max_retries {
-                            tracing::warn!(
-                                "Download attempt {}/{} failed for '{}': {}. Retrying...",
-                                attempt,
-                                max_retries,
-                                resource.name,
-                                last_error.as_ref().unwrap()
-                            );
-                            tokio::time::sleep(std::time::Duration::from_secs(2 * attempt as u64))
-                                .await;
-                        }
+        let mut response = None;
+        for attempt in 1..=max_retries {
+            match client.get(&resource.url).send().await {
+                Ok(resp) => {
+                    response = Some(resp);
+                    break;
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < max_retries {
+                        tracing::warn!(
+                            "Download attempt {}/{} failed for '{}': {}. Retrying...",
+                            attempt,
+                            max_retries,
+                            resource.name,
+                            last_error.as_ref().unwrap()
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(2 * attempt as u64))
+                            .await;
                     }
                 }
             }
-            // All retries exhausted
-            return Err(Error::Network(format!(
-                "Failed to download {} after {} attempts: {}",
-                resource.name,
-                max_retries,
-                last_error.unwrap()
-            )));
+        }
+
+        // Check if we got a response
+        let response = match response {
+            Some(resp) => resp,
+            None => {
+                return Err(Error::Network(format!(
+                    "Failed to download {} after {} attempts: {}",
+                    resource.name,
+                    max_retries,
+                    last_error.unwrap()
+                )));
+            }
         };
 
         if !response.status().is_success() {
