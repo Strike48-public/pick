@@ -62,6 +62,10 @@ pub fn SettingsPage(
     let mut seed_progress = use_signal(|| None::<SeedProgress>);
     let mut seed_result = use_signal(|| None::<Result<String, String>>);
 
+    // Export session state
+    let mut export_loading = use_signal(|| false);
+    let mut export_result = use_signal(|| None::<Result<String, String>>);
+
     // Load seed status on mount
     use_effect(move || {
         spawn(async move {
@@ -548,10 +552,15 @@ pub fn SettingsPage(
 
                                                     match result {
                                                         Ok(summary) => {
-                                                            seed_result.set(Some(Ok(format!(
-                                                                "Seeded {} resources successfully",
-                                                                summary.succeeded.len()
-                                                            ))));
+                                                            let msg = if summary.failed.is_empty() {
+                                                                format!("Seeded {} resources successfully", summary.succeeded.len())
+                                                            } else {
+                                                                format!("Seeded {}/{} resources ({} failed)",
+                                                                    summary.succeeded.len(),
+                                                                    summary.succeeded.len() + summary.failed.len(),
+                                                                    summary.failed.len())
+                                                            };
+                                                            seed_result.set(Some(if summary.failed.is_empty() { Ok(msg) } else { Err(msg) }));
                                                             let status = manager.check_status().await;
                                                             seed_status.set(Some(status));
                                                         }
@@ -658,10 +667,15 @@ pub fn SettingsPage(
                                                 seed_progress.set(None);
                                                 match result {
                                                     Ok(summary) => {
-                                                        seed_result.set(Some(Ok(format!(
-                                                            "Seeded {} resources successfully",
-                                                            summary.succeeded.len()
-                                                        ))));
+                                                        let msg = if summary.failed.is_empty() {
+                                                            format!("Seeded {} resources successfully", summary.succeeded.len())
+                                                        } else {
+                                                            format!("Seeded {}/{} resources ({} failed)",
+                                                                summary.succeeded.len(),
+                                                                summary.succeeded.len() + summary.failed.len(),
+                                                                summary.failed.len())
+                                                        };
+                                                        seed_result.set(Some(if summary.failed.is_empty() { Ok(msg) } else { Err(msg) }));
                                                         let status = manager.check_status().await;
                                                         seed_status.set(Some(status));
                                                     }
@@ -766,10 +780,15 @@ pub fn SettingsPage(
                                                 seed_loading.set(false);
                                                 match result {
                                                     Ok(summary) => {
-                                                        seed_result.set(Some(Ok(format!(
-                                                            "Seeded {} resources successfully",
-                                                            summary.succeeded.len()
-                                                        ))));
+                                                        let msg = if summary.failed.is_empty() {
+                                                            format!("Seeded {} resources successfully", summary.succeeded.len())
+                                                        } else {
+                                                            format!("Seeded {}/{} resources ({} failed)",
+                                                                summary.succeeded.len(),
+                                                                summary.succeeded.len() + summary.failed.len(),
+                                                                summary.failed.len())
+                                                        };
+                                                        seed_result.set(Some(if summary.failed.is_empty() { Ok(msg) } else { Err(msg) }));
                                                         let status = manager.check_status().await;
                                                         seed_status.set(Some(status));
                                                     }
@@ -794,6 +813,126 @@ pub fn SettingsPage(
 
                         div { class: "seed-info text-dim-xs",
                             "Resources will be downloaded to ~/.pick/resources/"
+                        }
+                    }
+                }
+
+                // Export Session section
+                div { class: "settings-card",
+                    div { class: "settings-card-header",
+                        h2 { "Export Session" }
+                    }
+                    div { class: "settings-card-body",
+                        p { class: "text-dim-s",
+                            "Export current session data to JSON or Markdown report for documentation, compliance, and evidence preservation."
+                        }
+
+                        div { class: "export-format-group",
+                            button {
+                                class: "export-btn",
+                                disabled: export_loading(),
+                                onclick: move |_| {
+                                    export_loading.set(true);
+                                    export_result.set(None);
+                                    spawn(async move {
+                                        use pentest_core::tools::ToolContext;
+
+                                        let registry_arc = match crate::session::get_tool_registry() {
+                                            Some(r) => r,
+                                            None => {
+                                                export_result.set(Some(Err("Tool registry not available".to_string())));
+                                                export_loading.set(false);
+                                                return;
+                                            }
+                                        };
+
+                                        let ctx = ToolContext::default();
+                                        let registry_guard = registry_arc.read().await;
+
+                                        let params = serde_json::json!({
+                                            "format": "json",
+                                        });
+
+                                        match registry_guard.execute("export_session", params, &ctx).await {
+                                            Ok(result) => {
+                                                if result.success {
+                                                    if let Some(file_path) = result.data.get("file_path").and_then(|v| v.as_str()) {
+                                                        export_result.set(Some(Ok(format!("Exported to {}", file_path))));
+                                                    } else {
+                                                        export_result.set(Some(Ok("Export successful".to_string())));
+                                                    }
+                                                } else {
+                                                    let err = result.error.unwrap_or_else(|| "Export failed".to_string());
+                                                    export_result.set(Some(Err(err)));
+                                                }
+                                            }
+                                            Err(e) => {
+                                                export_result.set(Some(Err(format!("Export error: {}", e))));
+                                            }
+                                        }
+                                        export_loading.set(false);
+                                    });
+                                },
+                                if export_loading() { "Exporting..." } else { "Export as JSON" }
+                            }
+                            button {
+                                class: "export-btn",
+                                disabled: export_loading(),
+                                onclick: move |_| {
+                                    export_loading.set(true);
+                                    export_result.set(None);
+                                    spawn(async move {
+                                        use pentest_core::tools::ToolContext;
+
+                                        let registry_arc = match crate::session::get_tool_registry() {
+                                            Some(r) => r,
+                                            None => {
+                                                export_result.set(Some(Err("Tool registry not available".to_string())));
+                                                export_loading.set(false);
+                                                return;
+                                            }
+                                        };
+
+                                        let ctx = ToolContext::default();
+                                        let registry_guard = registry_arc.read().await;
+
+                                        let params = serde_json::json!({
+                                            "format": "markdown",
+                                        });
+
+                                        match registry_guard.execute("export_session", params, &ctx).await {
+                                            Ok(result) => {
+                                                if result.success {
+                                                    if let Some(file_path) = result.data.get("file_path").and_then(|v| v.as_str()) {
+                                                        export_result.set(Some(Ok(format!("Exported to {}", file_path))));
+                                                    } else {
+                                                        export_result.set(Some(Ok("Export successful".to_string())));
+                                                    }
+                                                } else {
+                                                    let err = result.error.unwrap_or_else(|| "Export failed".to_string());
+                                                    export_result.set(Some(Err(err)));
+                                                }
+                                            }
+                                            Err(e) => {
+                                                export_result.set(Some(Err(format!("Export error: {}", e))));
+                                            }
+                                        }
+                                        export_loading.set(false);
+                                    });
+                                },
+                                if export_loading() { "Exporting..." } else { "Export as Markdown" }
+                            }
+                        }
+
+                        if let Some(Ok(ref msg)) = export_result() {
+                            div { class: "seed-result-success", "✓ {msg}" }
+                        }
+                        if let Some(Err(ref err)) = export_result() {
+                            div { class: "seed-result-error", "✗ Error: {err}" }
+                        }
+
+                        div { class: "export-info text-dim-xs",
+                            "Exports will be saved to your workspace directory"
                         }
                     }
                 }

@@ -346,13 +346,17 @@ pub fn WorkspaceApp() -> Element {
 
     let page = *active_page.read();
 
-    // Compute unread badge for Logs
-    let total_lines = terminal_lines.read().len();
+    // Compute error count badge for Logs (only show errors, not total unread)
+    let error_count = terminal_lines
+        .read()
+        .iter()
+        .filter(|line| matches!(line.level, pentest_core::terminal::LogLevel::Error))
+        .count();
+
     let unread = if page == NavPage::Logs {
-        last_seen_terminal_count.set(total_lines);
-        0
+        0 // Hide badge when viewing Logs page
     } else {
-        total_lines.saturating_sub(*last_seen_terminal_count.read())
+        error_count // Show error count when not on Logs page
     };
 
     let page_subtitle = match page {

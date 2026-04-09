@@ -278,6 +278,41 @@ impl SessionExport {
         let md = self.to_markdown();
         std::fs::write(path.into(), md)
     }
+
+    /// Create an example export for testing
+    pub fn example() -> Self {
+        use chrono::Utc;
+
+        Self {
+            metadata: SessionMetadata {
+                session_id: format!("session-{}", Utc::now().timestamp()),
+                start_time: Utc::now(),
+                end_time: Some(Utc::now()),
+                connector_version: env!("CARGO_PKG_VERSION").to_string(),
+                platform: std::env::consts::OS.to_string(),
+                target: Some("Example Target".to_string()),
+            },
+            tool_executions: vec![ToolExecution {
+                timestamp: Utc::now(),
+                tool_name: "network_discover".to_string(),
+                params: serde_json::json!({"interface": "eth0"}),
+                success: true,
+                duration_ms: 1250,
+                result: Some(serde_json::json!({"hosts_found": 3})),
+                error: None,
+            }],
+            findings: vec![Finding {
+                timestamp: Utc::now(),
+                severity: Severity::Info,
+                title: "Example Finding".to_string(),
+                description: "This is an example finding for demonstration".to_string(),
+                affected_target: "192.168.1.0/24".to_string(),
+                evidence: vec!["Discovered 3 hosts on network".to_string()],
+                recommendation: Some("Review discovered hosts for security posture".to_string()),
+            }],
+            files: vec![],
+        }
+    }
 }
 
 /// Convert severity to string

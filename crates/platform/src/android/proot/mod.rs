@@ -182,7 +182,10 @@ pub async fn execute_in_proot(
 
     // Add resources bind mount if directory exists
     let resources_bind = if host_resources.exists() {
-        Some(format!("{}:/root/.pick/resources", host_resources.to_string_lossy()))
+        Some(format!(
+            "{}:/root/.pick/resources",
+            host_resources.to_string_lossy()
+        ))
     } else {
         None
     };
@@ -191,10 +194,7 @@ pub async fn execute_in_proot(
         args.push(bind);
     }
 
-    args.extend_from_slice(&[
-        "-w",
-        "/root",
-    ]);
+    args.extend_from_slice(&["-w", "/root"]);
 
     let result = tokio::time::timeout(
         timeout,

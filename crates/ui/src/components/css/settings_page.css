@@ -572,8 +572,10 @@
 
 .seed-tier-btn-seeded {
     background: var(--secondary);
-    color: var(--muted-foreground);
+    color: var(--foreground);
     opacity: 1;
+    min-width: 90px;
+    border: 1px solid var(--border);
 }
 
 .seed-tier-reseed-icon {
@@ -636,6 +638,47 @@
     font-size: 11px;
     color: var(--muted-foreground);
     font-family: var(--font-mono);
+}
+
+/* Export Session Styles */
+.export-format-group {
+    display: flex;
+    gap: 12px;
+    margin-top: 16px;
+}
+
+.export-btn {
+    padding: 8px 16px;
+    background: var(--primary);
+    color: var(--primary-foreground);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: background 0.2s;
+}
+
+.export-btn:hover:not(:disabled) {
+    background: var(--ring);
+    opacity: 0.9;
+}
+
+.export-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.export-btn:active {
+    transform: translateY(1px);
+}
+
+.export-info {
+    margin-top: 12px;
+    padding: 8px;
+    background: var(--surface-1);
+    border-radius: 4px;
+    border-left: 2px solid var(--border);
 }
 
 .seed-result-success {

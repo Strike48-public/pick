@@ -196,7 +196,10 @@ impl ProotExecutor {
             }
             if host_resources.exists() {
                 args.push("-b".to_string());
-                args.push(format!("{}:/root/.pick/resources", host_resources.to_string_lossy()));
+                args.push(format!(
+                    "{}:/root/.pick/resources",
+                    host_resources.to_string_lossy()
+                ));
             }
         }
 
