@@ -283,7 +283,14 @@ pub fn CyberChefPage() -> Element {
         let chain = recipe_chain.read();
         if let Some(first_item) = chain.first() {
             let recipe = &RECIPES[first_item.recipe_idx];
-            input_text.set(recipe.example.to_string());
+            let example = recipe.example.to_string();
+            input_text.set(example.clone());
+            // Set the uncontrolled textarea value via JS
+            let js = format!(
+                "document.getElementById('cyberchef-input').value = {};",
+                serde_json::to_string(&example).unwrap_or_default()
+            );
+            let _ = document::eval(&js);
             if *auto_bake.read() {
                 execute_recipe_chain();
             }
@@ -681,9 +688,9 @@ pub fn CyberChefPage() -> Element {
                             }
                         }
                         textarea {
+                            id: "cyberchef-input",
                             class: "io-textarea",
                             placeholder: "Enter or paste your input here...",
-                            value: "{input_text}",
                             oninput: on_input_change,
                         }
                     }

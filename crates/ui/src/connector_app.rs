@@ -10,7 +10,7 @@ use dioxus::prelude::*;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use pentest_core::config::{ConnectorConfig, ShellMode};
+use pentest_core::config::{BorderRadius, ConnectorConfig, Density, ShellMode, Theme};
 use pentest_core::settings::{load_settings, save_settings};
 use pentest_core::state::ConnectorStatus;
 use pentest_core::terminal::TerminalLine;
@@ -23,7 +23,7 @@ use crate::components::{
 };
 use crate::download_manager::is_blackarch_ready;
 use crate::{
-    compute_screen, mobile_css, run_event_loop, theme_css, utils_css, AppScreen, EventLoopSignals,
+    compute_screen, mobile_css, run_event_loop, utils_css, AppScreen, EventLoopSignals,
     LiveViewConnector,
 };
 
@@ -98,6 +98,18 @@ pub struct ConnectorPagesProps {
     /// Callback when the user changes the WiFi adapter.
     #[props(default)]
     on_wifi_adapter_change: EventHandler<Option<String>>,
+    /// Current theme for appearance settings.
+    theme: Theme,
+    /// Callback when the user changes the theme.
+    on_theme_change: EventHandler<Theme>,
+    /// Current border radius for appearance settings.
+    border_radius: BorderRadius,
+    /// Callback when the user changes the border radius.
+    on_border_radius_change: EventHandler<BorderRadius>,
+    /// Current density for appearance settings.
+    density: Density,
+    /// Callback when the user changes the density.
+    on_density_change: EventHandler<Density>,
     /// Matrix API URL for chat.
     api_url: String,
     /// Auth token for chat.
@@ -206,6 +218,16 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                     on_shell_mode_change: move |mode: ShellMode| props.on_shell_mode_change.call(mode),
                     wifi_adapter: props.wifi_adapter.clone(),
                     on_wifi_adapter_change: move |adapter: Option<String>| props.on_wifi_adapter_change.call(adapter),
+                    theme: props.theme,
+                    on_theme_change: move |t: Theme| props.on_theme_change.call(t),
+                    border_radius: props.border_radius,
+                    on_border_radius_change: move |r: BorderRadius| props.on_border_radius_change.call(r),
+                    density: props.density,
+                    on_density_change: move |d: Density| props.on_density_change.call(d),
+                    on_theme_imported: move |_| {
+                        // Theme imported - could trigger UI refresh here if needed
+                        tracing::info!("Custom theme imported successfully");
+                    },
                 }
             }
         }
@@ -282,6 +304,11 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             }
         }
     });
+
+    // theme state from settings
+    let mut theme = use_signal(move || settings.peek().theme);
+    let mut border_radius = use_signal(move || settings.peek().border_radius);
+    let mut density = use_signal(move || settings.peek().density);
 
     // chat state
     let mut chat_mailbox: Signal<Option<String>> = use_signal(|| None);
@@ -501,14 +528,25 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     let blackarch_ready = *blackarch_downloaded.read();
 
     // ---- optional inline CSS (mobile only) ----
+    // Reactive CSS generation - regenerates when theme signals change
     let css_block = if cfg.inject_css {
-        let css = theme_css();
+        let theme_val = *theme.read();
+        let radius_val = *border_radius.read();
+        let density_val = *density.read();
+
+        let css = crate::theme::generate_theme_css(theme_val, radius_val, density_val);
         let mcss = mobile_css();
         let ucss = utils_css();
+        let tcss = crate::view_transitions::theme_transitions_css();
+        let toast_css = crate::components::toast_css();
+        let matrix_css = crate::components::matrix_rain_css();
         rsx! {
             style { {css} }
             style { {mcss} }
             style { {ucss} }
+            style { {tcss} }
+            style { {toast_css} }
+            style { {matrix_css} }
         }
     } else {
         rsx! {}
@@ -667,6 +705,27 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                     let mut s = settings.write();
                                     s.wifi_adapter = adapter;
                                     let _ = save_settings(&s);
+                                },
+                                theme: *theme.read(),
+                                on_theme_change: move |t: Theme| {
+                                    let mut s = settings.write();
+                                    s.theme = t;
+                                    let _ = save_settings(&s);
+                                    theme.set(t);
+                                },
+                                border_radius: *border_radius.read(),
+                                on_border_radius_change: move |r: BorderRadius| {
+                                    let mut s = settings.write();
+                                    s.border_radius = r;
+                                    let _ = save_settings(&s);
+                                    border_radius.set(r);
+                                },
+                                density: *density.read(),
+                                on_density_change: move |d: Density| {
+                                    let mut s = settings.write();
+                                    s.density = d;
+                                    let _ = save_settings(&s);
+                                    density.set(d);
                                 },
                                 api_url: chat_api_url,
                                 auth_token: matrix_auth_token.read().clone(),

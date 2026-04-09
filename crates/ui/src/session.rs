@@ -14,6 +14,8 @@ static TENANT_ID: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String
 static CONNECTOR_NAME: LazyLock<RwLock<String>> =
     LazyLock::new(|| RwLock::new("pentest-connector".to_string()));
 static TOOL_NAMES: LazyLock<RwLock<Vec<String>>> = LazyLock::new(|| RwLock::new(Vec::new()));
+static ACTION_REGISTRY: LazyLock<pentest_tools::registry::QuickActionRegistry> =
+    LazyLock::new(pentest_tools::create_action_registry);
 
 type SharedToolRegistry = Arc<RwLock<Option<Arc<TokioRwLock<ToolRegistry>>>>>;
 static TOOL_REGISTRY: LazyLock<SharedToolRegistry> = LazyLock::new(|| Arc::new(RwLock::new(None)));
@@ -66,6 +68,11 @@ pub fn get_tool_names() -> Vec<String> {
 pub fn set_tool_names(names: Vec<String>) {
     let mut guard = TOOL_NAMES.write().unwrap_or_else(|e| e.into_inner());
     *guard = names;
+}
+
+/// Get the global quick action registry.
+pub fn get_action_registry() -> &'static pentest_tools::registry::QuickActionRegistry {
+    &ACTION_REGISTRY
 }
 
 /// Store the tool registry for global access from UI components.

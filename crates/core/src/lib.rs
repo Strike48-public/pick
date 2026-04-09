@@ -16,6 +16,7 @@ pub mod seed;
 pub mod settings;
 pub mod state;
 pub mod terminal;
+pub mod theme_loader;
 pub mod tools;
 pub mod workspace;
 

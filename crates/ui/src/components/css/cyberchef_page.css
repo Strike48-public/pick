@@ -535,7 +535,7 @@
 .io-textarea {
   flex: 1;
   padding: 1rem;
-  border: 1px solid var(--border);
+  border: none;
   background: var(--surface-1);
   color: var(--text-primary);
   font-family: 'Fira Code', 'Courier New', monospace;
@@ -543,7 +543,6 @@
   line-height: 1.5;
   resize: none;
   outline: none;
-  border-radius: 4px;
 }
 
 .io-textarea::placeholder {
@@ -552,7 +551,6 @@
 
 .io-textarea:focus {
   background: var(--surface-1);
-  border-color: var(--primary);
 }
 
 .error-banner {

@@ -15,6 +15,7 @@ pub mod list_files;
 pub mod network_discover;
 pub mod port_scan;
 pub mod read_file;
+pub mod registry; // Quick action registry for UI
 pub mod screenshot;
 pub mod service_banner;
 pub mod session_export;
@@ -225,4 +226,11 @@ pub fn tool_names() -> Vec<String> {
         .into_iter()
         .map(String::from)
         .collect()
+}
+
+/// Create a quick action registry with all tool actions registered
+pub fn create_action_registry() -> registry::QuickActionRegistry {
+    let mut registry = registry::QuickActionRegistry::new();
+    registry::register_all_actions(&mut registry);
+    registry
 }
