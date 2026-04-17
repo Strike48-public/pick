@@ -177,18 +177,21 @@ impl EvidenceNode {
 
     /// Attach reproducibility metadata — called once by the tool wrapper
     /// before the node is inserted into the graph.
+    #[must_use = "with_provenance consumes self; assign the returned node or the provenance is lost"]
     pub fn with_provenance(mut self, provenance: Provenance) -> Self {
         self.provenance = Some(provenance);
         self
     }
 
     /// Attach tool-specific structured metadata.
+    #[must_use = "with_metadata consumes self; assign the returned node or the metadata is lost"]
     pub fn with_metadata(mut self, metadata: HashMap<String, serde_json::Value>) -> Self {
         self.metadata = metadata;
         self
     }
 
     /// Set the initial confidence score.
+    #[must_use = "with_confidence consumes self; assign the returned node or the score is lost"]
     pub fn with_confidence(mut self, confidence: f32) -> Self {
         self.confidence = confidence.clamp(0.0, 1.0);
         self

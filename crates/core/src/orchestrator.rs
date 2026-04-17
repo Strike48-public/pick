@@ -47,6 +47,7 @@ impl EngagementInfo {
         }
     }
 
+    #[must_use = "with_completed_at consumes self; assign the returned info or the timestamp is lost"]
     pub fn with_completed_at(mut self, completed_at: DateTime<Utc>) -> Self {
         self.completed_at = Some(completed_at);
         self
@@ -245,8 +246,22 @@ pub fn gate_for_report(
 /// instruction. Keeping this as a helper means the UI and tests agree on
 /// exactly what the Report Agent receives.
 pub fn build_report_agent_seed_message(manifest: &ValidatedFindingsManifest) -> String {
-    let json = serde_json::to_string_pretty(manifest)
-        .expect("manifest serialization is infallible: all fields serialize to JSON");
+    // Serialization should be infallible — every field in the manifest is a
+    // primitive, an enum with a derived impl, a DateTime<Utc>, or a
+    // HashMap<String, serde_json::Value>, none of which can fail to
+    // serialize. If a future field breaks that contract we fall back to an
+    // empty JSON object rather than panicking the connector process; the
+    // Report Agent's prompt already handles the "no findings" case and the
+    // error is loud in the logs so it cannot be ignored in review.
+    let json = serde_json::to_string_pretty(manifest).unwrap_or_else(|e| {
+        tracing::error!(
+            error = %e,
+            "BUG: ValidatedFindingsManifest serialization failed — a newly added \
+             field violates the infallibility contract. Falling back to an empty \
+             manifest so the Report Agent still receives something it can parse."
+        );
+        "{}".to_string()
+    });
     format!(
         "The orchestrator has closed the engagement. Below is the \
          `validated_findings_manifest`. Render the final penetration test \
