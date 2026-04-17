@@ -7,8 +7,21 @@
 
 use pentest_core::evidence::EvidenceNode;
 use pentest_core::tools::ToolRegistry;
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, PoisonError, RwLock};
 use tokio::sync::RwLock as TokioRwLock;
+
+/// Recover from a poisoned session lock. A poison means some earlier thread
+/// panicked while holding the write lock, so the inner data *may* be
+/// inconsistent. We log loudly and keep going — every caller here either
+/// reads a cheap clone or appends to a Vec, so partial writes do not leave
+/// dangling state that would cause further panics.
+fn recover_poisoned<T>(err: PoisonError<T>, name: &'static str) -> T {
+    tracing::error!(
+        lock = name,
+        "session lock was poisoned (a previous holder panicked); continuing with recovered state"
+    );
+    err.into_inner()
+}
 
 static AUTH_TOKEN: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
 static TENANT_ID: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
@@ -31,24 +44,34 @@ static EVIDENCE_GRAPH: LazyLock<RwLock<Vec<EvidenceNode>>> =
 
 /// Read the current session auth token (Matrix access token for GraphQL).
 pub fn get_auth_token() -> String {
-    AUTH_TOKEN.read().unwrap_or_else(|e| e.into_inner()).clone()
+    AUTH_TOKEN
+        .read()
+        .unwrap_or_else(|e| recover_poisoned(e, "AUTH_TOKEN"))
+        .clone()
 }
 
 /// Store a new session auth token.
 pub fn set_auth_token(token: &str) {
-    let mut guard = AUTH_TOKEN.write().unwrap_or_else(|e| e.into_inner());
+    let mut guard = AUTH_TOKEN
+        .write()
+        .unwrap_or_else(|e| recover_poisoned(e, "AUTH_TOKEN"));
     guard.clear();
     guard.push_str(token);
 }
 
 /// Read the current tenant/realm name (e.g. "non-prod").
 pub fn get_tenant_id() -> String {
-    TENANT_ID.read().unwrap_or_else(|e| e.into_inner()).clone()
+    TENANT_ID
+        .read()
+        .unwrap_or_else(|e| recover_poisoned(e, "TENANT_ID"))
+        .clone()
 }
 
 /// Store the tenant/realm name.
 pub fn set_tenant_id(tenant: &str) {
-    let mut guard = TENANT_ID.write().unwrap_or_else(|e| e.into_inner());
+    let mut guard = TENANT_ID
+        .write()
+        .unwrap_or_else(|e| recover_poisoned(e, "TENANT_ID"));
     guard.clear();
     guard.push_str(tenant);
 }
@@ -57,25 +80,32 @@ pub fn set_tenant_id(tenant: &str) {
 pub fn get_connector_name() -> String {
     CONNECTOR_NAME
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| recover_poisoned(e, "CONNECTOR_NAME"))
         .clone()
 }
 
 /// Store the connector name.
 pub fn set_connector_name(name: &str) {
-    let mut guard = CONNECTOR_NAME.write().unwrap_or_else(|e| e.into_inner());
+    let mut guard = CONNECTOR_NAME
+        .write()
+        .unwrap_or_else(|e| recover_poisoned(e, "CONNECTOR_NAME"));
     guard.clear();
     guard.push_str(name);
 }
 
 /// Read the registered connector tool names.
 pub fn get_tool_names() -> Vec<String> {
-    TOOL_NAMES.read().unwrap_or_else(|e| e.into_inner()).clone()
+    TOOL_NAMES
+        .read()
+        .unwrap_or_else(|e| recover_poisoned(e, "TOOL_NAMES"))
+        .clone()
 }
 
 /// Store the registered connector tool names.
 pub fn set_tool_names(names: Vec<String>) {
-    let mut guard = TOOL_NAMES.write().unwrap_or_else(|e| e.into_inner());
+    let mut guard = TOOL_NAMES
+        .write()
+        .unwrap_or_else(|e| recover_poisoned(e, "TOOL_NAMES"));
     *guard = names;
 }
 
@@ -86,7 +116,9 @@ pub fn get_action_registry() -> &'static pentest_tools::registry::QuickActionReg
 
 /// Store the tool registry for global access from UI components.
 pub fn set_tool_registry(registry: Arc<TokioRwLock<ToolRegistry>>) {
-    let mut guard = TOOL_REGISTRY.write().unwrap_or_else(|e| e.into_inner());
+    let mut guard = TOOL_REGISTRY
+        .write()
+        .unwrap_or_else(|e| recover_poisoned(e, "TOOL_REGISTRY"));
     *guard = Some(registry);
 }
 
@@ -94,7 +126,7 @@ pub fn set_tool_registry(registry: Arc<TokioRwLock<ToolRegistry>>) {
 pub fn get_tool_registry() -> Option<Arc<TokioRwLock<ToolRegistry>>> {
     TOOL_REGISTRY
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| recover_poisoned(e, "TOOL_REGISTRY"))
         .as_ref()
         .cloned()
 }
@@ -102,10 +134,16 @@ pub fn get_tool_registry() -> Option<Arc<TokioRwLock<ToolRegistry>>> {
 /// Snapshot the current evidence graph. Cheap clone — the graph is
 /// typically small (dozens of nodes at most) and the snapshot avoids
 /// leaking the internal lock into async code.
+///
+/// The snapshot is **point-in-time**: nodes pushed after this call returns
+/// are invisible to the caller until the next snapshot. This is by design —
+/// `on_generate_report` takes a snapshot at button-press time so the
+/// manifest reflects the operator's intent at that moment, not whatever
+/// races in during the handoff to the Report Agent.
 pub fn evidence_snapshot() -> Vec<EvidenceNode> {
     EVIDENCE_GRAPH
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| recover_poisoned(e, "EVIDENCE_GRAPH"))
         .clone()
 }
 
@@ -115,7 +153,7 @@ pub fn evidence_snapshot() -> Vec<EvidenceNode> {
 pub fn push_evidence(node: EvidenceNode) {
     EVIDENCE_GRAPH
         .write()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| recover_poisoned(e, "EVIDENCE_GRAPH"))
         .push(node);
 }
 
@@ -124,6 +162,6 @@ pub fn push_evidence(node: EvidenceNode) {
 pub fn clear_evidence() {
     EVIDENCE_GRAPH
         .write()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| recover_poisoned(e, "EVIDENCE_GRAPH"))
         .clear();
 }
