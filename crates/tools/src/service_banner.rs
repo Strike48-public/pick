@@ -2,8 +2,10 @@
 
 use async_trait::async_trait;
 use pentest_core::error::{Error, Result};
+use pentest_core::provenance::{truncate_excerpt, ProbeCommand, Provenance};
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
+    execute_timed_with_provenance, ParamType, PentestTool, Platform, ToolContext, ToolParam,
+    ToolResult, ToolSchema,
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -141,7 +143,7 @@ impl PentestTool for ServiceBannerTool {
     }
 
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
-        execute_timed(|| async {
+        execute_timed_with_provenance(|| async {
             // Parse parameters
             let host = param_str(&params, "host");
             if host.is_empty() {
@@ -189,13 +191,32 @@ impl PentestTool for ServiceBannerTool {
             // Parse banner
             let (service, version) = Self::parse_banner(&banner, port);
 
-            Ok(json!({
+            // Provenance: the reproducible analogue of our raw TCP probe is
+            // an ncat command piping the same bytes into the socket. This
+            // lets a reviewer re-grab the banner with a standard tool.
+            let reproducible = if probe.is_empty() {
+                format!("ncat {host} {port}")
+            } else {
+                // Render escape sequences visibly (\r\n etc.) so the
+                // published command is legible and executable as-is.
+                let escaped = probe.replace('\r', "\\r").replace('\n', "\\n");
+                format!("printf '{escaped}' | ncat {host} {port}")
+            };
+            let provenance = Provenance::new(
+                "tcp-banner",
+                env!("CARGO_PKG_VERSION"),
+                ProbeCommand::from_exact(reproducible).with_description("raw TCP banner grab"),
+                truncate_excerpt(&banner),
+            );
+
+            let data = json!({
                 "host": host,
                 "port": port,
                 "banner": banner,
                 "service": service,
                 "version": version,
-            }))
+            });
+            Ok((data, provenance))
         })
         .await
     }

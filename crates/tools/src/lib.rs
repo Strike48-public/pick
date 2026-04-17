@@ -14,6 +14,7 @@ pub mod lateral_movement;
 pub mod list_files;
 pub mod network_discover;
 pub mod port_scan;
+pub mod provenance_support;
 pub mod read_file;
 pub mod registry; // Quick action registry for UI
 pub mod screenshot;
