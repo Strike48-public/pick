@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ExternalDependency, ParamType, PentestTool, Platform, ToolContext, ToolParam,
-    ToolResult, ToolSchema,
+    execute_timed_with_provenance, ExternalDependency, ParamType, PentestTool, Platform,
+    ToolContext, ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use crate::external::install::ensure_tool_installed;
 use crate::external::runner::{param_str_or, CommandBuilder};
+use crate::provenance_support::single_step_provenance;
 
 pub struct WhatwebTool;
 
@@ -47,7 +48,7 @@ impl PentestTool for WhatwebTool {
     }
 
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
-        execute_timed(|| async move {
+        execute_timed_with_provenance(|| async move {
             let platform = get_platform();
             ensure_tool_installed(&platform, "whatweb", "whatweb").await?;
 
@@ -68,10 +69,24 @@ impl PentestTool for WhatwebTool {
                 .execute_command("whatweb", &args_refs, Duration::from_secs(timeout_secs))
                 .await?;
 
-            Ok(json!({
+            let excerpt = if result.stdout.is_empty() {
+                result.stderr.as_str()
+            } else {
+                result.stdout.as_str()
+            };
+            let provenance = single_step_provenance(
+                "whatweb",
+                "whatweb",
+                &args,
+                "web tech identification",
+                excerpt,
+            );
+
+            let data = json!({
                 "url": url,
                 "output": result.stdout,
-            }))
+            });
+            Ok((data, provenance))
         })
         .await
     }

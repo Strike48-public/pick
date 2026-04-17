@@ -1,6 +1,7 @@
 //! Tool trait definitions and schemas
 
 use crate::error::Result;
+use crate::provenance::Provenance;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -231,13 +232,21 @@ impl ToolSchema {
     }
 }
 
-/// Result from a tool execution
+/// Result from a tool execution.
+///
+/// `provenance` is `Option` because not every tool produces a finding —
+/// utilities like `device_info` or `list_files` have nothing to reproduce.
+/// Tools that produce findings (scanners, probes, exploits) must attach a
+/// `Provenance` so the Report Agent can render a reproducible evidence
+/// block. See [`crate::provenance`] and GitHub issue #52.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     pub success: bool,
     pub data: Value,
     pub error: Option<String>,
     pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Provenance>,
 }
 
 impl ToolResult {
@@ -248,6 +257,7 @@ impl ToolResult {
             data,
             error: None,
             duration_ms: 0,
+            provenance: None,
         }
     }
 
@@ -258,6 +268,7 @@ impl ToolResult {
             data,
             error: None,
             duration_ms,
+            provenance: None,
         }
     }
 
@@ -268,6 +279,7 @@ impl ToolResult {
             data: Value::Null,
             error: Some(message.into()),
             duration_ms: 0,
+            provenance: None,
         }
     }
 
@@ -278,7 +290,15 @@ impl ToolResult {
             data: Value::Null,
             error: Some(message.into()),
             duration_ms,
+            provenance: None,
         }
+    }
+
+    /// Attach provenance to this result. Finding-producing tools must call
+    /// this before returning.
+    pub fn with_provenance(mut self, provenance: Provenance) -> Self {
+        self.provenance = Some(provenance);
+        self
     }
 }
 
@@ -294,6 +314,25 @@ where
         Ok(data) => {
             let duration_ms = start.elapsed().as_millis() as u64;
             Ok(ToolResult::success_with_duration(data, duration_ms))
+        }
+        Err(e) => Ok(ToolResult::error(e.to_string())),
+    }
+}
+
+/// Like [`execute_timed`], but the tool body also returns `Provenance` so
+/// finding-producing tools can attach reproducibility metadata.
+pub async fn execute_timed_with_provenance<F, Fut>(f: F) -> Result<ToolResult>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<
+        Output = std::result::Result<(serde_json::Value, Provenance), crate::error::Error>,
+    >,
+{
+    let start = std::time::Instant::now();
+    match f().await {
+        Ok((data, provenance)) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
+            Ok(ToolResult::success_with_duration(data, duration_ms).with_provenance(provenance))
         }
         Err(e) => Ok(ToolResult::error(e.to_string())),
     }
@@ -498,4 +537,86 @@ fn levenshtein_distance(s1: &str, s2: &str) -> usize {
     }
 
     matrix[len1][len2]
+}
+
+#[cfg(test)]
+mod transport_tests {
+    //! Round-trip tests covering the Matrix transport contract.
+    //!
+    //! `connector.rs` forwards `ToolResult` to Matrix as JSON via
+    //! `serde_json::to_value(&result)`. These tests pin the on-wire shape
+    //! so the Report Agent can always locate `provenance` and its fields
+    //! at the documented path.
+    use super::*;
+    use crate::provenance::{ProbeCommand, Provenance};
+
+    #[test]
+    fn tool_result_without_provenance_omits_the_field() {
+        // Contract: tools that don't emit provenance (list_files,
+        // device_info, ...) must not ship a null `provenance` key. The
+        // Report Agent keys off presence, not nullness.
+        let result = ToolResult::success(serde_json::json!({"ok": true}));
+        let wire = serde_json::to_value(&result).expect("serialize");
+        assert!(
+            !wire.as_object().unwrap().contains_key("provenance"),
+            "absent provenance must be omitted, got: {wire}"
+        );
+    }
+
+    #[test]
+    fn tool_result_with_provenance_round_trips_through_json() {
+        // Contract: once a tool attaches provenance, every field must
+        // survive a JSON round-trip intact — this is exactly what the
+        // SDK does at connector.rs:237 before sending over the wire.
+        let prov = Provenance::new(
+            "nmap",
+            "7.95",
+            ProbeCommand::from_exact("nmap -sV 192.168.1.1"),
+            "Nmap scan report for 192.168.1.1",
+        );
+        let original = ToolResult::success(serde_json::json!({
+            "hosts": [{"ip": "192.168.1.1"}]
+        }))
+        .with_provenance(prov.clone());
+
+        let wire = serde_json::to_value(&original).expect("serialize");
+
+        // Verify the documented JSON path exists.
+        let prov_json = wire
+            .get("provenance")
+            .expect("provenance key present on the wire");
+        assert_eq!(prov_json["underlying_tool"], "nmap");
+        assert_eq!(prov_json["tool_version"], "7.95");
+        assert_eq!(prov_json["probe_commands"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            prov_json["probe_commands"][0]["command"],
+            "nmap -sV 192.168.1.1"
+        );
+
+        // Round-trip: Report Agent parses this back into a typed Provenance.
+        let back: ToolResult = serde_json::from_value(wire).expect("deserialize");
+        assert_eq!(back.provenance, Some(prov));
+    }
+
+    #[test]
+    fn tool_result_with_provenance_strips_secrets_on_the_wire() {
+        // Contract: what goes over the wire in `effective_command` must
+        // never contain secrets, even if the `command` field does. This
+        // is the end-to-end property the Report Agent relies on when it
+        // publishes probe steps into a customer-facing report.
+        let prov = Provenance::new(
+            "curl",
+            "8.5.0",
+            ProbeCommand::from_exact("curl -u admin:hunter2 https://internal.example.com"),
+            "200 OK",
+        );
+        let result = ToolResult::success(serde_json::json!({})).with_provenance(prov);
+
+        let wire = serde_json::to_value(&result).expect("serialize");
+        let eff = wire["provenance"]["probe_commands"][0]["effective_command"]
+            .as_str()
+            .expect("effective_command string");
+        assert!(!eff.contains("hunter2"), "secret on the wire: {eff}");
+        assert!(eff.contains("<REDACTED>"));
+    }
 }

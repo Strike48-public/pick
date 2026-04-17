@@ -5,6 +5,7 @@
 //! The connector writes the Matrix access token here after browser OAuth
 //! succeeds; the ChatPanel reads it in `make_client`.
 
+use pentest_core::evidence::EvidenceNode;
 use pentest_core::tools::ToolRegistry;
 use std::sync::{Arc, LazyLock, RwLock};
 use tokio::sync::RwLock as TokioRwLock;
@@ -19,6 +20,14 @@ static ACTION_REGISTRY: LazyLock<pentest_tools::registry::QuickActionRegistry> =
 
 type SharedToolRegistry = Arc<RwLock<Option<Arc<TokioRwLock<ToolRegistry>>>>>;
 static TOOL_REGISTRY: LazyLock<SharedToolRegistry> = LazyLock::new(|| Arc::new(RwLock::new(None)));
+
+/// Process-wide evidence graph. Tool wrappers / the Red Team agent push
+/// nodes in; the Generate Report action in the chat panel reads them out.
+///
+/// Kept as a flat `Vec` rather than an index because the orchestrator gate
+/// iterates the whole graph anyway, and the UI never looks up nodes by id.
+static EVIDENCE_GRAPH: LazyLock<RwLock<Vec<EvidenceNode>>> =
+    LazyLock::new(|| RwLock::new(Vec::new()));
 
 /// Read the current session auth token (Matrix access token for GraphQL).
 pub fn get_auth_token() -> String {
@@ -88,4 +97,33 @@ pub fn get_tool_registry() -> Option<Arc<TokioRwLock<ToolRegistry>>> {
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .cloned()
+}
+
+/// Snapshot the current evidence graph. Cheap clone — the graph is
+/// typically small (dozens of nodes at most) and the snapshot avoids
+/// leaking the internal lock into async code.
+pub fn evidence_snapshot() -> Vec<EvidenceNode> {
+    EVIDENCE_GRAPH
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Append a node to the evidence graph. Called by tool wrappers after the
+/// Red Team Agent produces a finding and by the Validator Agent when it
+/// adjudicates one.
+pub fn push_evidence(node: EvidenceNode) {
+    EVIDENCE_GRAPH
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(node);
+}
+
+/// Clear the evidence graph. Typically called at the start of a new
+/// engagement.
+pub fn clear_evidence() {
+    EVIDENCE_GRAPH
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 }

@@ -2,8 +2,10 @@
 
 use async_trait::async_trait;
 use pentest_core::error::{Error, Result};
+use pentest_core::provenance::{truncate_excerpt, ProbeCommand, Provenance};
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
+    execute_timed_with_provenance, ParamType, PentestTool, Platform, ToolContext, ToolParam,
+    ToolResult, ToolSchema,
 };
 use serde_json::{json, Value};
 use tokio::time::Duration;
@@ -244,7 +246,7 @@ impl PentestTool for DefaultCredsTool {
     }
 
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
-        execute_timed(|| async {
+        execute_timed_with_provenance(|| async {
             let host = param_str(&params, "host");
             if host.is_empty() {
                 return Err(Error::InvalidParams("host parameter is required".into()));
@@ -301,14 +303,56 @@ impl PentestTool for DefaultCredsTool {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
 
-            Ok(json!({
+            // Provenance: emit one ProbeCommand per credential pair we
+            // tried. `from_exact` runs `redact()` on each command, so the
+            // `effective_command` will never contain the raw password in a
+            // published report. This is the critical property: a reviewer
+            // can see which *structure* of auth attempt we made, but the
+            // secrets stay out of the published bytes.
+            let probe_command_template = match service.to_lowercase().as_str() {
+                "ssh" => |u: &str, p: &str, h: &str, port: u16| {
+                    format!(
+                        "sshpass -p '{p}' ssh -o StrictHostKeyChecking=no -p {port} {u}@{h} exit"
+                    )
+                },
+                "ftp" => |u: &str, p: &str, h: &str, port: u16| {
+                    format!("curl --connect-timeout 5 -u {u}:{p} ftp://{h}:{port}/")
+                },
+                _ => |u: &str, p: &str, h: &str, port: u16| {
+                    format!("curl -s -o /dev/null -w '%{{http_code}}' -u {u}:{p} http://{h}:{port}/")
+                },
+            };
+
+            let probes: Vec<ProbeCommand> = credentials
+                .iter()
+                .map(|(u, p)| {
+                    let full = probe_command_template(u, p, &host, port);
+                    ProbeCommand::from_exact(full)
+                        .with_description("default credential probe")
+                })
+                .collect();
+
+            let raw_excerpt = serde_json::to_string(&attempts).unwrap_or_default();
+            let provenance = Provenance::multi_step(
+                match service.to_lowercase().as_str() {
+                    "ssh" => "sshpass+openssh",
+                    "ftp" => "ftp-socket",
+                    _ => "curl",
+                },
+                env!("CARGO_PKG_VERSION"),
+                probes,
+                truncate_excerpt(&raw_excerpt),
+            );
+
+            let data = json!({
                 "host": host,
                 "port": port,
                 "service": service,
                 "attempts": attempts,
                 "successful": successful,
                 "total_tested": credentials.len(),
-            }))
+            });
+            Ok((data, provenance))
         })
         .await
     }

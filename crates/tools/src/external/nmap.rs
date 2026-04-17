@@ -5,8 +5,10 @@
 
 use async_trait::async_trait;
 use pentest_core::error::Result;
+use pentest_core::provenance::Provenance;
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
+    execute_timed_with_provenance, ParamType, PentestTool, Platform, ToolContext, ToolParam,
+    ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
@@ -14,6 +16,7 @@ use std::time::Duration;
 
 use super::install::ensure_tool_installed;
 use super::runner::{param_str_opt, param_str_or, CommandBuilder};
+use crate::provenance_support::{format_full_command, tool_version};
 use crate::util::{param_bool, param_u64};
 
 /// Nmap network scanner tool
@@ -105,7 +108,7 @@ impl PentestTool for NmapTool {
     }
 
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
-        execute_timed(|| async move {
+        execute_timed_with_provenance(|| async move {
             let platform = get_platform();
 
             // Ensure nmap is installed
@@ -200,8 +203,21 @@ impl PentestTool for NmapTool {
             // Read XML output
             let xml_output = super::runner::read_sandbox_file(&platform, output_file).await?;
 
+            // Provenance: exact arguments + parsed XML form the reproducible
+            // record. The XML is richer than stdout for nmap, so it's the
+            // right excerpt for downstream reproduction.
+            let full_command = format_full_command("nmap", &args);
+            let provenance = Provenance::new(
+                "nmap",
+                tool_version("nmap"),
+                pentest_core::provenance::ProbeCommand::from_exact(full_command)
+                    .with_description("network scan via nmap"),
+                pentest_core::provenance::truncate_excerpt(&xml_output),
+            );
+
             // Parse nmap XML output
-            parse_nmap_xml(&xml_output, &result.stderr)
+            let data = parse_nmap_xml(&xml_output, &result.stderr)?;
+            Ok((data, provenance))
         })
         .await
     }

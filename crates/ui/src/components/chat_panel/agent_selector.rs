@@ -9,7 +9,7 @@ use pentest_core::matrix::{AgentInfo, ConversationInfo};
 
 use super::constants::SUGGESTED_ACTIONS;
 use super::render::format_relative_time;
-use crate::components::icons::{ChevronDown, History, Plus};
+use crate::components::icons::{ChevronDown, FileText, History, Plus};
 
 /// Props for [`ChatHeader`].
 #[derive(Props, Clone, PartialEq)]
@@ -30,6 +30,9 @@ pub struct ChatHeaderProps {
     pub on_new_chat: EventHandler<()>,
     /// Called when the user clicks the history icon to toggle the history dropdown.
     pub on_toggle_history: EventHandler<()>,
+    /// Called when the user clicks "Generate Report" — asks the orchestrator
+    /// to gate the evidence graph and hand off to the Report Agent.
+    pub on_generate_report: EventHandler<()>,
     /// Whether the history dropdown is currently visible.
     pub show_history: Signal<bool>,
     /// True when rendered as a full-page view (hides close button).
@@ -77,6 +80,18 @@ pub fn ChatHeader(props: ChatHeaderProps) -> Element {
                         }
                     }
                 } else {
+                    // Generate Report: hands the validated evidence graph to
+                    // the Report Agent sibling.
+                    button {
+                        class: "chat-header-btn",
+                        title: "Generate Report",
+                        onclick: {
+                            let gr = props.on_generate_report;
+                            move |_| gr.call(())
+                        },
+                        FileText { size: 16 }
+                    }
+
                     // History toggle
                     button {
                         class: if (props.show_history)() { "chat-header-btn active" } else { "chat-header-btn" },
@@ -173,6 +188,7 @@ pub struct ChatHeaderCtx {
     pub on_agent_select: EventHandler<String>,
     pub on_new_chat: EventHandler<()>,
     pub on_toggle_history: EventHandler<()>,
+    pub on_generate_report: EventHandler<()>,
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +229,15 @@ pub fn ChatHeaderActions(ctx: ChatHeaderCtx) -> Element {
                 }
             }
         } else {
+            // Generate Report: hands the validated evidence graph to
+            // the Report Agent sibling.
+            button {
+                class: "chat-header-btn",
+                title: "Generate Report",
+                onclick: move |_| ctx.on_generate_report.call(()),
+                FileText { size: 16 }
+            }
+
             // History toggle
             button {
                 class: if ctx.show_history { "chat-header-btn active" } else { "chat-header-btn" },
