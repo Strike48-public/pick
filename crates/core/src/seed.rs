@@ -636,11 +636,8 @@ impl SeedManager {
             downloaded += chunk.len() as u64;
 
             // Report progress every 5%
-            if total_size > 0 {
-                let progress = (downloaded * 100)
-                    .checked_div(total_size)
-                    .expect("total_size > 0 guard ensures no division by zero")
-                    .min(100) as u8;
+            if let Some(progress) = (downloaded * 100).checked_div(total_size) {
+                let progress = (progress as u8).min(100);
                 if progress >= last_progress + 5 || progress == 100 {
                     progress_callback(SeedProgress {
                         resource_name: resource.name.clone(),
