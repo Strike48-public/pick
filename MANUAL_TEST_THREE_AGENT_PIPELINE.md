@@ -57,7 +57,12 @@ inject_test_evidence count=5 severity=mixed target=192.168.1.100
 
 ### Step 3: Validate Evidence
 
-In the Validator Agent conversation (auto-registered sibling):
+**How to access Validator Agent:**
+1. Look for the agent selector/switcher in the UI (typically in chat panel header or sidebar)
+2. Switch to the **Validator Agent** conversation (should be auto-registered as a sibling)
+3. If you don't see it listed, check that the agent auto-registration completed on startup
+
+**In the Validator Agent conversation, send this message:**
 
 ```
 Please review all pending evidence nodes and validate them:
@@ -67,6 +72,13 @@ Please review all pending evidence nodes and validate them:
 ```
 
 **Expected:** Validator responds with validation decisions for each node
+
+**Note:** The Validator Agent needs to be able to:
+- See the current evidence graph
+- Call functions to update validation status
+- Update severity if revising a finding
+
+If the Validator doesn't have access to evidence or update functions, file this as a bug.
 
 ### Step 4: Generate Report (Should Succeed)
 
