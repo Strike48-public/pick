@@ -64,12 +64,9 @@ impl PentestTool for PortScanTool {
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
         execute_timed(|| async {
             // Parse and validate parameters
-            let host = params
-                .get("host")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    pentest_core::error::Error::InvalidParams("host parameter is required".into())
-                })?;
+            let host = params.get("host").and_then(|v| v.as_str()).ok_or_else(|| {
+                pentest_core::error::Error::InvalidParams("host parameter is required".into())
+            })?;
 
             // Validate host (IP or hostname)
             let host = validate_target(host)?;
