@@ -1,0 +1,39 @@
+{
+  "metadata": {
+    "session_id": "session-1775740172",
+    "start_time": "2026-04-09T13:09:32.653761047Z",
+    "end_time": "2026-04-09T13:09:32.653761617Z",
+    "connector_version": "0.1.0",
+    "platform": "linux",
+    "target": "Example Target"
+  },
+  "tool_executions": [
+    {
+      "timestamp": "2026-04-09T13:09:32.653768200Z",
+      "tool_name": "network_discover",
+      "params": {
+        "interface": "eth0"
+      },
+      "success": true,
+      "duration_ms": 1250,
+      "result": {
+        "hosts_found": 3
+      },
+      "error": null
+    }
+  ],
+  "findings": [
+    {
+      "timestamp": "2026-04-09T13:09:32.653784717Z",
+      "severity": "info",
+      "title": "Example Finding",
+      "description": "This is an example finding for demonstration",
+      "affected_target": "192.168.1.0/24",
+      "evidence": [
+        "Discovered 3 hosts on network"
+      ],
+      "recommendation": "Review discovered hosts for security posture"
+    }
+  ],
+  "files": []
+}

@@ -216,6 +216,19 @@ impl PentestTool for ServiceBannerTool {
                 "service": service,
                 "version": version,
             });
+
+            // Produce evidence nodes for the three-agent pipeline
+            let evidence_nodes = crate::evidence_producer::evidence_from_service_banner(
+                &data,
+                &host,
+                port,
+                provenance.clone()
+            );
+
+            for node in evidence_nodes {
+                crate::evidence_producer::push_evidence(node);
+            }
+
             Ok((data, provenance))
         })
         .await

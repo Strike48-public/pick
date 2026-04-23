@@ -85,9 +85,57 @@ impl PentestTool for WhatwebTool {
             let data = json!({
                 "url": url,
                 "output": result.stdout,
+                "plugins": parse_whatweb_output(&result.stdout),
             });
+
+            // Produce evidence nodes for the three-agent pipeline
+            let evidence_nodes = crate::evidence_producer::evidence_from_whatweb(
+                &data,
+                &url,
+                provenance.clone()
+            );
+
+            for node in evidence_nodes {
+                crate::evidence_producer::push_evidence(node);
+            }
+
             Ok((data, provenance))
         })
         .await
     }
+}
+
+/// Parse whatweb output into structured plugin data.
+fn parse_whatweb_output(output: &str) -> Vec<Value> {
+    let mut plugins = Vec::new();
+
+    // Simple parsing - whatweb output format: [name], [name: version], etc.
+    for line in output.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        // Extract plugins from brackets [...]
+        let parts: Vec<&str> = line.split('[').skip(1).collect();
+        for part in parts {
+            if let Some(end) = part.find(']') {
+                let plugin_str = &part[..end];
+
+                if let Some(colon_pos) = plugin_str.find(':') {
+                    let name = plugin_str[..colon_pos].trim();
+                    let version = plugin_str[colon_pos + 1..].trim();
+                    plugins.push(json!({
+                        "name": name,
+                        "version": version,
+                    }));
+                } else {
+                    plugins.push(json!({
+                        "name": plugin_str.trim(),
+                    }));
+                }
+            }
+        }
+    }
+
+    plugins
 }

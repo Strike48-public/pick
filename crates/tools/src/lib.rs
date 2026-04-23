@@ -8,8 +8,10 @@ pub mod credential_harvest;
 pub mod cve_lookup;
 pub mod default_creds;
 pub mod device_info;
+pub mod evidence_producer; // NEW: Convert tool results to evidence nodes
 pub mod execute_command;
 pub mod external; // NEW: External tool integrations (BlackArch)
+pub mod inject_test_evidence; // NEW: Test tool for three-agent pipeline
 pub mod lateral_movement;
 pub mod list_files;
 pub mod network_discover;
@@ -41,6 +43,7 @@ pub use cve_lookup::CveLookupTool;
 pub use default_creds::DefaultCredsTool;
 pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
+pub use inject_test_evidence::InjectTestEvidenceTool;
 pub use external::{
     AircrackngTool, AmassTool, ArjunTool, ArpScanTool, ArpingTool, AssetfinderTool, BettercapTool,
     CewlTool, ChangemeTool, CommixTool, CrackmapexecTool, CrunchTool, DalfoxTool, DirbTool,
@@ -207,6 +210,9 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(ReadFileTool);
     registry.register(WriteFileTool);
     registry.register(ListFilesTool);
+
+    // Testing tools
+    registry.register(InjectTestEvidenceTool);
 
     // Data transformation and analysis
     registry.register(pentest_cyberchef::CyberChefTool::new());

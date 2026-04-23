@@ -217,6 +217,18 @@ impl PentestTool for NmapTool {
 
             // Parse nmap XML output
             let data = parse_nmap_xml(&xml_output, &result.stderr)?;
+
+            // Produce evidence nodes for the three-agent pipeline
+            let evidence_nodes = crate::evidence_producer::evidence_from_nmap(
+                &data,
+                &target,
+                provenance.clone()
+            );
+
+            for node in evidence_nodes {
+                crate::evidence_producer::push_evidence(node);
+            }
+
             Ok((data, provenance))
         })
         .await
