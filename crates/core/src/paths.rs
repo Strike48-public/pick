@@ -210,7 +210,9 @@ mod tests {
         assert!(result.is_ok());
 
         let path = result.unwrap();
-        assert!(path.starts_with(base));
+        // Canonicalize both paths for comparison (handles symlinks on macOS)
+        let base_canonical = base.canonicalize().unwrap();
+        assert!(path.starts_with(&base_canonical));
     }
 
     #[test]
