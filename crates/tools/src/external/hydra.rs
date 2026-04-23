@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use pentest_core::error::Result;
+use pentest_core::timeout::ToolTimeouts;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
@@ -87,8 +88,8 @@ impl PentestTool for HydraTool {
             .param(ToolParam::optional(
                 "timeout",
                 ParamType::Integer,
-                "Timeout in seconds (default: 300)",
-                json!(300),
+                "Timeout in seconds (default: 3600, range: 60-14400)",
+                json!(3600),
             ))
             .platforms(vec![Platform::Desktop, Platform::Tui])
     }
@@ -116,7 +117,16 @@ impl PentestTool for HydraTool {
 
             let threads = param_u64(&params, "threads", 16);
             let port = param_u64(&params, "port", 0);
-            let timeout = param_u64(&params, "timeout", 300);
+
+            // Get timeout with intelligent defaults and bounds checking
+            let timeouts = ToolTimeouts::default();
+            let default_timeout = timeouts.get_by_tool_name("hydra");
+            let user_timeout =
+                Duration::from_secs(param_u64(&params, "timeout", default_timeout.as_secs()));
+            let timeout = pentest_core::timeout::clamp_timeout(
+                user_timeout,
+                pentest_core::timeout::categorize_tool("hydra"),
+            );
 
             // Build hydra command
             let mut builder = CommandBuilder::new()
@@ -165,9 +175,9 @@ impl PentestTool for HydraTool {
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-            // Execute hydra
+            // Execute hydra with configured timeout
             let result = platform
-                .execute_command("hydra", &args_refs, Duration::from_secs(timeout))
+                .execute_command("hydra", &args_refs, timeout)
                 .await?;
 
             // Read output file

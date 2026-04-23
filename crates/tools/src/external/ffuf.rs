@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use pentest_core::error::Result;
+use pentest_core::timeout::ToolTimeouts;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
@@ -170,9 +171,11 @@ impl PentestTool for FfufTool {
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-            // Execute ffuf
+            // Execute ffuf with configured overall timeout
+            let timeouts = ToolTimeouts::default();
+            let overall_timeout = timeouts.get_by_tool_name("ffuf");
             let result = platform
-                .execute_command("ffuf", &args_refs, Duration::from_secs(300))
+                .execute_command("ffuf", &args_refs, overall_timeout)
                 .await?;
 
             if result.exit_code != 0 && result.stdout.is_empty() {

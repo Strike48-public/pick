@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use pentest_core::error::Result;
+use pentest_core::timeout::ToolTimeouts;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
@@ -64,8 +65,8 @@ impl PentestTool for NiktoTool {
             .param(ToolParam::optional(
                 "timeout",
                 ParamType::Integer,
-                "Timeout in seconds (default: 600)",
-                json!(600),
+                "Timeout in seconds (default: 1800, range: 30-7200)",
+                json!(1800),
             ))
             .platforms(vec![Platform::Desktop, Platform::Tui])
     }
@@ -91,7 +92,16 @@ impl PentestTool for NiktoTool {
 
             let port = param_u64(&params, "port", 0);
             let ssl = crate::util::param_bool(&params, "ssl", false);
-            let timeout = param_u64(&params, "timeout", 600);
+
+            // Get timeout with intelligent defaults and bounds checking
+            let timeouts = ToolTimeouts::default();
+            let default_timeout = timeouts.get_by_tool_name("nikto");
+            let user_timeout =
+                Duration::from_secs(param_u64(&params, "timeout", default_timeout.as_secs()));
+            let timeout = pentest_core::timeout::clamp_timeout(
+                user_timeout,
+                pentest_core::timeout::categorize_tool("nikto"),
+            );
 
             // Parse URL to extract host
             let host = if let Some(stripped) = target.strip_prefix("http://") {
@@ -131,9 +141,9 @@ impl PentestTool for NiktoTool {
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-            // Execute nikto
+            // Execute nikto with configured timeout
             let result = platform
-                .execute_command("nikto", &args_refs, Duration::from_secs(timeout))
+                .execute_command("nikto", &args_refs, timeout)
                 .await?;
 
             // Nikto may return non-zero even on success, check for output

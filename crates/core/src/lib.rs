@@ -17,6 +17,7 @@ pub mod settings;
 pub mod state;
 pub mod terminal;
 pub mod theme_loader;
+pub mod timeout;
 pub mod tools;
 pub mod validation;
 pub mod workspace;
