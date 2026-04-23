@@ -5,6 +5,7 @@ use pentest_core::error::Result;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
+use pentest_core::validation::{validate_port_spec, validate_target};
 use pentest_platform::{get_platform, NetworkOps, ScanConfig};
 use serde_json::{json, Value};
 
@@ -62,14 +63,16 @@ impl PentestTool for PortScanTool {
 
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
         execute_timed(|| async {
-            // Parse parameters
+            // Parse and validate parameters
             let host = params
                 .get("host")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
                     pentest_core::error::Error::InvalidParams("host parameter is required".into())
-                })?
-                .to_string();
+                })?;
+
+            // Validate host (IP or hostname)
+            let host = validate_target(host)?;
 
             let ports_str = {
                 let s = param_str(&params, "ports");
@@ -79,6 +82,9 @@ impl PentestTool for PortScanTool {
                     s
                 }
             };
+
+            // Validate port specification
+            let ports_str = validate_port_spec(&ports_str)?;
 
             let timeout_ms = param_u64(&params, "timeout_ms", 2000);
 

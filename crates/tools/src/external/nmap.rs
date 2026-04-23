@@ -8,6 +8,7 @@ use pentest_core::error::Result;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
+use pentest_core::validation::{validate_port_spec, validate_target};
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -111,13 +112,16 @@ impl PentestTool for NmapTool {
             // Ensure nmap is installed
             ensure_tool_installed(&platform, "nmap", "nmap").await?;
 
-            // Extract parameters
+            // Extract and validate target parameter
             let target = param_str_or(&params, "target", "");
             if target.is_empty() {
                 return Err(pentest_core::error::Error::InvalidParams(
                     "target parameter is required".into(),
                 ));
             }
+
+            // Validate target format (IP, hostname, or CIDR)
+            let target = validate_target(&target)?;
 
             let scan_type = param_str_or(&params, "scan_type", "connect");
             let ports = param_str_or(&params, "ports", "top1000");
@@ -164,7 +168,11 @@ impl PentestTool for NmapTool {
                     "top100" => builder = builder.arg("--top-ports", "100"),
                     "top1000" => {} // Default, no flag needed
                     "all" => builder = builder.flag("-p-"),
-                    _ => builder = builder.arg("-p", &ports),
+                    _ => {
+                        // Validate custom port specification
+                        let validated_ports = validate_port_spec(&ports)?;
+                        builder = builder.arg("-p", &validated_ports);
+                    }
                 }
             }
 

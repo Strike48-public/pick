@@ -18,6 +18,7 @@ pub mod state;
 pub mod terminal;
 pub mod theme_loader;
 pub mod tools;
+pub mod validation;
 pub mod workspace;
 
 pub mod prelude {
