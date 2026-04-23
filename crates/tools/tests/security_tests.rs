@@ -428,7 +428,11 @@ mod integration {
     fn test_validation_integrated() {
         // This is a placeholder for future integration tests
         // that would actually call tool execute() with malicious params
-        // and verify they're rejected
-        assert!(true);
+        // and verify they're rejected.
+        //
+        // For now, validation is verified through:
+        // - Unit tests on validation functions (52 tests)
+        // - Code review of tool implementations
+        // - Integration tests would require mocking tool execution
     }
 }
