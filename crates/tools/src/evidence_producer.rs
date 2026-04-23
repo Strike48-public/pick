@@ -29,10 +29,7 @@ pub fn push_evidence(node: EvidenceNode) {
     static PENDING_EVIDENCE: LazyLock<RwLock<Vec<EvidenceNode>>> =
         LazyLock::new(|| RwLock::new(Vec::new()));
 
-    PENDING_EVIDENCE
-        .write()
-        .unwrap()
-        .push(node);
+    PENDING_EVIDENCE.write().unwrap().push(node);
 }
 
 /// Drain pending evidence nodes. Called by the UI layer.
