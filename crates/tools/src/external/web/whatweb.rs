@@ -89,11 +89,8 @@ impl PentestTool for WhatwebTool {
             });
 
             // Produce evidence nodes for the three-agent pipeline
-            let evidence_nodes = crate::evidence_producer::evidence_from_whatweb(
-                &data,
-                &url,
-                provenance.clone()
-            );
+            let evidence_nodes =
+                crate::evidence_producer::evidence_from_whatweb(&data, &url, provenance.clone());
 
             for node in evidence_nodes {
                 crate::evidence_producer::push_evidence(node);

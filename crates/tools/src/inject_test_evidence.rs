@@ -5,12 +5,11 @@
 
 use async_trait::async_trait;
 use pentest_core::error::Result;
-use pentest_core::evidence::{EvidenceNode, ValidationStatus};
+use pentest_core::evidence::EvidenceNode;
 use pentest_core::export::Severity;
 use pentest_core::provenance::{ProbeCommand, Provenance};
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult,
-    ToolSchema,
+    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -199,10 +198,7 @@ mod tests {
             "target": "10.0.0.1"
         });
 
-        let result = tool
-            .execute(params, &ToolContext::default())
-            .await
-            .unwrap();
+        let result = tool.execute(params, &ToolContext::default()).await.unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["evidence_created"], 2);

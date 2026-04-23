@@ -222,7 +222,7 @@ impl PentestTool for ServiceBannerTool {
                 &data,
                 &host,
                 port,
-                provenance.clone()
+                provenance.clone(),
             );
 
             for node in evidence_nodes {
