@@ -43,7 +43,6 @@ pub use cve_lookup::CveLookupTool;
 pub use default_creds::DefaultCredsTool;
 pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
-pub use inject_test_evidence::InjectTestEvidenceTool;
 pub use external::{
     AircrackngTool, AmassTool, ArjunTool, ArpScanTool, ArpingTool, AssetfinderTool, BettercapTool,
     CewlTool, ChangemeTool, CommixTool, CrackmapexecTool, CrunchTool, DalfoxTool, DirbTool,
@@ -59,6 +58,7 @@ pub use external::{
     TheHarvesterTool, TsharkTool, UnicornscanTool, Wafw00fTool, WaybackurlsTool, WfuzzTool,
     WhatwebTool, WhoisTool, WpscanTool, XsstrikeTool,
 }; // External tools
+pub use inject_test_evidence::InjectTestEvidenceTool;
 pub use lateral_movement::LateralMovementTool;
 pub use list_files::ListFilesTool;
 pub use network_discover::NetworkDiscoverTool;

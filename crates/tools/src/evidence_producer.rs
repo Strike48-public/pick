@@ -4,7 +4,7 @@
 //! `ToolResult` with `Provenance`) and the evidence graph (which stores
 //! `EvidenceNode`s for the Validator and Report agents).
 
-use pentest_core::evidence::{EvidenceNode, SeverityHistoryEntry};
+use pentest_core::evidence::EvidenceNode;
 use pentest_core::export::Severity;
 use pentest_core::provenance::Provenance;
 use serde_json::Value;
@@ -12,31 +12,49 @@ use uuid::Uuid;
 
 /// Push an evidence node to the global evidence graph.
 ///
-/// This is a re-export from `pentest_ui::session` but available in the tools
-/// crate so tool wrappers don't need to depend on the UI crate directly.
+/// This function is called by `pentest_ui::session::push_evidence` after tools
+/// produce evidence. The tools crate itself just provides the conversion logic;
+/// the actual graph management happens in the UI layer to avoid circular dependencies.
+///
+/// This re-export exists so tool code can call `crate::evidence_producer::push_evidence(node)`
+/// without needing to know about the UI layer.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn push_evidence(node: EvidenceNode) {
-    #[cfg(feature = "ui-integration")]
-    {
-        // Direct call to UI session - will be wired at runtime
-        // This is a compile-time feature gate to avoid circular deps
-        pentest_ui::session::push_evidence(node);
-    }
-    #[cfg(not(feature = "ui-integration"))]
-    {
-        // Fallback: log the evidence (for headless/testing scenarios)
-        tracing::info!(
-            "Evidence produced: {} - {} ({})",
-            node.node_type,
-            node.title,
-            node.affected_target
-        );
-    }
+    // Store in a thread-local or global that the UI layer reads, or
+    // use an injected callback. For now, we'll use a simple approach:
+    // store in a static and let the UI poll it.
+    use std::sync::LazyLock;
+    use std::sync::RwLock;
+
+    static PENDING_EVIDENCE: LazyLock<RwLock<Vec<EvidenceNode>>> =
+        LazyLock::new(|| RwLock::new(Vec::new()));
+
+    PENDING_EVIDENCE
+        .write()
+        .unwrap()
+        .push(node);
+}
+
+/// Drain pending evidence nodes. Called by the UI layer.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn drain_pending_evidence() -> Vec<EvidenceNode> {
+    use std::sync::LazyLock;
+    use std::sync::RwLock;
+
+    static PENDING_EVIDENCE: LazyLock<RwLock<Vec<EvidenceNode>>> =
+        LazyLock::new(|| RwLock::new(Vec::new()));
+
+    std::mem::take(&mut *PENDING_EVIDENCE.write().unwrap())
 }
 
 #[cfg(target_arch = "wasm32")]
 pub fn push_evidence(_node: EvidenceNode) {
     // WASM cannot push evidence - no-op
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn drain_pending_evidence() -> Vec<EvidenceNode> {
+    Vec::new()
 }
 
 /// Create evidence nodes from nmap scan results.
@@ -51,9 +69,7 @@ pub fn evidence_from_nmap(
 
     if let Some(hosts) = nmap_data["hosts"].as_array() {
         for host in hosts {
-            let host_ip = host["ip"]
-                .as_str()
-                .unwrap_or(target);
+            let host_ip = host["ip"].as_str().unwrap_or(target);
 
             if let Some(ports) = host["ports"].as_array() {
                 for port in ports {
@@ -73,7 +89,10 @@ pub fn evidence_from_nmap(
                     let title = if version.is_empty() {
                         format!("Port {}/{} open on {}", port_num, protocol, host_ip)
                     } else {
-                        format!("Port {}/{} open on {} - {} {}", port_num, protocol, host_ip, service, version)
+                        format!(
+                            "Port {}/{} open on {} - {} {}",
+                            port_num, protocol, host_ip, service, version
+                        )
                     };
 
                     let description = if version.is_empty() {
@@ -88,7 +107,11 @@ pub fn evidence_from_nmap(
                         )
                     };
 
-                    let sensitive = if is_sensitive_port(port_num) { "sensitive" } else { "network" };
+                    let sensitive = if is_sensitive_port(port_num) {
+                        "sensitive"
+                    } else {
+                        "network"
+                    };
                     let rationale = format!(
                         "Port {} is commonly associated with {} service. Open {} ports should be validated for necessity.",
                         port_num, service, sensitive
@@ -107,7 +130,8 @@ pub fn evidence_from_nmap(
 
                     // Add structured metadata
                     node.metadata.insert("port".to_string(), port_num.into());
-                    node.metadata.insert("protocol".to_string(), protocol.into());
+                    node.metadata
+                        .insert("protocol".to_string(), protocol.into());
                     node.metadata.insert("service".to_string(), service.into());
                     if !version.is_empty() {
                         node.metadata.insert("version".to_string(), version.into());
@@ -207,7 +231,7 @@ pub fn evidence_from_whatweb(
         if !technologies.is_empty() {
             let severity = if versions.iter().any(|v| contains_vulnerable_version(v)) {
                 Severity::High
-            } else if versions.len() > 0 {
+            } else if !versions.is_empty() {
                 Severity::Medium
             } else {
                 Severity::Info
@@ -241,9 +265,11 @@ pub fn evidence_from_whatweb(
             )
             .with_provenance(provenance);
 
-            node.metadata.insert("technologies".to_string(), technologies.into());
+            node.metadata
+                .insert("technologies".to_string(), technologies.into());
             if !versions.is_empty() {
-                node.metadata.insert("versions".to_string(), versions.into());
+                node.metadata
+                    .insert("versions".to_string(), versions.into());
             }
 
             nodes.push(node);
@@ -363,7 +389,7 @@ mod tests {
             "nmap",
             "7.94".to_string(),
             pentest_core::provenance::ProbeCommand::from_exact("nmap -sV 192.168.1.100"),
-            "test output".to_string(),
+            "test output",
         );
 
         let nodes = evidence_from_nmap(&nmap_data, "192.168.1.100", provenance);
