@@ -11,6 +11,7 @@ pub mod file_browser;
 pub mod jwt_validator;
 pub mod logging;
 pub mod matrix;
+pub mod paths;
 pub mod rendering;
 pub mod seed;
 pub mod settings;
