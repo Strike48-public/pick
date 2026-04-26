@@ -210,7 +210,7 @@ async fn get_status(
 /// # Matrix Notification Content
 ///
 /// Agents receive a system message formatted as:
-/// ```
+/// ```text
 /// Aggression level changed from Balanced to Aggressive.
 ///
 /// **Aggressive Mode**
