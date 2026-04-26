@@ -113,25 +113,37 @@ impl PentestTool for SpawnSpecialistTool {
         ]
     }
 
-    async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, params: Value, ctx: &ToolContext) -> Result<ToolResult> {
         execute_timed(|| async {
             // Parse input
-            let _input: SpawnSpecialistInput = serde_json::from_value(params).map_err(|e| {
+            let input: SpawnSpecialistInput = serde_json::from_value(params).map_err(|e| {
                 Error::InvalidParams(format!("Invalid spawn_specialist parameters: {}", e))
             })?;
 
-            // TODO: Full implementation requires ToolContext enhancements:
-            // 1. Matrix client injection: ctx.matrix_client()
-            // 2. Aggression level: ctx.aggression_level()
-            // 3. Parent agent name: ctx.agent_name()
-            //
-            // Once available, call spawn_specialist_impl()
+            // Get Matrix client from context
+            let matrix_client = ctx
+                .matrix_client()
+                .ok_or_else(|| {
+                    Error::Config(
+                        "Matrix client not available - spawn_specialist requires connection to Strike48"
+                            .to_string(),
+                    )
+                })?;
 
-            Err(Error::Config(
-                "spawn_specialist tool requires ToolContext enhancements (Matrix client, \
-                 aggression level, agent name) - implementation ready, wiring pending"
-                    .to_string(),
-            ))
+            // Get aggression level and agent name from context
+            let aggression = ctx.aggression_level();
+            let parent_agent_name = ctx.agent_name();
+
+            // Call the full implementation
+            let result = spawn_specialist_impl(
+                input,
+                aggression,
+                parent_agent_name,
+                matrix_client.as_ref(),
+            )
+            .await?;
+
+            Ok(serde_json::to_value(&result)?)
         })
         .await
     }
@@ -139,9 +151,7 @@ impl PentestTool for SpawnSpecialistTool {
 
 /// Internal implementation of spawn_specialist logic.
 ///
-/// This function contains the complete specialist spawning logic and will be
-/// called once ToolContext has Matrix client, aggression level, and agent name.
-#[allow(dead_code)]
+/// This function contains the complete specialist spawning logic.
 async fn spawn_specialist_impl(
     input: SpawnSpecialistInput,
     aggression: AggressionLevel,

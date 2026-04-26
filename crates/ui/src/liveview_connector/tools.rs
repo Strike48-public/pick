@@ -123,17 +123,32 @@ fn emit_event(event_tx: &broadcast::Sender<ConnectorEvent>, event: ConnectorEven
     let _ = event_tx.send(event);
 }
 
+/// Parameters for tool execution
+pub(crate) struct ExecuteParams {
+    pub tools: Arc<RwLock<ToolRegistry>>,
+    pub workspace_path: Option<PathBuf>,
+    pub instance_id: String,
+    pub matrix_tx: Arc<RwLock<Option<mpsc::UnboundedSender<StreamMessage>>>>,
+    pub event_tx: broadcast::Sender<ConnectorEvent>,
+    pub aggression_level: pentest_core::aggression::AggressionLevel,
+    pub agent_name: String,
+    pub matrix_api_url: Option<String>,
+}
+
 /// Standalone execute handler that can run in a background task.
 /// `matrix_tx` is shared via Arc so the task always uses the current sender
 /// even if the gRPC stream was cycled while the tool was running.
-pub(crate) async fn handle_execute_impl(
-    req: proto::ExecuteRequest,
-    tools: Arc<RwLock<ToolRegistry>>,
-    workspace_path: Option<PathBuf>,
-    instance_id: String,
-    matrix_tx: Arc<RwLock<Option<mpsc::UnboundedSender<StreamMessage>>>>,
-    event_tx: broadcast::Sender<ConnectorEvent>,
-) {
+pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: ExecuteParams) {
+    let ExecuteParams {
+        tools,
+        workspace_path,
+        instance_id,
+        matrix_tx,
+        event_tx,
+        aggression_level,
+        agent_name,
+        matrix_api_url,
+    } = params;
     let request_id = req.request_id.clone();
     let request: Value = serde_json::from_slice(&req.payload).unwrap_or(Value::Null);
 
@@ -159,13 +174,28 @@ pub(crate) async fn handle_execute_impl(
         );
 
         let start = std::time::Instant::now();
+
+        // Build ToolContext with all enhancements
         let mut ctx = match &workspace_path {
             Some(path) => ToolContext::default().with_workspace(path.clone()),
             None => ToolContext::default(),
         };
+
         // Add instance_id to context metadata for tools to use
         ctx.metadata
             .insert("instance_id".to_string(), instance_id.clone());
+
+        // Set aggression level
+        ctx = ctx.with_aggression_level(aggression_level);
+
+        // Set agent name (e.g., "pentest-connector-red-team")
+        ctx = ctx.with_agent_name(agent_name.clone());
+
+        // Create Matrix client if API URL is available
+        if let Some(api_url) = matrix_api_url {
+            let matrix_client = Arc::new(pentest_core::matrix::MatrixChatClient::new(api_url));
+            ctx = ctx.with_matrix_client(matrix_client);
+        }
 
         let tools = tools.read().await;
         let result = match tools.execute(tool_name, params, &ctx).await {
@@ -243,15 +273,17 @@ impl LiveViewConnector {
             }
         } else {
             // Tool request - delegate to standalone function
-            handle_execute_impl(
-                req,
-                self.tools.clone(),
-                self.workspace_path.clone(),
-                self.config.instance_id.clone(),
-                Arc::clone(&self.matrix_tx),
-                self.event_tx.clone(),
-            )
-            .await;
+            let params = ExecuteParams {
+                tools: self.tools.clone(),
+                workspace_path: self.workspace_path.clone(),
+                instance_id: self.config.instance_id.clone(),
+                matrix_tx: Arc::clone(&self.matrix_tx),
+                event_tx: self.event_tx.clone(),
+                aggression_level: self.config.aggression_level,
+                agent_name: self.config.connector_name.clone(),
+                matrix_api_url: Some(self.derive_matrix_api_url()),
+            };
+            handle_execute_impl(req, params).await;
         }
     }
 

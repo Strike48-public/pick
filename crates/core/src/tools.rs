@@ -339,11 +339,35 @@ where
 }
 
 /// Context provided to tool execution
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ToolContext {
     pub platform: Platform,
     pub metadata: HashMap<String, String>,
     pub workspace_path: Option<PathBuf>,
+
+    /// Matrix chat client for spawning specialist agents.
+    /// Available when the connector is connected to Strike48.
+    matrix_client: Option<Arc<crate::matrix::MatrixChatClient>>,
+
+    /// Aggression level controlling specialist spawning behavior.
+    aggression_level: crate::aggression::AggressionLevel,
+
+    /// Name of the parent agent executing tools (e.g., "pentest-connector-red-team").
+    /// Used by spawn_specialist to name spawned agents.
+    agent_name: String,
+}
+
+impl std::fmt::Debug for ToolContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolContext")
+            .field("platform", &self.platform)
+            .field("metadata", &self.metadata)
+            .field("workspace_path", &self.workspace_path)
+            .field("has_matrix_client", &self.matrix_client.is_some())
+            .field("aggression_level", &self.aggression_level)
+            .field("agent_name", &self.agent_name)
+            .finish()
+    }
 }
 
 impl Default for ToolContext {
@@ -352,6 +376,9 @@ impl Default for ToolContext {
             platform: Platform::current(),
             metadata: HashMap::new(),
             workspace_path: None,
+            matrix_client: None,
+            aggression_level: crate::aggression::AggressionLevel::default(),
+            agent_name: "pentest-connector".to_string(),
         }
     }
 }
@@ -361,6 +388,39 @@ impl ToolContext {
     pub fn with_workspace(mut self, path: PathBuf) -> Self {
         self.workspace_path = Some(path);
         self
+    }
+
+    /// Set the Matrix client for specialist spawning
+    pub fn with_matrix_client(mut self, client: Arc<crate::matrix::MatrixChatClient>) -> Self {
+        self.matrix_client = Some(client);
+        self
+    }
+
+    /// Set the aggression level
+    pub fn with_aggression_level(mut self, level: crate::aggression::AggressionLevel) -> Self {
+        self.aggression_level = level;
+        self
+    }
+
+    /// Set the agent name
+    pub fn with_agent_name(mut self, name: impl Into<String>) -> Self {
+        self.agent_name = name.into();
+        self
+    }
+
+    /// Get the Matrix client if available
+    pub fn matrix_client(&self) -> Option<&Arc<crate::matrix::MatrixChatClient>> {
+        self.matrix_client.as_ref()
+    }
+
+    /// Get the aggression level
+    pub fn aggression_level(&self) -> crate::aggression::AggressionLevel {
+        self.aggression_level
+    }
+
+    /// Get the agent name
+    pub fn agent_name(&self) -> &str {
+        &self.agent_name
     }
 }
 
