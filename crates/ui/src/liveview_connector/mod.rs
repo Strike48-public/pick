@@ -546,7 +546,8 @@ impl LiveViewConnector {
                                     // Retry with exponential backoff to ensure specialist is tracked
                                     // Spawn as task since send_event is not async
                                     let active_scan = Arc::clone(&self.active_scan);
-                                    let total_specialists = Arc::clone(&self.total_specialists_spawned);
+                                    let total_specialists =
+                                        Arc::clone(&self.total_specialists_spawned);
                                     let agent_id_owned = agent_id.to_string();
                                     tokio::spawn(async move {
                                         let mut retry_count = 0;
@@ -557,7 +558,8 @@ impl LiveViewConnector {
                                             if let Ok(mut scan_guard) = active_scan.try_write() {
                                                 if let Some(ref mut scan) = *scan_guard {
                                                     // Check global specialist limit (persists across reconnects)
-                                                    let current_total = total_specialists.load(Ordering::SeqCst);
+                                                    let current_total =
+                                                        total_specialists.load(Ordering::SeqCst);
                                                     if current_total >= MAX_SPECIALISTS_PER_SCAN {
                                                         tracing::warn!(
                                                             "Max specialists limit reached ({} total spawned). \
@@ -573,7 +575,8 @@ impl LiveViewConnector {
                                                         specialist_info.clone(),
                                                     );
                                                     // Increment global counter (atomic)
-                                                    total_specialists.fetch_add(1, Ordering::SeqCst);
+                                                    total_specialists
+                                                        .fetch_add(1, Ordering::SeqCst);
                                                     tracing::info!(
                                                         "Specialist tracked: type={} agent={} targets={} (total: {}/{})",
                                                         specialist_info.specialist_type,
