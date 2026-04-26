@@ -356,7 +356,7 @@ impl LiveViewConnector {
                                     agent_id: agent_id.to_string(),
                                     started_at: std::time::Instant::now(),
                                     started_at_system: std::time::SystemTime::now(),
-                                    current_aggression: self.config.aggression_level.clone(),
+                                    current_aggression: self.config.aggression_level,
                                     active_specialists: std::collections::HashMap::new(),
                                 };
 
@@ -1022,7 +1022,7 @@ impl LiveViewConnector {
                     // Initialize Matrix HTTP client for API calls (system messages, etc.)
                     if !api_url.is_empty() {
                         let mut client = pentest_core::matrix::MatrixChatClient::new(&api_url);
-                        client.set_auth_token(&token);
+                        client.set_auth_token(token.clone());
                         *self.matrix_client.write().await = Some(client);
                         tracing::info!("Matrix HTTP client initialized");
                     }

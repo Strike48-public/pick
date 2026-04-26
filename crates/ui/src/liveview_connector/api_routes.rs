@@ -83,8 +83,8 @@ async fn post_aggression(
     // Get current level and update config
     let previous_level = {
         let mut config_guard = state.config.write().await;
-        let prev = config_guard.aggression_level.clone();
-        config_guard.aggression_level = new_level.clone();
+        let prev = config_guard.aggression_level;
+        config_guard.aggression_level = new_level;
         prev
     };
 
@@ -92,7 +92,7 @@ async fn post_aggression(
     let (conversation_id, agent_id) = {
         let mut scan_guard = state.scan_state.write().await;
         if let Some(ref mut scan) = *scan_guard {
-            scan.current_aggression = new_level.clone();
+            scan.current_aggression = new_level;
             (scan.conversation_id.clone(), scan.agent_id.clone())
         } else {
             return Err(ErrorResponse {
@@ -102,7 +102,7 @@ async fn post_aggression(
     };
 
     // Send system message to agent with new policy guidelines
-    let policy_guidelines = new_level.spawn_policy().to_guidelines(new_level.clone());
+    let policy_guidelines = new_level.spawn_policy().to_guidelines(new_level);
     let system_message = format!(
         "Aggression level changed from {} to {}.\n\n{}",
         previous_level.display_name(),
@@ -204,6 +204,6 @@ mod tests {
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(json["conversation_id"], "conv-123");
         assert_eq!(json["agent_id"], "agent-456");
-        assert_eq!(json["current_aggression"], "Aggressive");
+        assert_eq!(json["current_aggression"], "aggressive");
     }
 }
