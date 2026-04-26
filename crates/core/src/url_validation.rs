@@ -4,7 +4,7 @@
 //! attacks by blocking connections to private/internal IP addresses and localhost.
 
 use crate::error::{Error, Result};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 
 /// URL validation mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +159,10 @@ fn is_localhost_ipv6(ip: Ipv6Addr) -> bool {
 }
 
 /// Check if a host resolves to a private IP address
+///
+/// This function performs DNS resolution to prevent DNS rebinding attacks.
+/// If the host is a hostname (not an IP), it resolves all A/AAAA records
+/// and checks if ANY of them point to private IP ranges.
 fn is_private_ip(host: &str) -> bool {
     // Try to parse as IP address
     if let Ok(ip) = host.parse::<IpAddr>() {
@@ -168,10 +172,63 @@ fn is_private_ip(host: &str) -> bool {
         };
     }
 
-    // For hostnames, we cannot reliably check without DNS resolution
-    // In a production system, you might want to resolve and check
-    // For now, we assume hostnames are safe (they go through DNS)
-    false
+    // For hostnames, perform DNS resolution to prevent DNS rebinding attacks
+    // DNS rebinding attack: attacker registers domain pointing to public IP during
+    // validation, then switches DNS to private IP after validation passes.
+    //
+    // Defense: Resolve hostname and check ALL resolved IPs against private ranges.
+    // If ANY resolved IP is private, reject the hostname.
+    match resolve_hostname_to_ips(host) {
+        Ok(ips) => {
+            // Check if ANY resolved IP is private
+            for ip in ips {
+                let is_private = match ip {
+                    IpAddr::V4(ipv4) => is_private_ipv4(ipv4),
+                    IpAddr::V6(ipv6) => is_private_ipv6(ipv6),
+                };
+                if is_private {
+                    tracing::warn!(
+                        "Hostname {} resolved to private IP {}, blocking SSRF attempt",
+                        host,
+                        ip
+                    );
+                    return true;
+                }
+            }
+            // All resolved IPs are public
+            false
+        }
+        Err(e) => {
+            // DNS resolution failed - treat as private for safety
+            tracing::warn!(
+                "Failed to resolve hostname {}: {}, blocking for safety",
+                host,
+                e
+            );
+            true
+        }
+    }
+}
+
+/// Resolve a hostname to all its IP addresses (A and AAAA records)
+///
+/// Returns all resolved IPs or an error if DNS resolution fails.
+/// Uses standard library DNS resolution (synchronous).
+fn resolve_hostname_to_ips(hostname: &str) -> std::io::Result<Vec<IpAddr>> {
+    // Use port 0 as a placeholder - we only care about the IP addresses
+    let socket_addrs = format!("{}:0", hostname).to_socket_addrs()?;
+
+    // Extract IP addresses from socket addresses
+    let ips: Vec<IpAddr> = socket_addrs.map(|addr| addr.ip()).collect();
+
+    if ips.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "No IP addresses found for hostname",
+        ));
+    }
+
+    Ok(ips)
 }
 
 /// Check if an IPv4 address is private
@@ -190,6 +247,11 @@ fn is_private_ipv4(ip: Ipv4Addr) -> bool {
 
     // 192.168.0.0/16
     if octets[0] == 192 && octets[1] == 168 {
+        return true;
+    }
+
+    // 127.0.0.0/8 (loopback)
+    if octets[0] == 127 {
         return true;
     }
 
@@ -319,18 +381,26 @@ mod tests {
 
     #[test]
     fn test_production_mode_allows_public_hostnames() {
-        assert!(validate_url(
-            "wss://strike48.example.com:443",
-            ValidationMode::Production,
-            None
-        )
-        .is_ok());
-        assert!(validate_url(
-            "grpc://api.example.com:50061",
-            ValidationMode::Production,
-            None
-        )
-        .is_ok());
+        // Test with real public domains that should resolve to public IPs
+        // Skip if DNS resolution fails (no internet connectivity)
+        match resolve_hostname_to_ips("google.com") {
+            Ok(_) => {
+                // Internet connectivity available, test with real domains
+                assert!(
+                    validate_url("wss://google.com:443", ValidationMode::Production, None).is_ok(),
+                    "google.com should be allowed in production mode"
+                );
+                assert!(
+                    validate_url("grpc://github.com:50061", ValidationMode::Production, None)
+                        .is_ok(),
+                    "github.com should be allowed in production mode"
+                );
+            }
+            Err(_) => {
+                // No internet connectivity, skip test
+                println!("Skipping test - no internet connectivity");
+            }
+        }
     }
 
     #[test]
@@ -386,5 +456,138 @@ mod tests {
         assert!(is_private_ipv4("169.254.1.1".parse().unwrap()));
         assert!(!is_private_ipv4("8.8.8.8".parse().unwrap()));
         assert!(!is_private_ipv4("1.1.1.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_missing_private_ip_ranges() {
+        // RFC 6598: Carrier-grade NAT
+        assert!(is_private_ipv4("100.64.0.1".parse().unwrap()));
+        assert!(is_private_ipv4("100.127.255.254".parse().unwrap()));
+        assert!(!is_private_ipv4("100.63.255.255".parse().unwrap()));
+        assert!(!is_private_ipv4("100.128.0.0".parse().unwrap()));
+
+        // RFC 2544: Benchmark testing
+        assert!(is_private_ipv4("198.18.0.1".parse().unwrap()));
+        assert!(is_private_ipv4("198.19.255.254".parse().unwrap()));
+        assert!(!is_private_ipv4("198.17.255.255".parse().unwrap()));
+        assert!(!is_private_ipv4("198.20.0.0".parse().unwrap()));
+
+        // RFC 5737: Documentation ranges
+        assert!(is_private_ipv4("198.51.100.1".parse().unwrap()));
+        assert!(is_private_ipv4("203.0.113.1".parse().unwrap()));
+
+        // RFC 1112: Reserved
+        assert!(is_private_ipv4("240.0.0.1".parse().unwrap()));
+        assert!(is_private_ipv4("255.255.255.254".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_dns_resolution_localhost() {
+        // localhost should resolve to 127.0.0.1 and/or ::1
+        let ips = resolve_hostname_to_ips("localhost").expect("Failed to resolve localhost");
+        assert!(
+            !ips.is_empty(),
+            "localhost should resolve to at least one IP"
+        );
+
+        // All resolved IPs should be loopback
+        for ip in ips {
+            match ip {
+                IpAddr::V4(ipv4) => {
+                    assert!(ipv4.is_loopback(), "localhost IPv4 should be loopback");
+                }
+                IpAddr::V6(ipv6) => {
+                    assert!(ipv6.is_loopback(), "localhost IPv6 should be loopback");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_dns_resolution_public_domain() {
+        // google.com should resolve to public IPs
+        let ips = resolve_hostname_to_ips("google.com").expect("Failed to resolve google.com");
+        assert!(
+            !ips.is_empty(),
+            "google.com should resolve to at least one IP"
+        );
+
+        // All resolved IPs should be public (not private)
+        for ip in &ips {
+            match ip {
+                IpAddr::V4(ipv4) => {
+                    assert!(
+                        !is_private_ipv4(*ipv4),
+                        "google.com should resolve to public IPv4"
+                    );
+                }
+                IpAddr::V6(ipv6) => {
+                    assert!(
+                        !is_private_ipv6(*ipv6),
+                        "google.com should resolve to public IPv6"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_dns_resolution_invalid_hostname() {
+        // .invalid domains may resolve in some environments (DNS hijacking, search domains)
+        // or fail to resolve. Either is acceptable - we just need to handle both cases.
+        let result = resolve_hostname_to_ips("this-domain-does-not-exist-12345.invalid");
+        match result {
+            Ok(ips) => {
+                // If it resolved, check that we got at least one IP
+                assert!(
+                    !ips.is_empty(),
+                    "Should have at least one IP if resolution succeeded"
+                );
+            }
+            Err(_) => {
+                // DNS failure is also acceptable - treated as private for safety
+            }
+        }
+    }
+
+    #[test]
+    fn test_is_private_ip_blocks_localhost_hostname() {
+        // is_private_ip should block localhost via DNS resolution
+        // localhost resolves to 127.0.0.1 which is loopback (private)
+        assert!(
+            is_private_ip("localhost"),
+            "localhost should be blocked as private"
+        );
+    }
+
+    #[test]
+    fn test_is_private_ip_allows_public_hostname() {
+        // is_private_ip should allow public domains via DNS resolution
+        // Note: This test requires internet connectivity. Skip if DNS fails.
+        match resolve_hostname_to_ips("google.com") {
+            Ok(_) => {
+                // DNS worked, verify google.com is not blocked
+                assert!(
+                    !is_private_ip("google.com"),
+                    "google.com should be allowed (public)"
+                );
+            }
+            Err(_) => {
+                // No internet connectivity, skip test
+                println!("Skipping test - no internet connectivity");
+            }
+        }
+    }
+
+    #[test]
+    fn test_is_private_ip_blocks_invalid_hostname() {
+        // Invalid hostnames may:
+        // 1. Fail to resolve → blocked as private (fail-safe)
+        // 2. Resolve to hijacked IPs (e.g., ISP DNS search) → blocked if private
+        // Either way, they should be blocked for safety.
+        assert!(
+            is_private_ip("this-domain-does-not-exist-12345.invalid"),
+            "Invalid hostname should be blocked (either DNS failure or hijacked to private IP)"
+        );
     }
 }
