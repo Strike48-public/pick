@@ -138,7 +138,9 @@ impl MatrixChatClient {
                 if body.len() + chunk.len() > MAX_RESPONSE_SIZE {
                     return Err(crate::error::Error::Matrix(format!(
                         "Response exceeded {} MB limit (defensive limit against malicious payloads)",
-                        MAX_RESPONSE_SIZE / (1024 * 1024)
+                        MAX_RESPONSE_SIZE
+                            .checked_div(1024 * 1024)
+                            .unwrap_or(10)
                     )));
                 }
                 body.extend_from_slice(&chunk);
