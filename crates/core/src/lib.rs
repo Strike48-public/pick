@@ -3,6 +3,7 @@
 //! This crate provides the core types and abstractions for the multiplatform
 //! pentest connector application.
 
+pub mod aggression;
 pub mod config;
 pub mod connector;
 pub mod error;
@@ -17,6 +18,7 @@ pub mod provenance;
 pub mod rendering;
 pub mod seed;
 pub mod settings;
+pub mod specialist_spawner;
 pub mod state;
 pub mod terminal;
 pub mod theme_loader;
@@ -24,6 +26,7 @@ pub mod tools;
 pub mod workspace;
 
 pub mod prelude {
+    pub use crate::aggression::{AggressionLevel, OverridePolicy, SpawnPolicy};
     pub use crate::config::{
         load_connector_config, AppSettings, ConfigLoadResult, ConnectorConfig, DownloadState,
         ShellMode,
@@ -44,6 +47,9 @@ pub mod prelude {
         SeedSummary, SeedTier, TierSummary,
     };
     pub use crate::settings::{load_settings, save_settings};
+    pub use crate::specialist_spawner::{
+        AttackSurface, SpawnDecision, SpecialistContext, SpecialistSpawner, SpecialistType,
+    };
     pub use crate::state::ConnectorStatus;
     pub use crate::terminal::{LogLevel, TerminalLine};
     pub use crate::tools::{PentestTool, ToolContext, ToolResult, ToolSchema};

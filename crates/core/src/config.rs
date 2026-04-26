@@ -82,6 +82,10 @@ pub struct ConnectorConfig {
     pub reconnect_enabled: bool,
     pub reconnect_delay_ms: u64,
     pub max_backoff_delay_ms: u64,
+
+    /// Aggression level for specialist agent spawning (Conservative, Balanced, Aggressive, Maximum)
+    #[serde(default)]
+    pub aggression_level: crate::aggression::AggressionLevel,
 }
 
 fn default_connector_name() -> String {
@@ -102,6 +106,7 @@ impl Default for ConnectorConfig {
             reconnect_enabled: true,
             reconnect_delay_ms: 5000,
             max_backoff_delay_ms: 60000,
+            aggression_level: crate::aggression::AggressionLevel::default(),
         }
     }
 }
@@ -327,6 +332,11 @@ pub fn load_connector_config(args: &[String]) -> ConfigLoadResult {
     if let Ok(name) = std::env::var("CONNECTOR_NAME") {
         config.connector_name = name;
     }
+    if let Ok(aggression) = std::env::var("AGGRESSION_LEVEL") {
+        if let Ok(level) = aggression.parse::<crate::aggression::AggressionLevel>() {
+            config.aggression_level = level;
+        }
+    }
 
     // CLI args override everything
     let mut i = 1;
@@ -358,6 +368,29 @@ pub fn load_connector_config(args: &[String]) -> ConfigLoadResult {
             }
             "--no-tls" => {
                 config.use_tls = false;
+            }
+            "--aggression" | "-a" => {
+                i += 1;
+                if i < args.len() {
+                    match args[i].parse::<crate::aggression::AggressionLevel>() {
+                        Ok(level) => {
+                            // Display cost warning if expensive mode selected
+                            if let Some(warning) = level.cost_warning() {
+                                use crate::aggression::WarnLevel;
+                                let prefix = match warning.level {
+                                    WarnLevel::Info => "ℹ️ ",
+                                    WarnLevel::Warning => "⚠️  ",
+                                };
+                                eprintln!("{}{}", prefix, warning.message);
+                                eprintln!();
+                            }
+                            config.aggression_level = level;
+                        }
+                        Err(e) => {
+                            return ConfigLoadResult::Error(e);
+                        }
+                    }
+                }
             }
             "--help" | "-h" => {
                 return ConfigLoadResult::Help;
