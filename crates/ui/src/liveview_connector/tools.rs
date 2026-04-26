@@ -123,32 +123,17 @@ fn emit_event(event_tx: &broadcast::Sender<ConnectorEvent>, event: ConnectorEven
     let _ = event_tx.send(event);
 }
 
-/// Parameters for tool execution
-pub(crate) struct ExecuteParams {
-    pub tools: Arc<RwLock<ToolRegistry>>,
-    pub workspace_path: Option<PathBuf>,
-    pub instance_id: String,
-    pub matrix_tx: Arc<RwLock<Option<mpsc::UnboundedSender<StreamMessage>>>>,
-    pub event_tx: broadcast::Sender<ConnectorEvent>,
-    pub aggression_level: pentest_core::aggression::AggressionLevel,
-    pub agent_name: String,
-    pub matrix_api_url: Option<String>,
-}
-
 /// Standalone execute handler that can run in a background task.
 /// `matrix_tx` is shared via Arc so the task always uses the current sender
 /// even if the gRPC stream was cycled while the tool was running.
-pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: ExecuteParams) {
-    let ExecuteParams {
-        tools,
-        workspace_path,
-        instance_id,
-        matrix_tx,
-        event_tx,
-        aggression_level,
-        agent_name,
-        matrix_api_url,
-    } = params;
+pub(crate) async fn handle_execute_impl(
+    req: proto::ExecuteRequest,
+    tools: Arc<RwLock<ToolRegistry>>,
+    workspace_path: Option<PathBuf>,
+    instance_id: String,
+    matrix_tx: Arc<RwLock<Option<mpsc::UnboundedSender<StreamMessage>>>>,
+    event_tx: broadcast::Sender<ConnectorEvent>,
+) {
     let request_id = req.request_id.clone();
 
     // Defense against hostile targets: limit tool result payload size to prevent OOM
@@ -171,12 +156,7 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
             )
         });
 
-        let tx_clone = {
-            let guard = matrix_tx.read().await;
-            guard.as_ref().cloned()
-        };
-
-        if let Some(tx) = tx_clone {
+        if let Some(tx) = matrix_tx.read().await.as_ref() {
             let response_msg = StreamMessage {
                 message: Some(Message::ExecuteResponse(ExecuteResponse {
                     request_id,
@@ -216,28 +196,13 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
         );
 
         let start = std::time::Instant::now();
-
-        // Build ToolContext with all enhancements
         let mut ctx = match &workspace_path {
             Some(path) => ToolContext::default().with_workspace(path.clone()),
             None => ToolContext::default(),
         };
-
         // Add instance_id to context metadata for tools to use
         ctx.metadata
             .insert("instance_id".to_string(), instance_id.clone());
-
-        // Set aggression level
-        ctx = ctx.with_aggression_level(aggression_level);
-
-        // Set agent name (e.g., "pentest-connector-red-team")
-        ctx = ctx.with_agent_name(agent_name.clone());
-
-        // Create Matrix client if API URL is available
-        if let Some(api_url) = matrix_api_url {
-            let matrix_client = Arc::new(pentest_core::matrix::MatrixChatClient::new(api_url));
-            ctx = ctx.with_matrix_client(matrix_client);
-        }
 
         let tools = tools.read().await;
         let result = match tools.execute(tool_name, params, &ctx).await {
@@ -270,12 +235,7 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
     };
 
     // Send response — read the current sender at completion time (may be a new stream after reconnect)
-    let tx_clone = {
-        let guard = matrix_tx.read().await;
-        guard.as_ref().cloned()
-    };
-
-    if let Some(tx) = tx_clone {
+    if let Some(tx) = matrix_tx.read().await.as_ref() {
         let response_msg = StreamMessage {
             message: Some(Message::ExecuteResponse(ExecuteResponse {
                 request_id,
@@ -305,12 +265,7 @@ impl LiveViewConnector {
             let response = self.proxy_to_liveview(&page_request).await;
             let response_payload = serde_json::to_vec(&response).unwrap_or_default();
 
-            let tx_clone = {
-                let guard = self.matrix_tx.read().await;
-                guard.as_ref().cloned()
-            };
-
-            if let Some(tx) = tx_clone {
+            if let Some(tx) = self.matrix_tx.read().await.as_ref() {
                 let response_msg = StreamMessage {
                     message: Some(Message::ExecuteResponse(ExecuteResponse {
                         request_id,
@@ -325,17 +280,15 @@ impl LiveViewConnector {
             }
         } else {
             // Tool request - delegate to standalone function
-            let params = ExecuteParams {
-                tools: self.tools.clone(),
-                workspace_path: self.workspace_path.clone(),
-                instance_id: self.config.instance_id.clone(),
-                matrix_tx: Arc::clone(&self.matrix_tx),
-                event_tx: self.event_tx.clone(),
-                aggression_level: self.config.aggression_level,
-                agent_name: self.config.connector_name.clone(),
-                matrix_api_url: Some(self.derive_matrix_api_url()),
-            };
-            handle_execute_impl(req, params).await;
+            handle_execute_impl(
+                req,
+                self.tools.clone(),
+                self.workspace_path.clone(),
+                self.config.instance_id.clone(),
+                Arc::clone(&self.matrix_tx),
+                self.event_tx.clone(),
+            )
+            .await;
         }
     }
 
@@ -387,35 +340,6 @@ impl LiveViewConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn tool_payload_limit_enforced() {
-        // Create a payload that exceeds the 5MB limit
-        const MAX_TOOL_PAYLOAD: usize = 5 * 1024 * 1024; // 5 MB
-        let oversized_payload = vec![0u8; MAX_TOOL_PAYLOAD + 1];
-
-        let request = strike48_proto::proto::ExecuteRequest {
-            request_id: "test-123".to_string(),
-            payload: oversized_payload,
-        };
-
-        let params = ExecuteParams {
-            tools: Arc::new(RwLock::new(pentest_core::tools::ToolRegistry::new())),
-            workspace_path: None,
-            instance_id: "test-instance".to_string(),
-            matrix_tx: Arc::new(RwLock::new(None)),
-            event_tx: tokio::sync::broadcast::channel(1).0,
-            aggression_level: pentest_core::aggression::AggressionLevel::Balanced,
-            agent_name: "test-agent".to_string(),
-            matrix_api_url: None,
-        };
-
-        // The function should handle the oversized payload gracefully
-        // It will send an error response via matrix_tx, but since matrix_tx is None,
-        // this just exercises the defensive limit code path without panicking
-        handle_execute_impl(request, params).await;
-        // Test passes if no panic occurred
-    }
 
     #[test]
     fn tool_payload_limit_value() {

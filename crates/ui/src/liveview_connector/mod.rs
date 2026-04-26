@@ -1133,18 +1133,13 @@ impl LiveViewConnector {
                                 // Tool request - spawn in background to avoid blocking the message loop
                                 // during long-running commands (e.g., nmap scans).
                                 // Pass the Arc so the task uses the current sender after any reconnect.
-                                let params = tools::ExecuteParams {
-                                    tools: self.tools.clone(),
-                                    workspace_path: self.workspace_path.clone(),
-                                    instance_id: self.config.instance_id.clone(),
-                                    matrix_tx: Arc::clone(&self.matrix_tx),
-                                    event_tx: self.event_tx.clone(),
-                                    aggression_level: self.config.aggression_level,
-                                    agent_name: self.config.connector_name.clone(),
-                                    matrix_api_url: Some(self.derive_matrix_api_url()),
-                                };
+                                let tools = self.tools.clone();
+                                let workspace_path = self.workspace_path.clone();
+                                let instance_id = self.config.instance_id.clone();
+                                let matrix_tx = Arc::clone(&self.matrix_tx);
+                                let event_tx = self.event_tx.clone();
                                 tokio::spawn(async move {
-                                    handle_execute_impl(req, params).await;
+                                    handle_execute_impl(req, tools, workspace_path, instance_id, matrix_tx, event_tx).await;
                                 });
                             }
                         }
