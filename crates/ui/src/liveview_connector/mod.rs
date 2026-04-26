@@ -434,18 +434,45 @@ impl LiveViewConnector {
                                 };
 
                                 // Use try_write() to avoid blocking the event loop
-                                // If lock is held, skip update (unlikely but safe - next event will succeed)
-                                if let Ok(mut scan_guard) = self.active_scan.try_write() {
-                                    *scan_guard = Some(scan_state);
-                                    tracing::info!(
-                                        "Scan state initialized: conversation={} agent={} aggression={}",
-                                        conv_id,
-                                        agent_id,
-                                        self.config.aggression_level.display_name()
-                                    );
-                                } else {
-                                    tracing::warn!(
-                                        "Failed to acquire write lock for scan state init - scan state may not be available"
+                                // Retry with exponential backoff to ensure scan state is initialized
+                                let mut retry_count = 0;
+                                let max_retries = 3;
+                                let mut initialized = false;
+
+                                while retry_count < max_retries {
+                                    if let Ok(mut scan_guard) = self.active_scan.try_write() {
+                                        *scan_guard = Some(scan_state.clone());
+                                        tracing::info!(
+                                            "Scan state initialized: conversation={} agent={} aggression={}",
+                                            conv_id,
+                                            agent_id,
+                                            self.config.aggression_level.display_name()
+                                        );
+                                        initialized = true;
+                                        break;
+                                    } else {
+                                        retry_count += 1;
+                                        if retry_count < max_retries {
+                                            tracing::debug!(
+                                                "Scan state init lock contention, retry {}/{}",
+                                                retry_count,
+                                                max_retries
+                                            );
+                                            // Brief exponential backoff: 1ms, 2ms, 4ms
+                                            tokio::time::sleep(tokio::time::Duration::from_millis(
+                                                1 << retry_count
+                                            ))
+                                            .await;
+                                        }
+                                    }
+                                }
+
+                                if !initialized {
+                                    tracing::error!(
+                                        "CRITICAL: Failed to initialize scan state after {} retries. \
+                                         Scan {} will not be trackable via REST API.",
+                                        max_retries,
+                                        conv_id
                                     );
                                 }
                             }
@@ -487,24 +514,53 @@ impl LiveViewConnector {
 
                                     // Add specialist to active scan's specialist map
                                     // Use agent_id as key for easy lookup/updates
-                                    if let Ok(mut scan_guard) = self.active_scan.try_write() {
-                                        if let Some(ref mut scan) = *scan_guard {
-                                            scan.active_specialists
-                                                .insert(agent_id.to_string(), specialist_info);
-                                            tracing::info!(
-                                                "Specialist tracked: type={} agent={} targets={}",
-                                                specialist_type,
-                                                agent_id,
-                                                targets.len()
-                                            );
+                                    // Retry with exponential backoff to ensure specialist is tracked
+                                    let mut retry_count = 0;
+                                    let max_retries = 3;
+                                    let mut tracked = false;
+
+                                    while retry_count < max_retries {
+                                        if let Ok(mut scan_guard) = self.active_scan.try_write() {
+                                            if let Some(ref mut scan) = *scan_guard {
+                                                scan.active_specialists
+                                                    .insert(agent_id.to_string(), specialist_info.clone());
+                                                tracing::info!(
+                                                    "Specialist tracked: type={} agent={} targets={}",
+                                                    specialist_type,
+                                                    agent_id,
+                                                    targets.len()
+                                                );
+                                                tracked = true;
+                                                break;
+                                            } else {
+                                                tracing::warn!(
+                                                    "Specialist spawned but no active scan found - specialist will not be tracked"
+                                                );
+                                                break;
+                                            }
                                         } else {
-                                            tracing::warn!(
-                                                "Specialist spawned but no active scan found - specialist will not be tracked"
-                                            );
+                                            retry_count += 1;
+                                            if retry_count < max_retries {
+                                                tracing::debug!(
+                                                    "Specialist tracking lock contention, retry {}/{}",
+                                                    retry_count,
+                                                    max_retries
+                                                );
+                                                // Brief exponential backoff: 1ms, 2ms, 4ms
+                                                tokio::time::sleep(tokio::time::Duration::from_millis(
+                                                    1 << retry_count
+                                                ))
+                                                .await;
+                                            }
                                         }
-                                    } else {
-                                        tracing::warn!(
-                                            "Failed to acquire write lock for specialist tracking - specialist may not appear in /api/status"
+                                    }
+
+                                    if !tracked {
+                                        tracing::error!(
+                                            "CRITICAL: Failed to track specialist {} after {} retries. \
+                                             Specialist will not appear in /api/status and won't receive aggression updates.",
+                                            agent_id,
+                                            max_retries
                                         );
                                     }
                                 }

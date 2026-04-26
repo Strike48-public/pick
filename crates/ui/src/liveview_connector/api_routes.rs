@@ -94,6 +94,9 @@ pub struct AggressionAdjustResponse {
     pub previous_level: String,
     pub new_level: String,
     pub message: String,
+    /// Whether Matrix notifications were successfully sent to agents.
+    /// If false, local state was updated but agents may not be aware of the change.
+    pub agents_notified: bool,
 }
 
 /// Error response
@@ -226,11 +229,10 @@ async fn post_aggression(
         "aggressive" => AggressionLevel::Aggressive,
         "maximum" => AggressionLevel::Maximum,
         _ => {
+            // Log the actual invalid input but don't echo it back to the client
+            tracing::warn!("Invalid aggression level received: {}", request.level);
             return Err(ErrorResponse {
-                error: format!(
-                    "Invalid aggression level '{}'. Valid values: conservative, balanced, aggressive, maximum",
-                    request.level
-                ),
+                error: "Invalid aggression level. Valid values: conservative, balanced, aggressive, maximum".to_string(),
             });
         }
     };
@@ -272,24 +274,28 @@ async fn post_aggression(
     // Note: We return success even if this fails, because the local state update succeeded
     // Matrix failures could be transient (network issues, API downtime) and shouldn't block
     // the aggression change. Agents will use the new level for future operations regardless.
-    {
+    let agents_notified = {
         let client_guard = state.matrix_client.read().await;
         if let Some(ref client) = *client_guard {
-            if let Err(e) = client
+            match client
                 .send_system_message(&conversation_id, &agent_id, &system_message)
                 .await
             {
-                tracing::error!(
-                    "Failed to send aggression update to agent {}: {}. \
-                     Local state updated successfully, but agent was not notified.",
-                    agent_id, e
-                );
-                // Continue anyway - config is updated locally, future tool executions will use new level
-            } else {
-                tracing::info!(
-                    "Aggression update notification sent to agent {} (conversation {})",
-                    agent_id, conversation_id
-                );
+                Ok(_) => {
+                    tracing::info!(
+                        "Aggression update notification sent to agent {} (conversation {})",
+                        agent_id, conversation_id
+                    );
+                    true
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to send aggression update to agent {}: {}. \
+                         Local state updated successfully, but agent was not notified.",
+                        agent_id, e
+                    );
+                    false
+                }
             }
         } else {
             tracing::warn!(
@@ -298,8 +304,9 @@ async fn post_aggression(
                  This can happen if the connector hasn't established a Matrix session yet.",
                 conversation_id
             );
+            false
         }
-    }
+    };
 
     Ok(Json(AggressionAdjustResponse {
         success: true,
@@ -310,6 +317,7 @@ async fn post_aggression(
             new_level.display_name(),
             new_level.cost_multiplier()
         ),
+        agents_notified,
     }))
 }
 
@@ -379,6 +387,7 @@ mod tests {
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(json["conversation_id"], "conv-123");
         assert_eq!(json["agent_id"], "agent-456");
-        assert_eq!(json["current_aggression"], "Aggressive");
+        // AggressionLevel serializes to lowercase per #[serde(rename_all = "lowercase")]
+        assert_eq!(json["current_aggression"], "aggressive");
     }
 }
