@@ -700,3 +700,23 @@ impl ChatClient for MatrixChatClient {
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Additional methods not part of ChatClient trait
+// ---------------------------------------------------------------------------
+
+impl MatrixChatClient {
+    /// Send a system message (configuration update) to an agent.
+    /// This sends a regular message prefixed with [SYSTEM] to indicate it's a
+    /// configuration change rather than user input.
+    pub async fn send_system_message(
+        &self,
+        conversation_id: &str,
+        agent_id: &str,
+        message: &str,
+    ) -> crate::error::Result<String> {
+        let system_msg = format!("[SYSTEM] {}", message);
+        self.send_message(conversation_id, agent_id, &system_msg)
+            .await
+    }
+}

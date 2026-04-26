@@ -4,22 +4,27 @@
 
 pub mod arp_table;
 pub mod autopwn;
+pub mod begin_scan;
 pub mod credential_harvest;
 pub mod cve_lookup;
 pub mod default_creds;
 pub mod device_info;
+pub mod evidence_producer; // NEW: Convert tool results to evidence nodes
 pub mod execute_command;
 pub mod external; // NEW: External tool integrations (BlackArch)
+pub mod inject_test_evidence; // NEW: Test tool for three-agent pipeline
 pub mod lateral_movement;
 pub mod list_files;
 pub mod network_discover;
 pub mod port_scan;
+pub mod provenance_support;
 pub mod read_file;
 pub mod registry; // Quick action registry for UI
 pub mod screenshot;
 pub mod service_banner;
 pub mod session_export;
 pub mod smb_enum;
+pub mod spawn_specialist;
 pub mod ssdp_discover;
 pub mod traffic_capture;
 pub mod util;
@@ -35,6 +40,7 @@ pub use autopwn::{
     AutoPwnCaptureTool, AutoPwnCrackTool, AutoPwnNetworkPlanTool, AutoPwnOrchestratorTool,
     AutoPwnPlanTool, WebAppToolchain,
 };
+pub use begin_scan::BeginScanTool;
 pub use credential_harvest::CredentialHarvestTool;
 pub use cve_lookup::CveLookupTool;
 pub use default_creds::DefaultCredsTool;
@@ -55,6 +61,7 @@ pub use external::{
     TheHarvesterTool, TsharkTool, UnicornscanTool, Wafw00fTool, WaybackurlsTool, WfuzzTool,
     WhatwebTool, WhoisTool, WpscanTool, XsstrikeTool,
 }; // External tools
+pub use inject_test_evidence::InjectTestEvidenceTool;
 pub use lateral_movement::LateralMovementTool;
 pub use list_files::ListFilesTool;
 pub use network_discover::NetworkDiscoverTool;
@@ -64,6 +71,7 @@ pub use screenshot::ScreenshotTool;
 pub use service_banner::ServiceBannerTool;
 pub use session_export::SessionExportTool;
 pub use smb_enum::SmbEnumTool;
+pub use spawn_specialist::SpawnSpecialistTool;
 pub use ssdp_discover::SsdpDiscoverTool;
 pub use traffic_capture::TrafficCaptureTool;
 pub use web_vuln_scan::WebVulnScanTool;
@@ -207,11 +215,15 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(WriteFileTool);
     registry.register(ListFilesTool);
 
+    // Testing tools
+    registry.register(InjectTestEvidenceTool);
+
     // Data transformation and analysis
     registry.register(pentest_cyberchef::CyberChefTool::new());
 
     // Session management
     registry.register(SessionExportTool);
+    registry.register(BeginScanTool);
 
     // Automated toolchains
     registry.register(WebAppToolchain::new());

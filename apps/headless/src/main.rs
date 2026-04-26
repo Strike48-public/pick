@@ -80,6 +80,11 @@ async fn main() -> anyhow::Result<()> {
             "ott (pending approval)"
         }
     );
+    tracing::info!(
+        "  aggression: {} ({}x cost)",
+        config.aggression_level.display_name(),
+        config.aggression_level.cost_multiplier()
+    );
 
     // Create tool registry
     let tools = create_tool_registry();
@@ -191,11 +196,16 @@ fn print_usage() {
     eprintln!("  When STRIKEHUB_SOCKET is set, runs in IPC mode (host is optional).");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --token, -t <jwt>    JWT auth token");
-    eprintln!("  --tenant <id>        Tenant ID (default: \"default\")");
-    eprintln!("  --instance-id <id>   Instance ID (default: auto-generated)");
-    eprintln!("  --no-tls             Disable TLS");
-    eprintln!("  --help, -h           Show this help");
+    eprintln!("  --token, -t <jwt>       JWT auth token");
+    eprintln!("  --tenant <id>           Tenant ID (default: \"default\")");
+    eprintln!("  --instance-id <id>      Instance ID (default: auto-generated)");
+    eprintln!("  --aggression, -a <lvl>  Specialist spawning aggressiveness:");
+    eprintln!("                            conservative (c) - minimal spawning, fast");
+    eprintln!("                            balanced (b)     - default, intelligent");
+    eprintln!("                            aggressive (a)   - thorough, more costly");
+    eprintln!("                            maximum (max,m)  - exhaustive, expensive");
+    eprintln!("  --no-tls                Disable TLS");
+    eprintln!("  --help, -h              Show this help");
     eprintln!();
     eprintln!("Environment variables:");
     eprintln!("  STRIKE48_HOST        Server host:port");
@@ -205,5 +215,8 @@ fn print_usage() {
     eprintln!("  STRIKE48_TENANT      Tenant ID");
     eprintln!("  STRIKE48_INSTANCE_ID Instance ID");
     eprintln!("  STRIKE48_TLS         \"true\" or \"false\"");
+    eprintln!(
+        "  AGGRESSION_LEVEL     Specialist spawning: conservative|balanced|aggressive|maximum"
+    );
     eprintln!("  STRIKEHUB_SOCKET     Unix socket path (IPC mode)");
 }

@@ -1,10 +1,9 @@
 //! Direct test of whatweb tool
 //! Run with: cargo test --test whatweb_direct_test -- --nocapture --ignored
 
-use pentest_core::tools::{Platform, ToolContext};
+use pentest_core::tools::ToolContext;
 use pentest_tools::create_tool_registry;
 use serde_json::json;
-use std::collections::HashMap;
 
 #[tokio::test]
 #[ignore]
@@ -20,11 +19,7 @@ async fn test_whatweb_direct() {
         "url": "http://localhost:8080"
     });
 
-    let ctx = ToolContext {
-        platform: Platform::Desktop,
-        metadata: HashMap::new(),
-        workspace_path: None,
-    };
+    let ctx = ToolContext::default();
 
     eprintln!("▶ Executing whatweb...\n");
 

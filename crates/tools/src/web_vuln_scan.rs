@@ -2,8 +2,10 @@
 
 use async_trait::async_trait;
 use pentest_core::error::{Error, Result};
+use pentest_core::provenance::{truncate_excerpt, ProbeCommand, Provenance};
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
+    execute_timed_with_provenance, ParamType, PentestTool, Platform, ToolContext, ToolParam,
+    ToolResult, ToolSchema,
 };
 use serde_json::{json, Value};
 use tokio::time::Duration;
@@ -275,7 +277,7 @@ impl PentestTool for WebVulnScanTool {
     }
 
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
-        execute_timed(|| async {
+        execute_timed_with_provenance(|| async {
             let url = param_str(&params, "url");
             if url.is_empty() {
                 return Err(Error::InvalidParams("url parameter is required".into()));
@@ -316,7 +318,47 @@ impl PentestTool for WebVulnScanTool {
                 .count();
             let low = findings.iter().filter(|f| f["severity"] == "LOW").count();
 
-            Ok(json!({
+            // Provenance: this tool is a composed probe made of ~5 distinct
+            // check categories. Emit one ProbeCommand per category with the
+            // canonical curl-equivalent a reviewer can run to reproduce it.
+            // This keeps the report self-contained without depending on any
+            // internal Rust API.
+            let probes = vec![
+                ProbeCommand::from_exact(format!(
+                    "curl -sI -L {base_url} -o /dev/null -w '%{{http_code}}'"
+                ))
+                .with_description("security headers + server fingerprint"),
+                ProbeCommand::from_exact(format!(
+                    "for p in {}; do curl -sI {base_url}$p -w '%{{http_code}} %{{url_effective}}\\n' -o /dev/null; done",
+                    Self::ADMIN_PATHS.join(" ")
+                ))
+                .with_description("admin panel exposure probe"),
+                ProbeCommand::from_exact(format!(
+                    "for p in {}; do curl -sI {base_url}$p -w '%{{http_code}} %{{url_effective}}\\n' -o /dev/null; done",
+                    Self::SENSITIVE_FILES.join(" ")
+                ))
+                .with_description("sensitive file disclosure probe"),
+                ProbeCommand::from_exact(format!(
+                    "for d in /backup /uploads /files /images /static; do curl -s {base_url}$d/ | grep -E 'Index of|Directory listing|Parent Directory'; done"
+                ))
+                .with_description("directory listing probe"),
+                ProbeCommand::from_exact(format!("curl -sI {base_url}"))
+                    .with_description("HTTPS redirect / misconfiguration probe"),
+            ];
+
+            // Raw-response excerpt: serialize the findings list so a reviewer
+            // can see exactly what the probe surfaced, not a truncated HTML
+            // body from an arbitrary check.
+            let raw_excerpt = serde_json::to_string(&findings).unwrap_or_default();
+
+            let provenance = Provenance::multi_step(
+                "web_vuln_scan",
+                env!("CARGO_PKG_VERSION"),
+                probes,
+                truncate_excerpt(&raw_excerpt),
+            );
+
+            let data = json!({
                 "url": base_url,
                 "findings": findings,
                 "summary": {
@@ -326,8 +368,42 @@ impl PentestTool for WebVulnScanTool {
                     "medium": medium,
                     "low": low,
                 },
-            }))
+            });
+            Ok((data, provenance))
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pentest_core::tools::{PentestTool, ToolContext};
+
+    #[tokio::test]
+    async fn execute_emits_provenance_even_when_target_unreachable() {
+        // Contract under test: provenance structure is emitted based on
+        // the scan *plan*, not on target responsiveness. A report reviewer
+        // must be able to see which probes were attempted even when nothing
+        // responds.
+        //
+        // We target 127.0.0.1 on an unbound port so every request fails
+        // fast with ECONNREFUSED instead of the 5s TCP connect timeout we
+        // hit against unroutable IPs.
+        let tool = WebVulnScanTool;
+        let ctx = ToolContext::default();
+        let params = json!({ "url": "http://127.0.0.1:1" });
+
+        let result = tool.execute(params, &ctx).await.expect("execute ok");
+        let prov = result.provenance.expect("provenance must be emitted");
+        assert_eq!(prov.underlying_tool, "web_vuln_scan");
+        assert!(!prov.probe_commands.is_empty());
+        // Every probe must have a redacted effective_command.
+        for pc in &prov.probe_commands {
+            assert!(
+                !pc.effective_command.is_empty(),
+                "effective_command must be populated"
+            );
+        }
     }
 }

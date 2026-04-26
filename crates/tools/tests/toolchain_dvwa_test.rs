@@ -1,10 +1,9 @@
 //! Live test of toolchain against DVWA
 //! Run with: cargo test --test toolchain_dvwa_test -- --nocapture --ignored
 
-use pentest_core::tools::{Platform, ToolContext};
+use pentest_core::tools::ToolContext;
 use pentest_tools::create_tool_registry;
 use serde_json::json;
-use std::collections::HashMap;
 
 #[tokio::test]
 #[ignore] // Run explicitly with --ignored flag
@@ -41,11 +40,7 @@ async fn test_autopwn_webapp_dvwa() {
     });
 
     // Create context
-    let ctx = ToolContext {
-        platform: Platform::Desktop,
-        metadata: HashMap::new(),
-        workspace_path: None,
-    };
+    let ctx = ToolContext::default();
 
     println!("═══════════════════════════════════════════════════");
     println!("🎯 Starting autopwn_webapp Live Test");

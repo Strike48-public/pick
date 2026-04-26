@@ -9,6 +9,7 @@
 //! Unlike the standard ConnectionManager which uses ConnectorRunner,
 //! this directly handles the gRPC stream to support WebSocket messages.
 
+mod api_routes;
 mod auth;
 mod injections;
 mod token_refresh;
@@ -108,6 +109,30 @@ pub(crate) struct WsConnectionState {
     to_backend_tx: mpsc::Sender<WsMessage>,
 }
 
+/// Information about a spawned specialist agent
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SpecialistInfo {
+    pub specialist_type: String,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub targets: Vec<String>,
+    #[serde(with = "humantime_serde")]
+    pub spawned_at: std::time::SystemTime,
+}
+
+/// Active scan state tracking
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScanState {
+    pub conversation_id: String,
+    pub agent_id: String,
+    #[serde(skip)]
+    pub started_at: std::time::Instant,
+    #[serde(with = "humantime_serde")]
+    pub started_at_system: std::time::SystemTime,
+    pub current_aggression: pentest_core::aggression::AggressionLevel,
+    pub active_specialists: HashMap<String, SpecialistInfo>,
+}
+
 /// Event emitted during connector operations
 #[derive(Debug, Clone)]
 pub enum ConnectorEvent {
@@ -157,6 +182,10 @@ pub struct LiveViewConnector {
     pub(crate) liveview_port: u16,
     pub(crate) ott_provider: Arc<RwLock<Option<OttProvider>>>,
     pub(crate) reconnect_with_jwt: Arc<AtomicBool>,
+    /// Active scan state (if a scan is running)
+    pub(crate) active_scan: Arc<RwLock<Option<ScanState>>>,
+    /// Matrix HTTP client for sending system messages (aggression updates, etc.)
+    pub(crate) matrix_client: Arc<RwLock<Option<pentest_core::matrix::MatrixChatClient>>>,
 }
 
 impl LiveViewConnector {
@@ -197,6 +226,8 @@ impl LiveViewConnector {
             liveview_port: DEFAULT_LIVEVIEW_PORT,
             ott_provider: Arc::new(RwLock::new(None)),
             reconnect_with_jwt: Arc::new(AtomicBool::new(false)),
+            active_scan: Arc::new(RwLock::new(None)),
+            matrix_client: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -298,15 +329,97 @@ impl LiveViewConnector {
                         "[tool] {} completed ({}ms)",
                         tool_name, duration_ms
                     ))
-                    .with_details(details)
+                    .with_details(details.clone())
                 } else {
                     TerminalLine::error(format!(
                         "[tool] {} returned error ({}ms)",
                         tool_name, duration_ms
                     ))
-                    .with_details(details)
+                    .with_details(details.clone())
                 };
                 crate::liveview_server::push_terminal_line(line);
+
+                // Handle special tools that update scan state
+                if *success {
+                    if tool_name == "begin_scan" {
+                        // Extract conversation_id and agent_id from result
+                        if let Ok(scan_result) =
+                            serde_json::from_value::<serde_json::Value>(result.clone())
+                        {
+                            if let (Some(conv_id), Some(agent_id)) = (
+                                scan_result.get("scan_id").and_then(|v| v.as_str()),
+                                result.get("agent_id").and_then(|v| v.as_str()),
+                            ) {
+                                // Initialize scan state
+                                let scan_state = ScanState {
+                                    conversation_id: conv_id.to_string(),
+                                    agent_id: agent_id.to_string(),
+                                    started_at: std::time::Instant::now(),
+                                    started_at_system: std::time::SystemTime::now(),
+                                    current_aggression: self.config.aggression_level,
+                                    active_specialists: std::collections::HashMap::new(),
+                                };
+
+                                // Update active scan
+                                if let Ok(mut scan_guard) = self.active_scan.try_write() {
+                                    *scan_guard = Some(scan_state);
+                                    tracing::info!(
+                                        "Scan started: conv={} agent={}",
+                                        conv_id,
+                                        agent_id
+                                    );
+                                }
+                            }
+                        }
+                    } else if tool_name == "spawn_specialist" {
+                        // Extract specialist information from result
+                        if let Ok(spawn_result) =
+                            serde_json::from_value::<serde_json::Value>(result.clone())
+                        {
+                            if spawn_result
+                                .get("spawned")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false)
+                            {
+                                if let (
+                                    Some(specialist_type),
+                                    Some(agent_id),
+                                    Some(agent_name),
+                                    Some(targets),
+                                ) = (
+                                    spawn_result.get("specialist_type").and_then(|v| v.as_str()),
+                                    spawn_result.get("agent_id").and_then(|v| v.as_str()),
+                                    spawn_result.get("agent_name").and_then(|v| v.as_str()),
+                                    spawn_result.get("targets").and_then(|v| v.as_array()),
+                                ) {
+                                    let specialist_info = SpecialistInfo {
+                                        specialist_type: specialist_type.to_string(),
+                                        agent_id: agent_id.to_string(),
+                                        agent_name: agent_name.to_string(),
+                                        targets: targets
+                                            .iter()
+                                            .filter_map(|v| v.as_str().map(String::from))
+                                            .collect(),
+                                        spawned_at: std::time::SystemTime::now(),
+                                    };
+
+                                    // Add to active scan
+                                    if let Ok(mut scan_guard) = self.active_scan.try_write() {
+                                        if let Some(ref mut scan) = *scan_guard {
+                                            scan.active_specialists
+                                                .insert(agent_id.to_string(), specialist_info);
+                                            tracing::info!(
+                                                "Specialist spawned: type={} agent={}",
+                                                specialist_type,
+                                                agent_id
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             ConnectorEvent::ToolFailed { tool_name, error } => {
                 crate::liveview_server::push_terminal_line(
@@ -342,12 +455,23 @@ impl LiveViewConnector {
             "Starting LiveView server..."
         })));
 
+        // Create API routes for scan status and aggression adjustment
+        let api_state = api_routes::ApiState {
+            scan_state: self.active_scan.clone(),
+            config: Arc::new(RwLock::new(self.config.clone())),
+            matrix_client: self.matrix_client.clone(),
+        };
+        let api_routes_router = api_routes::create_api_routes(api_state);
+
+        // Merge API routes with extra routes
+        let combined_routes = extra_routes.merge(api_routes_router);
+
         let lv_config = LiveViewConfig {
             port: DEFAULT_LIVEVIEW_PORT,
             workspace_path,
         };
 
-        match start_liveview_server(lv_config, extra_routes).await {
+        match start_liveview_server(lv_config, combined_routes).await {
             Ok(handle) => {
                 self.liveview_port = handle.port();
                 let url = handle.base_url();
@@ -816,13 +940,18 @@ impl LiveViewConnector {
                                 // Tool request - spawn in background to avoid blocking the message loop
                                 // during long-running commands (e.g., nmap scans).
                                 // Pass the Arc so the task uses the current sender after any reconnect.
-                                let tools = self.tools.clone();
-                                let workspace_path = self.workspace_path.clone();
-                                let instance_id = self.config.instance_id.clone();
-                                let matrix_tx = Arc::clone(&self.matrix_tx);
-                                let event_tx = self.event_tx.clone();
+                                let params = tools::ExecuteParams {
+                                    tools: self.tools.clone(),
+                                    workspace_path: self.workspace_path.clone(),
+                                    instance_id: self.config.instance_id.clone(),
+                                    matrix_tx: Arc::clone(&self.matrix_tx),
+                                    event_tx: self.event_tx.clone(),
+                                    aggression_level: self.config.aggression_level,
+                                    agent_name: self.config.connector_name.clone(),
+                                    matrix_api_url: Some(self.derive_matrix_api_url()),
+                                };
                                 tokio::spawn(async move {
-                                    handle_execute_impl(req, tools, workspace_path, instance_id, matrix_tx, event_tx).await;
+                                    handle_execute_impl(req, params).await;
                                 });
                             }
                         }
@@ -889,6 +1018,14 @@ impl LiveViewConnector {
                         auth_token: token.clone(),
                         api_url: api_url.clone(),
                     });
+
+                    // Initialize Matrix HTTP client for API calls (system messages, etc.)
+                    if !api_url.is_empty() {
+                        let mut client = pentest_core::matrix::MatrixChatClient::new(&api_url);
+                        client.set_auth_token(token.clone());
+                        *self.matrix_client.write().await = Some(client);
+                        tracing::info!("Matrix HTTP client initialized");
+                    }
 
                     // Start server-side token refresh loop (idempotent) so
                     // the session token stays valid for GraphQL calls.

@@ -1,0 +1,57 @@
+[metadata]
+name = "Home Lab Test Scope"
+engagement_id = "test-2026-04-22"
+description = "Testing scope enforcement with 10.0.4.0/24 and 10.0.8.0/24 networks"
+
+# ============================================================================
+# IN SCOPE - Authorized targets for testing
+# ============================================================================
+
+[[in_scope]]
+type = "cidr"
+value = "10.0.4.0/24"
+description = "Primary test network (10.0.4.1-254)"
+
+[[in_scope]]
+type = "cidr"
+value = "10.0.8.0/24"
+description = "Secondary test network (10.0.8.1-254)"
+
+[[in_scope]]
+type = "domain"
+pattern = "*.local"
+description = "Local domain names"
+
+[[in_scope]]
+type = "domain"
+pattern = "*.test"
+description = "Test domain names"
+
+# ============================================================================
+# OUT OF SCOPE - Explicitly forbidden targets (takes precedence)
+# ============================================================================
+
+[[out_of_scope]]
+type = "cidr"
+value = "10.0.4.1/32"
+description = "Router/gateway - DO NOT SCAN"
+
+[[out_of_scope]]
+type = "cidr"
+value = "10.0.8.1/32"
+description = "Router/gateway - DO NOT SCAN"
+
+[[out_of_scope]]
+type = "domain"
+pattern = "*.production.com"
+description = "Production systems - FORBIDDEN"
+
+[[out_of_scope]]
+type = "domain"
+pattern = "*.prod"
+description = "Production systems - FORBIDDEN"
+
+[[out_of_scope]]
+type = "ports"
+ports = [22, 3389]
+description = "SSH and RDP - high risk services"

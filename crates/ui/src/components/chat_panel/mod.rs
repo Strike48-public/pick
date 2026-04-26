@@ -214,6 +214,73 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     let connector_name = crate::session::get_connector_name();
                     let auto = list.iter().find(|a| a.name == connector_name).cloned();
 
+                    // Ensure the Validator Agent sibling exists. It rides on
+                    // the same connector but with a separate system prompt
+                    // and a minimal tool surface (doc read + mermaid
+                    // validation). Scanner tools are NOT auto-approved —
+                    // the Validator re-probes only with human consent.
+                    // Idempotent: if the sibling is already registered we
+                    // leave it alone.
+                    let validator_name = format!("{}{}", connector_name, VALIDATOR_AGENT_SUFFIX);
+                    let has_validator = list.iter().any(|a| a.name == validator_name);
+                    if !has_validator {
+                        tracing::info!(
+                            "ChatPanel: no {} agent found, creating Validator Agent sibling",
+                            validator_name
+                        );
+                        match client
+                            .create_agent(default_validator_agent_input(
+                                &tenant_id,
+                                &connector_name,
+                            ))
+                            .await
+                        {
+                            Ok(new_agent) => {
+                                tracing::info!(
+                                    "ChatPanel: created Validator Agent: {}",
+                                    new_agent.name
+                                );
+                                list.push(new_agent);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "ChatPanel: failed to create Validator Agent: {}",
+                                    e
+                                );
+                            }
+                        }
+                    }
+
+                    // Ensure the Report Agent sibling exists. It rides on the
+                    // same connector but uses a separate system prompt and a
+                    // minimal tool surface (diagram validators + write_file).
+                    // Idempotent: if the sibling is already registered we
+                    // leave it alone — its prompt/tools don't depend on the
+                    // scanner tool list and updating risks thrashing state.
+                    let report_name = format!("{}{}", connector_name, REPORT_AGENT_SUFFIX);
+                    let has_report = list.iter().any(|a| a.name == report_name);
+                    if !has_report {
+                        tracing::info!(
+                            "ChatPanel: no {} agent found, creating Report Agent sibling",
+                            report_name
+                        );
+                        match client
+                            .create_agent(default_report_agent_input(&tenant_id, &connector_name))
+                            .await
+                        {
+                            Ok(new_agent) => {
+                                tracing::info!(
+                                    "ChatPanel: created Report Agent: {}",
+                                    new_agent.name
+                                );
+                                list.push(new_agent);
+                            }
+                            Err(e) => {
+                                tracing::warn!("ChatPanel: failed to create Report Agent: {}", e);
+                            }
+                        }
+                    }
+
                     if let Some(agent) = auto {
                         tracing::info!(
                             "ChatPanel: auto-selected agent: {}, updating tool configs",
@@ -603,6 +670,133 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         }
     });
 
+    // Handler: generate final report.
+    //
+    // 1. Snapshot the evidence graph and ask the orchestrator gate to build
+    //    a `validated_findings_manifest`. If any node is still Pending the
+    //    gate refuses — we surface the blocker as an error banner and bail.
+    // 2. Resolve the Report Agent sibling (`{connector_name}-report`) from
+    //    the agent list. If we can't find it, the auto-registration step in
+    //    the fetch-agents block didn't complete; tell the user so they can
+    //    reload.
+    // 3. Switch the selected agent to the Report sibling, create a fresh
+    //    conversation, and send the seed message the Report Agent expects.
+    //
+    // This is the single point at which the three-agent pipeline hands off
+    // to report rendering — no other path should write to the Report Agent.
+    let on_generate_report = EventHandler::new({
+        let make_client = make_client.clone();
+        move |_: ()| {
+            // Gate the evidence graph before doing anything UI-visible.
+            let snapshot = crate::session::evidence_snapshot();
+            let engagement = pentest_core::orchestrator::EngagementInfo::new(
+                crate::session::get_connector_name(),
+                chrono::Utc::now(),
+            );
+            let manifest = match pentest_core::orchestrator::gate_for_report(&snapshot, engagement)
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    error_msg.set(Some(format!(
+                        "Cannot generate report: {e}. Ask the Validator to adjudicate \
+                         pending nodes first."
+                    )));
+                    return;
+                }
+            };
+
+            // Resolve the Report Agent sibling. Its name is deterministic
+            // (see REPORT_AGENT_SUFFIX), so we look it up rather than trust
+            // whatever happens to be selected.
+            let connector_name = crate::session::get_connector_name();
+            let report_name = format!("{}{}", connector_name, REPORT_AGENT_SUFFIX);
+            let report_agent = agents
+                .peek()
+                .iter()
+                .find(|a| a.name == report_name)
+                .cloned();
+            let Some(report_agent) = report_agent else {
+                error_msg.set(Some(format!(
+                    "Report Agent '{report_name}' is not registered. Reload the page \
+                     so the chat panel can create it."
+                )));
+                return;
+            };
+
+            // Save current conversation under the previously selected agent
+            // before we hijack the panel with the Report Agent.
+            if let Some(old_agent) = selected_agent.peek().as_ref() {
+                if let Some(cid) = conversation_id.peek().clone() {
+                    agent_conversations
+                        .write()
+                        .insert(old_agent.id.clone(), cid);
+                }
+            }
+
+            selected_agent.set(Some(report_agent.clone()));
+            conversation_id.set(None);
+            messages.set(Vec::new());
+            show_history.set(false);
+            error_msg.set(None);
+            agent_thinking.set(false);
+            agent_status_text.set(String::new());
+
+            let seed = pentest_core::orchestrator::build_report_agent_seed_message(&manifest);
+            let client = make_client();
+            is_sending.set(true);
+
+            spawn(async move {
+                let conv_title = format!("Report for {}", manifest.engagement.target);
+                let conv_id = match client.create_conversation(Some(&conv_title)).await {
+                    Ok(id) => {
+                        conversation_id.set(Some(id.clone()));
+                        agent_conversations
+                            .write()
+                            .insert(report_agent.id.clone(), id.clone());
+                        id
+                    }
+                    Err(e) => {
+                        error_msg.set(Some(format!("Failed to create report conversation: {e}")));
+                        is_sending.set(false);
+                        return;
+                    }
+                };
+
+                let user_msg = ChatMessage {
+                    id: format!("local-{}", messages.peek().len()),
+                    sender_type: "USER".to_string(),
+                    sender_name: "Orchestrator".to_string(),
+                    text: seed.clone(),
+                    parts: vec![pentest_core::matrix::MessagePart::Text(seed.clone())],
+                };
+                messages.write().push(user_msg);
+                user_scrolled_up.set(false);
+
+                match client.send_message(&conv_id, &report_agent.id, &seed).await {
+                    Ok(_) => {
+                        agent_thinking.set(true);
+                        agent_status_text.set("Rendering report...".to_string());
+                        is_sending.set(false);
+                        poll_and_update(
+                            client,
+                            conv_id,
+                            conversation_id,
+                            messages,
+                            agent_thinking,
+                            agent_status_text,
+                            error_msg,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        error_msg.set(Some(format!("Failed to send report seed: {e}")));
+                        is_sending.set(false);
+                    }
+                }
+            });
+        }
+    });
+
     let on_select_conversation = EventHandler::new({
         let make_client = make_client.clone();
         move |cid: String| {
@@ -670,6 +864,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 on_agent_select,
                 on_new_chat,
                 on_toggle_history,
+                on_generate_report,
             };
             // Only write if the data actually changed (avoids unnecessary parent re-renders).
             let needs_update = {
@@ -807,6 +1002,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     on_agent_select: on_agent_select,
                     on_new_chat: on_new_chat,
                     on_toggle_history: on_toggle_history,
+                    on_generate_report: on_generate_report,
                     show_history: show_history,
                     is_full: is_full,
                     on_close: move |_| trigger_close(),
