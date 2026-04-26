@@ -198,18 +198,43 @@ fn is_private_ipv4(ip: Ipv4Addr) -> bool {
         return true;
     }
 
-    // 192.0.2.0/24 (documentation)
+    // 192.0.2.0/24 (documentation - TEST-NET-1)
     if octets[0] == 192 && octets[1] == 0 && octets[2] == 2 {
         return true;
     }
 
-    // 0.0.0.0/8
+    // 198.51.100.0/24 (documentation - TEST-NET-2)
+    if octets[0] == 198 && octets[1] == 51 && octets[2] == 100 {
+        return true;
+    }
+
+    // 203.0.113.0/24 (documentation - TEST-NET-3)
+    if octets[0] == 203 && octets[1] == 0 && octets[2] == 113 {
+        return true;
+    }
+
+    // 100.64.0.0/10 (carrier-grade NAT - RFC 6598)
+    if octets[0] == 100 && (octets[1] >= 64 && octets[1] <= 127) {
+        return true;
+    }
+
+    // 198.18.0.0/15 (benchmark testing - RFC 2544)
+    if octets[0] == 198 && (octets[1] == 18 || octets[1] == 19) {
+        return true;
+    }
+
+    // 0.0.0.0/8 (this network)
     if octets[0] == 0 {
         return true;
     }
 
     // Multicast (224.0.0.0/4)
     if octets[0] >= 224 && octets[0] <= 239 {
+        return true;
+    }
+
+    // 240.0.0.0/4 (reserved - RFC 1112)
+    if octets[0] >= 240 {
         return true;
     }
 
