@@ -9,6 +9,7 @@ use pentest_core::timeout::ToolTimeouts;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
+use pentest_core::validation::validate_target;
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -89,6 +90,9 @@ impl PentestTool for MasscanTool {
                     "target parameter is required".into(),
                 ));
             }
+
+            // Validate target to prevent command injection
+            let target = validate_target(&target)?;
 
             let ports = param_str_or(&params, "ports", "0-100");
             let rate = param_u64(&params, "rate", 1000);

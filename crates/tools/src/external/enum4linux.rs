@@ -8,6 +8,7 @@ use pentest_core::error::Result;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
+use pentest_core::validation::validate_target;
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -82,6 +83,9 @@ impl PentestTool for Enum4linuxTool {
 
             // Extract parameters
             let target = param_str_or(&params, "target", "");
+
+            // Validate target to prevent command injection
+            let target = validate_target(&target)?;
             if target.is_empty() {
                 return Err(pentest_core::error::Error::InvalidParams(
                     "target parameter is required".into(),
