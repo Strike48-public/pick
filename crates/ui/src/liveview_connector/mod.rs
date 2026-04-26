@@ -109,6 +109,30 @@ pub(crate) struct WsConnectionState {
     to_backend_tx: mpsc::Sender<WsMessage>,
 }
 
+/// Information about a spawned specialist agent
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SpecialistInfo {
+    pub specialist_type: String,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub targets: Vec<String>,
+    #[serde(with = "humantime_serde")]
+    pub spawned_at: std::time::SystemTime,
+}
+
+/// Active scan state tracking
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScanState {
+    pub conversation_id: String,
+    pub agent_id: String,
+    #[serde(skip)]
+    pub started_at: std::time::Instant,
+    #[serde(with = "humantime_serde")]
+    pub started_at_system: std::time::SystemTime,
+    pub current_aggression: pentest_core::aggression::AggressionLevel,
+    pub active_specialists: HashMap<String, SpecialistInfo>,
+}
+
 /// Event emitted during connector operations
 #[derive(Debug, Clone)]
 pub enum ConnectorEvent {
