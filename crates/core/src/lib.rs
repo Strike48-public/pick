@@ -3,6 +3,7 @@
 //! This crate provides the core types and abstractions for the multiplatform
 //! pentest connector application.
 
+pub mod aggression;
 pub mod config;
 pub mod connector;
 pub mod error;

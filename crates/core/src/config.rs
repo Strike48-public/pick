@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::aggression::AggressionLevel;
+
 /// Shell execution mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ShellMode {
@@ -82,6 +84,10 @@ pub struct ConnectorConfig {
     pub reconnect_enabled: bool,
     pub reconnect_delay_ms: u64,
     pub max_backoff_delay_ms: u64,
+
+    /// Aggression level for penetration testing scans
+    #[serde(default)]
+    pub aggression_level: AggressionLevel,
 }
 
 fn default_connector_name() -> String {
@@ -97,6 +103,7 @@ impl Default for ConnectorConfig {
             instance_id: Uuid::new_v4().to_string(),
             connector_name: default_connector_name(),
             display_name: None,
+            aggression_level: AggressionLevel::default(),
             tags: vec![],
             use_tls: true,
             reconnect_enabled: true,
