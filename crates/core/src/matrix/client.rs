@@ -112,18 +112,42 @@ impl MatrixChatClient {
         let status = resp.status();
         tracing::info!("[gql] response status={}", status);
 
+        // Defense against hostile Matrix API responses: limit response size to prevent OOM
+        const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
+
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("(could not read error body: {})", e));
             return Err(crate::error::Error::Matrix(format!(
                 "GraphQL request failed: {} - {}",
-                status, body
+                status,
+                truncate_body(&body)
             )));
         }
 
-        let body_text = resp
-            .text()
-            .await
-            .map_err(|e| crate::error::Error::Matrix(e.to_string()))?;
+        // Read response with size limit to prevent memory exhaustion from malicious/compromised server
+        let body_text = {
+            use futures::StreamExt;
+            let mut body = Vec::new();
+            let mut stream = resp.bytes_stream();
+
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|e| crate::error::Error::Matrix(e.to_string()))?;
+                if body.len() + chunk.len() > MAX_RESPONSE_SIZE {
+                    return Err(crate::error::Error::Matrix(format!(
+                        "Response exceeded {} MB limit (defensive limit against malicious payloads)",
+                        MAX_RESPONSE_SIZE / (1024 * 1024)
+                    )));
+                }
+                body.extend_from_slice(&chunk);
+            }
+
+            String::from_utf8(body).map_err(|e| {
+                crate::error::Error::Matrix(format!("Response contained invalid UTF-8: {}", e))
+            })?
+        };
         let gql: GqlResponse<T> = serde_json::from_str(&body_text).map_err(|e| {
             crate::error::Error::Matrix(format!(
                 "GraphQL decode error: {} — body: {}",

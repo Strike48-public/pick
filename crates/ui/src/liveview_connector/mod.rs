@@ -501,14 +501,31 @@ impl LiveViewConnector {
                                     spawn_result.get("agent_name").and_then(|v| v.as_str()),
                                     spawn_result.get("targets").and_then(|v| v.as_array()),
                                 ) {
+                                    // Defense against hostile agents: limit specialist tracking to prevent memory exhaustion
+                                    const MAX_SPECIALISTS_PER_SCAN: usize = 50;
+                                    const MAX_TARGETS_PER_SPECIALIST: usize = 1000;
+
+                                    // Truncate target list if excessive (defense against compromised agents)
+                                    let mut target_list: Vec<String> = targets
+                                        .iter()
+                                        .filter_map(|v| v.as_str().map(String::from))
+                                        .collect();
+
+                                    if target_list.len() > MAX_TARGETS_PER_SPECIALIST {
+                                        tracing::warn!(
+                                            "Specialist {} targets truncated from {} to {} (defensive limit)",
+                                            agent_id,
+                                            target_list.len(),
+                                            MAX_TARGETS_PER_SPECIALIST
+                                        );
+                                        target_list.truncate(MAX_TARGETS_PER_SPECIALIST);
+                                    }
+
                                     let specialist_info = SpecialistInfo {
                                         specialist_type: specialist_type.to_string(),
                                         agent_id: agent_id.to_string(),
                                         agent_name: agent_name.to_string(),
-                                        targets: targets
-                                            .iter()
-                                            .filter_map(|v| v.as_str().map(String::from))
-                                            .collect(),
+                                        targets: target_list,
                                         spawned_at: std::time::SystemTime::now(),
                                     };
 
@@ -522,13 +539,24 @@ impl LiveViewConnector {
                                     while retry_count < max_retries {
                                         if let Ok(mut scan_guard) = self.active_scan.try_write() {
                                             if let Some(ref mut scan) = *scan_guard {
+                                                // Check specialist limit before adding
+                                                if scan.active_specialists.len() >= MAX_SPECIALISTS_PER_SCAN {
+                                                    tracing::warn!(
+                                                        "Max specialists limit reached ({}). \
+                                                         Specialist {} will not be tracked.",
+                                                        MAX_SPECIALISTS_PER_SCAN,
+                                                        agent_id
+                                                    );
+                                                    break;
+                                                }
+
                                                 scan.active_specialists
                                                     .insert(agent_id.to_string(), specialist_info.clone());
                                                 tracing::info!(
                                                     "Specialist tracked: type={} agent={} targets={}",
                                                     specialist_type,
                                                     agent_id,
-                                                    targets.len()
+                                                    specialist_info.targets.len()
                                                 );
                                                 tracked = true;
                                                 break;

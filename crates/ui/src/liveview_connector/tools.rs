@@ -150,6 +150,48 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
         matrix_api_url,
     } = params;
     let request_id = req.request_id.clone();
+
+    // Defense against hostile targets: limit tool result payload size to prevent OOM
+    // This protects against malicious targets returning massive outputs (e.g., 100MB nmap XML)
+    const MAX_TOOL_PAYLOAD: usize = 5 * 1024 * 1024; // 5 MB
+
+    if req.payload.len() > MAX_TOOL_PAYLOAD {
+        tracing::error!(
+            "Tool result payload too large: {} bytes (max {} MB). \
+             This may indicate a hostile target attempting resource exhaustion.",
+            req.payload.len(),
+            MAX_TOOL_PAYLOAD / (1024 * 1024)
+        );
+
+        let error_payload = serde_json::json!({
+            "success": false,
+            "error": format!(
+                "Tool output exceeded {} MB limit. Output truncated for safety.",
+                MAX_TOOL_PAYLOAD / (1024 * 1024)
+            )
+        });
+
+        let tx_clone = {
+            let guard = matrix_tx.read().await;
+            guard.as_ref().cloned()
+        };
+
+        if let Some(tx) = tx_clone {
+            let response_msg = StreamMessage {
+                message: Some(Message::ExecuteResponse(ExecuteResponse {
+                    request_id,
+                    success: false,
+                    payload: serde_json::to_vec(&error_payload).unwrap_or_default(),
+                    payload_encoding: PayloadEncoding::Json as i32,
+                    error: "Payload size limit exceeded".to_string(),
+                    duration_ms: 0,
+                })),
+            };
+            let _ = tx.send(response_msg);
+        }
+        return;
+    }
+
     let request: Value = serde_json::from_slice(&req.payload).unwrap_or(Value::Null);
 
     // For now, we only handle tool execution (app proxying requires LiveViewConnector)
