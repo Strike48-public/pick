@@ -339,8 +339,6 @@ impl LiveViewConnector {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn tool_payload_limit_value() {
         // Verify the defensive limit constant is set correctly
