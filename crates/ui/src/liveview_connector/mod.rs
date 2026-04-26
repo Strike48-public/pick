@@ -54,7 +54,7 @@ use pentest_core::tools::ToolRegistry;
 use pentest_core::workspace;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use strike48_connector::{
     AppManifest, ClientOptions, ConnectorBehavior, ConnectorClient, NavigationConfig, OttProvider,
@@ -256,6 +256,8 @@ pub struct LiveViewConnector {
     pub(crate) active_scan: Arc<RwLock<Option<ScanState>>>,
     /// Matrix HTTP client for sending system messages (aggression updates, etc.)
     pub(crate) matrix_client: Arc<RwLock<Option<pentest_core::matrix::MatrixChatClient>>>,
+    /// Total specialists spawned across reconnects (persists across ScanState resets)
+    pub(crate) total_specialists_spawned: Arc<AtomicUsize>,
 }
 
 impl LiveViewConnector {
@@ -298,6 +300,7 @@ impl LiveViewConnector {
             reconnect_with_jwt: Arc::new(AtomicBool::new(false)),
             active_scan: Arc::new(RwLock::new(None)),
             matrix_client: Arc::new(RwLock::new(None)),
+            total_specialists_spawned: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -438,14 +441,17 @@ impl LiveViewConnector {
                                 // Spawn as task since send_event is not async
                                 let active_scan = Arc::clone(&self.active_scan);
                                 let conv_id = conv_id.to_string();
+                                let total_specialists = Arc::clone(&self.total_specialists_spawned);
                                 tokio::spawn(async move {
                                     let mut retry_count = 0;
-                                    let max_retries = 3;
+                                    let max_retries = 10;
                                     let mut initialized = false;
 
                                     while retry_count < max_retries {
                                         if let Ok(mut scan_guard) = active_scan.try_write() {
                                             *scan_guard = Some(scan_state.clone());
+                                            // Reset specialist counter when new scan starts
+                                            total_specialists.store(0, Ordering::SeqCst);
                                             tracing::info!(
                                                 "Scan state initialized: conversation={} agent={}",
                                                 scan_state.conversation_id,
@@ -461,10 +467,10 @@ impl LiveViewConnector {
                                                     retry_count,
                                                     max_retries
                                                 );
-                                                // Brief exponential backoff: 1ms, 2ms, 4ms
+                                                // Exponential backoff: 2ms, 4ms, 8ms, 16ms, 32ms, ...
                                                 tokio::time::sleep(
                                                     tokio::time::Duration::from_millis(
-                                                        1 << retry_count,
+                                                        2 << retry_count,
                                                     ),
                                                 )
                                                 .await;
@@ -540,23 +546,23 @@ impl LiveViewConnector {
                                     // Retry with exponential backoff to ensure specialist is tracked
                                     // Spawn as task since send_event is not async
                                     let active_scan = Arc::clone(&self.active_scan);
+                                    let total_specialists = Arc::clone(&self.total_specialists_spawned);
                                     let agent_id_owned = agent_id.to_string();
                                     tokio::spawn(async move {
                                         let mut retry_count = 0;
-                                        let max_retries = 3;
+                                        let max_retries = 10;
                                         let mut tracked = false;
 
                                         while retry_count < max_retries {
                                             if let Ok(mut scan_guard) = active_scan.try_write() {
                                                 if let Some(ref mut scan) = *scan_guard {
-                                                    // Check specialist limit before adding
-                                                    if scan.active_specialists.len()
-                                                        >= MAX_SPECIALISTS_PER_SCAN
-                                                    {
+                                                    // Check global specialist limit (persists across reconnects)
+                                                    let current_total = total_specialists.load(Ordering::SeqCst);
+                                                    if current_total >= MAX_SPECIALISTS_PER_SCAN {
                                                         tracing::warn!(
-                                                            "Max specialists limit reached ({}). \
+                                                            "Max specialists limit reached ({} total spawned). \
                                                              Specialist {} will not be tracked.",
-                                                            MAX_SPECIALISTS_PER_SCAN,
+                                                            current_total,
                                                             agent_id_owned
                                                         );
                                                         break;
@@ -566,11 +572,15 @@ impl LiveViewConnector {
                                                         agent_id_owned.clone(),
                                                         specialist_info.clone(),
                                                     );
+                                                    // Increment global counter (atomic)
+                                                    total_specialists.fetch_add(1, Ordering::SeqCst);
                                                     tracing::info!(
-                                                        "Specialist tracked: type={} agent={} targets={}",
+                                                        "Specialist tracked: type={} agent={} targets={} (total: {}/{})",
                                                         specialist_info.specialist_type,
                                                         agent_id_owned,
-                                                        specialist_info.targets.len()
+                                                        specialist_info.targets.len(),
+                                                        current_total + 1,
+                                                        MAX_SPECIALISTS_PER_SCAN
                                                     );
                                                     tracked = true;
                                                     break;
@@ -588,10 +598,10 @@ impl LiveViewConnector {
                                                         retry_count,
                                                         max_retries
                                                     );
-                                                    // Brief exponential backoff: 1ms, 2ms, 4ms
+                                                    // Exponential backoff: 2ms, 4ms, 8ms, 16ms, 32ms, ...
                                                     tokio::time::sleep(
                                                         tokio::time::Duration::from_millis(
-                                                            1 << retry_count,
+                                                            2 << retry_count,
                                                         ),
                                                     )
                                                     .await;
