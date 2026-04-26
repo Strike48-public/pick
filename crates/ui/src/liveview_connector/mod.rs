@@ -9,6 +9,7 @@
 //! Unlike the standard ConnectionManager which uses ConnectorRunner,
 //! this directly handles the gRPC stream to support WebSocket messages.
 
+mod api_routes;
 mod auth;
 mod injections;
 mod token_refresh;
@@ -157,6 +158,10 @@ pub struct LiveViewConnector {
     pub(crate) liveview_port: u16,
     pub(crate) ott_provider: Arc<RwLock<Option<OttProvider>>>,
     pub(crate) reconnect_with_jwt: Arc<AtomicBool>,
+    /// Active scan state (if a scan is running)
+    pub(crate) active_scan: Arc<RwLock<Option<ScanState>>>,
+    /// Matrix HTTP client for sending system messages (aggression updates, etc.)
+    pub(crate) matrix_client: Arc<RwLock<Option<pentest_core::matrix::MatrixChatClient>>>,
 }
 
 impl LiveViewConnector {
@@ -197,6 +202,8 @@ impl LiveViewConnector {
             liveview_port: DEFAULT_LIVEVIEW_PORT,
             ott_provider: Arc::new(RwLock::new(None)),
             reconnect_with_jwt: Arc::new(AtomicBool::new(false)),
+            active_scan: Arc::new(RwLock::new(None)),
+            matrix_client: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -342,12 +349,23 @@ impl LiveViewConnector {
             "Starting LiveView server..."
         })));
 
+        // Create API routes for scan status and aggression adjustment
+        let api_state = api_routes::ApiState {
+            scan_state: self.active_scan.clone(),
+            config: Arc::new(RwLock::new(self.config.clone())),
+            matrix_client: self.matrix_client.clone(),
+        };
+        let api_routes_router = api_routes::create_api_routes(api_state);
+
+        // Merge API routes with extra routes
+        let combined_routes = extra_routes.merge(api_routes_router);
+
         let lv_config = LiveViewConfig {
             port: DEFAULT_LIVEVIEW_PORT,
             workspace_path,
         };
 
-        match start_liveview_server(lv_config, extra_routes).await {
+        match start_liveview_server(lv_config, combined_routes).await {
             Ok(handle) => {
                 self.liveview_port = handle.port();
                 let url = handle.base_url();
@@ -894,6 +912,13 @@ impl LiveViewConnector {
                         auth_token: token.clone(),
                         api_url: api_url.clone(),
                     });
+
+                    // Initialize Matrix HTTP client for API calls (system messages, etc.)
+                    if !api_url.is_empty() {
+                        let client = pentest_core::matrix::MatrixChatClient::new(&api_url, &token);
+                        *self.matrix_client.write().await = Some(client);
+                        tracing::info!("Matrix HTTP client initialized");
+                    }
 
                     // Start server-side token refresh loop (idempotent) so
                     // the session token stays valid for GraphQL calls.

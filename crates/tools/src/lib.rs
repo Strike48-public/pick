@@ -4,6 +4,7 @@
 
 pub mod arp_table;
 pub mod autopwn;
+pub mod begin_scan;
 pub mod credential_harvest;
 pub mod cve_lookup;
 pub mod default_creds;
@@ -39,6 +40,7 @@ pub use autopwn::{
     AutoPwnCaptureTool, AutoPwnCrackTool, AutoPwnNetworkPlanTool, AutoPwnOrchestratorTool,
     AutoPwnPlanTool, WebAppToolchain,
 };
+pub use begin_scan::BeginScanTool;
 pub use credential_harvest::CredentialHarvestTool;
 pub use cve_lookup::CveLookupTool;
 pub use default_creds::DefaultCredsTool;
@@ -221,6 +223,7 @@ pub fn create_tool_registry() -> ToolRegistry {
 
     // Session management
     registry.register(SessionExportTool);
+    registry.register(BeginScanTool);
 
     // Automated toolchains
     registry.register(WebAppToolchain::new());
