@@ -133,7 +133,12 @@ impl PentestTool for JohnTool {
                         ));
                     }
                     let wordlist = validate_path(std::path::Path::new("/"), &wordlist)?;
-                    builder = builder.arg("--wordlist", wordlist.to_str().unwrap());
+                    let wordlist_str = wordlist.to_str().ok_or_else(|| {
+                        pentest_core::error::Error::InvalidParams(
+                            "Wordlist path contains invalid UTF-8".into(),
+                        )
+                    })?;
+                    builder = builder.arg("--wordlist", wordlist_str);
 
                     // Rules
                     if let Some(rules) = param_str_opt(&params, "rules") {
