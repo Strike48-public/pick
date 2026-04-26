@@ -65,11 +65,17 @@ pub struct SpawnSpecialistResult {
     /// Whether the specialist was spawned.
     pub spawned: bool,
 
+    /// Type of specialist spawned (if spawned).
+    pub specialist_type: Option<String>,
+
     /// Agent ID of the spawned specialist (if spawned).
     pub agent_id: Option<String>,
 
     /// Agent name of the spawned specialist (if spawned).
     pub agent_name: Option<String>,
+
+    /// Target URLs/endpoints being analyzed (if spawned).
+    pub targets: Option<Vec<String>>,
 
     /// Reason if not spawned.
     pub reason: Option<String>,
@@ -160,6 +166,9 @@ async fn spawn_specialist_impl(
 ) -> Result<SpawnSpecialistResult> {
     let spawner = SpecialistSpawner::new(aggression);
 
+    // Clone targets for later use in result
+    let targets_for_result = input.targets.clone();
+
     // Build specialist context
     let context = SpecialistContext {
         targets: input.targets,
@@ -193,8 +202,10 @@ async fn spawn_specialist_impl(
             } else if input.justification.is_some() {
                 return Ok(SpawnSpecialistResult {
                     spawned: false,
+                    specialist_type: None,
                     agent_id: None,
                     agent_name: None,
+                    targets: None,
                     reason: Some(format!(
                         "Policy override not allowed in {} mode",
                         aggression.display_name()
@@ -212,8 +223,10 @@ async fn spawn_specialist_impl(
             // For now, treat AskUser as Skip (UI can implement confirmation later)
             return Ok(SpawnSpecialistResult {
                 spawned: false,
+                specialist_type: None,
                 agent_id: None,
                 agent_name: None,
+                targets: None,
                 reason: Some("User confirmation required".to_string()),
                 decision: "ask_user".to_string(),
                 override_used: false,
@@ -226,8 +239,10 @@ async fn spawn_specialist_impl(
     if !should_spawn {
         return Ok(SpawnSpecialistResult {
             spawned: false,
+            specialist_type: None,
             agent_id: None,
             agent_name: None,
+            targets: None,
             reason: Some(format!(
                 "Policy says skip: {} mode threshold not met",
                 aggression.display_name()
@@ -258,8 +273,10 @@ async fn spawn_specialist_impl(
     {
         Ok(agent_info) => Ok(SpawnSpecialistResult {
             spawned: true,
+            specialist_type: Some(input.specialist_type.to_string()),
             agent_id: Some(agent_info.id),
             agent_name: Some(agent_info.name),
+            targets: Some(targets_for_result),
             reason: None,
             decision: if override_used {
                 "override_to_spawn".to_string()
@@ -305,8 +322,10 @@ mod tests {
     fn spawn_specialist_result_serialization() {
         let result = SpawnSpecialistResult {
             spawned: true,
+            specialist_type: Some("web-app".to_string()),
             agent_id: Some("agent-123".to_string()),
             agent_name: Some("pentest-connector-web-app".to_string()),
+            targets: Some(vec!["https://example.com".to_string()]),
             reason: None,
             decision: "spawn".to_string(),
             override_used: false,
