@@ -305,15 +305,97 @@ impl LiveViewConnector {
                         "[tool] {} completed ({}ms)",
                         tool_name, duration_ms
                     ))
-                    .with_details(details)
+                    .with_details(details.clone())
                 } else {
                     TerminalLine::error(format!(
                         "[tool] {} returned error ({}ms)",
                         tool_name, duration_ms
                     ))
-                    .with_details(details)
+                    .with_details(details.clone())
                 };
                 crate::liveview_server::push_terminal_line(line);
+
+                // Handle special tools that update scan state
+                if *success {
+                    if tool_name == "begin_scan" {
+                        // Extract conversation_id and agent_id from result
+                        if let Ok(scan_result) =
+                            serde_json::from_value::<serde_json::Value>(result.clone())
+                        {
+                            if let (Some(conv_id), Some(agent_id)) = (
+                                scan_result.get("scan_id").and_then(|v| v.as_str()),
+                                result.get("agent_id").and_then(|v| v.as_str()),
+                            ) {
+                                // Initialize scan state
+                                let scan_state = ScanState {
+                                    conversation_id: conv_id.to_string(),
+                                    agent_id: agent_id.to_string(),
+                                    started_at: std::time::Instant::now(),
+                                    started_at_system: std::time::SystemTime::now(),
+                                    current_aggression: self.config.aggression_level.clone(),
+                                    active_specialists: std::collections::HashMap::new(),
+                                };
+
+                                // Update active scan
+                                if let Ok(mut scan_guard) = self.active_scan.try_write() {
+                                    *scan_guard = Some(scan_state);
+                                    tracing::info!(
+                                        "Scan started: conv={} agent={}",
+                                        conv_id,
+                                        agent_id
+                                    );
+                                }
+                            }
+                        }
+                    } else if tool_name == "spawn_specialist" {
+                        // Extract specialist information from result
+                        if let Ok(spawn_result) =
+                            serde_json::from_value::<serde_json::Value>(result.clone())
+                        {
+                            if spawn_result
+                                .get("spawned")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false)
+                            {
+                                if let (
+                                    Some(specialist_type),
+                                    Some(agent_id),
+                                    Some(agent_name),
+                                    Some(targets),
+                                ) = (
+                                    spawn_result.get("specialist_type").and_then(|v| v.as_str()),
+                                    spawn_result.get("agent_id").and_then(|v| v.as_str()),
+                                    spawn_result.get("agent_name").and_then(|v| v.as_str()),
+                                    spawn_result.get("targets").and_then(|v| v.as_array()),
+                                ) {
+                                    let specialist_info = SpecialistInfo {
+                                        specialist_type: specialist_type.to_string(),
+                                        agent_id: agent_id.to_string(),
+                                        agent_name: agent_name.to_string(),
+                                        targets: targets
+                                            .iter()
+                                            .filter_map(|v| v.as_str().map(String::from))
+                                            .collect(),
+                                        spawned_at: std::time::SystemTime::now(),
+                                    };
+
+                                    // Add to active scan
+                                    if let Ok(mut scan_guard) = self.active_scan.try_write() {
+                                        if let Some(ref mut scan) = *scan_guard {
+                                            scan.active_specialists
+                                                .insert(agent_id.to_string(), specialist_info);
+                                            tracing::info!(
+                                                "Specialist spawned: type={} agent={}",
+                                                specialist_type,
+                                                agent_id
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             ConnectorEvent::ToolFailed { tool_name, error } => {
                 crate::liveview_server::push_terminal_line(

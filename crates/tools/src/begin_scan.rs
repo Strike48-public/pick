@@ -29,6 +29,9 @@ pub struct BeginScanResult {
     /// Scan ID (same as conversation_id)
     pub scan_id: String,
 
+    /// Agent ID that will perform the scan
+    pub agent_id: String,
+
     /// Current aggression level
     pub aggression_level: String,
 
@@ -77,6 +80,7 @@ impl PentestTool for BeginScanTool {
             let result = BeginScanResult {
                 success: true,
                 scan_id: input.conversation_id.clone(),
+                agent_id: input.agent_id.clone(),
                 aggression_level: aggression.display_name().to_string(),
                 message: format!(
                     "Scan started in {} mode ({}x cost multiplier). Use spawn_specialist to \
@@ -121,6 +125,7 @@ mod tests {
         let result = BeginScanResult {
             success: true,
             scan_id: "scan-123".to_string(),
+            agent_id: "agent-789".to_string(),
             aggression_level: "Balanced".to_string(),
             message: "Scan started".to_string(),
         };
@@ -128,5 +133,6 @@ mod tests {
         let deserialized: BeginScanResult = serde_json::from_str(&json).unwrap();
         assert!(deserialized.success);
         assert_eq!(deserialized.scan_id, "scan-123");
+        assert_eq!(deserialized.agent_id, "agent-789");
     }
 }
