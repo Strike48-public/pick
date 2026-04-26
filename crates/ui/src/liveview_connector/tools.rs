@@ -228,7 +228,12 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
     };
 
     // Send response — read the current sender at completion time (may be a new stream after reconnect)
-    if let Some(tx) = matrix_tx.read().await.as_ref() {
+    let tx_clone = {
+        let guard = matrix_tx.read().await;
+        guard.as_ref().cloned()
+    };
+
+    if let Some(tx) = tx_clone {
         let response_msg = StreamMessage {
             message: Some(Message::ExecuteResponse(ExecuteResponse {
                 request_id,
@@ -258,7 +263,12 @@ impl LiveViewConnector {
             let response = self.proxy_to_liveview(&page_request).await;
             let response_payload = serde_json::to_vec(&response).unwrap_or_default();
 
-            if let Some(tx) = self.matrix_tx.read().await.as_ref() {
+            let tx_clone = {
+                let guard = self.matrix_tx.read().await;
+                guard.as_ref().cloned()
+            };
+
+            if let Some(tx) = tx_clone {
                 let response_msg = StreamMessage {
                     message: Some(Message::ExecuteResponse(ExecuteResponse {
                         request_id,

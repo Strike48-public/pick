@@ -1021,7 +1021,8 @@ impl LiveViewConnector {
 
                     // Initialize Matrix HTTP client for API calls (system messages, etc.)
                     if !api_url.is_empty() {
-                        let client = pentest_core::matrix::MatrixChatClient::new(&api_url, &token);
+                        let mut client = pentest_core::matrix::MatrixChatClient::new(&api_url);
+                        client.set_auth_token(&token);
                         *self.matrix_client.write().await = Some(client);
                         tracing::info!("Matrix HTTP client initialized");
                     }
