@@ -52,7 +52,9 @@ impl IntoResponse for ErrorResponse {
 }
 
 /// GET /api/status - Returns current scan state
-async fn get_status(State(state): State<ApiState>) -> Result<Json<Option<ScanState>>, ErrorResponse> {
+async fn get_status(
+    State(state): State<ApiState>,
+) -> Result<Json<Option<ScanState>>, ErrorResponse> {
     let scan_guard = state.scan_state.read().await;
     Ok(Json(scan_guard.clone()))
 }
@@ -142,4 +144,66 @@ pub fn create_api_routes(state: ApiState) -> Router {
         .route("/api/status", get(get_status))
         .route("/api/aggression", post(post_aggression))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pentest_core::config::ConnectorConfig;
+
+    #[test]
+    fn aggression_request_serialization() {
+        let request = AggressionAdjustRequest {
+            level: "aggressive".to_string(),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("aggressive"));
+
+        let deserialized: AggressionAdjustRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.level, "aggressive");
+    }
+
+    #[tokio::test]
+    async fn api_state_creation() {
+        let config = ConnectorConfig::default();
+        let scan_state = Arc::new(RwLock::new(Some(ScanState {
+            conversation_id: "test-conv".to_string(),
+            agent_id: "test-agent".to_string(),
+            started_at: std::time::Instant::now(),
+            started_at_system: std::time::SystemTime::now(),
+            current_aggression: AggressionLevel::Balanced,
+            active_specialists: std::collections::HashMap::new(),
+        })));
+
+        let api_state = ApiState {
+            scan_state: scan_state.clone(),
+            config: Arc::new(RwLock::new(config)),
+            matrix_client: Arc::new(RwLock::new(None)),
+        };
+
+        // Verify we can read scan state through API state
+        let state_guard = api_state.scan_state.read().await;
+        assert!(state_guard.is_some());
+        if let Some(ref state) = *state_guard {
+            assert_eq!(state.conversation_id, "test-conv");
+            assert_eq!(state.current_aggression, AggressionLevel::Balanced);
+        }
+    }
+
+    #[test]
+    fn scan_state_serialization() {
+        let state = ScanState {
+            conversation_id: "conv-123".to_string(),
+            agent_id: "agent-456".to_string(),
+            started_at: std::time::Instant::now(),
+            started_at_system: std::time::SystemTime::now(),
+            current_aggression: AggressionLevel::Aggressive,
+            active_specialists: std::collections::HashMap::new(),
+        };
+
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["conversation_id"], "conv-123");
+        assert_eq!(json["agent_id"], "agent-456");
+        assert_eq!(json["current_aggression"], "Aggressive");
+    }
 }
