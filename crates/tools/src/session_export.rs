@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use pentest_core::export::SessionExport;
+use pentest_core::paths::validate_path;
 use pentest_core::prelude::*;
 use pentest_core::tools::{ParamType, ToolParam};
 use serde_json::json;
@@ -47,8 +48,19 @@ impl PentestTool for SessionExportTool {
         let extension = if format == "json" { "json" } else { "md" };
         let default_filename = format!("session-export-{}.{}", timestamp, extension);
 
-        let file_path = if let Some(path) = output_path {
-            PathBuf::from(path)
+        // Validate and resolve output path
+        let file_path = if let Some(user_path) = output_path {
+            // User-provided path must be validated against workspace
+            if let Some(workspace) = &ctx.workspace_path {
+                validate_path(workspace, user_path).map_err(|e| {
+                    tracing::error!("Invalid output path: {}", e);
+                    e
+                })?
+            } else {
+                return Ok(ToolResult::error(
+                    "No workspace available for path validation".to_string(),
+                ));
+            }
         } else if let Some(workspace) = &ctx.workspace_path {
             workspace.join(&default_filename)
         } else {

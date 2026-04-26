@@ -127,7 +127,7 @@ impl ConnectorConfig {
         self
     }
 
-    /// Validate the configuration
+    /// Validate the configuration including SSRF protection
     pub fn validate(&self) -> Result<(), String> {
         if self.host.is_empty() {
             return Err("Strike48 host is required".to_string());
@@ -135,6 +135,14 @@ impl ConnectorConfig {
         if self.tenant_id.is_empty() {
             return Err("Tenant ID is required".to_string());
         }
+
+        // Validate host URL for SSRF protection
+        use crate::url_validation::{validate_url, ValidationMode};
+
+        let validation_mode = ValidationMode::default();
+        validate_url(&self.host, validation_mode, None)
+            .map_err(|e| format!("Invalid host URL: {}", e))?;
+
         Ok(())
     }
 

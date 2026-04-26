@@ -5,9 +5,11 @@
 
 use async_trait::async_trait;
 use pentest_core::error::Result;
+use pentest_core::timeout::ToolTimeouts;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
+use pentest_core::validation::{validate_port_spec, validate_target};
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -94,8 +96,8 @@ impl PentestTool for NmapTool {
             .param(ToolParam::optional(
                 "timeout",
                 ParamType::Integer,
-                "Overall timeout in seconds (default: 300)",
-                json!(300),
+                "Overall timeout in seconds (default: 600, range: 30-3600)",
+                json!(600),
             ))
             .platforms(vec![Platform::Desktop, Platform::Tui])
     }
@@ -111,13 +113,16 @@ impl PentestTool for NmapTool {
             // Ensure nmap is installed
             ensure_tool_installed(&platform, "nmap", "nmap").await?;
 
-            // Extract parameters
+            // Extract and validate target parameter
             let target = param_str_or(&params, "target", "");
             if target.is_empty() {
                 return Err(pentest_core::error::Error::InvalidParams(
                     "target parameter is required".into(),
                 ));
             }
+
+            // Validate target format (IP, hostname, or CIDR)
+            let target = validate_target(&target)?;
 
             let scan_type = param_str_or(&params, "scan_type", "connect");
             let ports = param_str_or(&params, "ports", "top1000");
@@ -126,7 +131,16 @@ impl PentestTool for NmapTool {
             let aggressive = param_bool(&params, "aggressive", false);
             let timing = param_u64(&params, "timing", 3).clamp(0, 5);
             let no_ping = param_bool(&params, "no_ping", false);
-            let timeout = param_u64(&params, "timeout", 300);
+
+            // Get timeout with intelligent defaults and bounds checking
+            let timeouts = ToolTimeouts::default();
+            let default_timeout = timeouts.get_by_tool_name("nmap");
+            let user_timeout =
+                Duration::from_secs(param_u64(&params, "timeout", default_timeout.as_secs()));
+            let timeout = pentest_core::timeout::clamp_timeout(
+                user_timeout,
+                pentest_core::timeout::categorize_tool("nmap"),
+            );
 
             // Build nmap command
             let mut builder = CommandBuilder::new();
@@ -151,7 +165,11 @@ impl PentestTool for NmapTool {
                     "top100" => builder = builder.arg("--top-ports", "100"),
                     "top1000" => {} // Default, no flag needed
                     "all" => builder = builder.flag("-p-"),
-                    _ => builder = builder.arg("-p", &ports),
+                    _ => {
+                        // Validate custom port specification
+                        let validated_ports = validate_port_spec(&ports)?;
+                        builder = builder.arg("-p", &validated_ports);
+                    }
                 }
             }
 
@@ -192,9 +210,9 @@ impl PentestTool for NmapTool {
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-            // Execute nmap
+            // Execute nmap with configured timeout
             let result = platform
-                .execute_command("nmap", &args_refs, Duration::from_secs(timeout))
+                .execute_command("nmap", &args_refs, timeout)
                 .await?;
 
             // Read XML output

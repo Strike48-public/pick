@@ -5,9 +5,11 @@
 
 use async_trait::async_trait;
 use pentest_core::error::Result;
+use pentest_core::timeout::ToolTimeouts;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
+use pentest_core::validation::validate_target;
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -64,8 +66,8 @@ impl PentestTool for MasscanTool {
             .param(ToolParam::optional(
                 "timeout",
                 ParamType::Integer,
-                "Overall timeout in seconds (default: 300)",
-                json!(300),
+                "Overall timeout in seconds (default: 600, range: 30-3600)",
+                json!(600),
             ))
             .platforms(vec![Platform::Desktop, Platform::Tui])
     }
@@ -89,10 +91,22 @@ impl PentestTool for MasscanTool {
                 ));
             }
 
+            // Validate target to prevent command injection
+            let target = validate_target(&target)?;
+
             let ports = param_str_or(&params, "ports", "0-100");
             let rate = param_u64(&params, "rate", 1000);
             let banner = crate::util::param_bool(&params, "banner", false);
-            let timeout = param_u64(&params, "timeout", 300);
+
+            // Get timeout with intelligent defaults and bounds checking
+            let timeouts = ToolTimeouts::default();
+            let default_timeout = timeouts.get_by_tool_name("masscan");
+            let user_timeout =
+                Duration::from_secs(param_u64(&params, "timeout", default_timeout.as_secs()));
+            let timeout = pentest_core::timeout::clamp_timeout(
+                user_timeout,
+                pentest_core::timeout::categorize_tool("masscan"),
+            );
 
             // Build masscan command
             let output_file = "/tmp/masscan-output.json";
@@ -109,9 +123,9 @@ impl PentestTool for MasscanTool {
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-            // Execute masscan
+            // Execute masscan with configured timeout
             let result = platform
-                .execute_command("masscan", &args_refs, Duration::from_secs(timeout))
+                .execute_command("masscan", &args_refs, timeout)
                 .await?;
 
             if result.exit_code != 0 && result.stdout.is_empty() {

@@ -11,13 +11,17 @@ pub mod file_browser;
 pub mod jwt_validator;
 pub mod logging;
 pub mod matrix;
+pub mod paths;
 pub mod rendering;
 pub mod seed;
 pub mod settings;
 pub mod state;
 pub mod terminal;
 pub mod theme_loader;
+pub mod timeout;
 pub mod tools;
+pub mod url_validation;
+pub mod validation;
 pub mod workspace;
 
 pub mod prelude {
