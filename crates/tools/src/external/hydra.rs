@@ -9,6 +9,7 @@ use pentest_core::timeout::ToolTimeouts;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
+use pentest_core::validation::validate_target;
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -114,6 +115,9 @@ impl PentestTool for HydraTool {
                     "target and service parameters are required".into(),
                 ));
             }
+
+            // Validate target to prevent command injection
+            let target = validate_target(&target)?;
 
             let threads = param_u64(&params, "threads", 16);
             let port = param_u64(&params, "port", 0);

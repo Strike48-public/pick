@@ -9,6 +9,7 @@ use pentest_core::timeout::ToolTimeouts;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
+use pentest_core::url_validation::{validate_url, ValidationMode};
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -89,6 +90,9 @@ impl PentestTool for NiktoTool {
                     "target parameter is required".into(),
                 ));
             }
+
+            // Validate URL to prevent SSRF and command injection
+            let target = validate_url(&target, ValidationMode::Production, None)?;
 
             let port = param_u64(&params, "port", 0);
             let ssl = crate::util::param_bool(&params, "ssl", false);

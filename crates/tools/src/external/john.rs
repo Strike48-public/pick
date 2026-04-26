@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use pentest_core::error::Result;
+use pentest_core::paths::validate_path;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
@@ -124,7 +125,15 @@ impl PentestTool for JohnTool {
             } else if let Some(wordlist) = param_str_opt(&params, "wordlist") {
                 // Dictionary attack
                 if !wordlist.is_empty() {
-                    builder = builder.arg("--wordlist", &wordlist);
+                    // Validate path to prevent traversal (allow absolute paths for wordlists)
+                    let wordlist_path = std::path::Path::new(&wordlist);
+                    if !wordlist_path.is_absolute() {
+                        return Err(pentest_core::error::Error::InvalidParams(
+                            "Wordlist path must be absolute".into(),
+                        ));
+                    }
+                    let wordlist = validate_path(std::path::Path::new("/"), &wordlist)?;
+                    builder = builder.arg("--wordlist", wordlist.to_str().unwrap());
 
                     // Rules
                     if let Some(rules) = param_str_opt(&params, "rules") {
