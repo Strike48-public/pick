@@ -11,14 +11,19 @@
 //!
 //! # Security Model
 //!
-//! **These endpoints are LOCAL-ONLY and bind to `localhost:3030`.**
+//! **These endpoints bind to `localhost:3030` by default.**
 //!
-//! - No authentication is implemented (assumes localhost trust boundary)
-//! - Not exposed to network by default (bind address is 127.0.0.1)
-//! - Suitable for local development, single-user workstations, and trusted environments
+//! Security measures:
+//! - **Bearer token authentication**: All endpoints require `Authorization: Bearer <token>` header
+//!   matching the connector's `auth_token` from config (same token used for Strike48 server auth)
+//! - **Rate limiting**: POST /api/aggression limited to 10 requests per minute
+//! - **Request size limits**: POST bodies capped at 1MB to prevent memory exhaustion
+//! - **Input sanitization**: Invalid aggression levels are sanitized before logging
 //!
-//! **Future Enhancement**: For multi-user or networked deployments, API key authentication
-//! should be added before exposing these endpoints beyond localhost.
+//! Example authenticated request:
+//! ```bash
+//! curl -H "Authorization: Bearer your-auth-token" http://localhost:3030/api/status
+//! ```
 //!
 //! # State Lifecycle
 //!
@@ -57,9 +62,11 @@
 //!   -d '{"level": "aggressive"}'
 //! ```
 
+use axum::extract::DefaultBodyLimit;
 use axum::{
-    extract::State,
+    extract::{Request, State},
     http::StatusCode,
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -109,6 +116,85 @@ impl IntoResponse for ErrorResponse {
     fn into_response(self) -> Response {
         (StatusCode::BAD_REQUEST, Json(self)).into_response()
     }
+}
+
+/// Rate limiter for API endpoints (simple in-memory implementation)
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+#[derive(Clone)]
+struct RateLimiter {
+    requests: Arc<RwLock<HashMap<String, Vec<Instant>>>>,
+    max_requests: usize,
+    window: Duration,
+}
+
+impl RateLimiter {
+    fn new(max_requests: usize, window: Duration) -> Self {
+        Self {
+            requests: Arc::new(RwLock::new(HashMap::new())),
+            max_requests,
+            window,
+        }
+    }
+
+    async fn check(&self, key: &str) -> bool {
+        let mut requests = self.requests.write().await;
+        let now = Instant::now();
+
+        let entry = requests.entry(key.to_string()).or_insert_with(Vec::new);
+
+        // Remove expired timestamps
+        entry.retain(|&timestamp| now.duration_since(timestamp) < self.window);
+
+        if entry.len() < self.max_requests {
+            entry.push(now);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Middleware to enforce rate limiting on POST /api/aggression
+async fn rate_limit_middleware(
+    State(limiter): State<RateLimiter>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // Use localhost as key (all requests are from localhost)
+    if !limiter.check("localhost").await {
+        tracing::warn!("Rate limit exceeded for API endpoint");
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+    Ok(next.run(request).await)
+}
+
+/// Middleware to enforce simple bearer token authentication
+async fn auth_middleware(
+    State(state): State<ApiState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // Check for Authorization header
+    let auth_header = request
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok());
+
+    if let Some(auth) = auth_header {
+        // Expected format: "Bearer <token>"
+        if let Some(token) = auth.strip_prefix("Bearer ") {
+            // Compare with auth_token from config
+            let config = state.config.read().await;
+            if token == config.auth_token {
+                return Ok(next.run(request).await);
+            }
+        }
+    }
+
+    tracing::warn!("Unauthorized API access attempt");
+    Err(StatusCode::UNAUTHORIZED)
 }
 
 /// GET /api/status - Returns current scan state.
@@ -229,8 +315,14 @@ async fn post_aggression(
         "aggressive" => AggressionLevel::Aggressive,
         "maximum" => AggressionLevel::Maximum,
         _ => {
-            // Log the actual invalid input but don't echo it back to the client
-            tracing::warn!("Invalid aggression level received: {}", request.level);
+            // Sanitize input before logging to prevent log injection
+            let sanitized = request
+                .level
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .take(50)
+                .collect::<String>();
+            tracing::warn!("Invalid aggression level received: {}", sanitized);
             return Err(ErrorResponse {
                 error: "Invalid aggression level. Valid values: conservative, balanced, aggressive, maximum".to_string(),
             });
@@ -324,10 +416,32 @@ async fn post_aggression(
 }
 
 /// Create API router with scan status and aggression routes
+///
+/// # Security
+///
+/// All endpoints require Bearer token authentication via Authorization header.
+/// The token must match the connector's auth_token from config.
 pub fn create_api_routes(state: ApiState) -> Router {
+    // Rate limiter: 10 requests per minute for aggression endpoint
+    let rate_limiter = RateLimiter::new(10, Duration::from_secs(60));
+
     Router::new()
         .route("/api/status", get(get_status))
-        .route("/api/aggression", post(post_aggression))
+        .route(
+            "/api/aggression",
+            post(post_aggression)
+                .layer(middleware::from_fn_with_state(
+                    rate_limiter,
+                    rate_limit_middleware,
+                ))
+                // C2 Fix: 1MB body limit to prevent memory exhaustion
+                .layer(DefaultBodyLimit::max(1024 * 1024)),
+        )
+        // C1 Fix: Authentication middleware for all endpoints
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
         .with_state(state)
 }
 
