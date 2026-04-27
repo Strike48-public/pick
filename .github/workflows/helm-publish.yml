@@ -21,7 +21,7 @@ jobs:
     name: Package & Publish Helm Chart
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -58,7 +58,7 @@ jobs:
       # Publish to GitHub Pages (traditional helm repo)
       - name: Checkout gh-pages branch
         if: github.event_name != 'pull_request'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: gh-pages
           path: gh-pages
