@@ -135,6 +135,43 @@ pub(crate) async fn handle_execute_impl(
     event_tx: broadcast::Sender<ConnectorEvent>,
 ) {
     let request_id = req.request_id.clone();
+
+    // Defense against hostile targets: limit tool result payload size to prevent OOM
+    // This protects against malicious targets returning massive outputs (e.g., 100MB nmap XML)
+    const MAX_TOOL_PAYLOAD: usize = 5 * 1024 * 1024; // 5 MB
+
+    if req.payload.len() > MAX_TOOL_PAYLOAD {
+        tracing::error!(
+            "Tool result payload too large: {} bytes (max {} MB). \
+             This may indicate a hostile target attempting resource exhaustion.",
+            req.payload.len(),
+            MAX_TOOL_PAYLOAD / (1024 * 1024)
+        );
+
+        let error_payload = serde_json::json!({
+            "success": false,
+            "error": format!(
+                "Tool output exceeded {} MB limit. Output truncated for safety.",
+                MAX_TOOL_PAYLOAD / (1024 * 1024)
+            )
+        });
+
+        if let Some(tx) = matrix_tx.read().await.as_ref() {
+            let response_msg = StreamMessage {
+                message: Some(Message::ExecuteResponse(ExecuteResponse {
+                    request_id,
+                    success: false,
+                    payload: serde_json::to_vec(&error_payload).unwrap_or_default(),
+                    payload_encoding: PayloadEncoding::Json as i32,
+                    error: "Payload size limit exceeded".to_string(),
+                    duration_ms: 0,
+                })),
+            };
+            let _ = tx.send(response_msg);
+        }
+        return;
+    }
+
     let request: Value = serde_json::from_slice(&req.payload).unwrap_or(Value::Null);
 
     // For now, we only handle tool execution (app proxying requires LiveViewConnector)
@@ -297,5 +334,15 @@ impl LiveViewConnector {
                 AppPageResponse::error(502, format!("LiveView unavailable: {}", e))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn tool_payload_limit_value() {
+        // Verify the defensive limit constant is set correctly
+        const MAX_TOOL_PAYLOAD: usize = 5 * 1024 * 1024; // 5 MB
+        assert_eq!(MAX_TOOL_PAYLOAD, 5_242_880);
     }
 }

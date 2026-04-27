@@ -440,10 +440,12 @@ async fn capture_wep(
         tokio::time::sleep(Duration::from_secs(5)).await;
 
         let stats = platform.get_capture_stats(&capture_handle).await?;
-        let iv_rate = if last_update.elapsed().as_secs() > 0 {
-            (stats.ivs - last_iv_count) as f32 / last_update.elapsed().as_secs() as f32
-        } else {
-            0.0
+        let iv_rate = {
+            let elapsed_secs = last_update.elapsed().as_secs();
+            elapsed_secs
+                .checked_div(1)
+                .map(|s| (stats.ivs - last_iv_count) as f32 / s as f32)
+                .unwrap_or(0.0)
         };
 
         tracing::info!("  IVs: {} / {} ({:.0}/sec)", stats.ivs, target_ivs, iv_rate);

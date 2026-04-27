@@ -637,7 +637,12 @@ impl SeedManager {
 
             // Report progress every 5%
             if total_size > 0 {
-                let progress = ((downloaded * 100 / total_size) as u8).min(100);
+                let progress = downloaded
+                    .saturating_mul(100)
+                    .checked_div(total_size)
+                    .and_then(|p| u8::try_from(p).ok())
+                    .unwrap_or(0)
+                    .min(100);
                 if progress >= last_progress + 5 || progress == 100 {
                     progress_callback(SeedProgress {
                         resource_name: resource.name.clone(),
