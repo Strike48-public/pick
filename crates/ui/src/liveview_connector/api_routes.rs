@@ -425,19 +425,21 @@ pub fn create_api_routes(state: ApiState) -> Router {
     // Rate limiter: 10 requests per minute for aggression endpoint
     let rate_limiter = RateLimiter::new(10, Duration::from_secs(60));
 
+    // Create a separate router for the aggression endpoint with rate limiting and body size limit
+    let aggression_router = Router::new()
+        .route("/api/aggression", post(post_aggression))
+        .layer(middleware::from_fn_with_state(
+            rate_limiter,
+            rate_limit_middleware,
+        ))
+        // C2 Fix: 1MB body limit to prevent memory exhaustion
+        .layer(DefaultBodyLimit::max(1024 * 1024));
+
+    // Merge all routes and apply authentication middleware to everything
+    // C1 Fix: Authentication middleware for all endpoints
     Router::new()
         .route("/api/status", get(get_status))
-        .route(
-            "/api/aggression",
-            post(post_aggression)
-                .layer(middleware::from_fn_with_state(
-                    rate_limiter,
-                    rate_limit_middleware,
-                ))
-                // C2 Fix: 1MB body limit to prevent memory exhaustion
-                .layer(DefaultBodyLimit::max(1024 * 1024)),
-        )
-        // C1 Fix: Authentication middleware for all endpoints
+        .merge(aggression_router)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
