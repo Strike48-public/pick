@@ -15,11 +15,11 @@ use tokio::process::Command;
 const PROOT_DOWNLOAD_URLS: &[(&str, &str)] = &[
     (
         "x86_64",
-        "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-x86_64-static",
+        "https://github.com/proot-me/proot/releases/download/v5.3.0/proot-v5.3.0-x86_64-static",
     ),
     (
         "aarch64",
-        "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-aarch64-static",
+        "https://github.com/proot-me/proot/releases/download/v5.3.0/proot-v5.3.0-aarch64-static",
     ),
 ];
 

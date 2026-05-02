@@ -31,21 +31,19 @@ RUN echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman
 RUN sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf 2>/dev/null || true && \
     sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf 2>/dev/null || true
 
-# System update
-RUN pacman -Syu --noconfirm --overwrite '*' 2>&1 || true
+# Initialize pacman keyring and system update
+RUN pacman-key --init && \
+    pacman-key --populate archlinux && \
+    pacman -Syu --noconfirm --overwrite '*'
 
-# Initialize pacman keyring
-RUN pacman-key --init 2>/dev/null || true && \
-    pacman-key --populate archlinux 2>/dev/null || true
-
-# Add BlackArch repository
-RUN echo '' >> /etc/pacman.conf && \
-    echo '[blackarch]' >> /etc/pacman.conf && \
-    echo 'Server = https://blackarch.org/blackarch/$repo/os/$arch' >> /etc/pacman.conf && \
-    echo 'SigLevel = Optional TrustAll' >> /etc/pacman.conf
+# Add BlackArch repository and import its key
+RUN curl -sL https://blackarch.org/strap.sh -o /tmp/strap.sh && \
+    chmod +x /tmp/strap.sh && \
+    /tmp/strap.sh && \
+    rm /tmp/strap.sh
 
 # Sync package databases
-RUN pacman -Sy --noconfirm 2>&1 || true
+RUN pacman -Sy --noconfirm
 
 WORKDIR /root
 "#;

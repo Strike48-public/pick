@@ -81,6 +81,11 @@ pub async fn execute_command_in_dir(
         format!("{} {}", cmd, escaped_args.join(" "))
     };
 
+    tracing::info!(
+        "[execute_command] cmd={:?} args={:?} full_cmd={:?}",
+        cmd, args, full_cmd
+    );
+
     // Try sandboxed execution first
     tracing::info!(
         "[execute_command] Sandbox enabled, attempting to get sandbox manager for: {}",

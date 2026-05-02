@@ -37,10 +37,32 @@ run-desktop-release-sudo:
 # ============ Headless Agent ============
 
 # Default Strike48 host for development
-strike_host := env_var_or_default("STRIKE48_HOST", "ws://localhost:3030")
+strike_host := env_var_or_default("STRIKE48_HOST", "wss://studio.strike48.test")
 strike_tenant := env_var_or_default("STRIKE48_TENANT", "non-prod")
-matrix_api := env_var_or_default("MATRIX_API_URL", "http://localhost:3030")
-matrix_tenant := env_var_or_default("MATRIX_TENANT_ID", "non-prod")
+matrix_api := env_var_or_default("MATRIX_API_URL", "https://studio.strike48.test")
+matrix_tenant := env_var_or_default("MATRIX_TENANT_ID", "*")
+
+# Run headless agent in dev mode against studio.strike48.test
+dev STRIKE48_HOST="wss://studio.strike48.test" MATRIX_API_URL="https://studio.strike48.test" MATRIX_TENANT_ID="*" INSTANCE_ID="pick-dev" MATRIX_TLS_INSECURE="true" RUST_LOG="debug" STRIKE48_ACCEPT_INVALID_CERTS="true" *ARGS="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export STRIKE48_HOST="{{STRIKE48_HOST}}"
+    export STRIKE48_TENANT="non-prod"
+    export MATRIX_API_URL="{{MATRIX_API_URL}}"
+    export MATRIX_TENANT_ID="{{MATRIX_TENANT_ID}}"
+    export STRIKE48_INSTANCE_ID="{{INSTANCE_ID}}"
+    export MATRIX_TLS_INSECURE="{{MATRIX_TLS_INSECURE}}"
+    export STRIKE48_ACCEPT_INVALID_CERTS="{{STRIKE48_ACCEPT_INVALID_CERTS}}"
+    export RUST_LOG="{{RUST_LOG}}"
+    echo "Starting Pick connector (dev)..."
+    echo "  Host:   {{STRIKE48_HOST}}"
+    echo "  Tenant: {{MATRIX_TENANT_ID}}"
+    echo "  Instance: {{INSTANCE_ID}}"
+    echo ""
+    sudo -E HOME="$HOME" PATH="$PATH" \
+        CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
+        RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+        cargo run --package pentest-headless -- {{ARGS}}
 
 # Build headless agent
 build-headless:
@@ -62,11 +84,12 @@ run-headless-release *ARGS:
 run-headless-sudo *ARGS:
     sudo -E cargo run --package pentest-headless -- {{ARGS}}
 
-# Run headless agent with default env vars and sudo
+# Run headless agent with default env vars (sudo for raw socket access)
 run-headless-dev *ARGS:
     #!/usr/bin/env bash
-    sudo -E PATH="$PATH" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
-        env \
+    sudo -E HOME="$HOME" PATH="$PATH" \
+        CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
+        RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
         STRIKE48_HOST="{{strike_host}}" \
         STRIKE48_TENANT="{{strike_tenant}}" \
         MATRIX_API_URL="{{matrix_api}}" \
@@ -80,8 +103,7 @@ run-headless-env *ARGS:
     set -a  # Export all variables
     [[ -f .env ]] && source .env
     set +a
-    sudo -E PATH="$PATH" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
-        cargo run --package pentest-headless -- {{ARGS}} 2>&1 | tee -a ~/tmp/pentest.log
+    cargo run --package pentest-headless -- {{ARGS}} 2>&1 | tee -a ~/tmp/pentest.log
 
 # ============ Web (Liveview) ============
 
