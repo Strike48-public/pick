@@ -48,3 +48,4 @@ android-jniLibs
 
 # Mise
 .mise.local.toml
+.direnv/

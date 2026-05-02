@@ -244,22 +244,34 @@ pacman-key --populate archlinux
             tokio::fs::set_permissions(&strap_path, perms).await?;
         }
 
-        let pacman_conf = rootfs.join("etc/pacman.conf");
-        if pacman_conf.exists() {
-            let mut content = tokio::fs::read_to_string(&pacman_conf).await?;
+        // Run strap.sh inside the rootfs to properly import the BlackArch keyring
+        let strap_script = r#"
+set -e
+/tmp/strap.sh
+"#;
 
-            if !content.contains("[blackarch]") {
-                content.push_str(
-                    r#"
-
-[blackarch]
-Server = https://blackarch.org/blackarch/$repo/os/$arch
-SigLevel = Optional TrustAll
-"#,
-                );
-                tokio::fs::write(&pacman_conf, content).await?;
+        match self.run_in_rootfs(rootfs, strap_script).await {
+            Ok(output) => {
+                tracing::info!("BlackArch strap.sh completed: {}", output.trim());
+            }
+            Err(e) => {
+                tracing::warn!("BlackArch strap.sh failed: {}, falling back to manual config", e);
+                // Fall back to manual repo config if strap.sh fails
+                let pacman_conf = rootfs.join("etc/pacman.conf");
+                if pacman_conf.exists() {
+                    let mut content = tokio::fs::read_to_string(&pacman_conf).await?;
+                    if !content.contains("[blackarch]") {
+                        content.push_str(
+                            "\n\n[blackarch]\nServer = https://blackarch.org/blackarch/$repo/os/$arch\nSigLevel = Optional TrustAll\n",
+                        );
+                        tokio::fs::write(&pacman_conf, content).await?;
+                    }
+                }
             }
         }
+
+        // Clean up
+        tokio::fs::remove_file(&strap_path).await.ok();
 
         Ok(())
     }
@@ -442,21 +454,41 @@ done
             }
         }
 
-        // Fall back to bwrap with multi-uid mapping (our best option on desktop without proot/root)
-        tracing::info!("Using bwrap with multi-uid mapping for rootfs command execution");
+        // Fall back to simple bwrap (single-uid mapping, no unshare)
+        tracing::info!("Using simple bwrap for rootfs command execution");
 
-        // Use the BwrapExecutor to run the command
-        let executor = super::bwrap::BwrapExecutor::new(self.config.clone());
-        let result = executor
-            .execute(script, std::time::Duration::from_secs(300), None)
-            .await?;
+        let rootfs_str = rootfs.to_string_lossy().to_string();
+        let wrapped_script = format!(
+            "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && {}",
+            script
+        );
 
-        if result.exit_code == 0 {
-            Ok(result.stdout)
+        let output = Command::new("bwrap")
+            .args([
+                "--bind", &rootfs_str, "/",
+                "--dev", "/dev",
+                "--proc", "/proc",
+                "--tmpfs", "/tmp",
+                "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",
+                "--unshare-user",
+                "--uid", "0",
+                "--gid", "0",
+                "--share-net",
+                "--die-with-parent",
+                "/usr/bin/bash", "-c", &wrapped_script,
+            ])
+            .output()
+            .await
+            .map_err(|e| SandboxError::RootfsSetupFailed(format!("Failed to run bwrap: {}", e)))?;
+
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
             Err(SandboxError::RootfsSetupFailed(format!(
                 "bwrap command failed: stdout={}, stderr={}",
-                result.stdout, result.stderr
+                stdout, stderr
             )))
         }
     }
