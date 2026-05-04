@@ -52,7 +52,7 @@ wifi_scan = { version = "0.7", optional = true }
 ssdp-client = { version = "2.1", optional = true }
 
 # Sandbox dependencies (desktop)
-reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-features = false, optional = true }
+reqwest = { version = "0.12", features = ["rustls-tls", "rustls-tls-native-roots", "stream"], default-features = false, optional = true }
 
 # PTY support (desktop + android)
 portable-pty = { version = "0.9", optional = true }
