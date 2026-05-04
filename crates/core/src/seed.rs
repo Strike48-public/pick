@@ -636,18 +636,19 @@ impl SeedManager {
             downloaded += chunk.len() as u64;
 
             // Report progress every 5%
-            if total_size > 0 {
-                let progress = ((downloaded * 100 / total_size) as u8).min(100);
-                if progress >= last_progress + 5 || progress == 100 {
-                    progress_callback(SeedProgress {
-                        resource_name: resource.name.clone(),
-                        downloaded_mb: downloaded as f64 / 1_000_000.0,
-                        total_mb: total_size as f64 / 1_000_000.0,
-                        percent: progress,
-                        status: SeedStatus::Downloading,
-                    });
-                    last_progress = progress;
-                }
+            let progress = (downloaded * 100)
+                .checked_div(total_size)
+                .map(|p| (p as u8).min(100))
+                .unwrap_or(0);
+            if progress >= last_progress + 5 || progress == 100 {
+                progress_callback(SeedProgress {
+                    resource_name: resource.name.clone(),
+                    downloaded_mb: downloaded as f64 / 1_000_000.0,
+                    total_mb: total_size as f64 / 1_000_000.0,
+                    percent: progress,
+                    status: SeedStatus::Downloading,
+                });
+                last_progress = progress;
             }
         }
 
