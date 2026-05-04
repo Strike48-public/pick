@@ -247,17 +247,15 @@ pub async fn download_wordlist(wordlist: &Wordlist) -> Result<PathBuf> {
         downloaded += chunk.len() as u64;
 
         // Log progress every 10%
-        if total_size > 0 {
-            let progress = (downloaded * 100 / total_size) as u32;
-            if progress >= last_progress + 10 {
-                tracing::info!(
-                    "   {}% complete ({} MB / {} MB)",
-                    progress,
-                    downloaded / 1_000_000,
-                    total_size / 1_000_000
-                );
-                last_progress = progress;
-            }
+        let progress = (downloaded * 100).checked_div(total_size).unwrap_or(0) as u32;
+        if progress >= last_progress + 10 {
+            tracing::info!(
+                "   {}% complete ({} MB / {} MB)",
+                progress,
+                downloaded / 1_000_000,
+                total_size / 1_000_000
+            );
+            last_progress = progress;
         }
     }
 
