@@ -82,7 +82,7 @@ impl PentestTool for NmapTool {
             .param(ToolParam::optional(
                 "scripts",
                 ParamType::String,
-                "NSE scripts to run (comma-separated or 'default', 'vuln', etc.)",
+                "NSE scripts to run: specific scripts (smb-vuln-ms17-010,smb-enum-shares), wildcards (smb-*), or categories (default,vuln,safe,discovery,auth,brute). Scripts are validated before execution. Common: smb-vuln-ms17-010, smb-enum-shares, http-title, ssl-cert, dns-brute.",
                 json!(""),
             ))
             .param(ToolParam::optional(
@@ -188,9 +188,16 @@ impl PentestTool for NmapTool {
                 builder = builder.flag("-Pn");
             }
 
-            // NSE scripts
+            // NSE scripts - validate before running
             if let Some(scripts) = param_str_opt(&params, "scripts") {
                 if !scripts.is_empty() {
+                    // Validate scripts exist before running nmap
+                    if let Err(invalid) = validate_nse_scripts(&platform, &scripts).await {
+                        return Err(pentest_core::error::Error::InvalidParams(format!(
+                            "Invalid NSE script(s): {}. Use 'nmap --script-help <pattern>' to list available scripts.",
+                            invalid
+                        )));
+                    }
                     builder = builder.arg("--script", &scripts);
                 }
             }
@@ -306,6 +313,74 @@ fn extract_xml_attribute(xml: &str, pattern: &str) -> Option<String> {
         .captures(xml)?
         .get(1)
         .map(|m| m.as_str().to_string())
+}
+
+/// Validate NSE scripts exist before running nmap
+///
+/// Checks if the specified NSE scripts are available on the system.
+/// Returns Ok(()) if all scripts are valid, or Err(invalid_scripts) if any are missing.
+async fn validate_nse_scripts<P: CommandExec>(
+    platform: &P,
+    scripts: &str,
+) -> std::result::Result<(), String> {
+    use std::time::Duration;
+
+    // Parse script list (comma-separated)
+    let script_list: Vec<&str> = scripts.split(',').map(|s| s.trim()).collect();
+
+    // Skip validation for script categories (default, vuln, etc.)
+    let categories = [
+        "default",
+        "safe",
+        "intrusive",
+        "malware",
+        "discovery",
+        "version",
+        "vuln",
+        "exploit",
+        "external",
+        "auth",
+        "brute",
+        "dos",
+    ];
+
+    let mut invalid_scripts = Vec::new();
+
+    for script in script_list {
+        // Skip if it's a category
+        if categories.contains(&script) {
+            continue;
+        }
+
+        // Skip if it's a wildcard pattern (e.g., "smb-*")
+        if script.contains('*') || script.contains('?') {
+            continue;
+        }
+
+        // Check if script exists using --script-help
+        let result = platform
+            .execute_command("nmap", &["--script-help", script], Duration::from_secs(5))
+            .await;
+
+        // If command fails or output contains "0 scripts", script doesn't exist
+        match result {
+            Ok(output) => {
+                if output.stdout.contains("0 scripts") || output.stderr.contains("did not match") {
+                    invalid_scripts.push(script.to_string());
+                }
+            }
+            Err(_) => {
+                // If nmap --script-help fails, script likely doesn't exist
+                invalid_scripts.push(script.to_string());
+            }
+        }
+    }
+
+    if invalid_scripts.is_empty() {
+        Ok(())
+    } else {
+        Err(invalid_scripts.join(", "))
+    }
 }
 
 /// Calculate smart timeout based on scan parameters
