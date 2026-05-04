@@ -26,7 +26,7 @@ impl PentestTool for NmapTool {
     }
 
     fn description(&self) -> &str {
-        "Industry-standard network scanner for host discovery, port scanning, version detection, and OS fingerprinting"
+        "Industry-standard network scanner for host discovery, port scanning, version detection, and OS fingerprinting. STRATEGY: Start with top1000 ports (fast), then target full scans on interesting hosts only. Full port scans (-p-) across many hosts are very slow (15-30+ minutes)."
     }
 
     fn schema(&self) -> ToolSchema {
@@ -94,8 +94,8 @@ impl PentestTool for NmapTool {
             .param(ToolParam::optional(
                 "timeout",
                 ParamType::Integer,
-                "Overall timeout in seconds (default: 300)",
-                json!(300),
+                "Overall timeout in seconds (default: 1800). Full port scans (-p-) across multiple hosts require 1800-3600s. Top1000 scans typically complete in 60-300s.",
+                json!(1800),
             ))
             .platforms(vec![Platform::Desktop, Platform::Tui])
     }
@@ -126,7 +126,7 @@ impl PentestTool for NmapTool {
             let aggressive = param_bool(&params, "aggressive", false);
             let timing = param_u64(&params, "timing", 3).clamp(0, 5);
             let no_ping = param_bool(&params, "no_ping", false);
-            let timeout = param_u64(&params, "timeout", 300);
+            let timeout = param_u64(&params, "timeout", 1800);
 
             // Build nmap command
             let mut builder = CommandBuilder::new();
