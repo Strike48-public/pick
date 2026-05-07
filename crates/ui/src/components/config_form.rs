@@ -54,7 +54,7 @@ pub fn ConfigForm(
                     label { "Strike48 Host" }
                     input {
                         r#type: "text",
-                        placeholder: "grpc://localhost:50061",
+                        placeholder: "wss://strike48.example.com:443",
                         value: "{host}",
                         disabled: is_connecting,
                         oninput: move |e| host.set(e.value()),
