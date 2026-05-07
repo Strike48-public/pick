@@ -753,16 +753,22 @@ impl LiveViewConnector {
                                     TerminalLine::success("Registered with Strike48")
                                 ));
                                 if self.config.auth_token.is_empty() {
-                                    // No JWT yet — try loading saved OTT credentials.
-                                    // This may trigger a reconnect, so await it before
-                                    // transitioning to Registered.
+                                    // No JWT yet — the server accepted our registration
+                                    // request but authorization is still pending admin
+                                    // approval. Keep the UI on the connecting screen so
+                                    // the "Pending approval" callout is visible. The
+                                    // status transitions to Registered later, inside
+                                    // handle_credentials_issued, after the OTT exchange
+                                    // returns a JWT.
                                     self.handle_post_registration_auth().await;
+                                } else {
+                                    // JWT case: Matrix chat token comes from the __st
+                                    // query param injected by the Strike48 proxy when
+                                    // the LiveView WebSocket connects (see handle_ws_open).
+                                    // The session store persists it across reconnects so
+                                    // ChatPanel doesn't need a fresh fetch.
+                                    self.send_event(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
                                 }
-                                // JWT case: Matrix chat token comes from the __st query param
-                                // injected by the Strike48 proxy when the LiveView WebSocket
-                                // connects (see handle_ws_open). The session store persists it
-                                // across reconnects so ChatPanel doesn't need a fresh fetch.
-                                self.send_event(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
                             } else {
                                 tracing::error!("Registration failed: {}", resp.error);
 

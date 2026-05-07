@@ -71,7 +71,7 @@ impl LiveViewConnector {
         if std::env::var("STRIKEHUB_SOCKET").is_ok() {
             tracing::info!("[RegisterResponse] StrikeHub mode: waiting for admin approval");
             self.send_event(ConnectorEvent::Log(TerminalLine::info(
-                "Waiting for admin approval in Studio…",
+                "Pending approval — accept this connector in Prospector Studio.",
             )));
             self.send_event(ConnectorEvent::StepChanged(
                 ConnectingStep::WaitingForApproval,
@@ -92,7 +92,7 @@ impl LiveViewConnector {
         } else {
             tracing::info!("[RegisterResponse] No JWT, waiting for admin approval in Studio");
             self.send_event(ConnectorEvent::Log(TerminalLine::info(
-                "Waiting for admin approval in Studio…",
+                "Pending approval — accept this connector in Prospector Studio.",
             )));
             self.send_event(ConnectorEvent::StepChanged(
                 ConnectingStep::WaitingForApproval,
