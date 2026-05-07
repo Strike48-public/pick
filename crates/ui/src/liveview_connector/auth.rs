@@ -49,11 +49,24 @@ impl LiveViewConnector {
         }
     }
 
-    /// Handle post-registration auth: wait for admin approval or browser fallback.
+    /// Handle post-registration auth: wait for admin approval (default) or
+    /// opt into a browser-based OAuth fallback.
     ///
-    /// Called from the message loop when registration succeeds but no JWT is present.
-    /// Saved credentials are now loaded *before* the connection loop (in connect_and_run)
-    /// to avoid disrupting an already-successful registration with a reconnect cycle.
+    /// Called from the message loop when registration succeeds but no JWT is
+    /// present. The normal flow is: admin approves in Prospector Studio,
+    /// server emits `CredentialsIssued`, and `handle_credentials_issued`
+    /// performs the OTT exchange over the already-open wss stream — no
+    /// browser involvement.
+    ///
+    /// The browser-based OAuth path is disabled by default because it opens
+    /// a system browser tab on every connect, which is intrusive UX for
+    /// users who only care about connector auth (the overwhelming common
+    /// case). Set `PICK_ENABLE_BROWSER_AUTH=1` to opt back in, or run in
+    /// StrikeHub mode (which has its own IPC auth).
+    ///
+    /// Saved credentials are now loaded *before* the connection loop (in
+    /// `connect_and_run`) to avoid disrupting an already-successful
+    /// registration with a reconnect cycle.
     pub(crate) async fn handle_post_registration_auth(&mut self) {
         if std::env::var("STRIKEHUB_SOCKET").is_ok() {
             tracing::info!("[RegisterResponse] StrikeHub mode: waiting for admin approval");
@@ -63,9 +76,27 @@ impl LiveViewConnector {
             self.send_event(ConnectorEvent::StepChanged(
                 ConnectingStep::WaitingForApproval,
             ));
-        } else {
-            tracing::info!("[RegisterResponse] No JWT, trying browser login fallback");
+            return;
+        }
+
+        let browser_auth_enabled = std::env::var("PICK_ENABLE_BROWSER_AUTH")
+            .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+
+        if browser_auth_enabled {
+            tracing::info!(
+                "[RegisterResponse] No JWT, PICK_ENABLE_BROWSER_AUTH=1 \
+                 — trying browser login fallback"
+            );
             self.try_fetch_matrix_token_fallback().await;
+        } else {
+            tracing::info!("[RegisterResponse] No JWT, waiting for admin approval in Studio");
+            self.send_event(ConnectorEvent::Log(TerminalLine::info(
+                "Waiting for admin approval in Studio…",
+            )));
+            self.send_event(ConnectorEvent::StepChanged(
+                ConnectingStep::WaitingForApproval,
+            ));
         }
     }
 
