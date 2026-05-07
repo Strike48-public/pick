@@ -1,6 +1,6 @@
 # ── Stage 1: Chef ──────────────────────────────────────────────
 FROM rust:1.88-bookworm AS chef
-RUN cargo install cargo-chef
+RUN cargo install cargo-chef --locked
 WORKDIR /app
 
 # ── Stage 2: Planner ──────────────────────────────────────────
