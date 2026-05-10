@@ -1,4 +1,0 @@
-{
-  "mcpServers": {},
-  "_comment": "Pick uses Bash for all cargo operations. No MCPs needed. Memory MCP loaded globally."
-}
