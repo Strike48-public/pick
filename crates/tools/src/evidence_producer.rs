@@ -8,39 +8,81 @@ use pentest_core::evidence::EvidenceNode;
 use pentest_core::export::Severity;
 use pentest_core::provenance::Provenance;
 use serde_json::Value;
+use std::sync::LazyLock;
+use std::sync::RwLock;
 use uuid::Uuid;
 
-/// Push an evidence node to the global evidence graph.
+/// Global pending evidence buffer.
 ///
-/// This function is called by `pentest_ui::session::push_evidence` after tools
-/// produce evidence. The tools crate itself just provides the conversion logic;
-/// the actual graph management happens in the UI layer to avoid circular dependencies.
+/// Tools push evidence here via [`push_evidence`], and the UI layer
+/// periodically drains it via [`drain_pending_evidence`].
 ///
-/// This re-export exists so tool code can call `crate::evidence_producer::push_evidence(node)`
-/// without needing to know about the UI layer.
+/// # Thread Safety
+/// Protected by `RwLock` for concurrent access. Multiple tools can
+/// push evidence simultaneously, and the UI can drain without blocking
+/// tool execution (briefly blocks during the write lock acquisition).
+#[cfg(not(target_arch = "wasm32"))]
+static PENDING_EVIDENCE: LazyLock<RwLock<Vec<EvidenceNode>>> =
+    LazyLock::new(|| RwLock::new(Vec::new()));
+
+/// Push an evidence node to the global evidence buffer.
+///
+/// This function is called by tools after producing findings. The evidence
+/// is stored in a global buffer that the UI layer periodically drains and
+/// adds to the evidence graph.
+///
+/// # Thread Safety
+/// This function is thread-safe and can be called from multiple tools
+/// concurrently. Evidence order is deterministic within a single tool
+/// but non-deterministic across concurrent tools.
+///
+/// # Examples
+/// ```ignore
+/// use pentest_core::evidence::EvidenceNode;
+/// use pentest_core::export::Severity;
+///
+/// let node = EvidenceNode::new(
+///     "finding-1".to_string(),
+///     "open_port",
+///     "Port 22/tcp open".to_string(),
+///     "SSH service detected".to_string(),
+///     "192.168.1.1",
+///     Severity::Medium,
+///     "Open SSH port requires validation".to_string(),
+/// );
+///
+/// push_evidence(node);
+/// ```
 #[cfg(not(target_arch = "wasm32"))]
 pub fn push_evidence(node: EvidenceNode) {
-    // Store in a thread-local or global that the UI layer reads, or
-    // use an injected callback. For now, we'll use a simple approach:
-    // store in a static and let the UI poll it.
-    use std::sync::LazyLock;
-    use std::sync::RwLock;
-
-    static PENDING_EVIDENCE: LazyLock<RwLock<Vec<EvidenceNode>>> =
-        LazyLock::new(|| RwLock::new(Vec::new()));
-
     PENDING_EVIDENCE.write().unwrap().push(node);
 }
 
-/// Drain pending evidence nodes. Called by the UI layer.
+/// Drain all pending evidence nodes.
+///
+/// Called by the UI layer to retrieve accumulated evidence. This function
+/// returns all evidence and clears the buffer atomically.
+///
+/// # Thread Safety
+/// This function is thread-safe. If called concurrently from multiple threads,
+/// each call will receive a portion of the evidence (non-deterministic split).
+/// The UI should call this from a single thread for predictable behavior.
+///
+/// # Returns
+/// All accumulated evidence nodes since the last drain. Empty vector if
+/// no evidence has been produced.
+///
+/// # Examples
+/// ```ignore
+/// let evidence = drain_pending_evidence();
+///
+/// for node in evidence {
+///     // Add to evidence graph
+///     evidence_graph.add_node(node);
+/// }
+/// ```
 #[cfg(not(target_arch = "wasm32"))]
 pub fn drain_pending_evidence() -> Vec<EvidenceNode> {
-    use std::sync::LazyLock;
-    use std::sync::RwLock;
-
-    static PENDING_EVIDENCE: LazyLock<RwLock<Vec<EvidenceNode>>> =
-        LazyLock::new(|| RwLock::new(Vec::new()));
-
     std::mem::take(&mut *PENDING_EVIDENCE.write().unwrap())
 }
 
@@ -355,6 +397,153 @@ fn contains_interesting_info(text: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // NOTE: Tests that interact with the global PENDING_EVIDENCE static may
+    // experience race conditions when run in parallel. Run with --test-threads=1
+    // if you need deterministic behavior. The production code is thread-safe;
+    // this is only a testing artifact.
+    //
+    // Run: cargo test --package pentest-tools --lib evidence_producer::tests -- --test-threads=1
+
+    /// Test that evidence flows through the push → drain cycle.
+    ///
+    /// This test verifies the fix for the dual-static bug where push and drain
+    /// used separate static variables, causing evidence to never reach the UI.
+    ///
+    /// CRITICAL: This is THE test that proves the dual-static bug is fixed.
+    /// If this test passes, evidence flows from tools → UI.
+    #[test]
+    fn evidence_flows_through_buffer() {
+        // Create test evidence nodes with unique IDs
+        let node1 = EvidenceNode::new(
+            "test-flow-unique-1".to_string(),
+            "test_type",
+            "Test Finding 1".to_string(),
+            "Description for finding 1".to_string(),
+            "192.168.1.1",
+            Severity::Medium,
+            "Test rationale".to_string(),
+        );
+
+        let node2 = EvidenceNode::new(
+            "test-flow-unique-2".to_string(),
+            "test_type",
+            "Test Finding 2".to_string(),
+            "Description for finding 2".to_string(),
+            "192.168.1.2",
+            Severity::High,
+            "Test rationale".to_string(),
+        );
+
+        // Act: Push evidence
+        push_evidence(node1.clone());
+        push_evidence(node2.clone());
+
+        // Assert: Drain should contain our nodes (may contain others from parallel tests)
+        let drained = drain_pending_evidence();
+
+        // Find our nodes in the drained evidence
+        let our_nodes: Vec<_> = drained
+            .iter()
+            .filter(|n| n.id.starts_with("test-flow-unique-"))
+            .collect();
+
+        assert_eq!(our_nodes.len(), 2, "Should find our 2 nodes");
+
+        // Verify our specific nodes made it through
+        assert!(drained.iter().any(|n| n.id == "test-flow-unique-1"));
+        assert!(drained.iter().any(|n| n.id == "test-flow-unique-2"));
+
+        let node1_found = drained
+            .iter()
+            .find(|n| n.id == "test-flow-unique-1")
+            .unwrap();
+        assert_eq!(node1_found.affected_target, "192.168.1.1");
+
+        let node2_found = drained
+            .iter()
+            .find(|n| n.id == "test-flow-unique-2")
+            .unwrap();
+        assert_eq!(node2_found.affected_target, "192.168.1.2");
+    }
+
+    /// Test multiple pushes followed by single drain.
+    ///
+    /// Note: Uses unique IDs to avoid interference from parallel tests.
+    #[test]
+    fn multiple_push_single_drain() {
+        // Act: Push 10 nodes with unique IDs
+        for i in 0..10 {
+            let node = EvidenceNode::new(
+                format!("test-multi-unique-{}", i),
+                "test_type",
+                format!("Finding {}", i),
+                format!("Description {}", i),
+                "192.168.1.1",
+                Severity::Info,
+                "Test".to_string(),
+            );
+            push_evidence(node);
+        }
+
+        // Assert: Drain and verify our 10 nodes are present
+        let drained = drain_pending_evidence();
+
+        // Filter to only our nodes
+        let our_nodes: Vec<_> = drained
+            .iter()
+            .filter(|n| n.id.starts_with("test-multi-unique-"))
+            .collect();
+
+        assert_eq!(our_nodes.len(), 10, "Should find our 10 nodes");
+
+        // Verify IDs are present
+        for i in 0..10 {
+            let expected_id = format!("test-multi-unique-{}", i);
+            assert!(
+                drained.iter().any(|n| n.id == expected_id),
+                "Should find node with ID {}",
+                expected_id
+            );
+        }
+    }
+
+    /// Test that push is non-blocking (returns immediately).
+    ///
+    /// Note: Uses unique IDs and only verifies our nodes arrived.
+    #[test]
+    fn push_is_non_blocking() {
+        // Act & Assert: Push many nodes rapidly
+        let start = std::time::Instant::now();
+        for i in 0..1000 {
+            let node = EvidenceNode::new(
+                format!("perf-unique-{}", i),
+                "test",
+                format!("F{}", i),
+                "D".to_string(),
+                "192.168.1.1",
+                Severity::Info,
+                "R".to_string(),
+            );
+            push_evidence(node);
+        }
+        let elapsed = start.elapsed();
+
+        // Should complete in < 100ms (generous threshold)
+        assert!(
+            elapsed.as_millis() < 100,
+            "Pushing 1000 nodes took {}ms, expected < 100ms",
+            elapsed.as_millis()
+        );
+
+        // Verify our nodes arrived (drain and filter)
+        let drained = drain_pending_evidence();
+        let our_nodes: Vec<_> = drained
+            .iter()
+            .filter(|n| n.id.starts_with("perf-unique-"))
+            .collect();
+        assert_eq!(our_nodes.len(), 1000, "Should find all 1000 of our nodes");
+    }
 
     #[test]
     fn test_evidence_from_nmap_open_ports() {
