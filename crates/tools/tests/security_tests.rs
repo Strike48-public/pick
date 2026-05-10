@@ -570,6 +570,6 @@ mod integration {
         // - whatweb: URL validation
         //
         // Remaining tools (~30+) tracked in follow-up work.
-        assert!(true, "Validation coverage documented");
+        // Test passes if compilation succeeds (validates integration)
     }
 }
