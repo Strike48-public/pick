@@ -93,7 +93,7 @@ impl PentestTool for WhatwebTool {
                 crate::evidence_producer::evidence_from_whatweb(&data, &url, provenance.clone());
 
             for node in evidence_nodes {
-                crate::evidence_producer::push_evidence(node);
+                let _ = crate::evidence_producer::push_evidence(node);
             }
 
             Ok((data, provenance))

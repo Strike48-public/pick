@@ -12,6 +12,25 @@ use std::sync::LazyLock;
 use std::sync::RwLock;
 use uuid::Uuid;
 
+/// Error returned when evidence buffer is full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferFullError;
+
+impl std::fmt::Display for BufferFullError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "evidence buffer full")
+    }
+}
+
+impl std::error::Error for BufferFullError {}
+
+/// Maximum evidence nodes buffered before rejecting new evidence.
+///
+/// This prevents memory exhaustion from runaway scans or malicious agents.
+/// The limit is high enough for legitimate large scans (10K findings) but
+/// low enough to prevent DOS attacks.
+const MAX_EVIDENCE_NODES: usize = 10_000;
+
 /// Global pending evidence buffer.
 ///
 /// Tools push evidence here via [`push_evidence`], and the UI layer
@@ -31,10 +50,19 @@ static PENDING_EVIDENCE: LazyLock<RwLock<Vec<EvidenceNode>>> =
 /// is stored in a global buffer that the UI layer periodically drains and
 /// adds to the evidence graph.
 ///
+/// # Capacity
+/// The buffer has a maximum capacity of [`MAX_EVIDENCE_NODES`]. If the
+/// buffer is full, this function logs a warning and drops the new evidence.
+/// The UI should drain evidence periodically to prevent overflow.
+///
 /// # Thread Safety
 /// This function is thread-safe and can be called from multiple tools
 /// concurrently. Evidence order is deterministic within a single tool
 /// but non-deterministic across concurrent tools.
+///
+/// # Returns
+/// - `Ok(())` if evidence was pushed successfully
+/// - `Err(BufferFullError)` if buffer is full (evidence was dropped)
 ///
 /// # Examples
 /// ```ignore
@@ -51,11 +79,24 @@ static PENDING_EVIDENCE: LazyLock<RwLock<Vec<EvidenceNode>>> =
 ///     "Open SSH port requires validation".to_string(),
 /// );
 ///
-/// push_evidence(node);
+/// if let Err(e) = push_evidence(node) {
+///     eprintln!("Failed to push evidence: {}", e);
+/// }
 /// ```
 #[cfg(not(target_arch = "wasm32"))]
-pub fn push_evidence(node: EvidenceNode) {
-    PENDING_EVIDENCE.write().unwrap().push(node);
+pub fn push_evidence(node: EvidenceNode) -> Result<(), BufferFullError> {
+    let mut buffer = PENDING_EVIDENCE.write().unwrap();
+
+    if buffer.len() >= MAX_EVIDENCE_NODES {
+        eprintln!(
+            "⚠️  Evidence buffer full ({} nodes). Dropping new evidence: {}",
+            MAX_EVIDENCE_NODES, node.title
+        );
+        return Err(BufferFullError);
+    }
+
+    buffer.push(node);
+    Ok(())
 }
 
 /// Drain all pending evidence nodes.
@@ -86,14 +127,44 @@ pub fn drain_pending_evidence() -> Vec<EvidenceNode> {
     std::mem::take(&mut *PENDING_EVIDENCE.write().unwrap())
 }
 
+/// Get current evidence buffer size.
+///
+/// Useful for monitoring and debugging. The UI can use this to detect
+/// when the buffer is approaching capacity.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn evidence_buffer_size() -> usize {
+    PENDING_EVIDENCE.read().unwrap().len()
+}
+
+/// Check if evidence buffer is approaching capacity.
+///
+/// Returns `true` if buffer is > 80% full, indicating the UI should
+/// drain more frequently.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn evidence_buffer_near_full() -> bool {
+    let size = evidence_buffer_size();
+    size > (MAX_EVIDENCE_NODES * 80 / 100)
+}
+
 #[cfg(target_arch = "wasm32")]
-pub fn push_evidence(_node: EvidenceNode) {
+pub fn push_evidence(_node: EvidenceNode) -> Result<(), BufferFullError> {
     // WASM cannot push evidence - no-op
+    Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]
 pub fn drain_pending_evidence() -> Vec<EvidenceNode> {
     Vec::new()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn evidence_buffer_size() -> usize {
+    0
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn evidence_buffer_near_full() -> bool {
+    false
 }
 
 /// Create evidence nodes from nmap scan results.
@@ -543,6 +614,90 @@ mod tests {
             .filter(|n| n.id.starts_with("perf-unique-"))
             .collect();
         assert_eq!(our_nodes.len(), 1000, "Should find all 1000 of our nodes");
+    }
+
+    #[test]
+    fn evidence_buffer_enforces_capacity_limit() {
+        // Arrange: Clear buffer
+        let _ = drain_pending_evidence();
+
+        // Act: Try to push MAX + 100 nodes
+        let mut success_count = 0;
+        let mut rejected_count = 0;
+
+        for i in 0..(MAX_EVIDENCE_NODES + 100) {
+            let node = EvidenceNode::new(
+                format!("capacity-{}", i),
+                "test",
+                "Finding".to_string(),
+                "Desc".to_string(),
+                "192.168.1.1",
+                Severity::Info,
+                "R".to_string(),
+            );
+
+            match push_evidence(node) {
+                Ok(()) => success_count += 1,
+                Err(BufferFullError) => rejected_count += 1,
+            }
+        }
+
+        // Assert: Exactly MAX should succeed, rest rejected
+        assert_eq!(success_count, MAX_EVIDENCE_NODES);
+        assert_eq!(rejected_count, 100);
+
+        // Assert: Buffer contains exactly MAX
+        assert_eq!(evidence_buffer_size(), MAX_EVIDENCE_NODES);
+
+        // Cleanup
+        let _ = drain_pending_evidence();
+    }
+
+    #[test]
+    fn evidence_buffer_near_full_detection() {
+        // Arrange: Clear and fill to 85%
+        let _ = drain_pending_evidence();
+
+        let threshold = (MAX_EVIDENCE_NODES * 85) / 100;
+        for i in 0..threshold {
+            let node = EvidenceNode::new(
+                format!("near-full-{}", i),
+                "test",
+                "F".to_string(),
+                "D".to_string(),
+                "192.168.1.1",
+                Severity::Info,
+                "R".to_string(),
+            );
+            let _ = push_evidence(node);
+        }
+
+        // Assert: Should detect near-full
+        assert!(evidence_buffer_near_full());
+
+        // Drain completely
+        let _ = drain_pending_evidence();
+
+        // Fill to 70%
+        let target = (MAX_EVIDENCE_NODES * 70) / 100;
+        for i in 0..target {
+            let node = EvidenceNode::new(
+                format!("not-full-{}", i),
+                "test",
+                "F".to_string(),
+                "D".to_string(),
+                "192.168.1.1",
+                Severity::Info,
+                "R".to_string(),
+            );
+            let _ = push_evidence(node);
+        }
+
+        // Assert: Should NOT detect near-full
+        assert!(!evidence_buffer_near_full());
+
+        // Cleanup
+        let _ = drain_pending_evidence();
     }
 
     #[test]

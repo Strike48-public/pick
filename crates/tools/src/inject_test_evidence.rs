@@ -156,7 +156,7 @@ impl PentestTool for InjectTestEvidenceTool {
                     .insert("test_evidence".to_string(), true.into());
 
                 // Push to evidence graph
-                crate::evidence_producer::push_evidence(node.clone());
+                let _ = crate::evidence_producer::push_evidence(node.clone());
 
                 let severity_str = match severity {
                     Severity::Critical => "Critical",

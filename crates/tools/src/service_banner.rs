@@ -226,7 +226,7 @@ impl PentestTool for ServiceBannerTool {
             );
 
             for node in evidence_nodes {
-                crate::evidence_producer::push_evidence(node);
+                let _ = crate::evidence_producer::push_evidence(node);
             }
 
             Ok((data, provenance))

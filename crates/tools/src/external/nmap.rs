@@ -223,7 +223,7 @@ impl PentestTool for NmapTool {
                 crate::evidence_producer::evidence_from_nmap(&data, &target, provenance.clone());
 
             for node in evidence_nodes {
-                crate::evidence_producer::push_evidence(node);
+                let _ = crate::evidence_producer::push_evidence(node);
             }
 
             Ok((data, provenance))
