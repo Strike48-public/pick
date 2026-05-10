@@ -119,6 +119,13 @@ impl PentestTool for HydraTool {
             // Validate target to prevent command injection
             let target = validate_target(&target)?;
 
+            // Validate service name (only alphanumeric and hyphens)
+            if !service.chars().all(|c| c.is_alphanumeric() || c == '-') {
+                return Err(pentest_core::error::Error::InvalidParams(
+                    format!("Invalid service name '{}' - only alphanumeric and hyphens allowed", service)
+                ));
+            }
+
             let threads = param_u64(&params, "threads", 16);
             let port = param_u64(&params, "port", 0);
 
@@ -145,6 +152,18 @@ impl PentestTool for HydraTool {
                 }
             } else if let Some(user_list) = param_str_opt(&params, "username_list") {
                 if !user_list.is_empty() {
+                    // Validate username list path (system-wide wordlist like /usr/share/wordlists/users.txt)
+                    let user_list_path = std::path::Path::new(&user_list);
+                    if !user_list_path.is_absolute() {
+                        return Err(pentest_core::error::Error::InvalidParams(
+                            "Username list path must be absolute".into(),
+                        ));
+                    }
+                    if !user_list_path.exists() {
+                        return Err(pentest_core::error::Error::InvalidParams(
+                            format!("Username list file not found: {}", user_list)
+                        ));
+                    }
                     builder = builder.arg("-L", &user_list);
                 }
             } else {
@@ -160,6 +179,18 @@ impl PentestTool for HydraTool {
                 }
             } else if let Some(pass_list) = param_str_opt(&params, "password_list") {
                 if !pass_list.is_empty() {
+                    // Validate password list path (system-wide wordlist like /usr/share/wordlists/rockyou.txt)
+                    let pass_list_path = std::path::Path::new(&pass_list);
+                    if !pass_list_path.is_absolute() {
+                        return Err(pentest_core::error::Error::InvalidParams(
+                            "Password list path must be absolute".into(),
+                        ));
+                    }
+                    if !pass_list_path.exists() {
+                        return Err(pentest_core::error::Error::InvalidParams(
+                            format!("Password list file not found: {}", pass_list)
+                        ));
+                    }
                     builder = builder.arg("-P", &pass_list);
                 }
             } else {

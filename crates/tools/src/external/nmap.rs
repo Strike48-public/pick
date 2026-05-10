@@ -199,13 +199,31 @@ impl PentestTool for NmapTool {
             // NSE scripts - validate before running
             if let Some(scripts) = param_str_opt(&params, "scripts") {
                 if !scripts.is_empty() {
-                    // Validate scripts exist before running nmap
+                    // First, validate script names to prevent path injection
+                    // Allow: alphanumeric, hyphens, underscores, commas, wildcards (*?), dots
+                    // Block: slashes (path separators), shell metacharacters
+                    for script in scripts.split(',') {
+                        let script = script.trim();
+                        if script.is_empty() {
+                            continue;
+                        }
+                        if !script.chars().all(|c| {
+                            c.is_alphanumeric() || c == '-' || c == '_' || c == '*' || c == '?' || c == '.'
+                        }) {
+                            return Err(pentest_core::error::Error::InvalidParams(
+                                format!("Invalid NSE script name '{}' - only alphanumeric, hyphens, underscores, wildcards, and dots allowed", script)
+                            ));
+                        }
+                    }
+
+                    // Then validate scripts exist before running nmap
                     if let Err(invalid) = validate_nse_scripts(&platform, &scripts).await {
                         return Err(pentest_core::error::Error::InvalidParams(format!(
                             "Invalid NSE script(s): {}. Use 'nmap --script-help <pattern>' to list available scripts.",
                             invalid
                         )));
                     }
+
                     builder = builder.arg("--script", &scripts);
                 }
             }
