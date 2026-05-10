@@ -303,6 +303,8 @@ pub enum ConfigLoadResult {
     Help,
     /// An error occurred (unknown flag, bad host format, etc.).
     Error(String),
+    /// Config validation failed (SSRF protection, invalid URL, etc.).
+    ValidationFailed(String),
 }
 
 /// Build a [`ConnectorConfig`] by layering saved settings, environment variables,
@@ -408,6 +410,12 @@ pub fn load_connector_config(args: &[String]) -> ConfigLoadResult {
 
     // Preserve the original URL (including scheme) so that to_sdk_config()
     // can auto-detect transport type (WebSocket vs gRPC) and TLS from the scheme.
+
+    // Validate config before returning (SSRF protection, required fields, etc.)
+    if let Err(e) = config.validate() {
+        tracing::warn!("Config validation failed: {}", e);
+        return ConfigLoadResult::ValidationFailed(e);
+    }
 
     ConfigLoadResult::Ok(config)
 }

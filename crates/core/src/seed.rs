@@ -6,7 +6,6 @@
 use crate::error::{Error, Result};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -426,54 +425,25 @@ impl SeedManager {
             }
         }
 
-        // Check for hostname presence
-        let host = url
-            .host_str()
-            .ok_or_else(|| Error::InvalidParams("Invalid URL: missing host".into()))?;
-
-        // Block localhost variants (including bracket notation for IPv6)
-        if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]" {
-            return Err(Error::InvalidParams(
-                "Security: Localhost URLs not allowed".into(),
-            ));
-        }
-
-        // Try to parse as IP address (handles both IPv4 and IPv6)
-        // For IPv6 URLs like http://[::1]/, host_str() returns "[::1]", so strip brackets
-        let ip_str = host.trim_start_matches('[').trim_end_matches(']');
-        if let Ok(addr) = ip_str.parse::<IpAddr>() {
-            if Self::is_private_ip(&addr) {
+        // Block cloud metadata hostnames (check before general validation)
+        if let Some(host) = url.host_str() {
+            if host.ends_with(".metadata.google.internal") {
                 return Err(Error::InvalidParams(
-                    "Security: Private IP ranges not allowed".into(),
+                    "Security: Metadata service URLs not allowed".into(),
                 ));
             }
-
-            // Additional check for cloud metadata IPs
-            if let IpAddr::V4(ipv4) = addr {
-                if ipv4.octets() == [169, 254, 169, 254] {
-                    return Err(Error::InvalidParams(
-                        "Security: Metadata service URLs not allowed".into(),
-                    ));
-                }
-            }
         }
 
-        // Block cloud metadata hostnames
-        if host.ends_with(".metadata.google.internal") {
-            return Err(Error::InvalidParams(
-                "Security: Metadata service URLs not allowed".into(),
-            ));
-        }
+        // Use comprehensive SSRF validation from url_validation module
+        // Production mode: blocks localhost, private IPs, link-local, multicast, etc.
+        // This includes DNS resolution to prevent DNS rebinding attacks
+        crate::url_validation::validate_url(
+            url_str,
+            crate::url_validation::ValidationMode::Production,
+            None,
+        )?;
 
         Ok(())
-    }
-
-    /// Check if an IP address is in a private range
-    fn is_private_ip(addr: &IpAddr) -> bool {
-        match addr {
-            IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local(),
-            IpAddr::V6(ipv6) => ipv6.is_loopback() || ipv6.is_unspecified(),
-        }
     }
 
     /// Seed a single resource
@@ -819,39 +789,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn test_is_private_ip_ipv4() {
-        let private = vec!["10.0.0.1", "172.16.0.1", "192.168.1.1", "127.0.0.1"];
-        for ip_str in private {
-            let ip: IpAddr = ip_str.parse().unwrap();
-            assert!(
-                SeedManager::is_private_ip(&ip),
-                "{} should be private",
-                ip_str
-            );
-        }
-
-        let public = vec!["8.8.8.8", "1.1.1.1"];
-        for ip_str in public {
-            let ip: IpAddr = ip_str.parse().unwrap();
-            assert!(
-                !SeedManager::is_private_ip(&ip),
-                "{} should be public",
-                ip_str
-            );
-        }
-    }
-
-    #[test]
-    fn test_is_private_ip_ipv6() {
-        let loopback: IpAddr = "::1".parse().unwrap();
-        assert!(SeedManager::is_private_ip(&loopback));
-
-        let unspecified: IpAddr = "::".parse().unwrap();
-        assert!(SeedManager::is_private_ip(&unspecified));
-
-        // Public IPv6 (Google DNS)
-        let public: IpAddr = "2001:4860:4860::8888".parse().unwrap();
-        assert!(!SeedManager::is_private_ip(&public));
-    }
+    // Note: SSRF validation tests are now in url_validation module
+    // validate_seed_url delegates to url_validation::validate_url which has comprehensive tests
 }
