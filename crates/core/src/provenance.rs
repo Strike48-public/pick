@@ -106,18 +106,22 @@ impl Provenance {
 }
 
 /// Truncate a raw response to `RAW_RESPONSE_MAX_BYTES`, appending a marker
-/// if anything was cut. Preserves UTF-8 boundaries.
+/// if anything was cut. Preserves UTF-8 boundaries. Redacts secrets before
+/// storing.
 pub fn truncate_excerpt(raw: &str) -> String {
-    if raw.len() <= RAW_RESPONSE_MAX_BYTES {
-        return raw.to_string();
+    // Redact secrets first
+    let redacted = redact(raw);
+
+    if redacted.len() <= RAW_RESPONSE_MAX_BYTES {
+        return redacted;
     }
     // Walk back from RAW_RESPONSE_MAX_BYTES to a valid char boundary.
     let mut end = RAW_RESPONSE_MAX_BYTES;
-    while end > 0 && !raw.is_char_boundary(end) {
+    while end > 0 && !redacted.is_char_boundary(end) {
         end -= 1;
     }
     let mut out = String::with_capacity(end + TRUNCATION_MARKER.len());
-    out.push_str(&raw[..end]);
+    out.push_str(&redacted[..end]);
     out.push_str(TRUNCATION_MARKER);
     out
 }
@@ -274,7 +278,8 @@ mod tests {
 
     #[test]
     fn truncate_excerpt_over_limit_appends_marker() {
-        let s = "a".repeat(RAW_RESPONSE_MAX_BYTES + 100);
+        // Use a string that won't match any redaction patterns
+        let s = format!("HTTP Response: {}", "x ".repeat(RAW_RESPONSE_MAX_BYTES));
         let out = truncate_excerpt(&s);
         assert!(out.ends_with(TRUNCATION_MARKER));
         assert!(out.len() < s.len() + TRUNCATION_MARKER.len() + 4);
@@ -289,6 +294,55 @@ mod tests {
         // Must not panic, must be valid UTF-8 (all Rust Strings are), and
         // must be truncated since input exceeded the limit.
         assert!(out.ends_with(TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn truncate_excerpt_redacts_bearer_token() {
+        let response = "HTTP/1.1 200 OK\nAuthorization: Bearer sk-abc123def456ghi789\nContent-Type: application/json";
+        let out = truncate_excerpt(response);
+        assert!(!out.contains("sk-abc123def456ghi789"));
+        assert!(out.contains(REDACTION));
+    }
+
+    #[test]
+    fn truncate_excerpt_redacts_basic_auth() {
+        let response = "Request: curl -u admin:hunter2 https://api.example.com\nStatus: 200";
+        let out = truncate_excerpt(response);
+        assert!(!out.contains("hunter2"));
+        assert!(out.contains(REDACTION));
+    }
+
+    #[test]
+    fn truncate_excerpt_redacts_cookie_header() {
+        let response =
+            "GET /api HTTP/1.1\nCookie: session=abc123; remember=deadbeef\nHost: api.example.com";
+        let out = truncate_excerpt(response);
+        assert!(!out.contains("abc123"));
+        assert!(!out.contains("deadbeef"));
+        assert!(out.contains(REDACTION));
+    }
+
+    #[test]
+    fn truncate_excerpt_redacts_long_hex_tokens() {
+        let response = "API Key: 0123456789abcdef0123456789abcdef0123456789abcdef";
+        let out = truncate_excerpt(response);
+        assert!(!out.contains("0123456789abcdef0123456789abcdef"));
+        assert!(out.contains(REDACTION));
+    }
+
+    #[test]
+    fn truncate_excerpt_redacts_env_secrets() {
+        let response = "Environment: API_KEY=sk-live-xyz-1234567890\nStatus: starting";
+        let out = truncate_excerpt(response);
+        assert!(!out.contains("sk-live-xyz-1234567890"));
+        assert!(out.contains(REDACTION));
+    }
+
+    #[test]
+    fn truncate_excerpt_preserves_non_secret_content() {
+        let response = "Nmap scan report for 192.168.1.1\nPort 443/tcp open https";
+        let out = truncate_excerpt(response);
+        assert_eq!(out, response); // No secrets, should be unchanged
     }
 
     #[test]
