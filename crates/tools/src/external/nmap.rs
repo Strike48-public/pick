@@ -196,6 +196,22 @@ impl PentestTool for NmapTool {
             // NSE scripts
             if let Some(scripts) = param_str_opt(&params, "scripts") {
                 if !scripts.is_empty() {
+                    // Validate script names to prevent arbitrary file path injection
+                    // Allow: alphanumeric, hyphens, underscores, commas, wildcards (*?), and dots
+                    // Block: slashes (path separators), shell metacharacters
+                    for script in scripts.split(',') {
+                        let script = script.trim();
+                        if script.is_empty() {
+                            continue;
+                        }
+                        if !script.chars().all(|c| {
+                            c.is_alphanumeric() || c == '-' || c == '_' || c == '*' || c == '?' || c == '.'
+                        }) {
+                            return Err(pentest_core::error::Error::InvalidParams(
+                                format!("Invalid NSE script name '{}' - only alphanumeric, hyphens, underscores, wildcards, and dots allowed", script)
+                            ));
+                        }
+                    }
                     builder = builder.arg("--script", &scripts);
                 }
             }

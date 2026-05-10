@@ -116,10 +116,22 @@ fn extract_host(url: &str) -> Result<String> {
         }
     }
 
-    // Extract host (before port if present)
-    let host = if let Some(colon_pos) = remaining.find(':') {
+    // Extract host (handle IPv6 bracket notation: [::1]:443 or [2001:db8::1])
+    let host = if remaining.starts_with('[') {
+        // IPv6 bracket notation - find closing bracket
+        if let Some(bracket_end) = remaining.find(']') {
+            // Return just the host inside brackets (without the brackets)
+            &remaining[1..bracket_end]
+        } else {
+            return Err(Error::InvalidParams(
+                "IPv6 bracket notation incomplete - missing closing bracket".to_string()
+            ));
+        }
+    } else if let Some(colon_pos) = remaining.find(':') {
+        // IPv4 or hostname with port
         &remaining[..colon_pos]
     } else {
+        // No port specified
         remaining
     };
 
@@ -589,5 +601,30 @@ mod tests {
             is_private_ip("this-domain-does-not-exist-12345.invalid"),
             "Invalid hostname should be blocked (either DNS failure or hijacked to private IP)"
         );
+    }
+
+    #[test]
+    fn test_ipv6_bracket_notation() {
+        // IPv6 localhost with brackets
+        assert!(validate_url("wss://[::1]:443", ValidationMode::Development, None).is_ok());
+        assert!(validate_url("wss://[::1]:443", ValidationMode::Production, None).is_err());
+
+        // IPv6 address with brackets (full form)
+        assert!(validate_url("https://[2001:db8::1]:8080", ValidationMode::Development, None).is_ok());
+
+        // IPv6 without port
+        assert!(validate_url("https://[2001:db8::1]", ValidationMode::Development, None).is_ok());
+
+        // IPv6 link-local should be blocked in Production
+        assert!(validate_url("wss://[fe80::1]:443", ValidationMode::Production, None).is_err());
+    }
+
+    #[test]
+    fn test_ipv6_bracket_notation_malformed() {
+        // Missing closing bracket
+        assert!(validate_url("wss://[::1:443", ValidationMode::Development, None).is_err());
+
+        // Empty brackets
+        assert!(validate_url("wss://[]:443", ValidationMode::Development, None).is_err());
     }
 }

@@ -9,7 +9,7 @@ use pentest_core::timeout::ToolTimeouts;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
-use pentest_core::validation::validate_target;
+use pentest_core::validation::{validate_port_spec, validate_target};
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -95,6 +95,8 @@ impl PentestTool for MasscanTool {
             let target = validate_target(&target)?;
 
             let ports = param_str_or(&params, "ports", "0-100");
+            // Validate port specification to prevent command injection
+            let ports = validate_port_spec(&ports)?;
             let rate = param_u64(&params, "rate", 1000);
             let banner = crate::util::param_bool(&params, "banner", false);
 
