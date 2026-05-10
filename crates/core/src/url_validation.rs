@@ -124,7 +124,7 @@ fn extract_host(url: &str) -> Result<String> {
             &remaining[1..bracket_end]
         } else {
             return Err(Error::InvalidParams(
-                "IPv6 bracket notation incomplete - missing closing bracket".to_string()
+                "IPv6 bracket notation incomplete - missing closing bracket".to_string(),
             ));
         }
     } else if let Some(colon_pos) = remaining.find(':') {
@@ -610,7 +610,12 @@ mod tests {
         assert!(validate_url("wss://[::1]:443", ValidationMode::Production, None).is_err());
 
         // IPv6 address with brackets (full form)
-        assert!(validate_url("https://[2001:db8::1]:8080", ValidationMode::Development, None).is_ok());
+        assert!(validate_url(
+            "https://[2001:db8::1]:8080",
+            ValidationMode::Development,
+            None
+        )
+        .is_ok());
 
         // IPv6 without port
         assert!(validate_url("https://[2001:db8::1]", ValidationMode::Development, None).is_ok());

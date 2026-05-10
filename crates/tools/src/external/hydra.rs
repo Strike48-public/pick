@@ -121,9 +121,10 @@ impl PentestTool for HydraTool {
 
             // Validate service name (only alphanumeric and hyphens)
             if !service.chars().all(|c| c.is_alphanumeric() || c == '-') {
-                return Err(pentest_core::error::Error::InvalidParams(
-                    format!("Invalid service name '{}' - only alphanumeric and hyphens allowed", service)
-                ));
+                return Err(pentest_core::error::Error::InvalidParams(format!(
+                    "Invalid service name '{}' - only alphanumeric and hyphens allowed",
+                    service
+                )));
             }
 
             let threads = param_u64(&params, "threads", 16);
@@ -160,9 +161,10 @@ impl PentestTool for HydraTool {
                         ));
                     }
                     if !user_list_path.exists() {
-                        return Err(pentest_core::error::Error::InvalidParams(
-                            format!("Username list file not found: {}", user_list)
-                        ));
+                        return Err(pentest_core::error::Error::InvalidParams(format!(
+                            "Username list file not found: {}",
+                            user_list
+                        )));
                     }
                     builder = builder.arg("-L", &user_list);
                 }
@@ -187,9 +189,10 @@ impl PentestTool for HydraTool {
                         ));
                     }
                     if !pass_list_path.exists() {
-                        return Err(pentest_core::error::Error::InvalidParams(
-                            format!("Password list file not found: {}", pass_list)
-                        ));
+                        return Err(pentest_core::error::Error::InvalidParams(format!(
+                            "Password list file not found: {}",
+                            pass_list
+                        )));
                     }
                     builder = builder.arg("-P", &pass_list);
                 }

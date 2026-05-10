@@ -135,9 +135,10 @@ impl PentestTool for JohnTool {
                     }
                     // Verify the path exists to catch typos early
                     if !wordlist_path.exists() {
-                        return Err(pentest_core::error::Error::InvalidParams(
-                            format!("Wordlist file not found: {}", wordlist)
-                        ));
+                        return Err(pentest_core::error::Error::InvalidParams(format!(
+                            "Wordlist file not found: {}",
+                            wordlist
+                        )));
                     }
                     builder = builder.arg("--wordlist", &wordlist);
 

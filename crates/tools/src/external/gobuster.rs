@@ -124,13 +124,15 @@ impl PentestTool for GobusterTool {
                     // Use ValidationMode from context (Development vs Production based on environment)
                     let validation_mode = if std::env::var("PENTEST_ENV")
                         .unwrap_or_else(|_| "development".to_string())
-                        .to_lowercase() == "production" {
+                        .to_lowercase()
+                        == "production"
+                    {
                         ValidationMode::Production
                     } else {
                         ValidationMode::Development
                     };
                     validate_url(&target, validation_mode, None)?
-                },
+                }
                 "dns" => validate_target(&target)?,
                 _ => unreachable!(), // Already validated mode above
             };
