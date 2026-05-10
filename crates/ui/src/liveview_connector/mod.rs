@@ -239,7 +239,7 @@ pub enum ConnectorEvent {
 
 /// LiveView-enabled connector that handles WebSocket proxying
 pub struct LiveViewConnector {
-    pub(crate) config: ConnectorConfig,
+    pub(crate) config: Arc<RwLock<ConnectorConfig>>,
     pub(crate) tools: Arc<RwLock<ToolRegistry>>,
     pub(crate) workspace_path: Option<PathBuf>,
     pub(crate) ws_connections: Arc<DashMap<String, WsConnectionState>>,
@@ -267,6 +267,7 @@ impl LiveViewConnector {
 
         // Store tenant_id, connector_name, tool names, and registry in the global session so the
         // WorkspaceApp (liveview) can read them when auto-creating the agent persona and executing tools.
+        // Do this before wrapping config in Arc<RwLock<>>
         crate::session::set_tenant_id(&config.tenant_id);
         crate::session::set_connector_name(&config.connector_name);
         crate::session::set_tool_names(tools.names().iter().map(|s| s.to_string()).collect());
@@ -274,7 +275,7 @@ impl LiveViewConnector {
         let tools_arc = Arc::new(RwLock::new(tools));
         crate::session::set_tool_registry(tools_arc.clone());
 
-        // Create workspace directory
+        // Create workspace directory (do this before wrapping config)
         let workspace_path = match workspace::create_workspace(&config.instance_id) {
             Ok(path) => {
                 tracing::info!("Workspace created at {}", path.display());
@@ -287,7 +288,7 @@ impl LiveViewConnector {
         };
 
         Self {
-            config,
+            config: Arc::new(RwLock::new(config)),
             tools: tools_arc,
             workspace_path,
             ws_connections: Arc::new(DashMap::new()),
@@ -332,8 +333,9 @@ impl LiveViewConnector {
             }
         }
 
-        let host = &self.config.host;
-        let scheme = if self.config.use_tls { "https" } else { "http" };
+        let config = self.config.read().await;
+        let host = &config.host;
+        let scheme = if config.use_tls { "https" } else { "http" };
 
         // Strip URL scheme prefixes (grpc://, grpcs://, etc.) first (case-insensitive)
         let schemes = [
@@ -372,7 +374,8 @@ impl LiveViewConnector {
                 );
                 crate::liveview_server::set_matrix_credentials(api_url, auth_token);
                 crate::session::set_auth_token(auth_token);
-                crate::session::set_tenant_id(&self.config.tenant_id);
+                let tenant_id = self.config.read().await.tenant_id.clone();
+                crate::session::set_tenant_id(&tenant_id);
             }
         }
 
@@ -427,12 +430,13 @@ impl LiveViewConnector {
                                 result.get("agent_id").and_then(|v| v.as_str()),
                             ) {
                                 // Initialize scan state with current config values
+                                let current_aggression = self.config.read().await.aggression_level;
                                 let scan_state = ScanState {
                                     conversation_id: conv_id.to_string(),
                                     agent_id: agent_id.to_string(),
                                     started_at: std::time::Instant::now(),
                                     started_at_system: std::time::SystemTime::now(),
-                                    current_aggression: self.config.aggression_level,
+                                    current_aggression,
                                     active_specialists: std::collections::HashMap::new(),
                                 };
 
@@ -664,7 +668,7 @@ impl LiveViewConnector {
         // Create API routes for scan status and aggression adjustment
         let api_state = api_routes::ApiState {
             scan_state: self.active_scan.clone(),
-            config: Arc::new(RwLock::new(self.config.clone())),
+            config: self.config.clone(), // Share the Arc, no separate clone
             matrix_client: self.matrix_client.clone(),
         };
         let api_routes_router = api_routes::create_api_routes(api_state);
@@ -702,22 +706,27 @@ impl LiveViewConnector {
     pub async fn connect_and_run(&mut self) -> Result<(), String> {
         self.send_event(ConnectorEvent::StatusChanged(ConnectorStatus::Connecting));
         self.send_event(ConnectorEvent::StepChanged(ConnectingStep::Connecting));
+        let host = self.config.read().await.host.clone();
         self.send_event(ConnectorEvent::Log(TerminalLine::info(format!(
             "Connecting to {}...",
-            self.config.host
+            host
         ))));
 
         // If we already have a saved auth token, set the Matrix credentials
         // immediately so the workspace chat panel can use them.
+        let (auth_token, instance_id) = {
+            let config = self.config.read().await;
+            (config.auth_token.clone(), config.instance_id.clone())
+        };
         tracing::info!(
             "[ConnectAndRun] auth_token from config: len={} empty={}",
-            self.config.auth_token.len(),
-            self.config.auth_token.is_empty(),
+            auth_token.len(),
+            auth_token.is_empty(),
         );
-        if !self.config.auth_token.is_empty() {
+        if !auth_token.is_empty() {
             tracing::info!("[ConnectAndRun] Emitting CredentialsUpdated from saved token");
             self.send_event(ConnectorEvent::CredentialsUpdated {
-                auth_token: self.config.auth_token.clone(),
+                auth_token,
                 api_url: self.derive_matrix_api_url(),
             });
         } else {
@@ -729,7 +738,6 @@ impl LiveViewConnector {
             // 3. Saved credentials (loaded here, token fetched per-iteration)
             // 4. Post-approval (wait for admin via CredentialsIssued)
             let connector_type = "pentest-connector".to_string();
-            let instance_id = self.config.instance_id.clone();
             let mut ott_provider =
                 OttProvider::new(Some(connector_type.clone()), Some(instance_id.clone()));
 
@@ -740,7 +748,7 @@ impl LiveViewConnector {
                         tracing::info!("Direct config initialized: {}", creds.client_id);
                         match ott_provider.get_token().await {
                             Ok(token) => {
-                                self.config.auth_token = token.clone();
+                                self.config.write().await.auth_token = token.clone();
                                 self.send_event(ConnectorEvent::CredentialsUpdated {
                                     auth_token: token,
                                     api_url: self.derive_matrix_api_url(),
@@ -769,7 +777,7 @@ impl LiveViewConnector {
                         );
                         match ott_provider.get_token().await {
                             Ok(token) => {
-                                self.config.auth_token = token.clone();
+                                self.config.write().await.auth_token = token.clone();
                                 self.send_event(ConnectorEvent::CredentialsUpdated {
                                     auth_token: token,
                                     api_url: self.derive_matrix_api_url(),
@@ -820,7 +828,7 @@ impl LiveViewConnector {
                     match ott.get_token().await {
                         Ok(token) => {
                             tracing::info!("Got fresh JWT via OttProvider (len={})", token.len());
-                            self.config.auth_token = token.clone();
+                            self.config.write().await.auth_token = token.clone();
                             self.send_event(ConnectorEvent::CredentialsUpdated {
                                 auth_token: token,
                                 api_url: self.derive_matrix_api_url(),
@@ -828,12 +836,16 @@ impl LiveViewConnector {
                         }
                         Err(e) => {
                             tracing::warn!("Failed to get JWT from saved credentials: {}", e);
-                            self.config.auth_token.clear();
+                            let instance_id = {
+                                let mut config = self.config.write().await;
+                                config.auth_token.clear();
+                                config.instance_id.clone()
+                            };
                             // Clean up stale credentials file
                             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
                             let stale = format!(
                                 "{}/.strike48/credentials/pentest-connector_{}.json",
-                                home, self.config.instance_id
+                                home, instance_id
                             );
                             if std::fs::remove_file(&stale).is_ok() {
                                 tracing::info!("Removed stale credentials file: {}", stale);
@@ -851,7 +863,7 @@ impl LiveViewConnector {
             // MATRIX_TLS_INSECURE for self-signed certs, and automatic keepalive.
             #[allow(deprecated)]
             let mut client = ConnectorClient::with_options(ClientOptions {
-                url: Some(self.config.host.clone()),
+                url: Some(self.config.read().await.host.clone()),
                 ..Default::default()
             });
 
@@ -877,7 +889,8 @@ impl LiveViewConnector {
             self.send_event(ConnectorEvent::Log(TerminalLine::info(
                 "Connected, registering...",
             )));
-            tracing::info!("Connected to {}, starting stream...", self.config.host);
+            let host = self.config.read().await.host.clone();
+            tracing::info!("Connected to {}, starting stream...", host);
 
             let registration_msg = self.build_registration_message().await;
 
@@ -953,7 +966,7 @@ impl LiveViewConnector {
         // Build app manifest for workspace (Files + Shell)
         // Use hostname as the app name (display name); connector_name controls gateway identity
         let hostname = whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string());
-        let connector_type = self.config.connector_name.clone();
+        let connector_type = self.config.read().await.connector_name.clone();
 
         let manifest = AppManifest::new(&hostname, "/")
             .description("Browse files and access the interactive shell")
@@ -984,12 +997,13 @@ impl LiveViewConnector {
             task_types: vec![],
         };
 
+        let config = self.config.read().await;
         let register_request = RegisterConnectorRequest {
-            tenant_id: self.config.tenant_id.clone(),
+            tenant_id: config.tenant_id.clone(),
             connector_type,
-            instance_id: self.config.instance_id.clone(),
+            instance_id: config.instance_id.clone(),
             capabilities: Some(capabilities),
-            jwt_token: self.config.auth_token.clone(),
+            jwt_token: config.auth_token.clone(),
             session_token: String::new(),
             scope: 0,
             instance_metadata: None,
@@ -1007,10 +1021,13 @@ impl LiveViewConnector {
         // We do NOT reconnect — the existing stream stays alive. The fresh token
         // is stored so that if the stream drops for any reason, the reconnect
         // loop uses a valid token.
-        let has_jwt_auth =
-            !self.config.auth_token.is_empty() && self.ott_provider.read().await.is_some();
+        let (has_jwt_auth, auth_token) = {
+            let config = self.config.read().await;
+            let has_jwt = !config.auth_token.is_empty() && self.ott_provider.read().await.is_some();
+            (has_jwt, config.auth_token.clone())
+        };
         let refresh_timer = tokio::time::sleep(if has_jwt_auth {
-            jwt_refresh_delay(&self.config.auth_token)
+            jwt_refresh_delay(&auth_token)
         } else {
             // No OTT provider — disable refresh (effectively never fires)
             tokio::time::Duration::from_secs(365 * 86400)
@@ -1041,7 +1058,7 @@ impl LiveViewConnector {
                             Ok(new_token) => {
                                 let delay = jwt_refresh_delay(&new_token);
                                 tracing::info!("JWT refreshed silently (len={})", new_token.len());
-                                self.config.auth_token = new_token.clone();
+                                self.config.write().await.auth_token = new_token.clone();
                                 self.send_event(ConnectorEvent::CredentialsUpdated {
                                     auth_token: new_token,
                                     api_url: self.derive_matrix_api_url(),
@@ -1082,7 +1099,7 @@ impl LiveViewConnector {
                                 self.send_event(ConnectorEvent::Log(
                                     TerminalLine::success("Registered with Strike48")
                                 ));
-                                if self.config.auth_token.is_empty() {
+                                if self.config.read().await.auth_token.is_empty() {
                                     // No JWT yet — try loading saved OTT credentials.
                                     // This may trigger a reconnect, so await it before
                                     // transitioning to Registered.
@@ -1100,14 +1117,18 @@ impl LiveViewConnector {
                                 if resp.error.contains("expired") || resp.error.contains("invalid") ||
                                    resp.error.contains("auth") || resp.error.contains("jwt") {
                                     tracing::info!("Auth token expired/invalid, clearing and will retry");
-                                    self.config.auth_token.clear();
+                                    let instance_id = {
+                                        let mut config = self.config.write().await;
+                                        config.auth_token.clear();
+                                        config.instance_id.clone()
+                                    };
                                     // Clear the OTT provider so we don't try to refresh stale credentials
                                     *self.ott_provider.write().await = None;
                                     // Delete stale saved credentials file to break the retry loop
                                     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
                                     let stale = format!(
                                         "{}/.strike48/credentials/pentest-connector_{}.json",
-                                        home, self.config.instance_id
+                                        home, instance_id
                                     );
                                     if std::fs::remove_file(&stale).is_ok() {
                                         tracing::info!("Removed stale credentials file: {}", stale);
@@ -1148,7 +1169,7 @@ impl LiveViewConnector {
                                 // Pass the Arc so the task uses the current sender after any reconnect.
                                 let tools = self.tools.clone();
                                 let workspace_path = self.workspace_path.clone();
-                                let instance_id = self.config.instance_id.clone();
+                                let instance_id = self.config.read().await.instance_id.clone();
                                 let matrix_tx = Arc::clone(&self.matrix_tx);
                                 let event_tx = self.event_tx.clone();
                                 tokio::spawn(async move {
@@ -1442,9 +1463,12 @@ impl LiveViewConnector {
         if let Some(handle) = &self.liveview_handle {
             handle.shutdown();
         }
-        // Cleanup workspace
+        // Cleanup workspace - we need to block here to read the config
+        // This is acceptable in shutdown path (not a hot path)
         if self.workspace_path.is_some() {
-            workspace::cleanup_workspace(&self.config.instance_id);
+            let instance_id =
+                futures::executor::block_on(async { self.config.read().await.instance_id.clone() });
+            workspace::cleanup_workspace(&instance_id);
         }
     }
 }

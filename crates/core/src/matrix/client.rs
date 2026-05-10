@@ -116,14 +116,25 @@ impl MatrixChatClient {
         const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 
         if !status.is_success() {
-            let body = resp
-                .text()
-                .await
-                .unwrap_or_else(|e| format!("(could not read error body: {})", e));
+            // Apply same size limit to error responses to prevent DoS
+            use futures::StreamExt;
+            let mut body = Vec::new();
+            let mut stream = resp.bytes_stream();
+
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.unwrap_or_default();
+                if body.len() + chunk.len() > MAX_RESPONSE_SIZE {
+                    body.extend_from_slice(&chunk[..(MAX_RESPONSE_SIZE - body.len())]);
+                    break; // Truncate at limit
+                }
+                body.extend_from_slice(&chunk);
+            }
+
+            let body_text = String::from_utf8_lossy(&body).to_string();
             return Err(crate::error::Error::Matrix(format!(
                 "GraphQL request failed: {} - {}",
                 status,
-                truncate_body(&body)
+                truncate_body(&body_text)
             )));
         }
 

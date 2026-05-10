@@ -329,17 +329,8 @@ async fn post_aggression(
         }
     };
 
-    // Update connector's local configuration first (always succeeds)
-    // This is the source of truth for future tool executions and specialist spawns
-    let previous_level = {
-        let mut config_guard = state.config.write().await;
-        let prev = config_guard.aggression_level;
-        config_guard.aggression_level = new_level;
-        prev
-    };
-
-    // Update active scan state and extract conversation/agent IDs for Matrix notification
-    // If no scan is active, this is an error - aggression changes only apply to active scans
+    // Check for active scan FIRST before modifying config
+    // This prevents config corruption on error path
     let (conversation_id, agent_id) = {
         let mut scan_guard = state.scan_state.write().await;
         if let Some(ref mut scan) = *scan_guard {
@@ -350,6 +341,15 @@ async fn post_aggression(
                 error: "No active scan. Start a scan with begin_scan tool first.".to_string(),
             });
         }
+    };
+
+    // Update connector's local configuration (always succeeds after scan check passed)
+    // This is the source of truth for future tool executions and specialist spawns
+    let previous_level = {
+        let mut config_guard = state.config.write().await;
+        let prev = config_guard.aggression_level;
+        config_guard.aggression_level = new_level;
+        prev
     };
 
     // Notify the Red Team agent of the aggression change via Matrix system message

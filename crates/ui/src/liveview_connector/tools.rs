@@ -136,8 +136,8 @@ pub(crate) async fn handle_execute_impl(
 ) {
     let request_id = req.request_id.clone();
 
-    // Defense against hostile targets: limit tool result payload size to prevent OOM
-    // This protects against malicious targets returning massive outputs (e.g., 100MB nmap XML)
+    // Defense against hostile Matrix server: limit incoming request payload size to prevent OOM
+    // This protects against compromised/malicious Matrix server sending oversized requests
     const MAX_TOOL_PAYLOAD: usize = 5 * 1024 * 1024; // 5 MB
 
     if req.payload.len() > MAX_TOOL_PAYLOAD {
