@@ -507,8 +507,8 @@ mod tests {
         );
 
         // Act: Push evidence
-        push_evidence(node1.clone());
-        push_evidence(node2.clone());
+        let _ = push_evidence(node1.clone());
+        let _ = push_evidence(node2.clone());
 
         // Assert: Drain should contain our nodes (may contain others from parallel tests)
         let drained = drain_pending_evidence();
@@ -554,7 +554,7 @@ mod tests {
                 Severity::Info,
                 "Test".to_string(),
             );
-            push_evidence(node);
+            let _ = push_evidence(node);
         }
 
         // Assert: Drain and verify our 10 nodes are present
@@ -596,7 +596,7 @@ mod tests {
                 Severity::Info,
                 "R".to_string(),
             );
-            push_evidence(node);
+            let _ = push_evidence(node);
         }
         let elapsed = start.elapsed();
 
