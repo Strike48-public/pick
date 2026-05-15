@@ -3,7 +3,7 @@ entries:
   pick-connector:
   - apiVersion: v2
     appVersion: 0.9.9
-    created: "2026-05-15T20:32:00.376280079Z"
+    created: "2026-05-15T20:53:56.453227912Z"
     description: Pick Connector — headless pentest agent for Kubernetes
     digest: bc854e8e829c9740e9d75d75965ef8913d0855b0073a64f5f57441d0784a8f9d
     name: pick-connector
@@ -13,9 +13,9 @@ entries:
     version: 0.9.9
   - apiVersion: v2
     appVersion: 0.2.0
-    created: "2026-05-15T20:32:00.376000531Z"
+    created: "2026-05-15T20:53:56.452938005Z"
     description: Pick Connector — headless pentest agent for Kubernetes
-    digest: 84ea3a7d6962ac4ad1dfdc2fdbeda46955054b8cec961cef939ed9389d386b92
+    digest: 11e288a7bb95f52fbf7e45d30acbd3b70fd0a10a53b286f9aa388e6d425512cc
     name: pick-connector
     type: application
     urls:
@@ -23,7 +23,7 @@ entries:
     version: 0.2.0
   - apiVersion: v2
     appVersion: 0.1.4
-    created: "2026-05-15T20:32:00.37568755Z"
+    created: "2026-05-15T20:53:56.452598904Z"
     description: Pick Connector — headless pentest agent for Kubernetes
     digest: 144a51d9e270b77ac94022f92201dbf6fe9d296f725dd8bb522f344926a65044
     name: pick-connector
@@ -33,7 +33,7 @@ entries:
     version: 0.1.4
   - apiVersion: v2
     appVersion: 0.1.3
-    created: "2026-05-15T20:32:00.375348379Z"
+    created: "2026-05-15T20:53:56.452276396Z"
     description: Pick Connector — headless pentest agent for Kubernetes
     digest: e72347f7ecc06fcbdc8eefd540585d4aad3e457b71af13fe045a2a1887477b99
     name: pick-connector
@@ -43,7 +43,7 @@ entries:
     version: 0.1.3
   - apiVersion: v2
     appVersion: 0.1.0-rc1
-    created: "2026-05-15T20:32:00.375038073Z"
+    created: "2026-05-15T20:53:56.4519397Z"
     description: Pick Connector — headless pentest agent for Kubernetes
     digest: d43cd11107ada2c2405d52d33f0fcac7210f48ad412ae08bcc5f0855435210bc
     name: pick-connector
@@ -51,4 +51,4 @@ entries:
     urls:
     - https://strike48-public.github.io/pick/pick-connector-0.1.0-rc1.tgz
     version: 0.1.0-rc1
-generated: "2026-05-15T20:32:00.374592772Z"
+generated: "2026-05-15T20:53:56.45142569Z"
