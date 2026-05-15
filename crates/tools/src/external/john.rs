@@ -124,6 +124,22 @@ impl PentestTool for JohnTool {
             } else if let Some(wordlist) = param_str_opt(&params, "wordlist") {
                 // Dictionary attack
                 if !wordlist.is_empty() {
+                    // Validate wordlist path (john expects absolute system paths like /usr/share/wordlists/rockyou.txt)
+                    // We require absolute paths to prevent traversal but don't use validate_path since
+                    // these are system-wide wordlists, not workspace-relative files
+                    let wordlist_path = std::path::Path::new(&wordlist);
+                    if !wordlist_path.is_absolute() {
+                        return Err(pentest_core::error::Error::InvalidParams(
+                            "Wordlist path must be absolute".into(),
+                        ));
+                    }
+                    // Verify the path exists to catch typos early
+                    if !wordlist_path.exists() {
+                        return Err(pentest_core::error::Error::InvalidParams(format!(
+                            "Wordlist file not found: {}",
+                            wordlist
+                        )));
+                    }
                     builder = builder.arg("--wordlist", &wordlist);
 
                     // Rules

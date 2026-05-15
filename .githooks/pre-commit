@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# pre-commit hook - Block commits that introduce customer PII.
+#
+# Install by running: scripts/install-hooks.sh
+# (or manually: git config core.hooksPath .githooks)
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+SCANNER="$REPO_ROOT/scripts/check-pii.sh"
+
+if [[ ! -x "$SCANNER" ]]; then
+    echo "warning: $SCANNER not found or not executable, skipping PII check" >&2
+    exit 0
+fi
+
+# Scan only the added lines in staged changes. `git diff --cached` shows what's
+# about to be committed; grep '^+[^+]' filters to additions only (ignoring the
+# '+++' file-header lines). The scanner itself and its workflow are excluded
+# because they legitimately contain the banned names as pattern definitions.
+added_lines="$(
+    git diff --cached -- . \
+        ':!scripts/check-pii.sh' \
+        ':!.github/workflows/pii-check.yml' \
+        ':!.githooks/pre-commit' \
+        ':!.githooks/commit-msg' \
+    | grep -E '^\+[^+]' || true
+)"
+
+if [[ -n "$added_lines" ]]; then
+    if ! printf '%s\n' "$added_lines" | "$SCANNER" >&2; then
+        echo "" >&2
+        echo "Commit blocked: customer names (PII) found in staged changes." >&2
+        echo "Remove the customer names above and retry, or bypass with --no-verify (not recommended)." >&2
+        exit 1
+    fi
+fi
+
+exit 0

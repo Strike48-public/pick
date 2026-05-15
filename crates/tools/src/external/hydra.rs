@@ -5,9 +5,11 @@
 
 use async_trait::async_trait;
 use pentest_core::error::Result;
+use pentest_core::timeout::ToolTimeouts;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
+use pentest_core::validation::validate_target;
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -87,8 +89,8 @@ impl PentestTool for HydraTool {
             .param(ToolParam::optional(
                 "timeout",
                 ParamType::Integer,
-                "Timeout in seconds (default: 300)",
-                json!(300),
+                "Timeout in seconds (default: 3600, range: 60-14400)",
+                json!(3600),
             ))
             .platforms(vec![Platform::Desktop, Platform::Tui])
     }
@@ -114,9 +116,29 @@ impl PentestTool for HydraTool {
                 ));
             }
 
+            // Validate target to prevent command injection
+            let target = validate_target(&target)?;
+
+            // Validate service name (only alphanumeric and hyphens)
+            if !service.chars().all(|c| c.is_alphanumeric() || c == '-') {
+                return Err(pentest_core::error::Error::InvalidParams(format!(
+                    "Invalid service name '{}' - only alphanumeric and hyphens allowed",
+                    service
+                )));
+            }
+
             let threads = param_u64(&params, "threads", 16);
             let port = param_u64(&params, "port", 0);
-            let timeout = param_u64(&params, "timeout", 300);
+
+            // Get timeout with intelligent defaults and bounds checking
+            let timeouts = ToolTimeouts::default();
+            let default_timeout = timeouts.get_by_tool_name("hydra");
+            let user_timeout =
+                Duration::from_secs(param_u64(&params, "timeout", default_timeout.as_secs()));
+            let timeout = pentest_core::timeout::clamp_timeout(
+                user_timeout,
+                pentest_core::timeout::categorize_tool("hydra"),
+            );
 
             // Build hydra command
             let mut builder = CommandBuilder::new()
@@ -131,6 +153,19 @@ impl PentestTool for HydraTool {
                 }
             } else if let Some(user_list) = param_str_opt(&params, "username_list") {
                 if !user_list.is_empty() {
+                    // Validate username list path (system-wide wordlist like /usr/share/wordlists/users.txt)
+                    let user_list_path = std::path::Path::new(&user_list);
+                    if !user_list_path.is_absolute() {
+                        return Err(pentest_core::error::Error::InvalidParams(
+                            "Username list path must be absolute".into(),
+                        ));
+                    }
+                    if !user_list_path.exists() {
+                        return Err(pentest_core::error::Error::InvalidParams(format!(
+                            "Username list file not found: {}",
+                            user_list
+                        )));
+                    }
                     builder = builder.arg("-L", &user_list);
                 }
             } else {
@@ -146,6 +181,19 @@ impl PentestTool for HydraTool {
                 }
             } else if let Some(pass_list) = param_str_opt(&params, "password_list") {
                 if !pass_list.is_empty() {
+                    // Validate password list path (system-wide wordlist like /usr/share/wordlists/rockyou.txt)
+                    let pass_list_path = std::path::Path::new(&pass_list);
+                    if !pass_list_path.is_absolute() {
+                        return Err(pentest_core::error::Error::InvalidParams(
+                            "Password list path must be absolute".into(),
+                        ));
+                    }
+                    if !pass_list_path.exists() {
+                        return Err(pentest_core::error::Error::InvalidParams(format!(
+                            "Password list file not found: {}",
+                            pass_list
+                        )));
+                    }
                     builder = builder.arg("-P", &pass_list);
                 }
             } else {
@@ -165,9 +213,9 @@ impl PentestTool for HydraTool {
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-            // Execute hydra
+            // Execute hydra with configured timeout
             let result = platform
-                .execute_command("hydra", &args_refs, Duration::from_secs(timeout))
+                .execute_command("hydra", &args_refs, timeout)
                 .await?;
 
             // Read output file

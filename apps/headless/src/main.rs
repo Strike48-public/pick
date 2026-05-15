@@ -45,6 +45,12 @@ async fn main() -> anyhow::Result<()> {
             print_usage();
             std::process::exit(1);
         }
+        ConfigLoadResult::ValidationFailed(e) => {
+            eprintln!("Configuration validation failed: {}", e);
+            eprintln!();
+            print_usage();
+            std::process::exit(1);
+        }
     };
 
     // In StrikeHub mode the host is optional (liveview-only).

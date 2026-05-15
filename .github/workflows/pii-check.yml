@@ -1,0 +1,56 @@
+name: PII Check
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check-pii:
+    name: Scan for customer names
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure scanner is executable
+        run: chmod +x scripts/check-pii.sh
+
+      - name: Check PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "Scanning PR title..."
+          printf '%s\n' "$PR_TITLE" | scripts/check-pii.sh
+
+      - name: Check PR body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          echo "Scanning PR body..."
+          printf '%s\n' "${PR_BODY:-<empty>}" | scripts/check-pii.sh
+
+      - name: Check commit messages
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          echo "Scanning commit messages between $BASE_SHA..$HEAD_SHA"
+          git log --format='%H%n%s%n%b%n---' "$BASE_SHA..$HEAD_SHA" | scripts/check-pii.sh
+
+      - name: Check changed file contents
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          echo "Scanning diff for added lines between $BASE_SHA..$HEAD_SHA"
+          # Only scan added lines (lines starting with '+' but not '+++') to avoid
+          # tripping on unchanged historical content or on removal of bad content.
+          git diff "$BASE_SHA..$HEAD_SHA" -- . ':!scripts/check-pii.sh' ':!.github/workflows/pii-check.yml' \
+            | grep -E '^\+[^+]' \
+            | scripts/check-pii.sh

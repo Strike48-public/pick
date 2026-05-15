@@ -132,7 +132,7 @@ impl ConnectorConfig {
         self
     }
 
-    /// Validate the configuration
+    /// Validate the configuration including SSRF protection
     pub fn validate(&self) -> Result<(), String> {
         if self.host.is_empty() {
             return Err("Strike48 host is required".to_string());
@@ -140,6 +140,14 @@ impl ConnectorConfig {
         if self.tenant_id.is_empty() {
             return Err("Tenant ID is required".to_string());
         }
+
+        // Validate host URL for SSRF protection
+        use crate::url_validation::{validate_url, ValidationMode};
+
+        let validation_mode = ValidationMode::default();
+        validate_url(&self.host, validation_mode, None)
+            .map_err(|e| format!("Invalid host URL: {}", e))?;
+
         Ok(())
     }
 
@@ -148,26 +156,48 @@ impl ConnectorConfig {
         !self.auth_token.is_empty()
     }
 
-    /// Strip any URL scheme prefix from the host and return the bare `host:port`.
+    /// Validate `host` and return it with its scheme preserved so that transport
+    /// auto-detection in [`Self::to_sdk_config`] can distinguish WebSocket
+    /// (`wss://`) from gRPC (`grpc://`, `grpcs://`, or no scheme).
     ///
-    /// Handles `grpc://`, `grpcs://`, `http://`, `https://`, `ws://`, `wss://`.
-    /// Returns `Err` if the result is empty or missing a port (no `:`).
+    /// If no scheme is present and the host ends with `:443`, `wss://` is
+    /// prepended — Cloudflare-fronted Strike48 deployments (the common case
+    /// for port 443) do not proxy arbitrary gRPC over HTTP/2 and require
+    /// WebSocket. This mirrors what a user would type into a browser and
+    /// keeps saved settings from previous versions working.
+    ///
+    /// Returns `Err` if the bare `host:port` is missing or malformed.
     pub fn normalize_host(host: &str) -> Result<String, String> {
         let schemes = [
             "grpc://", "grpcs://", "http://", "https://", "ws://", "wss://",
         ];
-        let mut h = host.trim();
-        for scheme in &schemes {
-            if let Some(stripped) = h.strip_prefix(scheme) {
-                h = stripped;
-                break;
-            }
+        let trimmed = host.trim();
+        let lower = trimmed.to_lowercase();
+
+        let (scheme, bare) = schemes
+            .iter()
+            .find_map(|s| {
+                lower
+                    .strip_prefix(s)
+                    .map(|_| (&trimmed[..s.len()], &trimmed[s.len()..]))
+            })
+            .unwrap_or(("", trimmed));
+
+        if bare.is_empty() || !bare.contains(':') {
+            return Err(
+                "Invalid host format. Use scheme://host:port (e.g., wss://strike48.example.com:443)"
+                    .to_string(),
+            );
         }
 
-        if h.is_empty() || !h.contains(':') {
-            return Err("Invalid host format. Use host:port (e.g., localhost:50061)".to_string());
+        if !scheme.is_empty() {
+            return Ok(format!("{}{}", scheme, bare));
         }
-        Ok(h.to_string())
+
+        // No scheme: Strike48 behind Cloudflare on :443 must use WebSocket;
+        // other ports default to gRPC (SDK's default transport).
+        let inferred = if bare.ends_with(":443") { "wss://" } else { "" };
+        Ok(format!("{}{}", inferred, bare))
     }
 
     /// Convert to the SDK's ConnectorConfig
@@ -278,6 +308,8 @@ pub enum ConfigLoadResult {
     Help,
     /// An error occurred (unknown flag, bad host format, etc.).
     Error(String),
+    /// Config validation failed (SSRF protection, invalid URL, etc.).
+    ValidationFailed(String),
 }
 
 /// Build a [`ConnectorConfig`] by layering saved settings, environment variables,
@@ -411,7 +443,12 @@ pub fn load_connector_config(args: &[String]) -> ConfigLoadResult {
 
     // Preserve the original URL (including scheme) so that to_sdk_config()
     // can auto-detect transport type (WebSocket vs gRPC) and TLS from the scheme.
-    // normalize_host used to strip the scheme here, which broke WSS detection.
+
+    // Validate config before returning (SSRF protection, required fields, etc.)
+    if let Err(e) = config.validate() {
+        tracing::warn!("Config validation failed: {}", e);
+        return ConfigLoadResult::ValidationFailed(e);
+    }
 
     ConfigLoadResult::Ok(config)
 }
@@ -440,5 +477,58 @@ impl AppSettings {
             instance_id: self.device_id.clone(),
             ..base_config
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_host_preserves_wss_scheme() {
+        let out = ConnectorConfig::normalize_host("wss://studio.example.com:443").unwrap();
+        assert_eq!(out, "wss://studio.example.com:443");
+    }
+
+    #[test]
+    fn normalize_host_preserves_grpc_scheme() {
+        let out = ConnectorConfig::normalize_host("grpc://localhost:50061").unwrap();
+        assert_eq!(out, "grpc://localhost:50061");
+    }
+
+    #[test]
+    fn normalize_host_infers_wss_for_port_443() {
+        let out = ConnectorConfig::normalize_host("studio.example.com:443").unwrap();
+        assert_eq!(out, "wss://studio.example.com:443");
+    }
+
+    #[test]
+    fn normalize_host_leaves_non_443_bare() {
+        let out = ConnectorConfig::normalize_host("localhost:50061").unwrap();
+        assert_eq!(out, "localhost:50061");
+    }
+
+    #[test]
+    fn normalize_host_trims_whitespace() {
+        let out = ConnectorConfig::normalize_host("  wss://x.example.com:443  ").unwrap();
+        assert_eq!(out, "wss://x.example.com:443");
+    }
+
+    #[test]
+    fn normalize_host_rejects_missing_port() {
+        assert!(ConnectorConfig::normalize_host("studio.example.com").is_err());
+        assert!(ConnectorConfig::normalize_host("wss://studio.example.com").is_err());
+    }
+
+    #[test]
+    fn normalize_host_rejects_empty() {
+        assert!(ConnectorConfig::normalize_host("").is_err());
+        assert!(ConnectorConfig::normalize_host("   ").is_err());
+    }
+
+    #[test]
+    fn normalize_host_scheme_matching_is_case_insensitive() {
+        let out = ConnectorConfig::normalize_host("WSS://Studio.Example.com:443").unwrap();
+        assert_eq!(out, "WSS://Studio.Example.com:443");
     }
 }

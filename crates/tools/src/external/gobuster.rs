@@ -7,6 +7,8 @@ use pentest_core::error::Result;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
+use pentest_core::url_validation::{validate_url, ValidationMode};
+use pentest_core::validation::validate_target;
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -100,6 +102,7 @@ impl PentestTool for GobusterTool {
             // Extract parameters
             let mode = param_str_or(&params, "mode", "dir");
             let target = param_str_or(&params, "target", "");
+
             if target.is_empty() {
                 return Err(pentest_core::error::Error::InvalidParams(
                     "target parameter is required".into(),
@@ -112,6 +115,27 @@ impl PentestTool for GobusterTool {
                     "mode must be 'dir', 'dns', or 'vhost'".into(),
                 ));
             }
+
+            // Validate target based on mode:
+            // - dir/vhost modes expect URLs (http://example.com) → use validate_url
+            // - dns mode expects domain names → use validate_target
+            let target = match mode.as_str() {
+                "dir" | "vhost" => {
+                    // Use ValidationMode from context (Development vs Production based on environment)
+                    let validation_mode = if std::env::var("PENTEST_ENV")
+                        .unwrap_or_else(|_| "development".to_string())
+                        .to_lowercase()
+                        == "production"
+                    {
+                        ValidationMode::Production
+                    } else {
+                        ValidationMode::Development
+                    };
+                    validate_url(&target, validation_mode, None)?
+                }
+                "dns" => validate_target(&target)?,
+                _ => unreachable!(), // Already validated mode above
+            };
 
             let threads = param_u64(&params, "threads", 10);
             let timeout = param_u64(&params, "timeout", 10);

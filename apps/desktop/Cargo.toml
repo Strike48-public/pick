@@ -9,6 +9,13 @@ license.workspace = true
 name = "pentest-connector"
 path = "src/main.rs"
 
+[[example]]
+name = "egui_graph_poc"
+required-features = ["egui_poc"]
+
+[features]
+egui_poc = []
+
 [dependencies]
 # Crates
 pentest-core = { workspace = true, features = ["browser-auth"] }
@@ -21,3 +28,12 @@ dioxus = { workspace = true, features = ["desktop"] }
 
 # Logging
 tracing = { workspace = true }
+
+[dev-dependencies]
+# Graph visualization (examples require eframe 0.34)
+eframe = "0.34"
+egui = "0.34"
+egui_graphs = "0.30"
+petgraph = "0.8"
+dotenvy = "0.15"
+futures = { workspace = true }
