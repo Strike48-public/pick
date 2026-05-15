@@ -34,6 +34,8 @@ pub fn load_settings() -> AppSettings {
         Ok(contents) => {
             let mut settings: AppSettings = serde_json::from_str(&contents).unwrap_or_default();
 
+            let mut dirty = false;
+
             // Validate and clear expired auth token
             if let Some(last_config) = &mut settings.last_config {
                 if let Some(validated) =
@@ -41,17 +43,37 @@ pub fn load_settings() -> AppSettings {
                 {
                     last_config.auth_token = validated;
                 } else {
-                    // Token is expired or invalid, clear it
                     tracing::info!("Cleared expired/invalid auth token from settings");
                     last_config.auth_token.clear();
+                    dirty = true;
+                }
+            }
 
-                    // Save the updated settings to persist the change
-                    if let Err(e) = save_settings(&settings) {
-                        tracing::warn!(
-                            "Failed to save settings after clearing expired token: {}",
-                            e
-                        );
+            // Migrate saved hosts written by older versions that stripped the
+            // URL scheme. Without a scheme the SDK defaults to gRPC, which
+            // fails on Cloudflare-fronted Strike48 deployments. Re-running
+            // normalize_host now re-introduces wss:// for :443 hosts.
+            if let Some(last_config) = &mut settings.last_config {
+                if !last_config.host.is_empty() {
+                    if let Ok(normalized) =
+                        crate::config::ConnectorConfig::normalize_host(&last_config.host)
+                    {
+                        if normalized != last_config.host {
+                            tracing::info!(
+                                "Migrated saved host {} -> {}",
+                                last_config.host,
+                                normalized
+                            );
+                            last_config.host = normalized;
+                            dirty = true;
+                        }
                     }
+                }
+            }
+
+            if dirty {
+                if let Err(e) = save_settings(&settings) {
+                    tracing::warn!("Failed to save settings after migration: {}", e);
                 }
             }
 

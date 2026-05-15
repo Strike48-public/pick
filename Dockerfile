@@ -1,5 +1,5 @@
 # ── Stage 1: Chef ──────────────────────────────────────────────
-FROM rust:1.88-bookworm AS chef
+FROM rust:1.91-bookworm AS chef
 RUN cargo install cargo-chef
 WORKDIR /app
 
