@@ -103,13 +103,12 @@ impl Default for ConnectorConfig {
             instance_id: Uuid::new_v4().to_string(),
             connector_name: default_connector_name(),
             display_name: None,
-            aggression_level: AggressionLevel::default(),
             tags: vec![],
             use_tls: true,
             reconnect_enabled: true,
             reconnect_delay_ms: 5000,
             max_backoff_delay_ms: 60000,
-            aggression_level: crate::aggression::AggressionLevel::default(),
+            aggression_level: AggressionLevel::default(),
         }
     }
 }
