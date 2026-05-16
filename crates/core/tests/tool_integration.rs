@@ -305,7 +305,7 @@ async fn screenshot_returns_result() {
     let c = connector();
     let result = exec(&c, json!({"tool": "screenshot"})).await;
     assert_tool_result_shape(&result, "screenshot");
-    // May fail on headless CI — just verify shape
+    // May fail on headless CI — verify shape regardless of success/failure
 }
 
 // ── traffic_capture ──────────────────────────────────────────────────

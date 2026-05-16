@@ -96,32 +96,43 @@ pub async fn capture_screenshot() -> Result<Vec<u8>> {
     {
         use screenshots::Screen;
 
-        let screens =
-            Screen::all().map_err(|e| Error::Capture(format!("Failed to get screens: {}", e)))?;
+        // Catch panics from screenshot library (e.g., Wayland display not available)
+        let result = std::panic::catch_unwind(|| {
+            let screens = Screen::all()
+                .map_err(|e| Error::Capture(format!("Failed to get screens: {}", e)))?;
 
-        if screens.is_empty() {
-            return Err(Error::Capture("No screens found".into()));
+            if screens.is_empty() {
+                return Err(Error::Capture("No screens found".into()));
+            }
+
+            // Capture the primary screen
+            let screen = &screens[0];
+            let image = screen
+                .capture()
+                .map_err(|e| Error::Capture(format!("Failed to capture screen: {}", e)))?;
+
+            // Encode as PNG
+            let mut buffer = Vec::new();
+            let encoder = image::codecs::png::PngEncoder::new(&mut buffer);
+            image::ImageEncoder::write_image(
+                encoder,
+                image.as_raw(),
+                image.width(),
+                image.height(),
+                image::ExtendedColorType::Rgba8,
+            )
+            .map_err(|e| Error::Capture(format!("Failed to encode PNG: {}", e)))?;
+
+            Ok(buffer)
+        });
+
+        match result {
+            Ok(Ok(data)) => Ok(data),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(Error::Capture(
+                "Screenshot failed: display not available or Wayland/X11 error".into(),
+            )),
         }
-
-        // Capture the primary screen
-        let screen = &screens[0];
-        let image = screen
-            .capture()
-            .map_err(|e| Error::Capture(format!("Failed to capture screen: {}", e)))?;
-
-        // Encode as PNG
-        let mut buffer = Vec::new();
-        let encoder = image::codecs::png::PngEncoder::new(&mut buffer);
-        image::ImageEncoder::write_image(
-            encoder,
-            image.as_raw(),
-            image.width(),
-            image.height(),
-            image::ExtendedColorType::Rgba8,
-        )
-        .map_err(|e| Error::Capture(format!("Failed to encode PNG: {}", e)))?;
-
-        Ok(buffer)
     }
 
     #[cfg(not(feature = "screenshots"))]
