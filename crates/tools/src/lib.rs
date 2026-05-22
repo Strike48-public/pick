@@ -225,6 +225,9 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(SessionExportTool);
     registry.register(BeginScanTool);
 
+    // Agent orchestration
+    registry.register(SpawnSpecialistTool);
+
     // Automated toolchains
     registry.register(WebAppToolchain::new());
 

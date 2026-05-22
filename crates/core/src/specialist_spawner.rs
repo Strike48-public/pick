@@ -367,4 +367,47 @@ mod tests {
             PathBuf::from("skills/claude-red/specialists/ai-security-specialist.md")
         );
     }
+
+    /// Each specialist must have a prompt file shipped with the repo. The runtime
+    /// `SpecialistSpawner::spawn()` reads these files to populate the agent's
+    /// `system_message`; if any file is missing or empty, every spawn attempt
+    /// fails with `Error::Config`. Asserting both existence and a minimum size
+    /// guards against silent regressions where the file was deleted, truncated,
+    /// or renamed.
+    #[test]
+    fn specialist_prompt_files_exist_and_have_content() {
+        // Tests run from each crate's directory; resolve from the workspace root.
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("crates/core/.. should resolve to repo root")
+            .to_path_buf();
+
+        const MIN_PROMPT_BYTES: u64 = 1024;
+
+        for specialist in [
+            SpecialistType::WebApp,
+            SpecialistType::Api,
+            SpecialistType::Binary,
+            SpecialistType::AiSecurity,
+        ] {
+            let path = repo_root.join(specialist.prompt_file());
+            let metadata = std::fs::metadata(&path).unwrap_or_else(|e| {
+                panic!("specialist prompt missing for {specialist:?} at {path:?}: {e}")
+            });
+            assert!(
+                metadata.len() >= MIN_PROMPT_BYTES,
+                "specialist prompt for {specialist:?} at {path:?} is suspiciously small \
+                 ({} bytes < {MIN_PROMPT_BYTES} byte minimum)",
+                metadata.len()
+            );
+            let body = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("specialist prompt unreadable at {path:?}: {e}"));
+            assert!(
+                body.contains("# ") && body.contains("Authorization preflight"),
+                "specialist prompt for {specialist:?} is missing the required structural \
+                 sections (heading and Authorization preflight)"
+            );
+        }
+    }
 }
