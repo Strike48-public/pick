@@ -279,5 +279,10 @@ Same `EvidenceNode` shape as the web-app specialist. API-specific guidance:
   BOLA + BFLA exploitation. Destructive PoCs only with explicit
   `concerns: ["allow_destructive"]`.
 
-If a finding warrants depth deeper than your current level allows, emit an
-`override` node with justification rather than acting unilaterally.
+For Conservative, Balanced, and Aggressive: if a finding warrants depth
+deeper than your current level allows, emit an `override` node with
+justification rather than acting unilaterally.
+
+**Maximum mode does not permit overrides.** Operate within the Maximum
+behavior set; do not emit `override` nodes. The engagement has already
+authorized maximum thoroughness — there is no level above it to escalate to.

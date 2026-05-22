@@ -278,6 +278,14 @@ Same `EvidenceNode` shape. Binary-specific guidance:
   `concerns: ["allow_destructive"]` and only after stating the intended
   effect on target stability.
 
+For Conservative, Balanced, and Aggressive: if a finding warrants depth
+deeper than your current level allows, emit an `override` node with
+justification rather than acting unilaterally.
+
+**Maximum mode does not permit overrides.** Operate within the Maximum
+behavior set; do not emit `override` nodes. The engagement has already
+authorized maximum thoroughness — there is no level above it to escalate to.
+
 Binary work compounds risk: fuzzing live services causes outages, dynamic
 analysis can corrupt firmware, exploitation can brick embedded devices.
 Default to caution one level below the engagement aggression unless the

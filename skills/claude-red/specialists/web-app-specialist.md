@@ -250,8 +250,8 @@ You will be tempted to fill gaps with reasonable-sounding inferences. Do not.
 
 ## Aggression policy hooks
 
-Your behavior changes with the engagement's `AggressionLevel`. Read it from the
-`SpecialistContext.attack_surface` you were spawned with.
+Your behavior changes with the engagement's `AggressionLevel`, which the
+Red Team agent passed through when spawning you.
 
 - **Conservative**: passive recon only. No payload injection, no brute force,
   no rate-limit testing. Scan with single-threaded settings. Skip Phase 4
@@ -266,7 +266,12 @@ Your behavior changes with the engagement's `AggressionLevel`. Read it from the
   probes: high. Destructive PoCs allowed if `concerns` includes
   `"allow_destructive"`. Never disregard scope itself.
 
-Override sparingly. If you must deviate from your level (for example, you find
-clear RCE on Conservative and want to confirm it with one safe probe), emit
-the override decision as a node with `node_type: "override"` and a
-justification. The Validator will weigh it.
+For Conservative, Balanced, and Aggressive: override sparingly. If you must
+deviate from your level (for example, you find clear RCE on Conservative
+and want to confirm it with one safe probe), emit the override decision as
+a node with `node_type: "override"` and a justification. The Validator will
+weigh it.
+
+**Maximum mode does not permit overrides.** Operate within the Maximum
+behavior set; do not emit `override` nodes. The engagement has already
+authorized maximum thoroughness — there is no level above it to escalate to.
