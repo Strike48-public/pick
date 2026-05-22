@@ -38,11 +38,20 @@ Pick is a multi-platform penetration testing connector built with Dioxus (Rust).
 just run-headless-env
 ```
 
-### Current Configuration
+### Configuration
 
-- **Host:** `wss://disco-ball-us.strike48.com:443`
-- **Tenant:** `use-prd-c-disco-ball`
-- **Config:** `.env` file in project root
+Pick reads its connection settings from a `.env` file at the repository root:
+
+- `STRIKE48_HOST` — WebSocket URL of the Strike48 instance, e.g. `wss://your-tenant.example.com:443`
+- `STRIKE48_TENANT` — Tenant identifier registered on that instance
+- `MATRIX_API_URL` — HTTPS URL of the Matrix API for the same instance
+- `MATRIX_TENANT_ID` — Same tenant identifier; kept separate so a future split is non-breaking
+- `RUST_LOG` — Tracing filter, default `debug` for development
+
+`run-pentest.sh` provides safe defaults pointing at `localhost` so the script
+runs even without `.env`. Maintainers and contributors keep their own
+operator-specific values in their local `.env` (already gitignored) or in a
+gitignored `CLAUDE.local.md` overlay (see "Local Overrides" below).
 
 ---
 
@@ -176,19 +185,36 @@ Screenshot capture fails gracefully in headless CI environments (Wayland/X11 not
 
 ## Git Workflow
 
-### Remotes
+### Remote
 
-- `origin` = `Strike48-public/pick` (protected main)
-- `fork` = `jtomek-strike48/pick` (your fork)
+- `origin` = `Strike48-public/pick` — push feature branches here directly.
+- `main` on `origin` is protected: no direct pushes, no force pushes, merges only via PR.
+- A `fork` remote (`jtomek-strike48/pick` or similar) may exist locally from earlier history. **Maintainers should not use it.**
 
 ### Push Policy
 
-Main branch is protected. Push to fork, then create PR:
+Maintainers push feature branches directly to `origin`. The fork-then-PR pattern is for *external* contributors only — using it as a maintainer adds friction and breaks several things:
+
+- CI workflows that need secrets (signing keys, gitleaks PAT, deploy tokens) run in restricted mode on forks. Same-repo branches get full CI.
+- Teammates cannot push fixes to a fork-owned branch without explicit access grants.
+- Extra `git push fork` ceremony slows iteration without benefit.
 
 ```bash
-git push fork feature/my-branch
+# Create a feature branch off origin/main
+git fetch origin main
+git checkout -b feat/my-change origin/main
+
+# Work, commit, then push directly to origin
+git push -u origin feat/my-change
+
+# Open the PR — no --repo or --head <user>: qualifiers needed
 gh pr create --base main
+
+# After merge, clean up
+git push origin --delete feat/my-change
 ```
+
+**Exception:** External contributors (anyone without push access to `Strike48-public/pick`) should fork → PR. The fork pattern is correct for them, just not for maintainers.
 
 ### Pre-Push Hook
 
@@ -289,6 +315,32 @@ cargo test -- --nocapture     # Show println! output
 - Local testing: `./run-pentest.sh headless dev`
 - CI logs: `gh run view <run-id> --log-failed`
 - PR status: `gh pr view <number>`
+
+---
+
+## Local Overrides (Operator-Specific)
+
+This file (`CLAUDE.md`) is **public** — committed to the repository and visible
+to anyone with the source. Keep operator-specific or sensitive content out of
+it. Examples of content that belongs only in a local overlay:
+
+- Specific Strike48 host URLs and tenant identifiers you connect to
+- Internal infrastructure references (Slack channels, ticketing project keys, dashboards)
+- Customer or engagement names
+- Personal preferences, tooling tweaks, environment-specific paths
+
+Use `CLAUDE.local.md` (gitignored) for any of the above. Claude Code reads
+both files; `CLAUDE.local.md` takes precedence on conflicts. Other AI tooling
+follows the same `*.local.md` convention.
+
+```bash
+# Create your private overlay (gitignored, won't be committed)
+touch CLAUDE.local.md
+$EDITOR CLAUDE.local.md
+```
+
+If you find operator-specific content already in `CLAUDE.md`, move it to
+`CLAUDE.local.md` and open a PR removing it from the public file.
 
 ---
 

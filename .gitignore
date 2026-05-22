@@ -36,6 +36,11 @@ logs/
 .env.local
 .env.*.local
 
+# AI tooling local overlays — private, operator-specific, never committed.
+# See CLAUDE.md "Local Overrides" section.
+CLAUDE.local.md
+.claude/settings.local.json
+
 # Temporary
 /tmp/
 *.tmp
