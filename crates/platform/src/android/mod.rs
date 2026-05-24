@@ -65,18 +65,10 @@ pub fn set_oauth_callback_port(port: u16) -> Result<()> {
     jni_bridge::set_oauth_callback_port(port)
 }
 
-/// Check if root access is available on the device.
-///
-/// Returns:
-/// - `RootStatus::Available` if full root access works
-/// - `RootStatus::Unavailable` if no root access
-/// - `RootStatus::Restricted(reason)` if root exists but is constrained
-pub async fn check_root_access() -> system::RootStatus {
-    system::check_root_access().await
-}
-
-// Re-export RootStatus for external use
-pub use system::RootStatus;
+// Root detection: see `system::RootStatus` and `system::check_root_access` for
+// full documentation, including the explicit warning that this is informational
+// and not a security boundary.
+pub use system::{check_root_access, RootStatus};
 
 /// Android platform provider
 pub struct AndroidPlatform;
