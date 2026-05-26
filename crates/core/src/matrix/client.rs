@@ -758,7 +758,8 @@ impl MatrixChatClient {
         message: &str,
     ) -> crate::error::Result<String> {
         // Send the user message
-        self.send_message(conversation_id, agent_id, message).await?;
+        self.send_message(conversation_id, agent_id, message)
+            .await?;
 
         // Poll for agent response (500ms interval, 240 max polls = 120 seconds)
         let state = self.poll_for_response(conversation_id, 500, 240).await?;

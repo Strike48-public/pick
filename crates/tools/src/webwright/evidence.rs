@@ -37,10 +37,8 @@ pub fn ingest_webwright_evidence(
 
                 node.metadata
                     .insert("artifact_type".to_string(), "script".into());
-                node.metadata
-                    .insert("file_path".to_string(), path.into());
-                node.metadata
-                    .insert("task_id".to_string(), task_id.into());
+                node.metadata.insert("file_path".to_string(), path.into());
+                node.metadata.insert("task_id".to_string(), task_id.into());
 
                 let _ = push_evidence(node);
             }
@@ -68,10 +66,8 @@ pub fn ingest_webwright_evidence(
 
                 node.metadata
                     .insert("artifact_type".to_string(), "screenshot".into());
-                node.metadata
-                    .insert("file_path".to_string(), path.into());
-                node.metadata
-                    .insert("task_id".to_string(), task_id.into());
+                node.metadata.insert("file_path".to_string(), path.into());
+                node.metadata.insert("task_id".to_string(), task_id.into());
 
                 let _ = push_evidence(node);
             }
@@ -87,10 +83,7 @@ pub fn ingest_webwright_evidence(
                     Uuid::new_v4().to_string(),
                     "dom_snapshot",
                     format!("DOM snapshot: {}", filename),
-                    format!(
-                        "DOM state captured from {} during browser testing.",
-                        target
-                    ),
+                    format!("DOM state captured from {} during browser testing.", target),
                     target,
                     Severity::Info,
                     "DOM snapshot preserving page state at time of finding.".to_string(),
@@ -99,10 +92,8 @@ pub fn ingest_webwright_evidence(
 
                 node.metadata
                     .insert("artifact_type".to_string(), "dom_snapshot".into());
-                node.metadata
-                    .insert("file_path".to_string(), path.into());
-                node.metadata
-                    .insert("task_id".to_string(), task_id.into());
+                node.metadata.insert("file_path".to_string(), path.into());
+                node.metadata.insert("task_id".to_string(), task_id.into());
 
                 let _ = push_evidence(node);
             }
@@ -128,10 +119,7 @@ pub fn ingest_webwright_evidence(
                     Uuid::new_v4().to_string(),
                     log_type,
                     format!("Browser {}: {}", log_type.replace('_', " "), filename),
-                    format!(
-                        "Log captured during browser automation of {}.",
-                        target
-                    ),
+                    format!("Log captured during browser automation of {}.", target),
                     target,
                     Severity::Info,
                     "Execution log providing context for browser testing session.".to_string(),
@@ -140,10 +128,8 @@ pub fn ingest_webwright_evidence(
 
                 node.metadata
                     .insert("artifact_type".to_string(), log_type.into());
-                node.metadata
-                    .insert("file_path".to_string(), path.into());
-                node.metadata
-                    .insert("task_id".to_string(), task_id.into());
+                node.metadata.insert("file_path".to_string(), path.into());
+                node.metadata.insert("task_id".to_string(), task_id.into());
 
                 let _ = push_evidence(node);
             }
@@ -185,11 +171,9 @@ pub fn ingest_webwright_findings(
             )
             .with_provenance(provenance.clone());
 
-            node.metadata
-                .insert("task_id".to_string(), task_id.into());
+            node.metadata.insert("task_id".to_string(), task_id.into());
             if let Some(url) = finding.get("url") {
-                node.metadata
-                    .insert("finding_url".to_string(), url.clone());
+                node.metadata.insert("finding_url".to_string(), url.clone());
             }
             if let Some(vuln_type) = finding["type"].as_str() {
                 node.metadata
