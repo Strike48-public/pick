@@ -251,3 +251,41 @@ pub fn create_action_registry() -> registry::QuickActionRegistry {
     registry::register_all_actions(&mut registry);
     registry
 }
+
+#[cfg(test)]
+mod webwright_tests {
+    use super::*;
+
+    #[test]
+    fn webwright_registered_in_tool_registry() {
+        let registry = create_tool_registry();
+        assert!(
+            registry.get("webwright").is_some(),
+            "webwright tool not found in registry"
+        );
+    }
+
+    #[test]
+    fn webwright_schema_has_required_params() {
+        let registry = create_tool_registry();
+        let tool = registry.get("webwright").unwrap();
+        let schema = tool.schema();
+        let param_names: Vec<&str> = schema.params.iter().map(|p| p.name.as_str()).collect();
+        assert!(param_names.contains(&"mode"));
+        assert!(param_names.contains(&"start_url"));
+        assert!(param_names.contains(&"task"));
+        assert!(param_names.contains(&"script"));
+        assert!(param_names.contains(&"max_steps"));
+        assert!(param_names.contains(&"timeout"));
+    }
+
+    #[test]
+    fn webwright_schema_exports_to_json() {
+        let registry = create_tool_registry();
+        let tool = registry.get("webwright").unwrap();
+        let json_schema = tool.schema().to_json_schema();
+        assert_eq!(json_schema["name"], "webwright");
+        assert!(json_schema["parameters"]["properties"]["mode"].is_object());
+        assert!(json_schema["parameters"]["properties"]["start_url"].is_object());
+    }
+}
