@@ -255,7 +255,10 @@ set -e
                 tracing::info!("BlackArch strap.sh completed: {}", output.trim());
             }
             Err(e) => {
-                tracing::warn!("BlackArch strap.sh failed: {}, falling back to manual config", e);
+                tracing::warn!(
+                    "BlackArch strap.sh failed: {}, falling back to manual config",
+                    e
+                );
                 // Fall back to manual repo config if strap.sh fails
                 let pacman_conf = rootfs.join("etc/pacman.conf");
                 if pacman_conf.exists() {
@@ -465,17 +468,28 @@ done
 
         let output = Command::new("bwrap")
             .args([
-                "--bind", &rootfs_str, "/",
-                "--dev", "/dev",
-                "--proc", "/proc",
-                "--tmpfs", "/tmp",
-                "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",
+                "--bind",
+                &rootfs_str,
+                "/",
+                "--dev",
+                "/dev",
+                "--proc",
+                "/proc",
+                "--tmpfs",
+                "/tmp",
+                "--ro-bind",
+                "/etc/resolv.conf",
+                "/etc/resolv.conf",
                 "--unshare-user",
-                "--uid", "0",
-                "--gid", "0",
+                "--uid",
+                "0",
+                "--gid",
+                "0",
                 "--share-net",
                 "--die-with-parent",
-                "/usr/bin/bash", "-c", &wrapped_script,
+                "/usr/bin/bash",
+                "-c",
+                &wrapped_script,
             ])
             .output()
             .await

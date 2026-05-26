@@ -10,52 +10,9 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 
-/// Subordinate UID/GID range for multi-uid mapping
-#[derive(Debug, Clone, Copy)]
-struct SubIdRange {
-    start: u32,
-    count: u32,
-}
-
 /// Bubblewrap executor for Linux namespace-based sandboxing
 pub struct BwrapExecutor {
     config: SandboxConfig,
-}
-
-/// Get subordinate UID range from /etc/subuid for current user
-async fn get_subuid_range() -> Option<SubIdRange> {
-    let username = std::env::var("USER").ok()?;
-    let content = tokio::fs::read_to_string("/etc/subuid").await.ok()?;
-
-    for line in content.lines() {
-        if let Some(range) = line.strip_prefix(&format!("{}:", username)) {
-            let parts: Vec<&str> = range.split(':').collect();
-            if parts.len() == 2 {
-                let start = parts[0].parse::<u32>().ok()?;
-                let count = parts[1].parse::<u32>().ok()?;
-                return Some(SubIdRange { start, count });
-            }
-        }
-    }
-    None
-}
-
-/// Get subordinate GID range from /etc/subgid for current user
-async fn get_subgid_range() -> Option<SubIdRange> {
-    let username = std::env::var("USER").ok()?;
-    let content = tokio::fs::read_to_string("/etc/subgid").await.ok()?;
-
-    for line in content.lines() {
-        if let Some(range) = line.strip_prefix(&format!("{}:", username)) {
-            let parts: Vec<&str> = range.split(':').collect();
-            if parts.len() == 2 {
-                let start = parts[0].parse::<u32>().ok()?;
-                let count = parts[1].parse::<u32>().ok()?;
-                return Some(SubIdRange { start, count });
-            }
-        }
-    }
-    None
 }
 
 impl BwrapExecutor {
@@ -134,7 +91,9 @@ impl BwrapExecutor {
         let start = Instant::now();
 
         // Check if we're running as real root (sudo) — skip user namespace, add capabilities
-        let is_root = std::process::Command::new("id").arg("-u").output()
+        let is_root = std::process::Command::new("id")
+            .arg("-u")
+            .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
             .unwrap_or(false);
 
