@@ -31,18 +31,24 @@ pub async fn get_sandbox_manager() -> SandboxResult<Arc<SandboxManager>> {
 
             // When running as root, prefer bwrap (real capabilities for raw sockets).
             // Otherwise respect the user's shell_mode setting.
-            let is_root = std::process::Command::new("id").arg("-u").output()
+            let is_root = std::process::Command::new("id")
+                .arg("-u")
+                .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
                 .unwrap_or(false);
             if is_root {
                 config.preferred_backend = Some(SandboxBackend::Bwrap);
-                tracing::info!("[get_sandbox_manager] Running as root, preferring bwrap for real capabilities");
+                tracing::info!(
+                    "[get_sandbox_manager] Running as root, preferring bwrap for real capabilities"
+                );
             } else {
                 let settings = pentest_core::settings::load_settings();
                 match settings.shell_mode {
                     pentest_core::config::ShellMode::Proot => {
                         config.preferred_backend = Some(SandboxBackend::Proot);
-                        tracing::info!("[get_sandbox_manager] User selected Proot backend via settings");
+                        tracing::info!(
+                            "[get_sandbox_manager] User selected Proot backend via settings"
+                        );
                     }
                     pentest_core::config::ShellMode::Native => {
                         // Native = no sandbox preference, auto-detect

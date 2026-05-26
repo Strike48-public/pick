@@ -83,7 +83,9 @@ pub async fn execute_command_in_dir(
 
     tracing::info!(
         "[execute_command] cmd={:?} args={:?} full_cmd={:?}",
-        cmd, args, full_cmd
+        cmd,
+        args,
+        full_cmd
     );
 
     // Try sandboxed execution first

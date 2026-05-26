@@ -92,8 +92,10 @@ RUN RUST_TARGET=$(cat /tmp/rust-target) && \
 FROM kalilinux/kali-rolling AS runtime
 
 # Install common pentest tools + runtime deps
+# Kali rolling mirrors can be temporarily out-of-sync; retry once after a fresh
+# apt-get update to work around transient 404s on dependency packages.
 RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ( DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         openssl \
         libpcap0.8 \
@@ -126,7 +128,12 @@ RUN apt-get update && \
         proxychains4 \
         python3 \
         python3-pip \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    || (apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates openssl libpcap0.8 nmap nikto sqlmap gobuster dirb \
+        hydra john hashcat metasploit-framework exploitdb enum4linux smbclient \
+        whatweb wpscan ffuf nuclei curl wget net-tools iproute2 dnsutils whois \
+        traceroute tcpdump socat netcat-openbsd proxychains4 python3 python3-pip) \
+    ) && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/pentest-agent /usr/local/bin/pentest-agent
 
