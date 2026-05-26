@@ -6,6 +6,7 @@
 //! - `execute`: Replay a Playwright script for validation/evidence capture
 
 pub mod config;
+pub mod evidence;
 pub mod workspace;
 
 use async_trait::async_trait;
