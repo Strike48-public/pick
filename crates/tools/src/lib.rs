@@ -29,6 +29,7 @@ pub mod ssdp_discover;
 pub mod traffic_capture;
 pub mod util;
 pub mod web_vuln_scan;
+pub mod webwright;
 pub mod wifi_scan;
 pub mod wifi_scan_detailed;
 pub mod write_file;
@@ -75,6 +76,7 @@ pub use spawn_specialist::SpawnSpecialistTool;
 pub use ssdp_discover::SsdpDiscoverTool;
 pub use traffic_capture::TrafficCaptureTool;
 pub use web_vuln_scan::WebVulnScanTool;
+pub use webwright::WebwrightTool;
 pub use wifi_scan::WifiScanTool;
 pub use wifi_scan_detailed::WifiScanDetailedTool;
 pub use write_file::WriteFileTool;
@@ -227,6 +229,9 @@ pub fn create_tool_registry() -> ToolRegistry {
 
     // Automated toolchains
     registry.register(WebAppToolchain::new());
+
+    // Browser automation (AI-driven)
+    registry.register(WebwrightTool);
 
     registry
 }
