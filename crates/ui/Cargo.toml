@@ -65,6 +65,9 @@ pulldown-cmark = { workspace = true }
 # Base64 encoding for image preview
 base64 = { workspace = true }
 
+# UUID generation
+uuid = { workspace = true }
+
 # Icons
 lucide-dioxus = { workspace = true }
 

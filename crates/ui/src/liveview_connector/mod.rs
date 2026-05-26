@@ -38,6 +38,7 @@
 mod api_routes;
 mod auth;
 mod injections;
+pub mod llm_proxy;
 mod token_refresh;
 mod tools;
 
