@@ -20,6 +20,7 @@ use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
 
+use self::workspace::WebwrightWorkspace;
 use crate::external::runner::{param_str_opt, param_str_or};
 use crate::util::param_u64;
 
@@ -97,7 +98,7 @@ impl PentestTool for WebwrightTool {
             let start_url = param_str_or(&params, "start_url", "");
             let task = param_str_opt(&params, "task");
             let script = param_str_opt(&params, "script");
-            let _max_steps = param_u64(&params, "max_steps", 50);
+            let max_steps = param_u64(&params, "max_steps", 50);
             let timeout_secs = param_u64(&params, "timeout", 600);
 
             if start_url.is_empty() {
@@ -106,7 +107,10 @@ impl PentestTool for WebwrightTool {
                 ));
             }
 
-            // Validate mode and build command
+            // Create workspace
+            let workspace = WebwrightWorkspace::create(&platform).await?;
+
+            // Build command based on mode
             let (args, probe_desc) = match mode.as_str() {
                 "explore" => {
                     let task_str = task.unwrap_or_default();
@@ -115,13 +119,20 @@ impl PentestTool for WebwrightTool {
                             "task parameter is required for explore mode".into(),
                         ));
                     }
+                    workspace.write_config(9100, "strike48-default").await?;
                     let args = vec![
                         "-m".to_string(),
                         "webwright.run.cli".to_string(),
+                        "-c".to_string(),
+                        workspace.config_path(),
                         "-t".to_string(),
                         task_str.clone(),
                         "--start-url".to_string(),
                         start_url.clone(),
+                        "--workspace".to_string(),
+                        workspace.path(),
+                        "--max-steps".to_string(),
+                        max_steps.to_string(),
                     ];
                     let desc = format!(
                         "webwright explore --start-url {} --task \"{}\"",
@@ -136,15 +147,8 @@ impl PentestTool for WebwrightTool {
                             "script parameter is required for execute mode".into(),
                         ));
                     }
-                    // Write script to temp file for execution
-                    let script_path = "/tmp/webwright_script.py".to_string();
-                    std::fs::write(&script_path, script_content.as_bytes()).map_err(|e| {
-                        pentest_core::error::Error::ToolExecution(format!(
-                            "Failed to write script: {}",
-                            e
-                        ))
-                    })?;
-                    let args = vec![script_path];
+                    workspace.write_script(&script_content).await?;
+                    let args = vec![workspace.script_path()];
                     let desc = format!("webwright execute script on {}", start_url);
                     (args, desc)
                 }
@@ -162,6 +166,9 @@ impl PentestTool for WebwrightTool {
                 .execute_command("python3", &args_refs, Duration::from_secs(timeout_secs))
                 .await?;
 
+            // Collect artifacts from workspace
+            let artifacts = workspace.collect_artifacts(&platform).await?;
+
             // Build provenance
             let provenance = Provenance::new(
                 "webwright",
@@ -170,12 +177,42 @@ impl PentestTool for WebwrightTool {
                 &result.stdout,
             );
 
+            // Ingest evidence
+            evidence::ingest_webwright_evidence(
+                &artifacts,
+                &start_url,
+                &workspace.task_id,
+                &provenance,
+            );
+
+            // Check for findings.json in logs
+            if let Some(logs) = artifacts["logs"].as_array() {
+                for log_path in logs {
+                    if let Some(path) = log_path.as_str() {
+                        if path.contains("findings.json") || path.ends_with("findings.json") {
+                            if let Ok(content) = std::fs::read_to_string(path) {
+                                if let Ok(findings) = serde_json::from_str::<Value>(&content) {
+                                    evidence::ingest_webwright_findings(
+                                        &findings,
+                                        &start_url,
+                                        &workspace.task_id,
+                                        &provenance,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let data = json!({
                 "mode": mode,
                 "start_url": start_url,
                 "exit_code": result.exit_code,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
+                "artifacts": artifacts,
+                "task_id": workspace.task_id,
             });
 
             Ok((data, provenance))
