@@ -745,4 +745,39 @@ impl MatrixChatClient {
         self.send_message(conversation_id, agent_id, &system_msg)
             .await
     }
+
+    /// Send a message to a conversation and wait for the agent's response text.
+    ///
+    /// Used by the LLM proxy to route Webwright's requests through Strike48
+    /// conversations. Sends the user message via the `ask` mutation, then polls
+    /// for the agent's reply using `poll_for_response`.
+    pub async fn send_and_receive_message(
+        &self,
+        conversation_id: &str,
+        agent_id: &str,
+        message: &str,
+    ) -> crate::error::Result<String> {
+        // Send the user message
+        self.send_message(conversation_id, agent_id, message).await?;
+
+        // Poll for agent response (500ms interval, 240 max polls = 120 seconds)
+        let state = self.poll_for_response(conversation_id, 500, 240).await?;
+
+        // Extract the last agent message text
+        let response = state
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.sender_type != "USER" && !m.text.is_empty())
+            .map(|m| m.text.clone())
+            .unwrap_or_default();
+
+        if response.is_empty() {
+            return Err(crate::error::Error::Timeout(
+                "No agent response received within timeout".to_string(),
+            ));
+        }
+
+        Ok(response)
+    }
 }
