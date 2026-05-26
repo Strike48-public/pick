@@ -3,18 +3,29 @@
 use dioxus::prelude::*;
 use pentest_core::config::ConnectorConfig;
 
-/// Connection configuration form
+/// Connection configuration form.
+///
+/// Errors from the parent's connect pipeline (host validation, transport
+/// failure, registration rejection) are surfaced via `external_error`. Local
+/// validation errors (empty host) are shown in the same banner. Inference
+/// performed by `ConnectorConfig::normalize_host` is disclosed under the host
+/// field so users can verify the resolved transport before connecting — see
+/// the doc on `normalize_host` for the rationale.
 #[component]
 pub fn ConfigForm(
     config: ConnectorConfig,
     on_connect: EventHandler<(ConnectorConfig, bool)>,
     is_connecting: bool,
     #[props(default = false)] remember: bool,
+    /// Error pushed in by the parent when connection or validation fails.
+    /// Rendered in the same banner as local form errors.
+    #[props(default = None)]
+    external_error: Option<String>,
 ) -> Element {
     let mut host = use_signal(|| config.host.clone());
     let mut tenant_id = use_signal(|| config.tenant_id.clone());
     let mut auth_token = use_signal(|| config.auth_token.clone());
-    let mut error_msg = use_signal(|| None::<String>);
+    let mut local_error = use_signal(|| None::<String>);
     let mut remember = use_signal(move || remember);
 
     let handle_submit = move |_| {
@@ -22,13 +33,12 @@ pub fn ConfigForm(
         let tenant = tenant_id.read().clone();
         let token = auth_token.read().clone();
 
-        // Validation
-        if url.is_empty() {
-            error_msg.set(Some("Strike48 host is required".into()));
+        if url.trim().is_empty() {
+            local_error.set(Some("Strike48 host is required".into()));
             return;
         }
 
-        error_msg.set(None);
+        local_error.set(None);
 
         let new_config = ConnectorConfig::new(url)
             .tenant_id(tenant)
@@ -37,12 +47,29 @@ pub fn ConfigForm(
         on_connect.call((new_config, *remember.read()));
     };
 
+    // Live preview of what `normalize_host` will resolve. Only render when
+    // inference actually changed the input — keeps the form quiet for users
+    // who type the explicit form.
+    let host_value = host.read().clone();
+    let inference_hint = if host_value.trim().is_empty() {
+        None
+    } else {
+        ConnectorConfig::normalize_host(&host_value)
+            .ok()
+            .and_then(|n| n.hint())
+    };
+
+    let banner_msg = local_error
+        .read()
+        .clone()
+        .or_else(|| external_error.clone());
+
     rsx! {
         div { class: "config-form",
             h3 { "Connect to Strike48" }
 
-            // Error message
-            if let Some(err) = error_msg.read().as_ref() {
+            // Error message (local validation OR parent-supplied connect error)
+            if let Some(err) = banner_msg {
                 div {
                     class: "error-banner",
                     "{err}"
@@ -58,6 +85,12 @@ pub fn ConfigForm(
                         value: "{host}",
                         disabled: is_connecting,
                         oninput: move |e| host.set(e.value()),
+                    }
+                    if let Some(hint) = inference_hint {
+                        span {
+                            class: "form-hint",
+                            "{hint}"
+                        }
                     }
                 }
             }

@@ -58,13 +58,13 @@ pub fn load_settings() -> AppSettings {
                     if let Ok(normalized) =
                         crate::config::ConnectorConfig::normalize_host(&last_config.host)
                     {
-                        if normalized != last_config.host {
+                        if normalized.value != last_config.host {
                             tracing::info!(
                                 "Migrated saved host {} -> {}",
                                 last_config.host,
-                                normalized
+                                normalized.value
                             );
-                            last_config.host = normalized;
+                            last_config.host = normalized.value;
                             dirty = true;
                         }
                     }

@@ -284,6 +284,11 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     let mut active_page = use_signal(|| NavPage::Dashboard);
     let workspace_path: Signal<Option<String>> = use_signal(|| None);
     let mut last_seen_terminal_count = use_signal(|| 0usize);
+    // Error visible on the Connect screen. Connect-phase failures (validation,
+    // registration, transport) populate this so the user can see *why* the
+    // button "did nothing" instead of finding it logged into a terminal that
+    // is only rendered after a successful connection.
+    let mut connect_error: Signal<Option<String>> = use_signal(|| None);
 
     // download state
     let mut download_progress: Signal<Option<f64>> =
@@ -338,10 +343,16 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     let mut on_connect = move |(mut new_config, remember): (ConnectorConfig, bool)| {
         let device_id = settings.peek().device_id.clone();
 
+        // Clear any stale connect-phase error before retrying.
+        connect_error.set(None);
+
         match ConnectorConfig::normalize_host(&new_config.host) {
-            Ok(h) => new_config.host = h,
+            Ok(normalized) => new_config.host = normalized.value,
             Err(e) => {
-                terminal_lines.write().push(TerminalLine::error(e));
+                // Surface to the form banner (visible) AND log to terminal
+                // (debuggable on Dashboard once connected).
+                terminal_lines.write().push(TerminalLine::error(e.clone()));
+                connect_error.set(Some(e));
                 return;
             }
         }
@@ -429,9 +440,14 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             {
                 let mut conn = lv_connector.write().await;
                 if let Err(e) = conn.connect_and_run().await {
+                    let display = format!("Connection error: {}", e);
                     terminal_lines
                         .write()
-                        .push(TerminalLine::error(format!("Connection error: {}", e)));
+                        .push(TerminalLine::error(display.clone()));
+                    // Also surface to the Connect-screen banner — status flips
+                    // back to Error which routes us there, and without this
+                    // the error would be silent (terminal is not rendered).
+                    connect_error.set(Some(display));
                     status.set(ConnectorStatus::Error(e));
                 }
             }
@@ -581,6 +597,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                             on_connect: on_connect,
                             is_connecting: false,
                             remember: settings.read().auto_connect,
+                            external_error: connect_error.read().clone(),
                         }
                     }
                 },

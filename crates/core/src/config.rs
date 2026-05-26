@@ -114,6 +114,50 @@ impl Default for ConnectorConfig {
     }
 }
 
+/// Outcome of [`ConnectorConfig::normalize_host`].
+///
+/// Carries the canonical URL plus a record of which parts (scheme, port) were
+/// supplied by inference rather than typed by the user. Callers display the
+/// inference via [`Self::hint`] so users can verify the resolved transport
+/// before connecting — see the doc on `normalize_host` for the rationale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedHost {
+    /// Canonical URL with scheme and explicit port.
+    pub value: String,
+    /// `Some(scheme)` if `normalize_host` supplied a scheme the user did not type.
+    pub inferred_scheme: Option<&'static str>,
+    /// `Some(port)` if `normalize_host` supplied a port the user did not type.
+    pub inferred_port: Option<u16>,
+}
+
+impl NormalizedHost {
+    /// `true` if any defaulting occurred (scheme or port was supplied).
+    pub fn was_inferred(&self) -> bool {
+        self.inferred_scheme.is_some() || self.inferred_port.is_some()
+    }
+
+    /// User-facing line describing what we resolved, e.g.
+    /// `Will connect as wss://discoball.strike48.engineering:443`.
+    /// Returns `None` when the user typed everything explicitly.
+    pub fn hint(&self) -> Option<String> {
+        if self.was_inferred() {
+            Some(format!("Will connect as {}", self.value))
+        } else {
+            None
+        }
+    }
+}
+
+/// Returns `true` if `bare` contains a `:port` suffix.
+///
+/// Detects the *last* colon to avoid being fooled by any future IPv6 literal
+/// support; until then this is conservative and correct for `host:port` and
+/// `host` (no port).
+fn bare_has_port(bare: &str) -> bool {
+    bare.rsplit_once(':')
+        .is_some_and(|(_, port)| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
+}
+
 impl ConnectorConfig {
     /// Create a new configuration with the given URL
     pub fn new(host: impl Into<String>) -> Self {
@@ -159,48 +203,124 @@ impl ConnectorConfig {
         !self.auth_token.is_empty()
     }
 
-    /// Validate `host` and return it with its scheme preserved so that transport
-    /// auto-detection in [`Self::to_sdk_config`] can distinguish WebSocket
-    /// (`wss://`) from gRPC (`grpc://`, `grpcs://`, or no scheme).
+    /// Validate `host` and return a [`NormalizedHost`] with the final URL
+    /// plus a record of any defaults that were applied.
     ///
-    /// If no scheme is present and the host ends with `:443`, `wss://` is
-    /// prepended — Cloudflare-fronted Strike48 deployments (the common case
-    /// for port 443) do not proxy arbitrary gRPC over HTTP/2 and require
-    /// WebSocket. This mirrors what a user would type into a browser and
-    /// keeps saved settings from previous versions working.
+    /// # Inference policy (option C: visible inference)
     ///
-    /// Returns `Err` if the bare `host:port` is missing or malformed.
-    pub fn normalize_host(host: &str) -> Result<String, String> {
-        let schemes = [
-            "grpc://", "grpcs://", "http://", "https://", "ws://", "wss://",
+    /// We *infer* sensible defaults rather than rejecting incomplete input,
+    /// AND we *report* what was inferred via [`NormalizedHost::hint`] rather
+    /// than hiding it. The reasons, kept here so future-us can revisit:
+    ///
+    /// 1. The dominant Strike48 case is Cloudflare-fronted WebSocket on :443.
+    ///    Forcing users to type `wss://host:443` is friction without payoff.
+    /// 2. Once gRPC ships, the same bare host could legitimately mean either
+    ///    transport. Showing the resolved URL lets users verify intent up-front
+    ///    instead of debugging mysterious routing later.
+    /// 3. Trustworthy tooling (cargo, gh, kubectl) reports what it resolved;
+    ///    pentest users distrust magic, so we match that contract.
+    ///
+    /// To revert: drop [`NormalizedHost::hint`] to make inference silent, or
+    /// change the no-scheme/no-port branch below to return `Err` for strict
+    /// rejection.
+    ///
+    /// # Defaults applied
+    ///
+    /// | Input                       | Output                          | Inferred           |
+    /// |-----------------------------|---------------------------------|--------------------|
+    /// | `wss://host:443`            | `wss://host:443`                | none               |
+    /// | `wss://host`                | `wss://host:443`                | port               |
+    /// | `host:443`                  | `wss://host:443`                | scheme             |
+    /// | `host`                      | `wss://host:443`                | scheme + port      |
+    /// | `grpc://host`               | `grpc://host:50051`             | port               |
+    /// | `grpcs://host`              | `grpcs://host:443`              | port               |
+    /// | `ws://localhost`            | `ws://localhost:80`             | port               |
+    /// | `localhost:50061`           | `localhost:50061`               | none (SDK→gRPC)    |
+    ///
+    /// IPv6 literals (`[::1]:443`) are not supported by the port detector
+    /// here; revisit when needed.
+    ///
+    /// Returns `Err` on truly malformed input (empty, scheme with no host).
+    pub fn normalize_host(host: &str) -> Result<NormalizedHost, String> {
+        // Scheme → default port. Order matters only for matching; every entry
+        // is checked against the lowercased input.
+        const SCHEMES: &[(&str, u16)] = &[
+            ("grpc://", 50051),
+            ("grpcs://", 443),
+            ("http://", 80),
+            ("https://", 443),
+            ("ws://", 80),
+            ("wss://", 443),
         ];
+
         let trimmed = host.trim();
-        let lower = trimmed.to_lowercase();
-
-        let (scheme, bare) = schemes
-            .iter()
-            .find_map(|s| {
-                lower
-                    .strip_prefix(s)
-                    .map(|_| (&trimmed[..s.len()], &trimmed[s.len()..]))
-            })
-            .unwrap_or(("", trimmed));
-
-        if bare.is_empty() || !bare.contains(':') {
+        if trimmed.is_empty() {
             return Err(
-                "Invalid host format. Use scheme://host:port (e.g., wss://strike48.example.com:443)"
+                "Strike48 host is required (e.g., wss://strike48.example.com or strike48.example.com:443)"
                     .to_string(),
             );
         }
 
-        if !scheme.is_empty() {
-            return Ok(format!("{}{}", scheme, bare));
+        let lower = trimmed.to_lowercase();
+        let scheme_match = SCHEMES.iter().find_map(|(s, p)| {
+            lower
+                .strip_prefix(s)
+                .map(|_| (&trimmed[..s.len()], *p, &trimmed[s.len()..]))
+        });
+
+        // Resolve scheme + bare host portion. Track whether the scheme was
+        // inferred so the UI can disclose it.
+        let (scheme, bare_str, default_port, scheme_inferred): (String, String, u16, bool) =
+            match scheme_match {
+                Some((original_scheme, port, bare)) => {
+                    (original_scheme.to_string(), bare.to_string(), port, false)
+                }
+                None => {
+                    // No scheme. Decide based on what port (if any) is present.
+                    let has_port = bare_has_port(trimmed);
+                    if !has_port {
+                        // No scheme, no port — Strike48-on-Cloudflare default.
+                        ("wss://".to_string(), trimmed.to_string(), 443, true)
+                    } else if trimmed.ends_with(":443") {
+                        // :443 implies HTTPS/WebSocket through Cloudflare.
+                        ("wss://".to_string(), trimmed.to_string(), 443, true)
+                    } else {
+                        // Non-443 port without a scheme: leave bare and let the
+                        // SDK pick its default transport (currently gRPC).
+                        ("".to_string(), trimmed.to_string(), 0, false)
+                    }
+                }
+            };
+
+        if bare_str.is_empty() {
+            return Err(format!(
+                "Invalid host: missing hostname after scheme. Try {}strike48.example.com",
+                scheme
+            ));
         }
 
-        // No scheme: Strike48 behind Cloudflare on :443 must use WebSocket;
-        // other ports default to gRPC (SDK's default transport).
-        let inferred = if bare.ends_with(":443") { "wss://" } else { "" };
-        Ok(format!("{}{}", inferred, bare))
+        let port_inferred = !bare_has_port(&bare_str);
+        let final_bare = if port_inferred {
+            format!("{}:{}", bare_str, default_port)
+        } else {
+            bare_str
+        };
+
+        let value = format!("{}{}", scheme, final_bare);
+
+        Ok(NormalizedHost {
+            value,
+            inferred_scheme: if scheme_inferred {
+                Some("wss://")
+            } else {
+                None
+            },
+            inferred_port: if port_inferred {
+                Some(default_port)
+            } else {
+                None
+            },
+        })
     }
 
     /// Derive a stable, env-scoped instance id from the persistent `device_id`
@@ -540,51 +660,111 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalize_host_preserves_wss_scheme() {
-        let out = ConnectorConfig::normalize_host("wss://studio.example.com:443").unwrap();
-        assert_eq!(out, "wss://studio.example.com:443");
+    fn preserves_explicit_wss_with_port() {
+        let n = ConnectorConfig::normalize_host("wss://studio.example.com:443").unwrap();
+        assert_eq!(n.value, "wss://studio.example.com:443");
+        assert!(!n.was_inferred());
+        assert!(n.hint().is_none());
     }
 
     #[test]
-    fn normalize_host_preserves_grpc_scheme() {
-        let out = ConnectorConfig::normalize_host("grpc://localhost:50061").unwrap();
-        assert_eq!(out, "grpc://localhost:50061");
+    fn preserves_explicit_grpc_with_port() {
+        let n = ConnectorConfig::normalize_host("grpc://localhost:50061").unwrap();
+        assert_eq!(n.value, "grpc://localhost:50061");
+        assert!(!n.was_inferred());
     }
 
     #[test]
-    fn normalize_host_infers_wss_for_port_443() {
-        let out = ConnectorConfig::normalize_host("studio.example.com:443").unwrap();
-        assert_eq!(out, "wss://studio.example.com:443");
+    fn infers_wss_scheme_when_only_443_typed() {
+        let n = ConnectorConfig::normalize_host("studio.example.com:443").unwrap();
+        assert_eq!(n.value, "wss://studio.example.com:443");
+        assert_eq!(n.inferred_scheme, Some("wss://"));
+        assert_eq!(n.inferred_port, None);
     }
 
     #[test]
-    fn normalize_host_leaves_non_443_bare() {
-        let out = ConnectorConfig::normalize_host("localhost:50061").unwrap();
-        assert_eq!(out, "localhost:50061");
+    fn infers_wss_and_443_for_bare_host() {
+        let n = ConnectorConfig::normalize_host("discoball.strike48.engineering").unwrap();
+        assert_eq!(n.value, "wss://discoball.strike48.engineering:443");
+        assert_eq!(n.inferred_scheme, Some("wss://"));
+        assert_eq!(n.inferred_port, Some(443));
+        assert_eq!(
+            n.hint().as_deref(),
+            Some("Will connect as wss://discoball.strike48.engineering:443"),
+        );
     }
 
     #[test]
-    fn normalize_host_trims_whitespace() {
-        let out = ConnectorConfig::normalize_host("  wss://x.example.com:443  ").unwrap();
-        assert_eq!(out, "wss://x.example.com:443");
+    fn infers_443_for_wss_without_port() {
+        let n = ConnectorConfig::normalize_host("wss://strike48.example.com").unwrap();
+        assert_eq!(n.value, "wss://strike48.example.com:443");
+        assert_eq!(n.inferred_scheme, None);
+        assert_eq!(n.inferred_port, Some(443));
     }
 
     #[test]
-    fn normalize_host_rejects_missing_port() {
-        assert!(ConnectorConfig::normalize_host("studio.example.com").is_err());
-        assert!(ConnectorConfig::normalize_host("wss://studio.example.com").is_err());
+    fn infers_443_for_https_without_port() {
+        let n = ConnectorConfig::normalize_host("https://strike48.example.com").unwrap();
+        assert_eq!(n.value, "https://strike48.example.com:443");
+        assert_eq!(n.inferred_port, Some(443));
     }
 
     #[test]
-    fn normalize_host_rejects_empty() {
+    fn infers_80_for_ws_without_port() {
+        let n = ConnectorConfig::normalize_host("ws://localhost").unwrap();
+        assert_eq!(n.value, "ws://localhost:80");
+        assert_eq!(n.inferred_port, Some(80));
+    }
+
+    #[test]
+    fn infers_50051_for_grpc_without_port() {
+        let n = ConnectorConfig::normalize_host("grpc://localhost").unwrap();
+        assert_eq!(n.value, "grpc://localhost:50051");
+        assert_eq!(n.inferred_port, Some(50051));
+    }
+
+    #[test]
+    fn infers_443_for_grpcs_without_port() {
+        // grpcs:// is the Cloudflare-fronted gRPC case — same TLS port as wss.
+        let n = ConnectorConfig::normalize_host("grpcs://strike48.example.com").unwrap();
+        assert_eq!(n.value, "grpcs://strike48.example.com:443");
+        assert_eq!(n.inferred_port, Some(443));
+    }
+
+    #[test]
+    fn leaves_bare_host_with_non_443_port_alone() {
+        // Non-443 bare port: SDK picks gRPC (its default) — preserve user intent.
+        let n = ConnectorConfig::normalize_host("localhost:50061").unwrap();
+        assert_eq!(n.value, "localhost:50061");
+        assert!(!n.was_inferred());
+    }
+
+    #[test]
+    fn trims_surrounding_whitespace() {
+        let n = ConnectorConfig::normalize_host("  wss://x.example.com:443  ").unwrap();
+        assert_eq!(n.value, "wss://x.example.com:443");
+        assert!(!n.was_inferred());
+    }
+
+    #[test]
+    fn scheme_matching_is_case_insensitive() {
+        let n = ConnectorConfig::normalize_host("WSS://Studio.Example.com:443").unwrap();
+        assert_eq!(n.value, "WSS://Studio.Example.com:443");
+        assert!(!n.was_inferred());
+    }
+
+    #[test]
+    fn rejects_empty_input() {
         assert!(ConnectorConfig::normalize_host("").is_err());
         assert!(ConnectorConfig::normalize_host("   ").is_err());
     }
 
     #[test]
-    fn normalize_host_scheme_matching_is_case_insensitive() {
-        let out = ConnectorConfig::normalize_host("WSS://Studio.Example.com:443").unwrap();
-        assert_eq!(out, "WSS://Studio.Example.com:443");
+    fn idempotent_when_reapplied() {
+        let first = ConnectorConfig::normalize_host("discoball.strike48.engineering").unwrap();
+        let second = ConnectorConfig::normalize_host(&first.value).unwrap();
+        assert_eq!(first.value, second.value);
+        assert!(!second.was_inferred(), "second pass should not re-infer");
     }
 
     #[test]
