@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod evidence;
+pub mod sidecar;
 pub mod workspace;
 
 use async_trait::async_trait;
