@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use pentest_core::matrix::MatrixChatClient;
+use pentest_core::matrix::{ChatClient, MatrixChatClient};
 
 /// Shared state for the LLM proxy.
 #[derive(Clone)]
@@ -133,7 +133,7 @@ async fn handle_llm_request(
         }
     };
 
-    // Get or create conversation
+    // Get or create conversation (auto-create on first use)
     let conv_id = {
         let conv_guard = state.conversation_id.read().await;
         conv_guard.clone()
@@ -142,14 +142,43 @@ async fn handle_llm_request(
     let conversation_id = match conv_id {
         Some(id) => id,
         None => {
-            tracing::error!("LLM proxy: No conversation ID configured");
-            return Err(StatusCode::SERVICE_UNAVAILABLE);
+            // Auto-create a conversation for webwright's LLM calls
+            tracing::info!("LLM proxy: creating conversation for webwright");
+            match client.create_conversation(Some("webwright-browser-agent")).await {
+                Ok(id) => {
+                    let mut conv_guard = state.conversation_id.write().await;
+                    *conv_guard = Some(id.clone());
+                    id
+                }
+                Err(e) => {
+                    tracing::error!("LLM proxy: failed to create conversation: {}", e);
+                    return Err(StatusCode::SERVICE_UNAVAILABLE);
+                }
+            }
         }
     };
 
+    // Get or find an agent
     let agent_id = {
         let agent_guard = state.agent_id.read().await;
-        agent_guard.clone().unwrap_or_default()
+        agent_guard.clone()
+    };
+    let agent_id = match agent_id {
+        Some(id) => id,
+        None => {
+            // Find a suitable agent (first enabled one)
+            match client.list_agents().await {
+                Ok(agents) => {
+                    let id = agents.first().map(|a| a.id.clone()).unwrap_or_default();
+                    if !id.is_empty() {
+                        let mut guard = state.agent_id.write().await;
+                        *guard = Some(id.clone());
+                    }
+                    id
+                }
+                Err(_) => String::new(),
+            }
+        }
     };
 
     // Send to Strike48 and get response
