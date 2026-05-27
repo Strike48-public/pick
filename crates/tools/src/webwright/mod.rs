@@ -235,11 +235,19 @@ impl PentestTool for WebwrightTool {
                 }
             }
 
+            // Truncate stdout to avoid blowing up WebSocket frame limits.
+            // Webwright can produce very large output (>100MB with debug info).
+            let stdout_truncated = if result.stdout.len() > 4000 {
+                format!("{}... (truncated, {} bytes total)", &result.stdout[..4000], result.stdout.len())
+            } else {
+                result.stdout.clone()
+            };
+
             let data = json!({
                 "mode": mode,
                 "start_url": start_url,
                 "exit_code": result.exit_code,
-                "stdout": result.stdout,
+                "stdout": stdout_truncated,
                 "stderr": result.stderr,
                 "artifacts": artifacts,
                 "task_id": workspace.task_id,
