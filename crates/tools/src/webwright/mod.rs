@@ -277,10 +277,16 @@ fn build_env_exports() -> String {
         ));
     }
 
-    // Unset SSL_CERT_FILE inside sandbox — NixOS sets this to a nix store
-    // path that doesn't exist in proot. Let httpx/openssl use the rootfs default.
-    exports.push("unset SSL_CERT_FILE".to_string());
-    exports.push("unset SSL_CERT_DIR".to_string());
+    // Sanitize host env vars that leak into proot and cause issues:
+    // - SSL_CERT_FILE/SSL_CERT_DIR: NixOS paths don't exist in proot
+    // - TMPDIR: NixOS nix-shell paths don't exist in proot
+    // - DISPLAY/WAYLAND_DISPLAY: headless, no display needed
+    exports.push("unset SSL_CERT_FILE SSL_CERT_DIR TMPDIR DISPLAY WAYLAND_DISPLAY XDG_RUNTIME_DIR".to_string());
+    exports.push("export TMPDIR=/tmp".to_string());
+    exports.push("export HOME=/root".to_string());
+    // Chromium needs --no-sandbox in proot (no real namespaces available).
+    // PLAYWRIGHT_CHROMIUM_SANDBOX=0 tells Playwright to add --no-sandbox automatically.
+    exports.push("export PLAYWRIGHT_CHROMIUM_SANDBOX=0".to_string());
 
     format!("{};", exports.join("; "))
 }
