@@ -124,12 +124,13 @@ impl PentestTool for WebwrightTool {
                             "task parameter is required for explore mode".into(),
                         ));
                     }
-                    workspace.write_config(9100, "strike48-default").await?;
+                    // Webwright uses OPENAI_BASE_URL and OPENAI_API_KEY env vars
+                    // via the OpenAI SDK. We set these to point at our LLM proxy.
+                    // For now, use the default model_openai.yaml config and rely
+                    // on env vars for the API key.
                     let args = vec![
                         "-m".to_string(),
                         "webwright.run.cli".to_string(),
-                        "-c".to_string(),
-                        workspace.config_path(),
                         "-t".to_string(),
                         task_str.clone(),
                         "--start-url".to_string(),
