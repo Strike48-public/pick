@@ -209,7 +209,9 @@ pub fn format_relative_time(iso: &str) -> String {
     format!("{}d ago", days)
 }
 
-/// Render webwright screenshots as inline thumbnails using base64 data URIs.
+/// Render webwright screenshots as inline thumbnails.
+/// Reads files from disk at render time and base64-encodes them for display.
+/// The LLM only sees file paths — the user sees actual images.
 fn render_webwright_screenshots(result_json: &str) -> Element {
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(result_json);
     let val = match parsed {
@@ -217,16 +219,41 @@ fn render_webwright_screenshots(result_json: &str) -> Element {
         Err(_) => return rsx! {},
     };
 
-    // Use pre-encoded screenshot_data (base64 data URIs)
-    let screenshots: Vec<(String, String)> = val["data"]["screenshot_data"]
+    // Get screenshot paths from the result
+    let paths: Vec<String> = val["data"]["artifacts"]["screenshots"]
         .as_array()
-        .or_else(|| val["screenshot_data"].as_array())
+        .or_else(|| val["artifacts"]["screenshots"].as_array())
         .unwrap_or(&Vec::new())
         .iter()
-        .filter_map(|item| {
-            let filename = item["filename"].as_str()?.to_string();
-            let data_uri = item["data_uri"].as_str()?.to_string();
-            Some((filename, data_uri))
+        .filter_map(|p| p.as_str().map(|s| s.to_string()))
+        .filter(|p| p.contains("final_"))
+        .collect();
+
+    if paths.is_empty() {
+        return rsx! {};
+    }
+
+    // Resolve paths to actual files on disk and base64-encode for display.
+    // Paths are workspace-relative like "webwright/<task-id>/final_runs/..."
+    let workspace = crate::liveview_server::get_workspace_path();
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let rootfs_tmp = format!("{}/.local/share/pentest-sandbox/blackarch-rootfs/tmp", home);
+
+    let screenshots: Vec<(String, String)> = paths
+        .iter()
+        .filter_map(|rel_path| {
+            // Try connector workspace first, then rootfs /tmp
+            let ws_full = std::path::Path::new(&workspace).join(rel_path);
+            let rootfs_full = std::path::Path::new(&rootfs_tmp).join(rel_path);
+            let file_path = if ws_full.exists() { ws_full } else { rootfs_full };
+
+            std::fs::read(&file_path).ok().map(|bytes| {
+                use base64::Engine;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                let filename = rel_path.rsplit('/').next().unwrap_or("screenshot").to_string();
+                let data_uri = format!("data:image/png;base64,{}", b64);
+                (filename, data_uri)
+            })
         })
         .collect();
 
