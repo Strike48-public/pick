@@ -215,13 +215,14 @@ fn render_webwright_screenshots(result_json: &str) -> Element {
         Err(_) => return rsx! {},
     };
 
-    let screenshots: Vec<String> = val["screenshots"]
+    let screenshots: Vec<String> = val["data"]["artifacts"]["screenshots"]
         .as_array()
         .or_else(|| val["artifacts"]["screenshots"].as_array())
+        .or_else(|| val["screenshots"].as_array())
         .unwrap_or(&Vec::new())
         .iter()
         .filter_map(|p| p.as_str().map(|s| s.to_string()))
-        .filter(|p| p.contains("final_") || p.contains("screenshot"))
+        .filter(|p| p.contains("final_") || p.ends_with(".png"))
         .collect();
 
     if screenshots.is_empty() {
