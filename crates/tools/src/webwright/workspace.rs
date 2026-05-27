@@ -27,7 +27,14 @@ impl WebwrightWorkspace {
     /// collecting artifacts) and the sandbox (for running Python).
     pub async fn create(_platform: &impl CommandExec) -> Result<Self> {
         let task_id = Uuid::new_v4().to_string();
-        let base_dir = format!("/tmp/webwright/{}", task_id);
+
+        // Place output in the connector workspace (visible in Files panel).
+        // Falls back to /tmp/webwright/ if workspace isn't set.
+        let base_dir = {
+            let root = pentest_core::workspace::workspace_root();
+            let ws = root.join("webwright").join(&task_id);
+            ws.to_string_lossy().to_string()
+        };
 
         std::fs::create_dir_all(&base_dir)
             .map_err(|e| Error::ToolExecution(format!("Failed to create workspace: {}", e)))?;

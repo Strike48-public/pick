@@ -227,6 +227,7 @@ impl PentestTool for WebwrightTool {
                 "stderr": result.stderr,
                 "artifacts": artifacts,
                 "task_id": workspace.task_id,
+                "workspace_path": workspace.path(),
             });
 
             Ok((data, provenance))
