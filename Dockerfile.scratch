@@ -91,8 +91,14 @@ RUN RUST_TARGET=$(cat /tmp/rust-target) && \
 # ----------------------------------------------------------
 FROM kalilinux/kali-rolling AS runtime
 
-# Install common pentest tools + runtime deps
-RUN apt-get update && \
+# Pin sources.list to the kali.download CDN before updating. The default Kali
+# mirror rotation occasionally serves an apt index ahead of one or more backing
+# mirrors, which produces 404s during the install step for transitive deps
+# (e.g. libexpat1, libatomic1, libgomp1, netcat-openbsd). kali.download is the
+# official CDN and has been the most consistent source in CI.
+RUN printf 'deb http://kali.download/kali kali-rolling main contrib non-free non-free-firmware\n' \
+        > /etc/apt/sources.list \
+    && apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         openssl \
