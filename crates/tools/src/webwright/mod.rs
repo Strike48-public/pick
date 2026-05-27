@@ -130,8 +130,9 @@ impl PentestTool for WebwrightTool {
                     // Override model endpoint to use Pick's local LLM proxy.
                     // Must include base.yaml + model_openai.yaml explicitly since
                     // adding any -c flag replaces the defaults.
+                    let proxy_port = std::env::var("PICK_LLM_PROXY_PORT").unwrap_or_else(|_| "9100".to_string());
                     let endpoint = std::env::var("OPENAI_BASE_URL")
-                        .unwrap_or_else(|_| "http://127.0.0.1:9100/v1/chat/completions".to_string());
+                        .unwrap_or_else(|_| format!("http://127.0.0.1:{}/v1/chat/completions", proxy_port));
                     let cmd = format!(
                         "{} python3 -m webwright.run.cli -c base.yaml -c model_openai.yaml -c model.openai_endpoint={} -t {} --start-url {} --output-dir {} --task-id {}",
                         env_exports,
@@ -264,10 +265,11 @@ fn build_env_exports() -> String {
             }
         }
     } else {
-        // Point at Pick's local LLM proxy (TCP port 9100)
+        // Point at Pick's local LLM proxy (dynamic port stored in env)
+        let proxy_port = std::env::var("PICK_LLM_PROXY_PORT").unwrap_or_else(|_| "9100".to_string());
         exports.push(format!(
             "export OPENAI_BASE_URL={}",
-            shell_escape("http://127.0.0.1:9100/v1")
+            shell_escape(&format!("http://127.0.0.1:{}/v1", proxy_port))
         ));
         exports.push(format!(
             "export OPENAI_API_KEY={}",

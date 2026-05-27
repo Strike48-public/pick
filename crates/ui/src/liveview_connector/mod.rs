@@ -670,26 +670,30 @@ impl LiveViewConnector {
         };
         let api_routes_router = api_routes::create_api_routes(api_state);
 
-        // Start LLM proxy on its own TCP port (webwright in proot needs TCP access)
+        // Start LLM proxy on its own TCP port (webwright in proot needs TCP access).
+        // Bind to port 0 to let the OS pick an available port, then store it.
         let llm_state = llm_proxy::LlmProxyState {
             matrix_client: self.matrix_client.clone(),
             conversation_id: Arc::new(RwLock::new(None)),
             agent_id: Arc::new(RwLock::new(None)),
         };
         let llm_proxy_router = llm_proxy::create_llm_proxy_routes(llm_state);
-        tokio::spawn(async move {
-            let listener = match tokio::net::TcpListener::bind("127.0.0.1:9100").await {
-                Ok(l) => l,
-                Err(e) => {
-                    tracing::warn!("Failed to start LLM proxy on port 9100: {}", e);
-                    return;
+        let llm_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .ok();
+        if let Some(listener) = llm_listener {
+            let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+            // Store port so webwright tool can read it
+            std::env::set_var("PICK_LLM_PROXY_PORT", port.to_string());
+            tracing::info!("LLM proxy listening on http://127.0.0.1:{}", port);
+            tokio::spawn(async move {
+                if let Err(e) = axum::serve(listener, llm_proxy_router).await {
+                    tracing::error!("LLM proxy server error: {}", e);
                 }
-            };
-            tracing::info!("LLM proxy listening on http://127.0.0.1:9100");
-            if let Err(e) = axum::serve(listener, llm_proxy_router).await {
-                tracing::error!("LLM proxy server error: {}", e);
-            }
-        });
+            });
+        } else {
+            tracing::warn!("Failed to start LLM proxy (could not bind TCP port)");
+        }
 
         // Merge API routes with extra routes
         let combined_routes = extra_routes.merge(api_routes_router);
