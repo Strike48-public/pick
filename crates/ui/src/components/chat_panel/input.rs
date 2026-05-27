@@ -55,11 +55,8 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
                 await new Promise(function() {});
                 "#,
             );
-            loop {
-                match eval.recv::<String>().await {
-                    Ok(text) => on_send.call(text),
-                    Err(_) => break,
-                }
+            while let Ok(text) = eval.recv::<String>().await {
+                on_send.call(text);
             }
         });
     });
