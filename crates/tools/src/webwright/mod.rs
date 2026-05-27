@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod evidence;
+pub mod install;
 pub mod sidecar;
 pub mod workspace;
 
@@ -107,6 +108,9 @@ impl PentestTool for WebwrightTool {
                     "start_url parameter is required".into(),
                 ));
             }
+
+            // Ensure webwright is installed (auto-installs in sandbox)
+            install::ensure_webwright_installed(&platform).await?;
 
             // Create workspace
             let workspace = WebwrightWorkspace::create(&platform).await?;
