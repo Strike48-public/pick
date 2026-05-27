@@ -188,8 +188,8 @@ impl PentestTool for WebwrightTool {
 
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-            // Try sidecar first (warm browser, live updates), fall back to subprocess
-            let use_sidecar = std::env::var("WEBWRIGHT_SIDECAR").unwrap_or_default() == "1";
+            // Sidecar mode is default (warm browser, live updates). Disable with WEBWRIGHT_SIDECAR=0.
+            let use_sidecar = std::env::var("WEBWRIGHT_SIDECAR").unwrap_or_else(|_| "1".to_string()) != "0";
             let task_str_for_sidecar = param_str_opt(&params, "task").unwrap_or_default();
             let sidecar_result = if use_sidecar {
                 try_sidecar_execution(&mode, &start_url, &task_str_for_sidecar, &workspace, &env_exports).await
