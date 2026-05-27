@@ -166,6 +166,14 @@ async fn main() -> anyhow::Result<()> {
                                 auth_token.len()
                             );
                         }
+                        ConnectorEvent::ToolProgress {
+                            tool_name,
+                            step,
+                            message,
+                            ..
+                        } => {
+                            tracing::info!("[tool] {} step {}: {}", tool_name, step, message);
+                        }
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,

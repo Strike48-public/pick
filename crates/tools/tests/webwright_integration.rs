@@ -315,7 +315,7 @@ async fn missing_start_url_rejected() {
 async fn workspace_creates_and_collects_artifacts() {
     let platform = pentest_platform::get_platform();
 
-    let workspace = WebwrightWorkspace::create(&platform).await.unwrap();
+    let workspace = WebwrightWorkspace::create(&platform, None).await.unwrap();
     let ws_path = workspace.path();
 
     assert!(

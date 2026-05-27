@@ -223,6 +223,14 @@ pub enum ConnectorEvent {
         tool_name: String,
         error: String,
     },
+    /// Live progress from a running tool (e.g., webwright sidecar step updates).
+    ToolProgress {
+        tool_name: String,
+        step: u32,
+        message: String,
+        /// Base64-encoded screenshot if available at this step.
+        screenshot: Option<String>,
+    },
     Log(TerminalLine),
     /// Connector JWT obtained via OTT — should be saved to persist authorization.
     /// `api_url` is the Matrix API base URL (e.g. `https://studio.example.com:8443`).
