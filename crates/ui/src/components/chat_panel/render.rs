@@ -209,6 +209,92 @@ pub fn format_relative_time(iso: &str) -> String {
     format!("{}d ago", days)
 }
 
+/// Render the live progress widget or fallback to the standard thinking dots.
+/// When webwright is running via sidecar, shows a rich live feed of steps/screenshots.
+pub fn render_live_progress(status_text: &str) -> Element {
+    // Check if webwright sidecar is actively running
+    let mut rx = pentest_tools::webwright::live_state::subscribe();
+    let progress = rx.borrow().clone();
+
+    if progress.running {
+        // Rich live webwright widget
+        let step_text = format!("Step {} — {}", progress.step, progress.action);
+        let finding_count = progress.findings.len();
+
+        rsx! {
+            div {
+                style: "padding: 8px 0;",
+                // Step indicator with pulsing dot
+                div {
+                    style: "display: flex; align-items: center; gap: 8px; margin-bottom: 6px;",
+                    div {
+                        style: "width: 8px; height: 8px; border-radius: 50%; background: #00ff88; animation: pulse 1.5s infinite; flex-shrink: 0;",
+                    }
+                    span {
+                        style: "font-size: 13px; color: #00ff88; font-family: monospace;",
+                        "{step_text}"
+                    }
+                }
+                // Live screenshot (if available)
+                if let Some(ref screenshot) = progress.screenshot {
+                    div {
+                        style: "margin: 6px 0; max-width: 280px; border: 1px solid #00ff8840; border-radius: 4px; overflow: hidden;",
+                        img {
+                            src: "data:image/png;base64,{screenshot}",
+                            style: "width: 100%; height: auto; display: block; opacity: 0.9;",
+                        }
+                    }
+                }
+                // Findings ticker
+                if finding_count > 0 {
+                    div {
+                        style: "margin-top: 6px; font-size: 11px;",
+                        for finding in progress.findings.iter() {
+                            div {
+                                style: "display: flex; align-items: center; gap: 6px; margin: 2px 0;",
+                                span {
+                                    style: "padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 600; background: {severity_color(&finding.severity)}; color: #fff;",
+                                    "{finding.severity}"
+                                }
+                                span {
+                                    style: "color: #ccc;",
+                                    "{finding.title}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Pulse animation
+            style { "@keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.3; }} }}" }
+        }
+    } else {
+        // Standard thinking indicator
+        rsx! {
+            div { class: "chat-thinking-status",
+                if !status_text.is_empty() {
+                    span { class: "chat-status-label", "{status_text}" }
+                }
+                div { class: "chat-thinking-dots",
+                    span { "." }
+                    span { "." }
+                    span { "." }
+                }
+            }
+        }
+    }
+}
+
+fn severity_color(severity: &str) -> &'static str {
+    match severity.to_lowercase().as_str() {
+        "critical" => "#dc2626",
+        "high" => "#ea580c",
+        "medium" => "#ca8a04",
+        "low" => "#2563eb",
+        _ => "#6b7280",
+    }
+}
+
 /// Render webwright screenshots as inline thumbnails.
 /// Reads files from disk at render time and base64-encodes them for display.
 /// The LLM only sees file paths — the user sees actual images.

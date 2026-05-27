@@ -8,6 +8,7 @@
 pub mod config;
 pub mod evidence;
 pub mod install;
+pub mod live_state;
 pub mod sidecar;
 pub mod workspace;
 
@@ -393,10 +394,14 @@ async fn try_sidecar_execution(
         return None;
     }
 
+    // Signal start for live UI
+    live_state::start(&workspace.task_id);
+
     // Subscribe and wait for completion
     let mut rx = sidecar.subscribe();
     let timeout = tokio::time::Duration::from_secs(300);
     let deadline = tokio::time::Instant::now() + timeout;
+    let mut findings: Vec<live_state::WebwrightFinding> = Vec::new();
 
     loop {
         let event = tokio::select! {
@@ -412,14 +417,35 @@ async fn try_sidecar_execution(
         };
 
         match &event {
-            SidecarEvent::Step { n, action, .. } => {
+            SidecarEvent::Step { n, action, screenshot } => {
                 tracing::info!("[webwright-sidecar] step {}: {}", n, action);
+                live_state::update(live_state::WebwrightProgress {
+                    step: *n,
+                    action: action.clone(),
+                    screenshot: screenshot.clone(),
+                    findings: findings.clone(),
+                    running: true,
+                    task_id: workspace.task_id.clone(),
+                });
             }
             SidecarEvent::Finding { severity, title, .. } => {
                 tracing::info!("[webwright-sidecar] finding: [{}] {}", severity, title);
+                findings.push(live_state::WebwrightFinding {
+                    severity: severity.clone(),
+                    title: title.clone(),
+                });
+                live_state::update(live_state::WebwrightProgress {
+                    step: 0,
+                    action: format!("Found: {}", title),
+                    screenshot: None,
+                    findings: findings.clone(),
+                    running: true,
+                    task_id: workspace.task_id.clone(),
+                });
             }
             SidecarEvent::Complete { summary, .. } => {
                 tracing::info!("[webwright-sidecar] complete: {}", summary);
+                live_state::complete(&workspace.task_id);
                 return Some(pentest_platform::CommandResult {
                     stdout: summary.clone(),
                     stderr: String::new(),
@@ -430,6 +456,7 @@ async fn try_sidecar_execution(
             }
             SidecarEvent::Error { message } => {
                 tracing::error!("[webwright-sidecar] error: {}", message);
+                live_state::complete(&workspace.task_id);
                 return Some(pentest_platform::CommandResult {
                     stdout: String::new(),
                     stderr: message.clone(),
@@ -441,6 +468,8 @@ async fn try_sidecar_execution(
             _ => {}
         }
     }
+
+    live_state::complete(&workspace.task_id);
 
     // If we get here, something went wrong
     None

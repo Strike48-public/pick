@@ -8,7 +8,7 @@ use pentest_core::matrix::{AgentInfo, ChatMessage, ConversationInfo};
 
 use super::agent_selector::SuggestedActions;
 use super::next_steps::NextStepsActions;
-use super::render::render_message;
+use super::render::{render_live_progress, render_message};
 
 /// Props for [`MessageList`].
 #[derive(Props, Clone, PartialEq)]
@@ -115,7 +115,7 @@ pub fn MessageList(props: MessageListProps) -> Element {
                     }
                 }
 
-                // Thinking indicator
+                // Thinking indicator / live webwright progress
                 if agent_thinking() {
                     div { class: "chat-bubble chat-bubble-agent chat-thinking",
                         div { class: "chat-bubble-sender",
@@ -123,16 +123,7 @@ pub fn MessageList(props: MessageListProps) -> Element {
                                 "{agent.name}"
                             }
                         }
-                        div { class: "chat-thinking-status",
-                            if !agent_status_text.read().is_empty() {
-                                span { class: "chat-status-label", "{agent_status_text}" }
-                            }
-                            div { class: "chat-thinking-dots",
-                                span { "." }
-                                span { "." }
-                                span { "." }
-                            }
-                        }
+                        {render_live_progress(&agent_status_text.read())}
                     }
                 }
             }
