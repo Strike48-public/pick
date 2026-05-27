@@ -229,23 +229,45 @@ impl PentestTool for WebwrightTool {
     }
 }
 
-/// Build shell export statements for API keys that webwright needs.
-/// Forwards OPENAI_API_KEY, OPENAI_BASE_URL, and ANTHROPIC_API_KEY from
-/// Pick's process environment into the sandbox.
+/// Build shell export statements for webwright's LLM configuration.
+///
+/// Priority:
+/// 1. If OPENAI_API_KEY is set in Pick's env, forward it (user-provided key)
+/// 2. Otherwise, point at Pick's local LLM proxy (port 3030) with a dummy key
+///
+/// The local proxy translates OpenAI requests → Strike48 conversation messages.
 fn build_env_exports() -> String {
     let mut exports = Vec::new();
 
-    for var in [
-        "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_MODEL",
-    ] {
-        if let Ok(val) = std::env::var(var) {
-            if !val.is_empty() {
-                exports.push(format!("export {}={}", var, shell_escape(&val)));
+    // Check if user provided their own API key
+    let has_user_key = std::env::var("OPENAI_API_KEY")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+
+    if has_user_key {
+        // Forward user-provided keys
+        for var in [
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_MODEL",
+        ] {
+            if let Ok(val) = std::env::var(var) {
+                if !val.is_empty() {
+                    exports.push(format!("export {}={}", var, shell_escape(&val)));
+                }
             }
         }
+    } else {
+        // Point at Pick's local LLM proxy (runs on same server as LiveView)
+        exports.push(format!(
+            "export OPENAI_BASE_URL={}",
+            shell_escape("http://127.0.0.1:3030/v1")
+        ));
+        exports.push(format!(
+            "export OPENAI_API_KEY={}",
+            shell_escape("pick-internal")
+        ));
     }
 
     if exports.is_empty() {

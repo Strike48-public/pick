@@ -670,8 +670,18 @@ impl LiveViewConnector {
         };
         let api_routes_router = api_routes::create_api_routes(api_state);
 
+        // Create LLM proxy routes for webwright
+        let llm_state = llm_proxy::LlmProxyState {
+            matrix_client: self.matrix_client.clone(),
+            conversation_id: Arc::new(RwLock::new(None)),
+            agent_id: Arc::new(RwLock::new(None)),
+        };
+        let llm_proxy_router = llm_proxy::create_llm_proxy_routes(llm_state);
+
         // Merge API routes with extra routes
-        let combined_routes = extra_routes.merge(api_routes_router);
+        let combined_routes = extra_routes
+            .merge(api_routes_router)
+            .merge(llm_proxy_router);
 
         let lv_config = LiveViewConfig {
             port: DEFAULT_LIVEVIEW_PORT,
