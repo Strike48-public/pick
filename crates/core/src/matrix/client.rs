@@ -501,6 +501,52 @@ const DELETE_CONVERSATION_QUERY: &str = r#"
     }
 "#;
 
+const GET_TOKEN_USAGE_STATS_QUERY: &str = r#"
+    query GetTokenUsageStats {
+        tokenUsageStats {
+            isLimited
+            daily { usage limit status }
+            weekly { usage limit status }
+            monthly { usage limit status }
+        }
+    }
+"#;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GetTokenUsageStatsData {
+    token_usage_stats: Option<TokenUsageStatsNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenUsageStatsNode {
+    is_limited: bool,
+    daily: TokenUsagePeriodNode,
+    weekly: TokenUsagePeriodNode,
+    monthly: TokenUsagePeriodNode,
+}
+
+#[derive(Deserialize)]
+struct TokenUsagePeriodNode {
+    usage: i64,
+    limit: Option<i64>,
+    status: String,
+}
+
+impl TokenUsagePeriodNode {
+    fn into_period(self) -> TokenUsagePeriod {
+        TokenUsagePeriod {
+            usage: self.usage,
+            limit: self.limit,
+            status: self
+                .status
+                .parse::<TokenUsageStatus>()
+                .unwrap_or(TokenUsageStatus::Unknown),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Trait implementation
 // ---------------------------------------------------------------------------
@@ -724,6 +770,21 @@ impl ChatClient for MatrixChatClient {
             .await?;
 
         Ok(())
+    }
+
+    async fn get_token_usage_stats(&self) -> crate::error::Result<Option<TokenUsageStats>> {
+        self.require_auth()?;
+
+        let data: GetTokenUsageStatsData = self
+            .execute_gql(GET_TOKEN_USAGE_STATS_QUERY, serde_json::json!({}))
+            .await?;
+
+        Ok(data.token_usage_stats.map(|node| TokenUsageStats {
+            is_limited: node.is_limited,
+            daily: node.daily.into_period(),
+            weekly: node.weekly.into_period(),
+            monthly: node.monthly.into_period(),
+        }))
     }
 }
 

@@ -283,6 +283,53 @@ pub fn cached_browser_token() -> Option<String> {
 #[cfg(not(feature = "browser-auth"))]
 pub fn clear_browser_token_cache() {}
 
+/// Open `url` in the host's system browser.
+///
+/// Reuses the same opener chain as the OAuth login flow (custom opener for
+/// Android Intent → `open::that()` fallback), so the URL launches in the user's
+/// real default browser rather than in a wry sub-WebView. The wry path is what
+/// makes Vite-style SPAs render blank with "origin: null" CORS failures, so any
+/// UI link that should land in the system browser must route through here.
+///
+/// Returns the underlying error as a String if every opener path fails.
+#[cfg(feature = "browser-auth")]
+pub fn open_url_in_browser(url: &str) -> Result<(), String> {
+    tracing::info!("[BROWSER_OPEN] Opening URL via system browser: {}", url);
+
+    if let Ok(opener_lock) = BROWSER_OPENER.lock() {
+        if let Some(ref opener) = *opener_lock {
+            match opener(url) {
+                Ok(()) => {
+                    tracing::info!("[BROWSER_OPEN] Opened via custom opener");
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[BROWSER_OPEN] Custom opener failed: {} (falling back to open::that)",
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    match open::that(url) {
+        Ok(()) => {
+            tracing::info!("[BROWSER_OPEN] Opened via open::that()");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!("[BROWSER_OPEN] open::that() failed: {}", e);
+            Err(e.to_string())
+        }
+    }
+}
+
+#[cfg(not(feature = "browser-auth"))]
+pub fn open_url_in_browser(_url: &str) -> Result<(), String> {
+    Err("browser-auth feature not enabled".to_string())
+}
+
 /// Fetch an access token by opening the system browser for login.
 ///
 /// Flow:

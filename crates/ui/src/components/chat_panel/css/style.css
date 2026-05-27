@@ -280,6 +280,81 @@
     border-bottom: 1px solid var(--border);
 }
 
+/* Inline notice — sits above the chat input, quieter than .chat-error. */
+.chat-notice {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.5rem 0.625rem;
+    margin: 0 0.75rem 0.5rem 0.75rem;
+    border-radius: 0.375rem;
+    border: 1px solid var(--border);
+    background: var(--muted);
+    font-size: 0.75rem;
+    line-height: 1.35;
+}
+
+.chat-notice--limit {
+    border-color: color-mix(in srgb, #d97706 40%, var(--border));
+    background: color-mix(in srgb, #d97706 8%, var(--muted));
+}
+
+.chat-notice--error {
+    border-color: color-mix(in srgb, var(--destructive) 35%, var(--border));
+    background: color-mix(in srgb, var(--destructive) 6%, var(--muted));
+}
+
+.chat-notice__icon {
+    flex-shrink: 0;
+    font-size: 0.875rem;
+    line-height: 1.2;
+    margin-top: 0.05rem;
+}
+
+.chat-notice__body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    /* Without flex-start the inline-flex <Button> would stretch to the full
+       body width (default align-items=stretch on a column flex container) and
+       then center its label, making "Open Studio" appear floating mid-line
+       instead of left-aligned under the detail text. */
+    align-items: flex-start;
+    gap: 0.15rem;
+}
+
+.chat-notice__title {
+    font-weight: 600;
+    color: var(--foreground);
+}
+
+.chat-notice__detail {
+    color: var(--muted-foreground);
+}
+
+/* The "Open Studio" affordance uses the shared <Button variant=Link> component
+   defined in components/button.{rs,css} — no custom .chat-notice__link styling
+   here. Earlier hand-rolled link buttons leaked WebKit's native hover state
+   into a "blob" over the text and triggered text-selection highlights, both of
+   which the Link variant already handles correctly. */
+
+.chat-notice__close {
+    flex-shrink: 0;
+    background: transparent;
+    border: none;
+    color: var(--muted-foreground);
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0 0.15rem;
+    margin-left: 0.25rem;
+}
+
+.chat-notice__close:hover {
+    color: var(--foreground);
+}
+
 .chat-messages-wrapper {
     flex: 1;
     display: flex;

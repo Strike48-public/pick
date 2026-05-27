@@ -21,13 +21,14 @@ use pentest_core::terminal::TerminalLine;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::button::{Button, ButtonSize, ButtonVariant};
 use agent_selector::ChatHeader;
 pub use agent_selector::{ChatHeaderActions, ChatHeaderCtx};
 use constants::*;
 use history::HistoryDropdown;
 use input::ChatInput;
 use messages::MessageList;
-use polling::poll_and_update;
+use polling::{poll_and_update, ChatNoticeKind};
 pub use render::format_relative_time;
 use render::{CHART_PROCESSOR_JS, UTILS_JS};
 
@@ -77,6 +78,10 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     let mut agent_thinking = use_signal(|| false);
     let mut agent_status_text = use_signal(String::new);
     let mut error_msg = use_signal(|| None::<String>);
+    // Subtle inline notice driven by poll_and_update — distinct from `error_msg`
+    // (which renders the loud red banner for call-failures). Used for things
+    // like "Token limit reached" where we want a softer, link-bearing message.
+    let mut chat_notice = use_signal(|| None::<polling::ChatNotice>);
 
     // Per-agent conversation tracking
     let mut agent_conversations: Signal<HashMap<String, String>> = use_signal(HashMap::new);
@@ -444,6 +449,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
 
             let agent = agents.peek().iter().find(|a| a.id == val).cloned();
             error_msg.set(None);
+            chat_notice.set(None);
             show_history.set(false);
             agent_thinking.set(false);
             agent_status_text.set(String::new());
@@ -469,6 +475,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                         agent_thinking,
                                         agent_status_text,
                                         error_msg,
+                                        chat_notice,
                                     )
                                     .await;
                                 }
@@ -524,6 +531,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             let client = make_client();
             is_sending.set(true);
             error_msg.set(None);
+            chat_notice.set(None);
 
             spawn(async move {
                 let existing_id: Option<String> = conversation_id.peek().clone();
@@ -580,6 +588,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             agent_thinking,
                             agent_status_text,
                             error_msg,
+                            chat_notice,
                         )
                         .await;
                     }
@@ -637,6 +646,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                     agent_thinking,
                                     agent_status_text,
                                     error_msg,
+                                    chat_notice,
                                 )
                                 .await;
                             }
@@ -669,6 +679,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             }
             show_history.set(false);
             error_msg.set(None);
+            chat_notice.set(None);
 
             if let Some(agent) = selected_agent.peek().as_ref() {
                 let agent_id = agent.id.clone();
@@ -783,6 +794,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             messages.set(Vec::new());
             show_history.set(false);
             error_msg.set(None);
+            chat_notice.set(None);
             agent_thinking.set(false);
             agent_status_text.set(String::new());
 
@@ -830,6 +842,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             agent_thinking,
                             agent_status_text,
                             error_msg,
+                            chat_notice,
                         )
                         .await;
                     }
@@ -871,6 +884,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 agent_thinking,
                                 agent_status_text,
                                 error_msg,
+                                chat_notice,
                             )
                             .await;
                         }
@@ -1068,7 +1082,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 }
             }
 
-            // Error banner
+            // Error banner — loud red strip for caller-side failures (send/load).
             if let Some(err) = error_msg.read().as_ref() {
                 div { class: "chat-error", "{err}" }
             }
@@ -1084,6 +1098,59 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 on_send: send_message.clone(),
                 conversation_list: conversation_list,
                 on_select_conversation: on_select_conversation,
+            }
+
+            // Inline notice — quieter than `chat-error`, sits above the input.
+            // Surfaced by polling when the agent backend returned an error
+            // (token limit, rate limit, generic upstream failure).
+            if let Some(notice) = chat_notice.read().as_ref() {
+                {
+                    let kind_class = match notice.kind {
+                        ChatNoticeKind::TokenLimit => "chat-notice chat-notice--limit",
+                        ChatNoticeKind::UpstreamError => "chat-notice chat-notice--error",
+                    };
+                    let icon = match notice.kind {
+                        ChatNoticeKind::TokenLimit => "⏱",
+                        ChatNoticeKind::UpstreamError => "⚠",
+                    };
+                    let title = notice.title.clone();
+                    let detail = notice.detail.clone();
+                    let studio_url = notice.studio_url.clone();
+                    rsx! {
+                        div { class: "{kind_class}",
+                            span { class: "chat-notice__icon", "{icon}" }
+                            div { class: "chat-notice__body",
+                                div { class: "chat-notice__title", "{title}" }
+                                div { class: "chat-notice__detail", "{detail}" }
+                                if let Some(url) = studio_url {
+                                    // Use the existing Link-variant Button rather than a raw
+                                    // <button> with custom CSS — it already has properly-tested
+                                    // hover/focus/active states that won't bleed WebKit's
+                                    // native button chrome (the "blob on hover" bug). A real
+                                    // <button> element is required (vs. <a href>) so that the
+                                    // browser can't follow a link in the connector iframe
+                                    // while open::that() is also opening the system browser.
+                                    Button {
+                                        variant: ButtonVariant::Link,
+                                        size: ButtonSize::Small,
+                                        on_click: move |_| {
+                                            if let Err(e) = pentest_core::matrix::open_url_in_browser(&url) {
+                                                tracing::warn!("Failed to open Studio URL: {}", e);
+                                            }
+                                        },
+                                        "Open Studio →"
+                                    }
+                                }
+                            }
+                            button {
+                                class: "chat-notice__close",
+                                aria_label: "Dismiss",
+                                onclick: move |_| chat_notice.set(None),
+                                "×"
+                            }
+                        }
+                    }
+                }
             }
 
             // Input area
