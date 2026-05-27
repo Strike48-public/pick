@@ -19,25 +19,18 @@ pub struct WebwrightWorkspace {
 }
 
 impl WebwrightWorkspace {
-    /// Create a new workspace directory in the sandbox.
-    pub async fn create(platform: &impl CommandExec) -> Result<Self> {
+    /// Create a new workspace directory.
+    ///
+    /// Uses direct filesystem access (not platform.execute_command) because
+    /// workspace files are written from the host via std::fs::write and must
+    /// be accessible from both the host (for writing config/scripts and
+    /// collecting artifacts) and the sandbox (for running Python).
+    pub async fn create(_platform: &impl CommandExec) -> Result<Self> {
         let task_id = Uuid::new_v4().to_string();
         let base_dir = format!("/tmp/webwright/{}", task_id);
 
-        let result = platform
-            .execute_command(
-                "mkdir",
-                &["-p", &base_dir],
-                std::time::Duration::from_secs(5),
-            )
-            .await?;
-
-        if result.exit_code != 0 {
-            return Err(Error::ToolExecution(format!(
-                "Failed to create workspace: {}",
-                result.stderr
-            )));
-        }
+        std::fs::create_dir_all(&base_dir)
+            .map_err(|e| Error::ToolExecution(format!("Failed to create workspace: {}", e)))?;
 
         Ok(Self { task_id, base_dir })
     }
@@ -79,36 +72,46 @@ impl WebwrightWorkspace {
     }
 
     /// Collect all artifacts produced by Webwright in the workspace.
-    pub async fn collect_artifacts(&self, platform: &impl CommandExec) -> Result<Value> {
-        let result = platform
-            .execute_command(
-                "find",
-                &[&self.base_dir, "-type", "f"],
-                std::time::Duration::from_secs(10),
-            )
-            .await?;
-
-        let files: Vec<&str> = result.stdout.lines().filter(|l| !l.is_empty()).collect();
-
+    ///
+    /// Walks the workspace directory and categorizes files by type.
+    pub async fn collect_artifacts(&self, _platform: &impl CommandExec) -> Result<Value> {
         let mut scripts = Vec::new();
         let mut screenshots = Vec::new();
         let mut logs = Vec::new();
         let mut snapshots = Vec::new();
         let mut other = Vec::new();
+        let mut total_files = 0;
 
-        for file in &files {
+        fn walk_dir(dir: &std::path::Path, files: &mut Vec<String>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        walk_dir(&path, files);
+                    } else if let Some(s) = path.to_str() {
+                        files.push(s.to_string());
+                    }
+                }
+            }
+        }
+
+        let mut all_files = Vec::new();
+        walk_dir(std::path::Path::new(&self.base_dir), &mut all_files);
+
+        for file in &all_files {
             let filename = file.rsplit('/').next().unwrap_or(file);
             if filename.ends_with(".py") && filename != "script.py" {
-                scripts.push(*file);
+                scripts.push(file.as_str());
             } else if filename.contains("screenshot") && filename.ends_with(".png") {
-                screenshots.push(*file);
+                screenshots.push(file.as_str());
             } else if filename.ends_with(".json") || filename.ends_with(".log") {
-                logs.push(*file);
+                logs.push(file.as_str());
             } else if filename.ends_with(".html") {
-                snapshots.push(*file);
+                snapshots.push(file.as_str());
             } else if filename != "config.yaml" && filename != "script.py" {
-                other.push(*file);
+                other.push(file.as_str());
             }
+            total_files += 1;
         }
 
         Ok(serde_json::json!({
@@ -119,19 +122,13 @@ impl WebwrightWorkspace {
             "logs": logs,
             "dom_snapshots": snapshots,
             "other": other,
-            "total_files": files.len(),
+            "total_files": total_files,
         }))
     }
 
     /// Clean up workspace directory.
-    pub async fn cleanup(&self, platform: &impl CommandExec) -> Result<()> {
-        let _ = platform
-            .execute_command(
-                "rm",
-                &["-rf", &self.base_dir],
-                std::time::Duration::from_secs(10),
-            )
-            .await;
+    pub async fn cleanup(&self, _platform: &impl CommandExec) -> Result<()> {
+        let _ = std::fs::remove_dir_all(&self.base_dir);
         Ok(())
     }
 }
