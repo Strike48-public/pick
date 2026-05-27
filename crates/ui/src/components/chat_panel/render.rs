@@ -212,9 +212,21 @@ pub fn format_relative_time(iso: &str) -> String {
 /// Render the live progress widget or fallback to the standard thinking dots.
 /// When webwright is running via sidecar, shows a rich live feed of steps/screenshots.
 pub fn render_live_progress(status_text: &str) -> Element {
-    // Check if webwright sidecar is actively running
-    let mut rx = pentest_tools::webwright::live_state::subscribe();
-    let progress = rx.borrow().clone();
+    // Poll the watch channel into a Dioxus signal for reactivity
+    let mut progress_signal = use_signal(|| pentest_tools::webwright::live_state::WebwrightProgress::default());
+
+    use_future(move || async move {
+        let mut rx = pentest_tools::webwright::live_state::subscribe();
+        loop {
+            // Wait for changes
+            if rx.changed().await.is_err() {
+                break;
+            }
+            progress_signal.set(rx.borrow().clone());
+        }
+    });
+
+    let progress = progress_signal.read().clone();
 
     if progress.running {
         // Rich live webwright widget
