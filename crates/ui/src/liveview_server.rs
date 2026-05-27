@@ -322,7 +322,7 @@ pub async fn start_liveview_server(
             "/assets/fonts/jetbrains-mono-regular.ttf",
             get(serve_font_regular),
         )
-        .route("/workspace/*path", get(serve_workspace_file))
+        .route("/workspace/{*path}", get(serve_workspace_file))
         .merge(extra_routes);
 
     // Check for IPC mode via STRIKEHUB_SOCKET env var (Unix only — StrikeHub runs on Linux)
