@@ -7,7 +7,7 @@ pub const CHAT_MAX_WIDTH: i32 = 800;
 pub const CHAT_DEFAULT_WIDTH: i32 = 380;
 
 pub const POLL_INTERVAL_MS: u64 = 800;
-pub const MAX_POLL_ATTEMPTS: u32 = 150;
+pub const MAX_POLL_ATTEMPTS: u32 = 750; // 800ms × 750 = 10 minutes (enough for webwright)
 
 /// Suggested quick-action prompts shown in the empty chat state.
 pub const SUGGESTED_ACTIONS: &[(&str, &str)] = &[
