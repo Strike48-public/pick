@@ -123,12 +123,31 @@ async fn handle_llm_request(
         prompt.len()
     );
 
-    // Get Matrix client
+    // Get Matrix client (try shared state first, fall back to session token)
+    let client_guard = state.matrix_client.read().await;
+    if client_guard.is_none() {
+        drop(client_guard);
+        // Try initializing from session token (set when iframe loads)
+        let token = crate::session::get_auth_token();
+        if !token.is_empty() {
+            let api_url = std::env::var("MATRIX_API_URL").unwrap_or_default();
+            if !api_url.is_empty() {
+                let mut client = MatrixChatClient::new(&api_url);
+                client.set_auth_token(&token);
+                let mut guard = state.matrix_client.write().await;
+                *guard = Some(client);
+                tracing::info!("LLM proxy: initialized matrix client from session token");
+            }
+        }
+    } else {
+        drop(client_guard);
+    }
+
     let client_guard = state.matrix_client.read().await;
     let client = match client_guard.as_ref() {
         Some(c) => c,
         None => {
-            tracing::error!("LLM proxy: Matrix client not available");
+            tracing::error!("LLM proxy: Matrix client not available (no session token)");
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
     };
