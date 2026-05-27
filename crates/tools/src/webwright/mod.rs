@@ -91,7 +91,7 @@ impl PentestTool for WebwrightTool {
         vec![Platform::Desktop, Platform::Android, Platform::Tui]
     }
 
-    async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, params: Value, ctx: &ToolContext) -> Result<ToolResult> {
         execute_timed_with_provenance(|| async move {
             let platform = get_platform();
 
@@ -111,8 +111,8 @@ impl PentestTool for WebwrightTool {
             // Ensure webwright is installed (auto-installs in sandbox)
             install::ensure_webwright_installed(&platform).await?;
 
-            // Create workspace
-            let workspace = WebwrightWorkspace::create(&platform).await?;
+            // Create workspace inside the connector's instance workspace
+            let workspace = WebwrightWorkspace::create(&platform, ctx.workspace_path.as_deref()).await?;
 
             // Build env vars for webwright (forward API keys from Pick's environment)
             let env_exports = build_env_exports();

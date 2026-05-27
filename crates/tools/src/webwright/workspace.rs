@@ -24,14 +24,21 @@ pub struct WebwrightWorkspace {
 impl WebwrightWorkspace {
     /// Create a new workspace directory.
     ///
-    /// Creates `webwright/<task-id>/` inside the connector workspace on the host.
+    /// Creates `webwright/<task-id>/` inside the connector's instance workspace.
     /// Inside proot this is accessible at `/workspace/webwright/<task-id>/`.
-    pub async fn create(_platform: &impl CommandExec) -> Result<Self> {
+    pub async fn create(
+        _platform: &impl CommandExec,
+        workspace_path: Option<&std::path::Path>,
+    ) -> Result<Self> {
         let task_id = Uuid::new_v4().to_string();
 
-        let host_dir = pentest_core::workspace::workspace_root()
-            .join("webwright")
-            .join(&task_id);
+        // Use the instance workspace if provided, fall back to workspace_root()
+        let host_dir = match workspace_path {
+            Some(ws) => ws.join("webwright").join(&task_id),
+            None => pentest_core::workspace::workspace_root()
+                .join("webwright")
+                .join(&task_id),
+        };
         std::fs::create_dir_all(&host_dir)
             .map_err(|e| Error::ToolExecution(format!("Failed to create workspace: {}", e)))?;
 
