@@ -29,14 +29,15 @@ pub(super) fn DirectoryListing(props: DirectoryListingProps) -> Element {
     let path = props.rel_path.clone();
     let on_navigate = props.on_navigate;
 
-    // Load directory contents and poll for changes every 2 seconds
+    // Load directory contents — re-runs when rel_path changes
     {
         let ws = ws.clone();
         let path = path.clone();
-        use_future(move || {
+        use_effect(move || {
             let ws = ws.clone();
             let path = path.clone();
-            async move {
+            loading.set(true);
+            spawn(async move {
                 loop {
                     match list_directory(Path::new(&ws), &path) {
                         Ok(e) => {
@@ -50,7 +51,7 @@ pub(super) fn DirectoryListing(props: DirectoryListingProps) -> Element {
                     loading.set(false);
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 }
-            }
+            });
         });
     }
 
