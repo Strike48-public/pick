@@ -207,49 +207,59 @@ pub fn format_relative_time(iso: &str) -> String {
     format!("{}d ago", days)
 }
 
-/// Extract screenshot paths from webwright tool result and render as images.
-/// Screenshots are served via /workspace/ route from the connector workspace.
+/// Render a custom webwright tool result widget with screenshot thumbnails.
 fn render_webwright_screenshots(result_json: &str) -> Element {
-    // Parse the result to find screenshot file paths
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(result_json);
-    let screenshots: Vec<String> = match parsed {
-        Ok(ref val) => val["artifacts"]["screenshots"]
-            .as_array()
-            .unwrap_or(&Vec::new())
-            .iter()
-            .filter_map(|p| p.as_str().map(|s| s.to_string()))
-            .collect(),
-        Err(_) => Vec::new(),
+    let val = match parsed {
+        Ok(v) => v,
+        Err(_) => return rsx! {},
     };
+
+    let screenshots: Vec<String> = val["artifacts"]["screenshots"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .filter_map(|p| p.as_str().map(|s| s.to_string()))
+        // Only show "final" screenshots, not intermediates
+        .filter(|p| p.contains("final_") || p.contains("screenshot"))
+        .collect();
 
     if screenshots.is_empty() {
         return rsx! {};
     }
 
-    // Convert absolute paths to workspace-relative paths for the /workspace/ route
-    let workspace_root = crate::liveview_server::get_workspace_path();
+    // Convert sandbox paths to servable /workspace/ URLs
+    // Paths look like /tmp/webwright/<task-id>/..., serve via /workspace/webwright/<task-id>/...
+    let task_id = val["task_id"].as_str().unwrap_or("");
 
     rsx! {
         div { class: "chat-tool-screenshots",
-            div { class: "chat-tool-section-label", "Screenshots ({screenshots.len()})" }
+            style: "margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px;",
             for path in screenshots.iter() {
                 {
-                    let relative = if !workspace_root.is_empty() && path.starts_with(&workspace_root) {
-                        path.strip_prefix(&workspace_root).unwrap_or(path).trim_start_matches('/')
-                    } else {
-                        // Fallback: use the filename only under webwright/
-                        path.rsplit('/').next().unwrap_or(path)
-                    };
-                    let src = format!("/workspace/{}", relative);
                     let filename = path.rsplit('/').next().unwrap_or("screenshot");
+                    // Construct URL: /workspace/webwright/<task-id>/<relative-from-task-dir>
+                    let relative = path
+                        .find(task_id)
+                        .map(|idx| &path[idx..])
+                        .unwrap_or(filename);
+                    let src = format!("/workspace/webwright/{}", relative);
                     rsx! {
-                        div { class: "chat-tool-screenshot",
-                            img {
-                                src: "{src}",
-                                alt: "{filename}",
-                                style: "max-width: 100%; border-radius: 4px; margin: 4px 0;",
+                        div {
+                            style: "display: inline-block; max-width: 300px; border: 1px solid #333; border-radius: 6px; overflow: hidden; background: #1a1a2e;",
+                            a {
+                                href: "{src}",
+                                target: "_blank",
+                                img {
+                                    src: "{src}",
+                                    alt: "{filename}",
+                                    style: "width: 100%; height: auto; display: block;",
+                                }
                             }
-                            div { class: "chat-tool-screenshot-label", "{filename}" }
+                            div {
+                                style: "padding: 4px 8px; font-size: 11px; color: #888; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;",
+                                "{filename}"
+                            }
                         }
                     }
                 }

@@ -110,11 +110,11 @@ impl WebwrightWorkspace {
     /// Collect all artifacts produced by Webwright in the workspace.
     /// Reads from the host-side path.
     pub async fn collect_artifacts(&self, _platform: &impl CommandExec) -> Result<Value> {
-        let mut scripts = Vec::new();
-        let mut screenshots = Vec::new();
-        let mut logs = Vec::new();
-        let mut snapshots = Vec::new();
-        let mut other = Vec::new();
+        let mut scripts: Vec<String> = Vec::new();
+        let mut screenshots: Vec<String> = Vec::new();
+        let mut logs: Vec<String> = Vec::new();
+        let mut snapshots: Vec<String> = Vec::new();
+        let mut other: Vec<String> = Vec::new();
         let mut total_files = 0;
 
         fn walk_dir(dir: &std::path::Path, files: &mut Vec<String>) {
@@ -133,18 +133,30 @@ impl WebwrightWorkspace {
         let mut all_files = Vec::new();
         walk_dir(std::path::Path::new(&self.host_dir), &mut all_files);
 
+        // Strip host prefix — return sandbox-relative paths only.
+        // Agent should see /workspace/webwright/<task-id>/... not host paths.
+        let host_prefix = &self.host_dir;
+        let sandbox_prefix = &self.sandbox_dir;
+
         for file in &all_files {
+            // Convert host path to sandbox-relative path
+            let relative = file
+                .strip_prefix(host_prefix)
+                .unwrap_or(file)
+                .trim_start_matches('/');
+            let sandbox_path = format!("{}/{}", sandbox_prefix, relative);
+
             let filename = file.rsplit('/').next().unwrap_or(file);
             if filename.ends_with(".py") && filename != "script.py" {
-                scripts.push(file.as_str());
+                scripts.push(sandbox_path.clone());
             } else if filename.ends_with(".png") {
-                screenshots.push(file.as_str());
+                screenshots.push(sandbox_path.clone());
             } else if filename.ends_with(".json") || filename.ends_with(".log") {
-                logs.push(file.as_str());
+                logs.push(sandbox_path.clone());
             } else if filename.ends_with(".html") {
-                snapshots.push(file.as_str());
+                snapshots.push(sandbox_path.clone());
             } else if filename != "config.yaml" && filename != "script.py" {
-                other.push(file.as_str());
+                other.push(sandbox_path.clone());
             }
             total_files += 1;
         }

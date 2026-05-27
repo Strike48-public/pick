@@ -237,16 +237,25 @@ async fn serve_workspace_file(
     use axum::response::IntoResponse;
 
     let workspace = get_workspace_path();
-    if workspace.is_empty() {
-        return (StatusCode::NOT_FOUND, "Workspace not configured").into_response();
-    }
 
-    let file_path = std::path::Path::new(&workspace).join(&path);
+    // Try multiple locations: connector workspace, then rootfs /tmp
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let rootfs_base = format!("{}/.local/share/pentest-sandbox/blackarch-rootfs/tmp", home);
+
+    let file_path = {
+        let ws_path = std::path::Path::new(&workspace).join(&path);
+        if ws_path.exists() {
+            ws_path
+        } else {
+            // Webwright writes to rootfs /tmp/webwright/... inside proot
+            std::path::Path::new(&rootfs_base).join(&path)
+        }
+    };
     let canonical = match file_path.canonicalize() {
         Ok(p) => p,
         Err(_) => return (StatusCode::NOT_FOUND, "File not found").into_response(),
     };
-    if !canonical.starts_with(&workspace) {
+    if !canonical.starts_with(&workspace) && !canonical.starts_with(&rootfs_base) {
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
     }
 
