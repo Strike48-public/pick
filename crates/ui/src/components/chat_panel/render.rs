@@ -122,6 +122,12 @@ fn render_tool_call(tc: &ToolCallInfo, expanded_tools: &mut Signal<Vec<String>>)
                 span { class: "chat-tool-name", "{name}" }
                 span { class: "chat-tool-status {status_class}", "{status_display}" }
             }
+            // Show webwright screenshots ALWAYS (not just when expanded)
+            if name == "webwright" {
+                if let Some(ref result_str) = result {
+                    {render_webwright_screenshots(result_str)}
+                }
+            }
             if is_expanded {
                 div { class: "chat-tool-details",
                     if let Some(ref args_str) = args {
@@ -134,10 +140,6 @@ fn render_tool_call(tc: &ToolCallInfo, expanded_tools: &mut Signal<Vec<String>>)
                         div { class: "chat-tool-section",
                             div { class: "chat-tool-section-label", "Result" }
                             pre { class: "chat-tool-code", "{result_str}" }
-                        }
-                        // Render screenshots inline for webwright tool results
-                        if name == "webwright" {
-                            {render_webwright_screenshots(result_str)}
                         }
                     }
                     if let Some(ref err_str) = error {
@@ -207,7 +209,7 @@ pub fn format_relative_time(iso: &str) -> String {
     format!("{}d ago", days)
 }
 
-/// Render a custom webwright tool result widget with screenshot thumbnails.
+/// Render webwright screenshots as inline thumbnails using base64 data URIs.
 fn render_webwright_screenshots(result_json: &str) -> Element {
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(result_json);
     let val = match parsed {
@@ -215,14 +217,17 @@ fn render_webwright_screenshots(result_json: &str) -> Element {
         Err(_) => return rsx! {},
     };
 
-    let screenshots: Vec<String> = val["data"]["artifacts"]["screenshots"]
+    // Use pre-encoded screenshot_data (base64 data URIs)
+    let screenshots: Vec<(String, String)> = val["data"]["screenshot_data"]
         .as_array()
-        .or_else(|| val["artifacts"]["screenshots"].as_array())
-        .or_else(|| val["screenshots"].as_array())
+        .or_else(|| val["screenshot_data"].as_array())
         .unwrap_or(&Vec::new())
         .iter()
-        .filter_map(|p| p.as_str().map(|s| s.to_string()))
-        .filter(|p| p.contains("final_") || p.ends_with(".png"))
+        .filter_map(|item| {
+            let filename = item["filename"].as_str()?.to_string();
+            let data_uri = item["data_uri"].as_str()?.to_string();
+            Some((filename, data_uri))
+        })
         .collect();
 
     if screenshots.is_empty() {
@@ -230,31 +235,23 @@ fn render_webwright_screenshots(result_json: &str) -> Element {
     }
 
     rsx! {
-        div { class: "chat-tool-screenshots",
+        div {
             style: "margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px;",
-            for path in screenshots.iter() {
-                {
-                    let filename = path.rsplit('/').next().unwrap_or("screenshot");
-                    // Paths are workspace-relative like "webwright/<id>/final_runs/.../file.png"
-                    // Serve via /workspace/<path>
-                    let src = format!("/workspace/{}", path);
-                    rsx! {
-                        div {
-                            style: "display: inline-block; max-width: 300px; border: 1px solid #333; border-radius: 6px; overflow: hidden; background: #1a1a2e;",
-                            a {
-                                href: "{src}",
-                                target: "_blank",
-                                img {
-                                    src: "{src}",
-                                    alt: "{filename}",
-                                    style: "width: 100%; height: auto; display: block;",
-                                }
-                            }
-                            div {
-                                style: "padding: 4px 8px; font-size: 11px; color: #888; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;",
-                                "{filename}"
-                            }
+            for (filename, data_uri) in screenshots.iter() {
+                div {
+                    style: "display: inline-block; max-width: 320px; border: 1px solid #333; border-radius: 6px; overflow: hidden; background: #1a1a2e;",
+                    a {
+                        href: "{data_uri}",
+                        target: "_blank",
+                        img {
+                            src: "{data_uri}",
+                            alt: "{filename}",
+                            style: "width: 100%; height: auto; display: block;",
                         }
+                    }
+                    div {
+                        style: "padding: 4px 8px; font-size: 11px; color: #888; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;",
+                        "{filename}"
                     }
                 }
             }

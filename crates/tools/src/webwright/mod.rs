@@ -235,6 +235,30 @@ impl PentestTool for WebwrightTool {
                 }
             }
 
+            // Base64-encode final screenshots for inline display in the widget.
+            // Only include "final_" screenshots (not intermediates) to keep payload reasonable.
+            let screenshot_data: Vec<Value> = artifacts["screenshots"]
+                .as_array()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .filter_map(|p| p.as_str())
+                .filter(|p| p.contains("final_"))
+                .filter_map(|rel_path| {
+                    // Resolve to host path for reading
+                    let host_path = format!("{}/{}", workspace.host_path(),
+                        rel_path.strip_prefix(&format!("webwright/{}/", workspace.task_id)).unwrap_or(rel_path));
+                    std::fs::read(&host_path).ok().map(|bytes| {
+                        use base64::Engine;
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                        let filename = rel_path.rsplit('/').next().unwrap_or("screenshot");
+                        json!({
+                            "filename": filename,
+                            "data_uri": format!("data:image/png;base64,{}", b64),
+                        })
+                    })
+                })
+                .collect();
+
             let data = json!({
                 "mode": mode,
                 "start_url": start_url,
@@ -244,6 +268,7 @@ impl PentestTool for WebwrightTool {
                 "artifacts": artifacts,
                 "task_id": workspace.task_id,
                 "workspace_path": workspace.path(),
+                "screenshot_data": screenshot_data,
             });
 
             tracing::info!("[webwright] execute complete ({:.1}s total)", t0.elapsed().as_secs_f32());
