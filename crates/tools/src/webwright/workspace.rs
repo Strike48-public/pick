@@ -130,39 +130,42 @@ impl WebwrightWorkspace {
             }
         }
 
+        // Read from connector workspace if copy succeeded, otherwise rootfs host path
+        let read_dir = self.connector_dir.as_deref().unwrap_or(&self.host_dir);
         let mut all_files = Vec::new();
-        walk_dir(std::path::Path::new(&self.host_dir), &mut all_files);
+        walk_dir(std::path::Path::new(read_dir), &mut all_files);
 
-        // Strip host prefix — return sandbox-relative paths only.
-        // Agent should see /workspace/webwright/<task-id>/... not host paths.
-        let host_prefix = &self.host_dir;
-        let sandbox_prefix = &self.sandbox_dir;
-
+        // Return paths relative to the connector workspace root.
+        // read_file resolves relative to the workspace, so "webwright/<id>/file.png" works.
         for file in &all_files {
-            // Convert host path to sandbox-relative path
             let relative = file
-                .strip_prefix(host_prefix)
+                .strip_prefix(read_dir)
                 .unwrap_or(file)
                 .trim_start_matches('/');
-            let sandbox_path = format!("{}/{}", sandbox_prefix, relative);
+
+            // Path that read_file can access (relative to workspace root)
+            let visible_path = match &self.connector_dir {
+                Some(_) => format!("webwright/{}/{}", self.task_id, relative),
+                None => relative.to_string(),
+            };
 
             let filename = file.rsplit('/').next().unwrap_or(file);
             if filename.ends_with(".py") && filename != "script.py" {
-                scripts.push(sandbox_path.clone());
+                scripts.push(visible_path.clone());
             } else if filename.ends_with(".png") {
-                screenshots.push(sandbox_path.clone());
+                screenshots.push(visible_path.clone());
             } else if filename.ends_with(".json") || filename.ends_with(".log") {
-                logs.push(sandbox_path.clone());
+                logs.push(visible_path.clone());
             } else if filename.ends_with(".html") {
-                snapshots.push(sandbox_path.clone());
+                snapshots.push(visible_path.clone());
             } else if filename != "config.yaml" && filename != "script.py" {
-                other.push(sandbox_path.clone());
+                other.push(visible_path.clone());
             }
             total_files += 1;
         }
 
         Ok(serde_json::json!({
-            "workspace": self.host_dir,
+            "workspace": format!("webwright/{}", self.task_id),
             "task_id": self.task_id,
             "scripts": scripts,
             "screenshots": screenshots,
@@ -173,24 +176,32 @@ impl WebwrightWorkspace {
         }))
     }
 
-    /// Copy artifacts from rootfs /tmp to the connector workspace (for Files panel).
+    /// Copy artifacts from rootfs /tmp to the connector workspace (for Files panel + read_file).
     pub fn copy_to_connector_workspace(&self) {
         if let Some(ref dest) = self.connector_dir {
-            fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
+            fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> u32 {
                 let _ = std::fs::create_dir_all(dst);
+                let mut count = 0;
                 if let Ok(entries) = std::fs::read_dir(src) {
                     for entry in entries.flatten() {
                         let src_path = entry.path();
                         let dst_path = dst.join(entry.file_name());
                         if src_path.is_dir() {
-                            copy_dir(&src_path, &dst_path);
+                            count += copy_dir(&src_path, &dst_path);
                         } else {
-                            let _ = std::fs::copy(&src_path, &dst_path);
+                            if std::fs::copy(&src_path, &dst_path).is_ok() {
+                                count += 1;
+                            }
                         }
                     }
                 }
+                count
             }
-            copy_dir(std::path::Path::new(&self.host_dir), std::path::Path::new(dest));
+            let count = copy_dir(std::path::Path::new(&self.host_dir), std::path::Path::new(dest));
+            tracing::info!(
+                "[webwright] copied {} files from rootfs to connector workspace: {}",
+                count, dest
+            );
         }
     }
 
