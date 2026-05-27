@@ -114,7 +114,9 @@ impl SidecarProcess {
             .map_err(|e| Error::ToolExecution(format!("Failed to write sidecar script: {}", e)))?;
 
         let cmd_str = format!(
-            "{} export OPENAI_BASE_URL='http://127.0.0.1:{}/v1'; \
+            "export PATH=/usr/bin:/usr/local/bin:/bin:/sbin; \
+             {} \
+             export OPENAI_BASE_URL='http://127.0.0.1:{}/v1'; \
              export OPENAI_API_KEY='pick-internal'; \
              export PLAYWRIGHT_CHROMIUM_SANDBOX=0; \
              python3 /tmp/webwright_sidecar_server.py",
