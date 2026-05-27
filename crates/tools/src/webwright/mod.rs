@@ -22,9 +22,16 @@ use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
 
+use self::sidecar::{SidecarCommand, SidecarEvent, SidecarProcess};
 use self::workspace::WebwrightWorkspace;
 use crate::external::runner::{param_str_opt, param_str_or};
 use crate::util::param_u64;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+/// Global sidecar instance — shared across tool invocations for warm browser reuse.
+static SIDECAR: std::sync::LazyLock<Arc<Mutex<Option<SidecarProcess>>>> =
+    std::sync::LazyLock::new(|| Arc::new(Mutex::new(None)));
 
 /// Webwright browser automation tool.
 pub struct WebwrightTool;
@@ -181,15 +188,30 @@ impl PentestTool for WebwrightTool {
 
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-            // Execute in sandbox via bash (to inject env vars)
-            tracing::info!("[webwright] launching subprocess (timeout={}s, {:.1}s elapsed)", timeout_secs, t0.elapsed().as_secs_f32());
-            let result = platform
-                .execute_command("bash", &args_refs, Duration::from_secs(timeout_secs))
-                .await?;
-            tracing::info!(
-                "[webwright] subprocess exited: code={} stdout_len={} stderr_len={} ({:.1}s elapsed)",
-                result.exit_code, result.stdout.len(), result.stderr.len(), t0.elapsed().as_secs_f32()
-            );
+            // Try sidecar first (warm browser, live updates), fall back to subprocess
+            let use_sidecar = std::env::var("WEBWRIGHT_SIDECAR").unwrap_or_default() == "1";
+            let task_str_for_sidecar = param_str_opt(&params, "task").unwrap_or_default();
+            let sidecar_result = if use_sidecar {
+                try_sidecar_execution(&mode, &start_url, &task_str_for_sidecar, &workspace, &env_exports).await
+            } else {
+                None
+            };
+
+            let result = if let Some(r) = sidecar_result {
+                tracing::info!("[webwright] sidecar execution complete ({:.1}s elapsed)", t0.elapsed().as_secs_f32());
+                r
+            } else {
+                // Subprocess fallback
+                tracing::info!("[webwright] launching subprocess (timeout={}s, {:.1}s elapsed)", timeout_secs, t0.elapsed().as_secs_f32());
+                let r = platform
+                    .execute_command("bash", &args_refs, Duration::from_secs(timeout_secs))
+                    .await?;
+                tracing::info!(
+                    "[webwright] subprocess exited: code={} stdout_len={} stderr_len={} ({:.1}s elapsed)",
+                    r.exit_code, r.stdout.len(), r.stderr.len(), t0.elapsed().as_secs_f32()
+                );
+                r
+            };
 
             // Copy artifacts to connector workspace (for Files panel)
             workspace.copy_to_connector_workspace();
@@ -321,4 +343,105 @@ fn build_env_exports() -> String {
 /// Simple shell escaping — wraps in single quotes, escaping any internal single quotes.
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Try to execute via the sidecar process. Returns None if sidecar unavailable.
+async fn try_sidecar_execution(
+    mode: &str,
+    start_url: &str,
+    task: &str,
+    workspace: &WebwrightWorkspace,
+    env_exports: &str,
+) -> Option<pentest_platform::CommandResult> {
+    let mut guard = SIDECAR.lock().await;
+
+    // Spawn sidecar if not running
+    if guard.is_none() || !guard.as_ref().unwrap().is_alive().await {
+        let proxy_port: u16 = std::env::var("PICK_LLM_PROXY_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(9100);
+
+        match SidecarProcess::spawn(env_exports, proxy_port).await {
+            Ok(proc) => {
+                *guard = Some(proc);
+            }
+            Err(e) => {
+                tracing::warn!("[webwright-sidecar] failed to spawn: {}, falling back to subprocess", e);
+                return None;
+            }
+        }
+    }
+
+    let sidecar = guard.as_ref().unwrap();
+
+    // Send command
+    let cmd = match mode {
+        "explore" => SidecarCommand::StartTask {
+            mode: "explore".to_string(),
+            task: task.to_string(),
+            url: start_url.to_string(),
+            max_steps: 50,
+            output_dir: workspace.path(),
+            task_id: workspace.task_id.clone(),
+        },
+        _ => return None, // Only explore mode supported via sidecar for now
+    };
+
+    if let Err(e) = sidecar.send(cmd).await {
+        tracing::warn!("[webwright-sidecar] send failed: {}, falling back", e);
+        return None;
+    }
+
+    // Subscribe and wait for completion
+    let mut rx = sidecar.subscribe();
+    let timeout = tokio::time::Duration::from_secs(300);
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let event = tokio::select! {
+            ev = rx.recv() => match ev {
+                Ok(e) => e,
+                Err(_) => break,
+            },
+            _ = tokio::time::sleep_until(deadline) => {
+                tracing::warn!("[webwright-sidecar] timed out waiting for completion");
+                let _ = sidecar.send(SidecarCommand::Cancel).await;
+                break;
+            }
+        };
+
+        match &event {
+            SidecarEvent::Step { n, action, .. } => {
+                tracing::info!("[webwright-sidecar] step {}: {}", n, action);
+            }
+            SidecarEvent::Finding { severity, title, .. } => {
+                tracing::info!("[webwright-sidecar] finding: [{}] {}", severity, title);
+            }
+            SidecarEvent::Complete { summary, .. } => {
+                tracing::info!("[webwright-sidecar] complete: {}", summary);
+                return Some(pentest_platform::CommandResult {
+                    stdout: summary.clone(),
+                    stderr: String::new(),
+                    exit_code: 0,
+                    timed_out: false,
+                    duration_ms: 0,
+                });
+            }
+            SidecarEvent::Error { message } => {
+                tracing::error!("[webwright-sidecar] error: {}", message);
+                return Some(pentest_platform::CommandResult {
+                    stdout: String::new(),
+                    stderr: message.clone(),
+                    exit_code: 1,
+                    timed_out: false,
+                    duration_ms: 0,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    // If we get here, something went wrong
+    None
 }
