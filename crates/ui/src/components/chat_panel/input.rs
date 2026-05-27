@@ -25,6 +25,18 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
     let agent_thinking = props.agent_thinking;
     let disabled = is_sending() || agent_thinking();
 
+    // Re-focus the textarea when agent finishes (disabled → enabled)
+    use_effect(move || {
+        if !disabled {
+            spawn(async move {
+                let _ = document::eval(
+                    "var el=document.querySelector('.chat-textarea');if(el){el.focus();}",
+                )
+                .await;
+            });
+        }
+    });
+
     let send_from_form = {
         let on_send = props.on_send;
         move |evt: Event<FormData>| {
