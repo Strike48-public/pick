@@ -115,6 +115,9 @@ impl PentestTool for WebwrightTool {
             // Create workspace
             let workspace = WebwrightWorkspace::create(&platform).await?;
 
+            // Build env vars for webwright (forward API keys from Pick's environment)
+            let env_exports = build_env_exports();
+
             // Build command based on mode
             let (args, probe_desc) = match mode.as_str() {
                 "explore" => {
@@ -124,22 +127,16 @@ impl PentestTool for WebwrightTool {
                             "task parameter is required for explore mode".into(),
                         ));
                     }
-                    // Webwright uses OPENAI_BASE_URL and OPENAI_API_KEY env vars
-                    // via the OpenAI SDK. We set these to point at our LLM proxy.
-                    // For now, use the default model_openai.yaml config and rely
-                    // on env vars for the API key.
-                    let args = vec![
-                        "-m".to_string(),
-                        "webwright.run.cli".to_string(),
-                        "-t".to_string(),
-                        task_str.clone(),
-                        "--start-url".to_string(),
-                        start_url.clone(),
-                        "--output-dir".to_string(),
-                        workspace.path(),
-                        "--task-id".to_string(),
-                        workspace.task_id.clone(),
-                    ];
+                    // Run via bash to inject env vars into the sandbox
+                    let cmd = format!(
+                        "{} python3 -m webwright.run.cli -t {} --start-url {} --output-dir {} --task-id {}",
+                        env_exports,
+                        shell_escape(&task_str),
+                        shell_escape(&start_url),
+                        shell_escape(&workspace.path()),
+                        shell_escape(&workspace.task_id),
+                    );
+                    let args = vec!["-c".to_string(), cmd];
                     let desc = format!(
                         "webwright explore --start-url {} --task \"{}\"",
                         start_url, task_str
@@ -154,7 +151,12 @@ impl PentestTool for WebwrightTool {
                         ));
                     }
                     workspace.write_script(&script_content).await?;
-                    let args = vec![workspace.script_path()];
+                    let cmd = format!(
+                        "{} python3 {}",
+                        env_exports,
+                        shell_escape(&workspace.script_path()),
+                    );
+                    let args = vec!["-c".to_string(), cmd];
                     let desc = format!("webwright execute script on {}", start_url);
                     (args, desc)
                 }
@@ -167,9 +169,9 @@ impl PentestTool for WebwrightTool {
 
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-            // Execute in sandbox
+            // Execute in sandbox via bash (to inject env vars)
             let result = platform
-                .execute_command("python3", &args_refs, Duration::from_secs(timeout_secs))
+                .execute_command("bash", &args_refs, Duration::from_secs(timeout_secs))
                 .await?;
 
             // Collect artifacts from workspace
@@ -225,4 +227,35 @@ impl PentestTool for WebwrightTool {
         })
         .await
     }
+}
+
+/// Build shell export statements for API keys that webwright needs.
+/// Forwards OPENAI_API_KEY, OPENAI_BASE_URL, and ANTHROPIC_API_KEY from
+/// Pick's process environment into the sandbox.
+fn build_env_exports() -> String {
+    let mut exports = Vec::new();
+
+    for var in [
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_MODEL",
+    ] {
+        if let Ok(val) = std::env::var(var) {
+            if !val.is_empty() {
+                exports.push(format!("export {}={}", var, shell_escape(&val)));
+            }
+        }
+    }
+
+    if exports.is_empty() {
+        String::new()
+    } else {
+        format!("{};", exports.join("; "))
+    }
+}
+
+/// Simple shell escaping — wraps in single quotes, escaping any internal single quotes.
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
