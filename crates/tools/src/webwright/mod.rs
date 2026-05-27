@@ -94,6 +94,7 @@ impl PentestTool for WebwrightTool {
     async fn execute(&self, params: Value, ctx: &ToolContext) -> Result<ToolResult> {
         execute_timed_with_provenance(|| async move {
             let platform = get_platform();
+            let t0 = std::time::Instant::now();
 
             let mode = param_str_or(&params, "mode", "explore");
             let start_url = param_str_or(&params, "start_url", "");
@@ -102,6 +103,8 @@ impl PentestTool for WebwrightTool {
             let _max_steps = param_u64(&params, "max_steps", 50); // reserved for future sidecar use
             let timeout_secs = param_u64(&params, "timeout", 60);
 
+            tracing::info!("[webwright] execute start: mode={} url={} timeout={}s", mode, start_url, timeout_secs);
+
             if start_url.is_empty() {
                 return Err(pentest_core::error::Error::InvalidParams(
                     "start_url parameter is required".into(),
@@ -109,10 +112,14 @@ impl PentestTool for WebwrightTool {
             }
 
             // Ensure webwright is installed (auto-installs in sandbox)
+            tracing::info!("[webwright] checking installation...");
             install::ensure_webwright_installed(&platform).await?;
+            tracing::info!("[webwright] installed OK ({:.1}s elapsed)", t0.elapsed().as_secs_f32());
 
             // Create workspace inside the connector's instance workspace
+            tracing::info!("[webwright] ctx.workspace_path={:?}", ctx.workspace_path);
             let workspace = WebwrightWorkspace::create(&platform, ctx.workspace_path.as_deref()).await?;
+            tracing::info!("[webwright] workspace created: sandbox={} host={}", workspace.path(), workspace.host_path());
 
             // Build env vars for webwright (forward API keys from Pick's environment)
             let env_exports = build_env_exports();
@@ -175,12 +182,22 @@ impl PentestTool for WebwrightTool {
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
             // Execute in sandbox via bash (to inject env vars)
+            tracing::info!("[webwright] launching subprocess (timeout={}s, {:.1}s elapsed)", timeout_secs, t0.elapsed().as_secs_f32());
             let result = platform
                 .execute_command("bash", &args_refs, Duration::from_secs(timeout_secs))
                 .await?;
+            tracing::info!(
+                "[webwright] subprocess exited: code={} stdout_len={} stderr_len={} ({:.1}s elapsed)",
+                result.exit_code, result.stdout.len(), result.stderr.len(), t0.elapsed().as_secs_f32()
+            );
+
+            // Copy artifacts to connector workspace (for Files panel)
+            workspace.copy_to_connector_workspace();
 
             // Collect artifacts from workspace
+            tracing::info!("[webwright] collecting artifacts from {}", workspace.host_path());
             let artifacts = workspace.collect_artifacts(&platform).await?;
+            tracing::info!("[webwright] artifacts: {} files ({:.1}s elapsed)", artifacts["total_files"], t0.elapsed().as_secs_f32());
 
             // Build provenance
             let provenance = Provenance::new(
@@ -229,6 +246,7 @@ impl PentestTool for WebwrightTool {
                 "workspace_path": workspace.path(),
             });
 
+            tracing::info!("[webwright] execute complete ({:.1}s total)", t0.elapsed().as_secs_f32());
             Ok((data, provenance))
         })
         .await

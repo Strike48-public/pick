@@ -17,56 +17,70 @@ pub struct WebwrightWorkspace {
     pub task_id: String,
     /// Path inside the sandbox (what we pass to webwright as --output-dir).
     sandbox_dir: String,
-    /// Path on the host (where we read artifacts back from).
+    /// Path on the host where rootfs /tmp maps to.
     host_dir: String,
+    /// Path in connector workspace (for Files panel). Artifacts copied here after.
+    connector_dir: Option<String>,
 }
 
 impl WebwrightWorkspace {
     /// Create a new workspace directory.
     ///
-    /// Creates `webwright/<task-id>/` inside the connector's instance workspace.
-    /// Inside proot this is accessible at `/workspace/webwright/<task-id>/`.
+    /// Uses /tmp/webwright/ which is accessible inside proot (rootfs /tmp).
+    /// After execution, artifacts are copied to the connector workspace for
+    /// the Files panel.
     pub async fn create(
         _platform: &impl CommandExec,
-        workspace_path: Option<&std::path::Path>,
+        connector_workspace: Option<&std::path::Path>,
     ) -> Result<Self> {
         let task_id = Uuid::new_v4().to_string();
 
-        // Use the instance workspace if provided, fall back to workspace_root()
-        let host_dir = match workspace_path {
-            Some(ws) => ws.join("webwright").join(&task_id),
-            None => pentest_core::workspace::workspace_root()
-                .join("webwright")
-                .join(&task_id),
-        };
-        std::fs::create_dir_all(&host_dir)
-            .map_err(|e| Error::ToolExecution(format!("Failed to create workspace: {}", e)))?;
+        // Sandbox dir: accessible inside proot via rootfs /tmp
+        let sandbox_dir = format!("/tmp/webwright/{}", task_id);
 
-        // Inside proot, the connector workspace is bind-mounted at /workspace
-        let sandbox_dir = format!("/workspace/webwright/{}", task_id);
+        // Host dir: where artifacts actually land (rootfs path on host)
+        let rootfs_str = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let rootfs_host_path = format!(
+            "{}/.local/share/pentest-sandbox/blackarch-rootfs/tmp/webwright/{}",
+            rootfs_str, task_id
+        );
+
+        // Also create in connector workspace (for Files panel) — we'll copy after
+        let connector_dir = connector_workspace
+            .map(|ws| ws.join("webwright").join(&task_id));
+        if let Some(ref cd) = connector_dir {
+            std::fs::create_dir_all(cd)
+                .map_err(|e| Error::ToolExecution(format!("Failed to create workspace: {}", e)))?;
+        }
 
         Ok(Self {
             task_id,
             sandbox_dir,
-            host_dir: host_dir.to_string_lossy().to_string(),
+            host_dir: rootfs_host_path,
+            connector_dir: connector_dir.map(|p| p.to_string_lossy().to_string()),
         })
     }
 
-    /// Write Webwright YAML config to workspace (host side).
+    /// Write Webwright YAML config to workspace (host-side rootfs path).
     pub async fn write_config(&self, proxy_port: u16, model_name: &str) -> Result<()> {
         let config = WebwrightConfig::new(proxy_port, model_name);
         let yaml = config
             .to_yaml()
             .map_err(|e| Error::ToolExecution(format!("Failed to serialize config: {}", e)))?;
 
+        // Write to the rootfs host path (visible inside proot as sandbox_dir)
+        std::fs::create_dir_all(&self.host_dir)
+            .map_err(|e| Error::ToolExecution(format!("Failed to create dir: {}", e)))?;
         std::fs::write(format!("{}/config.yaml", self.host_dir), yaml.as_bytes())
             .map_err(|e| Error::ToolExecution(format!("Failed to write config: {}", e)))?;
 
         Ok(())
     }
 
-    /// Write a Python script to workspace (host side).
+    /// Write a Python script to workspace (host-side rootfs path).
     pub async fn write_script(&self, content: &str) -> Result<()> {
+        std::fs::create_dir_all(&self.host_dir)
+            .map_err(|e| Error::ToolExecution(format!("Failed to create dir: {}", e)))?;
         std::fs::write(format!("{}/script.py", self.host_dir), content.as_bytes())
             .map_err(|e| Error::ToolExecution(format!("Failed to write script: {}", e)))?;
 
@@ -147,6 +161,27 @@ impl WebwrightWorkspace {
         }))
     }
 
+    /// Copy artifacts from rootfs /tmp to the connector workspace (for Files panel).
+    pub fn copy_to_connector_workspace(&self) {
+        if let Some(ref dest) = self.connector_dir {
+            fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
+                let _ = std::fs::create_dir_all(dst);
+                if let Ok(entries) = std::fs::read_dir(src) {
+                    for entry in entries.flatten() {
+                        let src_path = entry.path();
+                        let dst_path = dst.join(entry.file_name());
+                        if src_path.is_dir() {
+                            copy_dir(&src_path, &dst_path);
+                        } else {
+                            let _ = std::fs::copy(&src_path, &dst_path);
+                        }
+                    }
+                }
+            }
+            copy_dir(std::path::Path::new(&self.host_dir), std::path::Path::new(dest));
+        }
+    }
+
     /// Clean up workspace directory.
     pub async fn cleanup(&self, _platform: &impl CommandExec) -> Result<()> {
         let _ = std::fs::remove_dir_all(&self.host_dir);
@@ -162,16 +197,12 @@ mod tests {
     fn workspace_paths_are_consistent() {
         let ws = WebwrightWorkspace {
             task_id: "test-123".to_string(),
-            sandbox_dir: "/workspace/webwright/test-123".to_string(),
-            host_dir: "/home/user/.local/share/pentest-connector/workspaces/webwright/test-123"
-                .to_string(),
+            sandbox_dir: "/tmp/webwright/test-123".to_string(),
+            host_dir: "/home/user/.local/share/pentest-sandbox/blackarch-rootfs/tmp/webwright/test-123".to_string(),
+            connector_dir: Some("/home/user/.local/share/pentest-connector/workspaces/abc/webwright/test-123".to_string()),
         };
-        assert_eq!(ws.config_path(), "/workspace/webwright/test-123/config.yaml");
-        assert_eq!(ws.script_path(), "/workspace/webwright/test-123/script.py");
-        assert_eq!(ws.path(), "/workspace/webwright/test-123");
-        assert_eq!(
-            ws.host_path(),
-            "/home/user/.local/share/pentest-connector/workspaces/webwright/test-123"
-        );
+        assert_eq!(ws.config_path(), "/tmp/webwright/test-123/config.yaml");
+        assert_eq!(ws.script_path(), "/tmp/webwright/test-123/script.py");
+        assert_eq!(ws.path(), "/tmp/webwright/test-123");
     }
 }
