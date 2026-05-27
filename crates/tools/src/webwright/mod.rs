@@ -127,18 +127,19 @@ impl PentestTool for WebwrightTool {
                             "task parameter is required for explore mode".into(),
                         ));
                     }
-                    // Override model endpoint to use Pick's local LLM proxy
+                    // Override model endpoint to use Pick's local LLM proxy.
+                    // Must include base.yaml + model_openai.yaml explicitly since
+                    // adding any -c flag replaces the defaults.
                     let endpoint = std::env::var("OPENAI_BASE_URL")
                         .unwrap_or_else(|_| "http://127.0.0.1:3030/v1/chat/completions".to_string());
-                    // Run via bash to inject env vars into the sandbox
                     let cmd = format!(
-                        "{} python3 -m webwright.run.cli -t {} --start-url {} --output-dir {} --task-id {} -c model.openai_endpoint={}",
+                        "{} python3 -m webwright.run.cli -c base.yaml -c model_openai.yaml -c model.openai_endpoint={} -t {} --start-url {} --output-dir {} --task-id {}",
                         env_exports,
+                        shell_escape(&endpoint),
                         shell_escape(&task_str),
                         shell_escape(&start_url),
                         shell_escape(&workspace.path()),
                         shell_escape(&workspace.task_id),
-                        shell_escape(&endpoint),
                     );
                     let args = vec!["-c".to_string(), cmd];
                     let desc = format!(
