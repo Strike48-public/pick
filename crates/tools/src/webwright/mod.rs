@@ -270,11 +270,12 @@ fn build_env_exports() -> String {
         ));
     }
 
-    if exports.is_empty() {
-        String::new()
-    } else {
-        format!("{};", exports.join("; "))
-    }
+    // Unset SSL_CERT_FILE inside sandbox — NixOS sets this to a nix store
+    // path that doesn't exist in proot. Let httpx/openssl use the rootfs default.
+    exports.push("unset SSL_CERT_FILE".to_string());
+    exports.push("unset SSL_CERT_DIR".to_string());
+
+    format!("{};", exports.join("; "))
 }
 
 /// Simple shell escaping — wraps in single quotes, escaping any internal single quotes.
