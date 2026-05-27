@@ -244,6 +244,7 @@ impl PentestTool for WebwrightTool {
                 "artifacts": artifacts,
                 "task_id": workspace.task_id,
                 "workspace_path": workspace.path(),
+                "note": "Screenshots are displayed inline to the user automatically. Do NOT use read_file on them unless you need to analyze their content.",
             });
 
             tracing::info!("[webwright] execute complete ({:.1}s total)", t0.elapsed().as_secs_f32());
