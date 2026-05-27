@@ -32,13 +32,6 @@ pub fn render_message(msg: &ChatMessage, expanded_tools: &mut Signal<Vec<String>
                 div {
                     class: "chat-bubble-text chat-markdown",
                     dangerous_inner_html: "{html}",
-                    onmounted: move |_| {
-                        spawn(async move {
-                            if let Err(e) = document::eval("triggerChartPostProcess()").await {
-                                tracing::warn!("JS eval failed (chart post-process): {e}");
-                            }
-                        });
-                    },
                 }
             }
         };
@@ -57,13 +50,6 @@ pub fn render_message(msg: &ChatMessage, expanded_tools: &mut Signal<Vec<String>
                             div {
                                 class: "chat-bubble-text chat-markdown",
                                 dangerous_inner_html: "{html}",
-                                onmounted: move |_| {
-                                    spawn(async move {
-                                        if let Err(e) = document::eval("triggerChartPostProcess()").await {
-                                            tracing::warn!("JS eval failed (chart post-process): {e}");
-                                        }
-                                    });
-                                },
                             }
                         }
                     }
