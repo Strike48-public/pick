@@ -131,7 +131,7 @@ impl PentestTool for WebwrightTool {
                     // Must include base.yaml + model_openai.yaml explicitly since
                     // adding any -c flag replaces the defaults.
                     let endpoint = std::env::var("OPENAI_BASE_URL")
-                        .unwrap_or_else(|_| "http://127.0.0.1:3030/v1/chat/completions".to_string());
+                        .unwrap_or_else(|_| "http://127.0.0.1:9100/v1/chat/completions".to_string());
                     let cmd = format!(
                         "{} python3 -m webwright.run.cli -c base.yaml -c model_openai.yaml -c model.openai_endpoint={} -t {} --start-url {} --output-dir {} --task-id {}",
                         env_exports,
@@ -264,10 +264,10 @@ fn build_env_exports() -> String {
             }
         }
     } else {
-        // Point at Pick's local LLM proxy (runs on same server as LiveView)
+        // Point at Pick's local LLM proxy (TCP port 9100)
         exports.push(format!(
             "export OPENAI_BASE_URL={}",
-            shell_escape("http://127.0.0.1:3030/v1")
+            shell_escape("http://127.0.0.1:9100/v1")
         ));
         exports.push(format!(
             "export OPENAI_API_KEY={}",

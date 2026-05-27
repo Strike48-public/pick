@@ -670,18 +670,29 @@ impl LiveViewConnector {
         };
         let api_routes_router = api_routes::create_api_routes(api_state);
 
-        // Create LLM proxy routes for webwright
+        // Start LLM proxy on its own TCP port (webwright in proot needs TCP access)
         let llm_state = llm_proxy::LlmProxyState {
             matrix_client: self.matrix_client.clone(),
             conversation_id: Arc::new(RwLock::new(None)),
             agent_id: Arc::new(RwLock::new(None)),
         };
         let llm_proxy_router = llm_proxy::create_llm_proxy_routes(llm_state);
+        tokio::spawn(async move {
+            let listener = match tokio::net::TcpListener::bind("127.0.0.1:9100").await {
+                Ok(l) => l,
+                Err(e) => {
+                    tracing::warn!("Failed to start LLM proxy on port 9100: {}", e);
+                    return;
+                }
+            };
+            tracing::info!("LLM proxy listening on http://127.0.0.1:9100");
+            if let Err(e) = axum::serve(listener, llm_proxy_router).await {
+                tracing::error!("LLM proxy server error: {}", e);
+            }
+        });
 
         // Merge API routes with extra routes
-        let combined_routes = extra_routes
-            .merge(api_routes_router)
-            .merge(llm_proxy_router);
+        let combined_routes = extra_routes.merge(api_routes_router);
 
         let lv_config = LiveViewConfig {
             port: DEFAULT_LIVEVIEW_PORT,
