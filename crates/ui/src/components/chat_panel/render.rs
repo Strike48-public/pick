@@ -215,12 +215,12 @@ fn render_webwright_screenshots(result_json: &str) -> Element {
         Err(_) => return rsx! {},
     };
 
-    let screenshots: Vec<String> = val["artifacts"]["screenshots"]
+    let screenshots: Vec<String> = val["screenshots"]
         .as_array()
+        .or_else(|| val["artifacts"]["screenshots"].as_array())
         .unwrap_or(&Vec::new())
         .iter()
         .filter_map(|p| p.as_str().map(|s| s.to_string()))
-        // Only show "final" screenshots, not intermediates
         .filter(|p| p.contains("final_") || p.contains("screenshot"))
         .collect();
 
@@ -228,22 +228,15 @@ fn render_webwright_screenshots(result_json: &str) -> Element {
         return rsx! {};
     }
 
-    // Convert sandbox paths to servable /workspace/ URLs
-    // Paths look like /tmp/webwright/<task-id>/..., serve via /workspace/webwright/<task-id>/...
-    let task_id = val["task_id"].as_str().unwrap_or("");
-
     rsx! {
         div { class: "chat-tool-screenshots",
             style: "margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px;",
             for path in screenshots.iter() {
                 {
                     let filename = path.rsplit('/').next().unwrap_or("screenshot");
-                    // Construct URL: /workspace/webwright/<task-id>/<relative-from-task-dir>
-                    let relative = path
-                        .find(task_id)
-                        .map(|idx| &path[idx..])
-                        .unwrap_or(filename);
-                    let src = format!("/workspace/webwright/{}", relative);
+                    // Paths are workspace-relative like "webwright/<id>/final_runs/.../file.png"
+                    // Serve via /workspace/<path>
+                    let src = format!("/workspace/{}", path);
                     rsx! {
                         div {
                             style: "display: inline-block; max-width: 300px; border: 1px solid #333; border-radius: 6px; overflow: hidden; background: #1a1a2e;",
