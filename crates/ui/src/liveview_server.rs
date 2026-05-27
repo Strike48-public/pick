@@ -241,7 +241,6 @@ async fn serve_workspace_file(
         return (StatusCode::NOT_FOUND, "Workspace not configured").into_response();
     }
 
-    // Resolve path safely (prevent directory traversal)
     let file_path = std::path::Path::new(&workspace).join(&path);
     let canonical = match file_path.canonicalize() {
         Ok(p) => p,
