@@ -158,7 +158,7 @@ async fn handle_llm_request(
         }
     };
 
-    // Get or find an agent
+    // Get or upsert the webwright browser exploration agent
     let agent_id = {
         let agent_guard = state.agent_id.read().await;
         agent_guard.clone()
@@ -166,17 +166,16 @@ async fn handle_llm_request(
     let agent_id = match agent_id {
         Some(id) => id,
         None => {
-            // Find a suitable agent (first enabled one)
-            match client.list_agents().await {
-                Ok(agents) => {
-                    let id = agents.first().map(|a| a.id.clone()).unwrap_or_default();
-                    if !id.is_empty() {
-                        let mut guard = state.agent_id.write().await;
-                        *guard = Some(id.clone());
-                    }
+            match upsert_webwright_agent(client).await {
+                Ok(id) => {
+                    let mut guard = state.agent_id.write().await;
+                    *guard = Some(id.clone());
                     id
                 }
-                Err(_) => String::new(),
+                Err(e) => {
+                    tracing::error!("LLM proxy: failed to upsert webwright agent: {}", e);
+                    String::new()
+                }
             }
         }
     };
@@ -210,6 +209,55 @@ async fn handle_llm_request(
     };
 
     Ok(Json(response))
+}
+
+const WEBWRIGHT_AGENT_NAME: &str = "Webwright Browser Agent";
+
+const WEBWRIGHT_SYSTEM_PROMPT: &str = "\
+You are a web security testing agent controlling a headless browser via Playwright. \
+Your job is to explore web applications, identify vulnerabilities, and generate \
+replayable Python/Playwright scripts as proof-of-concept exploits.\n\n\
+Focus on:\n\
+- Mapping authentication flows (OAuth, SAML, 2FA)\n\
+- Testing for XSS (reflected, stored, DOM-based)\n\
+- CSRF token extraction and bypass\n\
+- Client-side validation bypass\n\
+- Session management weaknesses\n\
+- JavaScript-heavy SPA testing\n\n\
+Output your actions as structured JSON with thought, python_code, and done fields. \
+Generate clean, replayable Playwright scripts for any vulnerabilities found.";
+
+/// Find or create the webwright browser exploration agent.
+async fn upsert_webwright_agent(
+    client: &MatrixChatClient,
+) -> pentest_core::error::Result<String> {
+    use pentest_core::matrix::CreateAgentInput;
+
+    // Check if the agent already exists
+    if let Ok(Some(agent)) = client.find_agent_by_name(WEBWRIGHT_AGENT_NAME).await {
+        tracing::info!("LLM proxy: found existing webwright agent: {}", agent.id);
+        return Ok(agent.id);
+    }
+
+    // Create it
+    tracing::info!("LLM proxy: creating webwright browser agent persona");
+    let input = CreateAgentInput {
+        name: WEBWRIGHT_AGENT_NAME.to_string(),
+        description: Some(
+            "AI-driven browser automation agent for web application security testing".to_string(),
+        ),
+        system_message: Some(WEBWRIGHT_SYSTEM_PROMPT.to_string()),
+        agent_greeting: Some(
+            "Browser agent ready. Give me a target URL and I'll explore it for vulnerabilities."
+                .to_string(),
+        ),
+        context: None,
+        tools: None,
+    };
+
+    let agent = client.create_agent(input).await?;
+    tracing::info!("LLM proxy: created webwright agent: {}", agent.id);
+    Ok(agent.id)
 }
 
 /// Create the LLM proxy router.
