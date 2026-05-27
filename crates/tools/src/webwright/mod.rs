@@ -79,11 +79,10 @@ impl PentestTool for WebwrightTool {
                 "Maximum agent loop iterations for explore mode (default: 50)",
                 json!(50),
             ))
-            .param(ToolParam::optional(
+            .param(ToolParam::required(
                 "timeout",
                 ParamType::Integer,
-                "Timeout in seconds (default: 600)",
-                json!(600),
+                "Timeout in seconds. MUST be set explicitly. Use 300 for most tasks, 600 for complex multi-page explorations.",
             ))
             .platforms(vec![Platform::Desktop, Platform::Android, Platform::Tui])
     }
@@ -101,7 +100,7 @@ impl PentestTool for WebwrightTool {
             let task = param_str_opt(&params, "task");
             let script = param_str_opt(&params, "script");
             let _max_steps = param_u64(&params, "max_steps", 50); // reserved for future sidecar use
-            let timeout_secs = param_u64(&params, "timeout", 600);
+            let timeout_secs = param_u64(&params, "timeout", 60);
 
             if start_url.is_empty() {
                 return Err(pentest_core::error::Error::InvalidParams(
