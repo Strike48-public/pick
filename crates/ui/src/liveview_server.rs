@@ -228,6 +228,54 @@ async fn serve_font_regular() -> axum::response::Response {
         .into_response()
 }
 
+/// Serve files from the workspace directory.
+/// Used by the tool result widget to display screenshots and other artifacts.
+async fn serve_workspace_file(
+    axum::extract::Path(path): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+
+    let workspace = get_workspace_path();
+    if workspace.is_empty() {
+        return (StatusCode::NOT_FOUND, "Workspace not configured").into_response();
+    }
+
+    // Resolve path safely (prevent directory traversal)
+    let file_path = std::path::Path::new(&workspace).join(&path);
+    let canonical = match file_path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::NOT_FOUND, "File not found").into_response(),
+    };
+    if !canonical.starts_with(&workspace) {
+        return (StatusCode::FORBIDDEN, "Access denied").into_response();
+    }
+
+    // Read and serve
+    let bytes = match std::fs::read(&canonical) {
+        Ok(b) => b,
+        Err(_) => return (StatusCode::NOT_FOUND, "File not found").into_response(),
+    };
+
+    // Determine content type from extension
+    let content_type = match canonical.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("html") => "text/html",
+        Some("json") => "application/json",
+        Some("py") => "text/plain",
+        Some("log") => "text/plain",
+        _ => "application/octet-stream",
+    };
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, content_type)],
+        bytes,
+    )
+        .into_response()
+}
+
 /// Start the LiveView server in a background task
 ///
 /// Returns a handle that can be used to get the server URL and shutdown.
@@ -274,6 +322,7 @@ pub async fn start_liveview_server(
             "/assets/fonts/jetbrains-mono-regular.ttf",
             get(serve_font_regular),
         )
+        .route("/workspace/*path", get(serve_workspace_file))
         .merge(extra_routes);
 
     // Check for IPC mode via STRIKEHUB_SOCKET env var (Unix only — StrikeHub runs on Linux)

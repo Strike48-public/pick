@@ -135,6 +135,10 @@ fn render_tool_call(tc: &ToolCallInfo, expanded_tools: &mut Signal<Vec<String>>)
                             div { class: "chat-tool-section-label", "Result" }
                             pre { class: "chat-tool-code", "{result_str}" }
                         }
+                        // Render screenshots inline for webwright tool results
+                        if name == "webwright" {
+                            {render_webwright_screenshots(result_str)}
+                        }
                     }
                     if let Some(ref err_str) = error {
                         div { class: "chat-tool-section chat-tool-error",
@@ -201,4 +205,55 @@ pub fn format_relative_time(iso: &str) -> String {
     }
     let days = hours / 24;
     format!("{}d ago", days)
+}
+
+/// Extract screenshot paths from webwright tool result and render as images.
+/// Screenshots are served via /workspace/ route from the connector workspace.
+fn render_webwright_screenshots(result_json: &str) -> Element {
+    // Parse the result to find screenshot file paths
+    let parsed: Result<serde_json::Value, _> = serde_json::from_str(result_json);
+    let screenshots: Vec<String> = match parsed {
+        Ok(ref val) => val["artifacts"]["screenshots"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .filter_map(|p| p.as_str().map(|s| s.to_string()))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+
+    if screenshots.is_empty() {
+        return rsx! {};
+    }
+
+    // Convert absolute paths to workspace-relative paths for the /workspace/ route
+    let workspace_root = crate::liveview_server::get_workspace_path();
+
+    rsx! {
+        div { class: "chat-tool-screenshots",
+            div { class: "chat-tool-section-label", "Screenshots ({screenshots.len()})" }
+            for path in screenshots.iter() {
+                {
+                    let relative = if !workspace_root.is_empty() && path.starts_with(&workspace_root) {
+                        path.strip_prefix(&workspace_root).unwrap_or(path).trim_start_matches('/')
+                    } else {
+                        // Fallback: use the filename only under webwright/
+                        path.rsplit('/').next().unwrap_or(path)
+                    };
+                    let src = format!("/workspace/{}", relative);
+                    let filename = path.rsplit('/').next().unwrap_or("screenshot");
+                    rsx! {
+                        div { class: "chat-tool-screenshot",
+                            img {
+                                src: "{src}",
+                                alt: "{filename}",
+                                style: "max-width: 100%; border-radius: 4px; margin: 4px 0;",
+                            }
+                            div { class: "chat-tool-screenshot-label", "{filename}" }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
