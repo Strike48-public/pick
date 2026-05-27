@@ -270,18 +270,33 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
         guard.as_ref().cloned()
     };
 
-    if let Some(tx) = tx_clone {
-        let response_msg = StreamMessage {
-            message: Some(Message::ExecuteResponse(ExecuteResponse {
-                request_id,
-                success: true,
-                payload: response_payload,
-                payload_encoding: PayloadEncoding::Json as i32,
-                error: String::new(),
-                duration_ms: 0,
-            })),
-        };
-        let _ = tx.send(response_msg);
+    match tx_clone {
+        Some(tx) => {
+            let response_msg = StreamMessage {
+                message: Some(Message::ExecuteResponse(ExecuteResponse {
+                    request_id: request_id.clone(),
+                    success: true,
+                    payload: response_payload,
+                    payload_encoding: PayloadEncoding::Json as i32,
+                    error: String::new(),
+                    duration_ms: 0,
+                })),
+            };
+            match tx.send(response_msg) {
+                Ok(_) => tracing::info!("[tool] execute_response sent for request_id={}", request_id),
+                Err(e) => tracing::error!(
+                    "[tool] FAILED to send execute_response for request_id={}: {} (stream likely dropped during execution)",
+                    request_id, e
+                ),
+            }
+        }
+        None => {
+            tracing::error!(
+                "[tool] NO STREAM SENDER available for request_id={} — response DROPPED. \
+                 Stream may have been disconnected during tool execution.",
+                request_id
+            );
+        }
     }
 }
 
