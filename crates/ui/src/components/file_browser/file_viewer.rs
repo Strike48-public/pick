@@ -97,6 +97,15 @@ pub(super) fn FileViewer(props: FileViewerProps) -> Element {
                         class: "markdown-body",
                         dangerous_inner_html: render_markdown_raw(&fc.content),
                     }
+                } else if rel_path.ends_with(".html") || rel_path.ends_with(".htm") {
+                    // Render HTML files in an iframe via srcdoc
+                    div {
+                        style: "width: 100%; height: calc(100vh - 80px);",
+                        dangerous_inner_html: format!(
+                            r#"<iframe srcdoc="{}" style="width:100%;height:100%;border:none;background:white;" sandbox="allow-same-origin"></iframe>"#,
+                            fc.content.replace('"', "&quot;")
+                        ),
+                    }
                 } else {
                     CodeView {
                         content: fc.content.clone(),

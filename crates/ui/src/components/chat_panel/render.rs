@@ -266,15 +266,13 @@ fn render_webwright_screenshots(result_json: &str) -> Element {
             style: "margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px;",
             for (filename, data_uri) in screenshots.iter() {
                 div {
-                    style: "display: inline-block; max-width: 320px; border: 1px solid #333; border-radius: 6px; overflow: hidden; background: #1a1a2e;",
-                    a {
-                        href: "{data_uri}",
-                        target: "_blank",
-                        img {
-                            src: "{data_uri}",
-                            alt: "{filename}",
-                            style: "width: 100%; height: auto; display: block;",
-                        }
+                    class: "webwright-thumb",
+                    style: "display: inline-block; max-width: 320px; border: 1px solid #333; border-radius: 6px; overflow: hidden; background: #1a1a2e; cursor: pointer;",
+                    img {
+                        class: "webwright-thumb-img",
+                        src: "{data_uri}",
+                        alt: "{filename}",
+                        style: "width: 100%; height: auto; display: block;",
                     }
                     div {
                         style: "padding: 4px 8px; font-size: 11px; color: #888; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;",
@@ -282,6 +280,11 @@ fn render_webwright_screenshots(result_json: &str) -> Element {
                     }
                 }
             }
+        }
+        // Modal: clicking a thumbnail opens a fullscreen overlay (click overlay to close)
+        {
+            let modal_js = "(function(){document.querySelectorAll('.webwright-thumb').forEach(function(el){el.onclick=function(){var img=this.querySelector('.webwright-thumb-img');if(!img)return;var overlay=document.createElement('div');overlay.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.92);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer;';overlay.onclick=function(){document.body.removeChild(overlay);};var big=document.createElement('img');big.src=img.src;big.style.cssText='max-width:95vw;max-height:95vh;object-fit:contain;border-radius:4px;';overlay.appendChild(big);document.body.appendChild(overlay);};});})()";
+            rsx! { script { dangerous_inner_html: "{modal_js}" } }
         }
     }
 }
