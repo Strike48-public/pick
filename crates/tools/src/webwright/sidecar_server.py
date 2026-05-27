@@ -49,34 +49,49 @@ def emit_complete(summary: str, artifacts: dict):
 
 
 async def run_explore_task(task: str, url: str, max_steps: int, output_dir: str, task_id: str):
-    """Run a webwright explore task and stream events."""
+    """Run a webwright explore task as a subprocess and stream events."""
     try:
-        from webwright.run.cli import run_one
-        from webwright.config import get_config_from_spec
-
         emit_step(0, f"initializing webwright for {url}")
-
-        # Load configs
-        configs = ["base.yaml", "model_openai.yaml"]
-        endpoint = os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:9100/v1")
-        endpoint_url = f"{endpoint}/chat/completions" if not endpoint.endswith("/chat/completions") else endpoint
-        configs.append(f"model.openai_endpoint={endpoint_url}")
 
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
+        # Build webwright CLI command
+        endpoint = os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:9100/v1")
+        endpoint_url = f"{endpoint}/chat/completions" if not endpoint.endswith("/chat/completions") else endpoint
+
+        cmd = [
+            "python3", "-m", "webwright.run.cli",
+            "-c", "base.yaml",
+            "-c", "model_openai.yaml",
+            "-c", f"model.openai_endpoint={endpoint_url}",
+            "-t", task,
+            "--start-url", url,
+            "--output-dir", output_dir,
+            "--task-id", task_id,
+        ]
+
         emit_step(1, f"starting exploration: {task}")
 
-        # Run webwright (this blocks until complete)
-        result = run_one(
-            task=task,
-            task_id=task_id,
-            start_url=url,
-            config_spec=configs,
-            output_dir=output_path,
-            resolved_output_dir=None,
-            debug=False,
+        # Run as subprocess (avoids nested event loop issues)
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+
+        # Stream stdout for progress (webwright prints status)
+        step_n = 2
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            text = line.decode().strip()
+            if text:
+                emit_step(step_n, text[:200])
+                step_n += 1
+
+        await proc.wait()
 
         # Collect artifacts
         artifacts = {"screenshots": [], "scripts": [], "logs": []}
@@ -88,10 +103,14 @@ async def run_explore_task(task: str, url: str, max_steps: int, output_dir: str,
         for f in output_path.rglob("*.json"):
             artifacts["logs"].append(str(f.relative_to(output_path)))
 
-        emit_complete(
-            summary=f"Task complete. {len(artifacts['screenshots'])} screenshots, {len(artifacts['scripts'])} scripts.",
-            artifacts=artifacts,
-        )
+        if proc.returncode == 0:
+            emit_complete(
+                summary=f"Task complete. {len(artifacts['screenshots'])} screenshots, {len(artifacts['scripts'])} scripts.",
+                artifacts=artifacts,
+            )
+        else:
+            stderr = (await proc.stderr.read()).decode()[:500]
+            emit_error(f"Webwright exited with code {proc.returncode}: {stderr}")
 
     except Exception as e:
         emit_error(str(e))
