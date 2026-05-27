@@ -100,7 +100,7 @@ impl PentestTool for WebwrightTool {
             let start_url = param_str_or(&params, "start_url", "");
             let task = param_str_opt(&params, "task");
             let script = param_str_opt(&params, "script");
-            let max_steps = param_u64(&params, "max_steps", 50);
+            let _max_steps = param_u64(&params, "max_steps", 50); // reserved for future sidecar use
             let timeout_secs = param_u64(&params, "timeout", 600);
 
             if start_url.is_empty() {
@@ -134,10 +134,10 @@ impl PentestTool for WebwrightTool {
                         task_str.clone(),
                         "--start-url".to_string(),
                         start_url.clone(),
-                        "--workspace".to_string(),
+                        "--output-dir".to_string(),
                         workspace.path(),
-                        "--max-steps".to_string(),
-                        max_steps.to_string(),
+                        "--task-id".to_string(),
+                        workspace.task_id.clone(),
                     ];
                     let desc = format!(
                         "webwright explore --start-url {} --task \"{}\"",
