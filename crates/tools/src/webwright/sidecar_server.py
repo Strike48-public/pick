@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""Webwright sidecar server.
+
+Long-lived process that accepts JSON-line commands on stdin and emits
+JSON-line events on stdout. Keeps the Playwright browser warm between
+tasks for faster startup and enables live progress streaming.
+
+Protocol:
+  Pick -> Sidecar (stdin):
+    {"type": "start_task", "mode": "explore", "task": "...", "url": "...", "max_steps": 50}
+    {"type": "execute_script", "script": "...", "url": "..."}
+    {"type": "cancel"}
+
+  Sidecar -> Pick (stdout):
+    {"type": "step", "n": 1, "action": "navigating to ...", "screenshot": "<base64 or null>"}
+    {"type": "finding", "severity": "high", "title": "...", "detail": "..."}
+    {"type": "script_generated", "path": "..."}
+    {"type": "complete", "summary": "...", "artifacts": {...}}
+    {"type": "error", "message": "..."}
+"""
+
+import asyncio
+import json
+import sys
+import os
+import signal
+from pathlib import Path
+
+# Ensure output is line-buffered
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
+
+def emit(event: dict):
+    """Send a JSON-line event to stdout."""
+    print(json.dumps(event), flush=True)
+
+
+def emit_step(n: int, action: str, screenshot: str | None = None):
+    emit({"type": "step", "n": n, "action": action, "screenshot": screenshot})
+
+
+def emit_error(message: str):
+    emit({"type": "error", "message": message})
+
+
+def emit_complete(summary: str, artifacts: dict):
+    emit({"type": "complete", "summary": summary, "artifacts": artifacts})
+
+
+async def run_explore_task(task: str, url: str, max_steps: int, output_dir: str, task_id: str):
+    """Run a webwright explore task and stream events."""
+    try:
+        from webwright.run.cli import run_one
+        from webwright.config import get_config_from_spec
+
+        emit_step(0, f"initializing webwright for {url}")
+
+        # Load configs
+        configs = ["base.yaml", "model_openai.yaml"]
+        endpoint = os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:9100/v1")
+        endpoint_url = f"{endpoint}/chat/completions" if not endpoint.endswith("/chat/completions") else endpoint
+        configs.append(f"model.openai_endpoint={endpoint_url}")
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        emit_step(1, f"starting exploration: {task}")
+
+        # Run webwright (this blocks until complete)
+        result = run_one(
+            task=task,
+            task_id=task_id,
+            start_url=url,
+            config_spec=configs,
+            output_dir=output_path,
+            resolved_output_dir=None,
+            debug=False,
+        )
+
+        # Collect artifacts
+        artifacts = {"screenshots": [], "scripts": [], "logs": []}
+        for f in output_path.rglob("*.png"):
+            artifacts["screenshots"].append(str(f.relative_to(output_path)))
+        for f in output_path.rglob("*.py"):
+            if f.name != "script.py":
+                artifacts["scripts"].append(str(f.relative_to(output_path)))
+        for f in output_path.rglob("*.json"):
+            artifacts["logs"].append(str(f.relative_to(output_path)))
+
+        emit_complete(
+            summary=f"Task complete. {len(artifacts['screenshots'])} screenshots, {len(artifacts['scripts'])} scripts.",
+            artifacts=artifacts,
+        )
+
+    except Exception as e:
+        emit_error(str(e))
+
+
+async def run_execute_task(script: str, url: str, output_dir: str):
+    """Run a Python/Playwright script."""
+    try:
+        emit_step(0, "executing script")
+
+        script_path = Path(output_dir) / "script.py"
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(script)
+
+        proc = await asyncio.create_subprocess_exec(
+            "python3", str(script_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode == 0:
+            emit_complete(
+                summary=f"Script executed successfully (exit code 0)",
+                artifacts={"stdout": stdout.decode()},
+            )
+        else:
+            emit_error(f"Script failed (exit code {proc.returncode}): {stderr.decode()[:1000]}")
+
+    except Exception as e:
+        emit_error(str(e))
+
+
+async def main():
+    """Main event loop: read commands from stdin, dispatch tasks."""
+    emit({"type": "ready"})
+
+    current_task = None
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+
+        try:
+            cmd = json.loads(line)
+        except json.JSONDecodeError as e:
+            emit_error(f"Invalid JSON: {e}")
+            continue
+
+        cmd_type = cmd.get("type", "")
+
+        if cmd_type == "start_task":
+            output_dir = cmd.get("output_dir", f"/tmp/webwright/{cmd.get('task_id', 'adhoc')}")
+            task_id = cmd.get("task_id", "adhoc")
+
+            if cmd.get("mode") == "explore":
+                await run_explore_task(
+                    task=cmd.get("task", ""),
+                    url=cmd.get("url", ""),
+                    max_steps=cmd.get("max_steps", 50),
+                    output_dir=output_dir,
+                    task_id=task_id,
+                )
+            elif cmd.get("mode") == "execute":
+                await run_execute_task(
+                    script=cmd.get("script", ""),
+                    url=cmd.get("url", ""),
+                    output_dir=output_dir,
+                )
+            else:
+                emit_error(f"Unknown mode: {cmd.get('mode')}")
+
+        elif cmd_type == "cancel":
+            if current_task and not current_task.done():
+                current_task.cancel()
+                emit({"type": "cancelled"})
+
+        elif cmd_type == "shutdown":
+            emit({"type": "shutdown_ack"})
+            break
+
+        else:
+            emit_error(f"Unknown command type: {cmd_type}")
+
+
+if __name__ == "__main__":
+    # Handle SIGTERM gracefully
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, EOFError):
+        pass
