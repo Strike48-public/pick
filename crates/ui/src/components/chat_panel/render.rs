@@ -248,85 +248,87 @@ pub fn render_live_progress(status_text: &str) -> Element {
     let progress = progress_signal.read().clone();
 
     if progress.running {
-        // Rich live webwright widget with rolling log
         let step_text = format!("Step {} — {}", progress.step, progress.action);
 
         rsx! {
             div {
-                style: "padding: 8px 0; max-width: 500px;",
-                // Current step with pulsing dot
+                style: "padding: 8px 0; max-width: 560px; border-left: 2px solid #00ff8844; padding-left: 10px;",
+                // Header: pulsing dot + step
                 div {
-                    style: "display: flex; align-items: center; gap: 8px; margin-bottom: 8px;",
+                    style: "display: flex; align-items: center; gap: 8px; margin-bottom: 6px;",
                     div {
-                        style: "width: 8px; height: 8px; border-radius: 50%; background: #00ff88; animation: pulse 1.5s infinite; flex-shrink: 0;",
+                        style: "width: 7px; height: 7px; border-radius: 50%; background: #00ff88; animation: ww-pulse 1.2s ease-in-out infinite; flex-shrink: 0;",
                     }
                     span {
-                        style: "font-size: 12px; color: #00ff88; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+                        style: "font-size: 11px; color: #00ff88; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
                         "{step_text}"
                     }
                 }
-                // Rolling log
+                // Screenshot feed: horizontal scroll, most recent first
+                if !progress.screenshots.is_empty() {
+                    div {
+                        style: "display: flex; gap: 4px; overflow-x: auto; padding: 4px 0; margin-bottom: 6px;",
+                        for shot in progress.screenshots.iter().rev() {
+                            div {
+                                style: "flex-shrink: 0; width: 120px; height: 80px; border: 1px solid #00ff8830; border-radius: 3px; overflow: hidden;",
+                                img {
+                                    src: "data:image/png;base64,{shot}",
+                                    style: "width: 100%; height: 100%; object-fit: cover;",
+                                }
+                            }
+                        }
+                    }
+                }
+                // Most recent single screenshot (fallback when screenshots vec is empty)
+                if progress.screenshots.is_empty() {
+                    if let Some(ref screenshot) = progress.screenshot {
+                        div {
+                            style: "margin-bottom: 6px; max-width: 200px; border: 1px solid #00ff8830; border-radius: 3px; overflow: hidden;",
+                            img {
+                                src: "data:image/png;base64,{screenshot}",
+                                style: "width: 100%; height: auto; display: block;",
+                            }
+                        }
+                    }
+                }
+                // Rolling log (compact terminal)
                 if !progress.log.is_empty() {
                     div {
-                        style: "background: #0d1117; border: 1px solid #21262d; border-radius: 4px; padding: 6px 8px; font-family: monospace; font-size: 11px; max-height: 150px; overflow-y: auto;",
-                        for entry in progress.log.iter() {
+                        style: "background: #010409; border: 1px solid #161b22; border-radius: 3px; padding: 4px 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; max-height: 120px; overflow-y: auto; line-height: 1.4;",
+                        for entry in progress.log.iter().rev().take(8).collect::<Vec<_>>().into_iter().rev() {
                             div {
-                                style: "color: #8b949e; padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+                                style: "color: #6e7681; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
                                 span {
-                                    style: "color: #484f58; margin-right: 6px;",
-                                    "[{entry.step}]"
+                                    style: "color: #363b42; margin-right: 5px;",
+                                    "{entry.step:>2}"
                                 }
                                 "{entry.action}"
                             }
                         }
                     }
                 }
-                // Live screenshot (if available)
-                if let Some(ref screenshot) = progress.screenshot {
-                    div {
-                        style: "margin-top: 8px; max-width: 280px; border: 1px solid #00ff8840; border-radius: 4px; overflow: hidden;",
-                        img {
-                            src: "data:image/png;base64,{screenshot}",
-                            style: "width: 100%; height: auto; display: block; opacity: 0.9;",
-                        }
-                    }
-                }
-                // Findings
+                // Findings ticker
                 if !progress.findings.is_empty() {
                     div {
-                        style: "margin-top: 8px; font-size: 11px;",
+                        style: "margin-top: 6px;",
                         for finding in progress.findings.iter() {
                             div {
-                                style: "display: flex; align-items: center; gap: 6px; margin: 2px 0;",
+                                style: "display: flex; align-items: center; gap: 5px; margin: 2px 0; font-size: 10px;",
                                 span {
-                                    style: "padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 600; background: {severity_color(&finding.severity)}; color: #fff;",
+                                    style: "padding: 0px 4px; border-radius: 2px; font-weight: 700; font-size: 9px; text-transform: uppercase; background: {severity_color(&finding.severity)}; color: #fff;",
                                     "{finding.severity}"
                                 }
-                                span {
-                                    style: "color: #ccc;",
-                                    "{finding.title}"
-                                }
+                                span { style: "color: #c9d1d9;", "{finding.title}" }
                             }
                         }
                     }
                 }
             }
-            style { "@keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.3; }} }}" }
+            style { "@keyframes ww-pulse {{ 0%,100% {{ opacity:1; }} 50% {{ opacity:0.2; }} }} @keyframes ww-rec {{ 0%,100% {{ opacity:1; }} 50% {{ opacity:0; }} }}" }
         }
     } else {
-        // Standard thinking indicator
-        rsx! {
-            div { class: "chat-thinking-status",
-                if !status_text.is_empty() {
-                    span { class: "chat-status-label", "{status_text}" }
-                }
-                div { class: "chat-thinking-dots",
-                    span { "." }
-                    span { "." }
-                    span { "." }
-                }
-            }
-        }
+        // Not running — show nothing (completed state handled by render_webwright_screenshots)
+        rsx! {}
     }
 }
 
@@ -397,29 +399,40 @@ fn render_webwright_screenshots(result_json: &str) -> Element {
         return rsx! {};
     }
 
+    let count = screenshots.len();
+
     rsx! {
         div {
-            style: "margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px;",
-            for (filename, data_uri) in screenshots.iter() {
-                div {
-                    class: "webwright-thumb",
-                    style: "display: inline-block; max-width: 320px; border: 1px solid #333; border-radius: 6px; overflow: hidden; background: #1a1a2e; cursor: pointer;",
-                    img {
-                        class: "webwright-thumb-img",
-                        src: "{data_uri}",
-                        alt: "{filename}",
-                        style: "width: 100%; height: auto; display: block;",
-                    }
+            style: "margin-top: 6px; border-left: 2px solid #58a6ff44; padding-left: 10px;",
+            // Summary line
+            div {
+                style: "font-size: 10px; color: #58a6ff; font-family: 'JetBrains Mono', monospace; margin-bottom: 6px; letter-spacing: 0.5px; text-transform: uppercase;",
+                "{count} screenshots captured"
+            }
+            // Gallery grid: 3-4 columns of small thumbnails
+            div {
+                style: "display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px;",
+                for (filename, data_uri) in screenshots.iter().rev() {
                     div {
-                        style: "padding: 4px 8px; font-size: 11px; color: #888; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;",
-                        "{filename}"
+                        class: "webwright-thumb",
+                        style: "border: 1px solid #21262d; border-radius: 4px; overflow: hidden; cursor: pointer; transition: border-color 0.15s;",
+                        img {
+                            class: "webwright-thumb-img",
+                            src: "{data_uri}",
+                            alt: "{filename}",
+                            style: "width: 100%; height: 90px; object-fit: cover; display: block;",
+                        }
+                        div {
+                            style: "padding: 3px 6px; font-size: 9px; color: #6e7681; font-family: 'JetBrains Mono', monospace; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; background: #010409;",
+                            "{filename}"
+                        }
                     }
                 }
             }
         }
-        // Modal: clicking a thumbnail opens a fullscreen overlay (click overlay to close)
+        // Modal: click thumb → fullscreen overlay (Escape or click to close)
         {
-            let modal_js = "(function(){document.querySelectorAll('.webwright-thumb').forEach(function(el){el.onclick=function(){var img=this.querySelector('.webwright-thumb-img');if(!img)return;var overlay=document.createElement('div');overlay.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.92);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer;';var close=function(){document.body.removeChild(overlay);document.removeEventListener(\"keydown\",esc);};overlay.onclick=close;var esc=function(e){if(e.key===\"Escape\")close();};document.addEventListener(\"keydown\",esc);var big=document.createElement('img');big.src=img.src;big.style.cssText='max-width:95vw;max-height:95vh;object-fit:contain;border-radius:4px;';overlay.appendChild(big);document.body.appendChild(overlay);};});})()";
+            let modal_js = "(function(){document.querySelectorAll('.webwright-thumb').forEach(function(el){el.onclick=function(){var img=this.querySelector('.webwright-thumb-img');if(!img)return;var overlay=document.createElement('div');overlay.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(2,4,8,0.95);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer;backdrop-filter:blur(4px);';var close=function(){document.body.removeChild(overlay);document.removeEventListener(\"keydown\",esc);};overlay.onclick=close;var esc=function(e){if(e.key===\"Escape\")close();};document.addEventListener(\"keydown\",esc);var big=document.createElement('img');big.src=img.src;big.style.cssText='max-width:92vw;max-height:90vh;object-fit:contain;border-radius:6px;border:1px solid #21262d;';overlay.appendChild(big);var hint=document.createElement('div');hint.textContent='ESC or click to close';hint.style.cssText='position:absolute;bottom:20px;color:#6e7681;font-size:12px;font-family:monospace;';overlay.appendChild(hint);document.body.appendChild(overlay);};});})()";
             rsx! { script { dangerous_inner_html: "{modal_js}" } }
         }
     }
