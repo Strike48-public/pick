@@ -80,18 +80,55 @@ async def run_explore_task(task: str, url: str, max_steps: int, output_dir: str,
             stderr=asyncio.subprocess.PIPE,
         )
 
-        # Stream stdout for progress (webwright prints status)
+        # Watch output directory for new files while webwright runs
         step_n = 2
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                break
-            text = line.decode().strip()
-            if text:
-                emit_step(step_n, text[:200])
-                step_n += 1
+        seen_files = set()
+        output_path = Path(output_dir)
 
+        async def watch_files():
+            """Poll output dir for new screenshots/steps and emit events."""
+            nonlocal step_n
+            while proc.returncode is None:
+                await asyncio.sleep(2)
+                if not output_path.exists():
+                    continue
+                for f in output_path.rglob("*"):
+                    if f.is_file() and str(f) not in seen_files:
+                        seen_files.add(str(f))
+                        name = f.name
+                        if name.endswith(".png"):
+                            emit_step(step_n, f"screenshot: {name}")
+                            step_n += 1
+                        elif name.endswith(".sh"):
+                            # Step scripts contain the action
+                            try:
+                                content = f.read_text()[:100].strip()
+                                emit_step(step_n, f"executing: {content}")
+                            except:
+                                emit_step(step_n, f"step: {name}")
+                            step_n += 1
+                        elif name == "trajectory.json":
+                            emit_step(step_n, "agent reasoning updated")
+                            step_n += 1
+
+        # Read stdout and watch files concurrently
+        async def read_stdout():
+            nonlocal step_n
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                text = line.decode().strip()
+                if text:
+                    emit_step(step_n, text[:200])
+                    step_n += 1
+
+        # Run both tasks — file watcher stops when proc finishes
+        stdout_task = asyncio.create_task(read_stdout())
+        watch_task = asyncio.create_task(watch_files())
         await proc.wait()
+        watch_task.cancel()
+        await stdout_task
 
         # Collect artifacts
         artifacts = {"screenshots": [], "scripts": [], "logs": []}
