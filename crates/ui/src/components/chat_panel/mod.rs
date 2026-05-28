@@ -669,6 +669,19 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             }
             show_history.set(false);
             error_msg.set(None);
+            agent_thinking.set(false);
+            agent_status_text.set(String::new());
+
+            // Focus the chat input so user can start typing immediately
+            spawn(async move {
+                for _ in 0..3 {
+                    let _ = document::eval(
+                        "let el = document.querySelector('.chat-textarea'); if(el) el.focus();",
+                    )
+                    .await;
+                    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                }
+            });
 
             if let Some(agent) = selected_agent.peek().as_ref() {
                 let agent_id = agent.id.clone();

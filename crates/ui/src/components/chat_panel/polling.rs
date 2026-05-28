@@ -26,6 +26,15 @@ pub async fn poll_and_update(
     }
 
     for _attempt in 0..MAX_POLL_ATTEMPTS {
+        // Exit immediately if user switched away from this conversation
+        if !is_active(&active_conversation_id, &conv_id) {
+            tracing::info!(
+                "[ChatPoll] Conversation {} no longer active, stopping poll",
+                conv_id
+            );
+            return;
+        }
+
         match client.get_conversation(&conv_id).await {
             Ok(state) => {
                 let done = state.agent_status.is_terminal();
@@ -57,11 +66,13 @@ pub async fn poll_and_update(
                     agent_status_text.set(status_label.to_string());
 
                     if !state.messages.is_empty() {
-                        messages.set(state.messages.clone());
+                        let merged = merge_messages(&messages.peek(), &state.messages);
+                        messages.set(merged);
                     }
 
                     if done && has_agent_msg {
-                        messages.set(state.messages);
+                        let merged = merge_messages(&messages.peek(), &state.messages);
+                        messages.set(merged);
                         agent_thinking.set(false);
                         agent_status_text.set(String::new());
                         return;
@@ -87,10 +98,59 @@ pub async fn poll_and_update(
     // Final poll after timeout
     if is_active(&active_conversation_id, &conv_id) {
         match client.get_conversation(&conv_id).await {
-            Ok(state) => messages.set(state.messages),
+            Ok(state) => {
+                let merged = merge_messages(&messages.peek(), &state.messages);
+                messages.set(merged);
+            }
             Err(e) => error_msg.set(Some(format!("Polling timed out: {}", e))),
         }
         agent_thinking.set(false);
         agent_status_text.set(String::new());
     }
+}
+
+/// Merge server messages with local state.
+/// Strategy: keep the current order as the base (user message was pushed first
+/// at the correct position), then append any NEW messages from the server
+/// that aren't already in the current list. This prevents server misordering
+/// from placing the user's message after the agent's response.
+fn merge_messages(current: &[ChatMessage], server: &[ChatMessage]) -> Vec<ChatMessage> {
+    // If current is empty, just use server (initial load)
+    if current.is_empty() {
+        return server.to_vec();
+    }
+
+    // If server response is empty, keep current state
+    if server.is_empty() {
+        return current.to_vec();
+    }
+
+    // Start with current messages, replacing local placeholders with server versions
+    let mut result: Vec<ChatMessage> = Vec::with_capacity(server.len());
+
+    // First: keep local user messages at their positions, matched by text
+    for msg in current.iter() {
+        if msg.id.starts_with("local-") {
+            // Try to find the server version of this local message
+            if let Some(server_msg) = server
+                .iter()
+                .find(|s| s.sender_type == "USER" && s.text == msg.text)
+            {
+                result.push(server_msg.clone());
+            } else {
+                // Server hasn't caught up yet, keep local version
+                result.push(msg.clone());
+            }
+        }
+    }
+
+    // Then: append all server messages not already in result (agent responses, etc.)
+    for msg in server.iter() {
+        let already_present = result.iter().any(|r| r.id == msg.id);
+        if !already_present {
+            result.push(msg.clone());
+        }
+    }
+
+    result
 }
