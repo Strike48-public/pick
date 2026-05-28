@@ -203,6 +203,50 @@ impl ConnectorConfig {
         Ok(format!("{}{}", inferred, bare))
     }
 
+    /// Derive a stable, env-scoped instance id from the persistent `device_id`
+    /// and the target `host`.
+    ///
+    /// Saved credentials and connector approval are keyed by instance id. With a
+    /// single global instance id, one credential is reused for every env, so a
+    /// token minted for env A is rejected by env B's gateway. Folding a host slug
+    /// into the instance id gives each Strike48 instance its own credential +
+    /// approval. The mapping is deterministic — the same host always yields the
+    /// same id — so approval persists across restarts and env switches "just work".
+    pub fn env_scoped_instance_id(device_id: &str, host: &str) -> String {
+        let slug = Self::host_slug(host);
+        if slug.is_empty() {
+            device_id.to_string()
+        } else {
+            format!("{device_id}-{slug}")
+        }
+    }
+
+    /// Reduce a host URL to a short, stable identifier slug: scheme and port are
+    /// stripped and any run of non-alphanumeric characters collapses to a single
+    /// `-` (e.g. `wss://studio.example.com:443` -> `studio-example-com`).
+    fn host_slug(host: &str) -> String {
+        let after_scheme = host.rsplit("://").next().unwrap_or(host);
+        let authority = after_scheme.split('/').next().unwrap_or(after_scheme);
+        // Drop a trailing :port (last colon only, so IPv6 forms degrade gracefully).
+        let hostname = authority
+            .rsplit_once(':')
+            .map(|(h, _)| h)
+            .unwrap_or(authority);
+
+        let mut slug = String::with_capacity(hostname.len());
+        let mut prev_dash = false;
+        for c in hostname.chars() {
+            if c.is_ascii_alphanumeric() {
+                slug.push(c.to_ascii_lowercase());
+                prev_dash = false;
+            } else if !prev_dash {
+                slug.push('-');
+                prev_dash = true;
+            }
+        }
+        slug.trim_matches('-').to_string()
+    }
+
     /// Convert to the SDK's ConnectorConfig
     pub fn to_sdk_config(&self) -> strike48_connector::ConnectorConfig {
         let mut sdk_config = strike48_connector::ConnectorConfig {
@@ -447,10 +491,18 @@ pub fn load_connector_config(args: &[String]) -> ConfigLoadResult {
     // Preserve the original URL (including scheme) so that to_sdk_config()
     // can auto-detect transport type (WebSocket vs gRPC) and TLS from the scheme.
 
-    // Validate config before returning (SSRF protection, required fields, etc.)
-    if let Err(e) = config.validate() {
-        tracing::warn!("Config validation failed: {}", e);
-        return ConfigLoadResult::ValidationFailed(e);
+    // Validate config before returning (SSRF protection, required fields, etc.).
+    // Under StrikeHub the host is chosen by the trusted local launcher and may
+    // legitimately be a private-IP / self-hosted studio, so skip the SSRF host
+    // check in that mode — main() already intends to skip validation when launched
+    // by StrikeHub, but this earlier check would otherwise reject it first.
+    // Standalone mode keeps full validation.
+    let is_strikehub = std::env::var("STRIKEHUB_SOCKET").is_ok();
+    if !is_strikehub {
+        if let Err(e) = config.validate() {
+            tracing::warn!("Config validation failed: {}", e);
+            return ConfigLoadResult::ValidationFailed(e);
+        }
     }
 
     ConfigLoadResult::Ok(config)
@@ -533,5 +585,51 @@ mod tests {
     fn normalize_host_scheme_matching_is_case_insensitive() {
         let out = ConnectorConfig::normalize_host("WSS://Studio.Example.com:443").unwrap();
         assert_eq!(out, "WSS://Studio.Example.com:443");
+    }
+
+    #[test]
+    fn host_slug_strips_scheme_and_port() {
+        assert_eq!(
+            ConnectorConfig::host_slug("wss://studio.example.com:443"),
+            "studio-example-com"
+        );
+        assert_eq!(
+            ConnectorConfig::host_slug("connectors.example.org:443"),
+            "connectors-example-org"
+        );
+        assert_eq!(
+            ConnectorConfig::host_slug("grpc://localhost:50061"),
+            "localhost"
+        );
+    }
+
+    #[test]
+    fn host_slug_is_empty_for_empty_host() {
+        assert_eq!(ConnectorConfig::host_slug(""), "");
+    }
+
+    #[test]
+    fn env_scoped_instance_id_differs_per_host() {
+        let device = "device-0001";
+        let a = ConnectorConfig::env_scoped_instance_id(device, "wss://studio.example.com:443");
+        let b = ConnectorConfig::env_scoped_instance_id(device, "wss://studio.example.org:443");
+        assert_eq!(a, format!("{device}-studio-example-com"));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn env_scoped_instance_id_is_stable_for_same_host() {
+        let device = "device-0001";
+        let a = ConnectorConfig::env_scoped_instance_id(device, "wss://studio.example.com:443");
+        let b = ConnectorConfig::env_scoped_instance_id(device, "wss://studio.example.com:443");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn env_scoped_instance_id_falls_back_to_device_id_when_host_empty() {
+        assert_eq!(
+            ConnectorConfig::env_scoped_instance_id("dev-1", ""),
+            "dev-1"
+        );
     }
 }

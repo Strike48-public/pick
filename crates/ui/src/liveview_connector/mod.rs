@@ -94,6 +94,13 @@ const JWT_REFRESH_FALLBACK_SECS: u64 = 240;
 /// Retry delay when a proactive JWT refresh fails.
 const JWT_REFRESH_RETRY_SECS: u64 = 30;
 
+/// Number of consecutive registration rejections to tolerate before treating
+/// the saved credential as unusable for this host and falling back to the
+/// approval flow. A token minted for a different env registers fine at the auth
+/// layer but is rejected here forever, so without this the connector loops
+/// silently.
+const REGISTRATION_FAILURE_RETRY_LIMIT: u32 = 3;
+
 /// Parse remaining seconds until expiry from a JWT (3-part `header.payload.signature`).
 fn jwt_remaining_secs(token: &str) -> Option<i64> {
     let payload_b64 = token.split('.').nth(1)?;
@@ -258,6 +265,10 @@ pub struct LiveViewConnector {
     pub(crate) matrix_client: Arc<RwLock<Option<pentest_core::matrix::MatrixChatClient>>>,
     /// Total specialists spawned across reconnects (persists across ScanState resets)
     pub(crate) total_specialists_spawned: Arc<AtomicUsize>,
+    /// Consecutive registration rejections, reset on a successful registration.
+    /// Used to break the silent retry loop when a credential is valid but minted
+    /// for a different env than the connection host.
+    pub(crate) registration_failures: u32,
 }
 
 impl LiveViewConnector {
@@ -301,6 +312,7 @@ impl LiveViewConnector {
             active_scan: Arc::new(RwLock::new(None)),
             matrix_client: Arc::new(RwLock::new(None)),
             total_specialists_spawned: Arc::new(AtomicUsize::new(0)),
+            registration_failures: 0,
         }
     }
 
@@ -707,27 +719,21 @@ impl LiveViewConnector {
             self.config.host
         ))));
 
-        // If we already have a saved auth token, set the Matrix credentials
-        // immediately so the workspace chat panel can use them.
         tracing::info!(
             "[ConnectAndRun] auth_token from config: len={} empty={}",
             self.config.auth_token.len(),
             self.config.auth_token.is_empty(),
         );
-        if !self.config.auth_token.is_empty() {
-            tracing::info!("[ConnectAndRun] Emitting CredentialsUpdated from saved token");
-            self.send_event(ConnectorEvent::CredentialsUpdated {
-                auth_token: self.config.auth_token.clone(),
-                api_url: self.derive_matrix_api_url(),
-            });
-        } else {
-            tracing::info!("[ConnectAndRun] No saved auth_token — trying pre-approval auth");
 
-            // Auth initialization follows the SDK's priority order:
-            // 1. Direct config (cert-manager / K8s secrets)
-            // 2. Pre-approval OTT (env var / file)
-            // 3. Saved credentials (loaded here, token fetched per-iteration)
-            // 4. Post-approval (wait for admin via CredentialsIssued)
+        // Auth precedence:
+        // 1. Direct config (cert-manager / K8s secrets)
+        // 2. Pre-approval OTT (env var / file) — explicit, env-correct provisioning
+        //    (e.g. StrikeHub). Takes precedence over a saved auth_token, which may be
+        //    stale or minted for a different env than the host we're connecting to.
+        // 3. Saved JWT from a prior approval (settings.json)
+        // 4. Saved OTT credentials on disk (token fetched per loop iteration)
+        // 5. Post-approval (wait for admin via CredentialsIssued)
+        {
             let connector_type = "pentest-connector".to_string();
             let instance_id = self.config.instance_id.clone();
             let mut ott_provider =
@@ -792,6 +798,14 @@ impl LiveViewConnector {
                         );
                     }
                 }
+            } else if !self.config.auth_token.is_empty() {
+                // Saved JWT from a prior approval. Set Matrix credentials immediately
+                // so the workspace chat panel can use them.
+                tracing::info!("[ConnectAndRun] Using saved auth token");
+                self.send_event(ConnectorEvent::CredentialsUpdated {
+                    auth_token: self.config.auth_token.clone(),
+                    api_url: self.derive_matrix_api_url(),
+                });
             } else if ott_provider
                 .load_saved_credentials(&connector_type, Some(&instance_id))
                 .is_some()
@@ -800,6 +814,10 @@ impl LiveViewConnector {
                 // each connection loop iteration (matching kubestudio's pattern).
                 tracing::info!("Loaded saved credentials, will use JWT authentication");
                 *self.ott_provider.write().await = Some(ott_provider);
+            } else {
+                tracing::info!(
+                    "[ConnectAndRun] No auth source available — registering for admin approval"
+                );
             }
         }
 
@@ -1122,6 +1140,7 @@ impl LiveViewConnector {
                     match msg.message {
                         Some(Message::RegisterResponse(resp)) => {
                             if resp.success {
+                                self.registration_failures = 0;
                                 tracing::info!("Registered: {}", resp.connector_arn);
                                 self.send_event(ConnectorEvent::Log(
                                     TerminalLine::success("Registered with Strike48")
@@ -1138,16 +1157,35 @@ impl LiveViewConnector {
                                 // across reconnects so ChatPanel doesn't need a fresh fetch.
                                 self.send_event(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
                             } else {
-                                tracing::error!("Registration failed: {}", resp.error);
+                                self.registration_failures =
+                                    self.registration_failures.saturating_add(1);
+                                tracing::error!(
+                                    "Registration failed (attempt {}): {}",
+                                    self.registration_failures, resp.error
+                                );
 
-                                // If auth failed (expired/invalid token), clear it and retry
-                                if resp.error.contains("expired") || resp.error.contains("invalid") ||
-                                   resp.error.contains("auth") || resp.error.contains("jwt") {
-                                    tracing::info!("Auth token expired/invalid, clearing and will retry");
+                                // Clear the saved credential and re-run approval when:
+                                //  - the server reports an explicit auth problem, or
+                                //  - a generic rejection persists across retries — a token
+                                //    minted for a different env passes the auth layer but is
+                                //    rejected here forever, so the credential is unusable for
+                                //    this host.
+                                let auth_error = resp.error.contains("expired")
+                                    || resp.error.contains("invalid")
+                                    || resp.error.contains("auth")
+                                    || resp.error.contains("jwt");
+                                let exhausted = self.registration_failures
+                                    >= REGISTRATION_FAILURE_RETRY_LIMIT;
+
+                                if auth_error || exhausted {
+                                    tracing::info!(
+                                        "Clearing saved credentials (auth_error={}, attempts={}) and re-running approval",
+                                        auth_error, self.registration_failures
+                                    );
                                     self.config.auth_token.clear();
-                                    // Clear the OTT provider so we don't try to refresh stale credentials
+                                    // Clear the OTT provider so we don't refresh stale credentials
                                     *self.ott_provider.write().await = None;
-                                    // Delete stale saved credentials file to break the retry loop
+                                    // Delete the stale saved credentials file to break the loop
                                     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
                                     let stale = format!(
                                         "{}/.strike48/credentials/pentest-connector_{}.json",
@@ -1161,13 +1199,16 @@ impl LiveViewConnector {
                                         auth_token: String::new(),
                                         api_url: String::new(),
                                     });
-                                    self.send_event(ConnectorEvent::Log(
-                                        TerminalLine::info("Token expired, will re-register for approval")
-                                    ));
+                                    self.send_event(ConnectorEvent::Log(TerminalLine::info(
+                                        "Registration rejected — clearing credentials and re-running approval for this env",
+                                    )));
+                                    self.registration_failures = 0;
                                     // Don't return - let the reconnect loop handle it
                                     return;
                                 }
 
+                                // Early/transient failure: surface it and let the
+                                // connection loop retry before we give up on the credential.
                                 self.send_event(ConnectorEvent::Log(
                                     TerminalLine::error(format!("Registration failed: {}", resp.error))
                                 ));
