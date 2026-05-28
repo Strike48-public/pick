@@ -404,6 +404,7 @@ async fn try_sidecar_execution(
     let deadline = tokio::time::Instant::now() + timeout;
     let mut findings: Vec<live_state::WebwrightFinding> = Vec::new();
     let mut log: Vec<live_state::LogEntry> = Vec::new();
+    let mut screenshots: Vec<String> = Vec::new();
 
     loop {
         let event = tokio::select! {
@@ -433,11 +434,15 @@ async fn try_sidecar_execution(
                     // Keep last 20 entries
                     if log.len() > 20 { log.remove(0); }
                 }
+                // Accumulate screenshots into the gallery
+                if let Some(ref shot) = screenshot {
+                    screenshots.push(shot.clone());
+                }
                 live_state::update(&workspace.task_id, live_state::WebwrightProgress {
                     step: *n,
                     action: if useful { action.clone() } else { "working...".to_string() },
                     screenshot: screenshot.clone(),
-                    screenshots: Vec::new(), // TODO: accumulate
+                    screenshots: screenshots.clone(),
                     findings: findings.clone(),
                     log: log.clone(),
                     running: true,
