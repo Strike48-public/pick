@@ -249,85 +249,93 @@ pub fn render_live_progress(status_text: &str) -> Element {
 
     if progress.running {
         let step_text = format!("Step {} — {}", progress.step, progress.action);
+        let has_screenshots = !progress.screenshots.is_empty() || progress.screenshot.is_some();
 
         rsx! {
             div {
-                style: "padding: 8px 0; max-width: 560px; border-left: 2px solid #00ff8844; padding-left: 10px;",
-                // Header: pulsing dot + step
+                style: "padding: 8px; margin-top: 4px; background: #0d1117; border: 1px solid #21262d; border-radius: 6px; max-width: 700px;",
+                // Header bar
                 div {
-                    style: "display: flex; align-items: center; gap: 8px; margin-bottom: 6px;",
+                    style: "display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid #161b22;",
                     div {
-                        style: "width: 7px; height: 7px; border-radius: 50%; background: #00ff88; animation: ww-pulse 1.2s ease-in-out infinite; flex-shrink: 0;",
+                        style: "width: 6px; height: 6px; border-radius: 50%; background: #00ff88; animation: ww-pulse 1.2s ease-in-out infinite; flex-shrink: 0;",
                     }
                     span {
-                        style: "font-size: 11px; color: #00ff88; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+                        style: "font-size: 11px; color: #00ff88; font-family: 'JetBrains Mono', monospace; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
                         "{step_text}"
                     }
+                    span {
+                        style: "font-size: 9px; color: #484f58; font-family: 'JetBrains Mono', monospace; flex-shrink: 0;",
+                        "LIVE"
+                    }
                 }
-                // Screenshot feed: horizontal scroll, most recent first
-                if !progress.screenshots.is_empty() {
+                // Two-column layout: log left, screenshots right
+                div {
+                    style: "display: flex; gap: 8px; min-height: 100px;",
+                    // Left: rolling log
                     div {
-                        style: "display: flex; gap: 4px; overflow-x: auto; padding: 4px 0; margin-bottom: 6px;",
-                        for shot in progress.screenshots.iter().rev() {
+                        style: "flex: 1; min-width: 0;",
+                        if !progress.log.is_empty() {
                             div {
-                                style: "flex-shrink: 0; width: 120px; height: 80px; border: 1px solid #00ff8830; border-radius: 3px; overflow: hidden;",
-                                img {
-                                    src: "data:image/png;base64,{shot}",
-                                    style: "width: 100%; height: 100%; object-fit: cover;",
+                                style: "background: #010409; border: 1px solid #161b22; border-radius: 3px; padding: 5px 7px; font-family: 'JetBrains Mono', monospace; font-size: 10px; max-height: 160px; overflow-y: auto; line-height: 1.5;",
+                                for entry in progress.log.iter().rev().take(10).collect::<Vec<_>>().into_iter().rev() {
+                                    div {
+                                        style: "color: #6e7681; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+                                        span {
+                                            style: "color: #363b42; margin-right: 5px;",
+                                            "{entry.step:>2}"
+                                        }
+                                        "{entry.action}"
+                                    }
+                                }
+                            }
+                        }
+                        // Findings below log
+                        if !progress.findings.is_empty() {
+                            div {
+                                style: "margin-top: 6px;",
+                                for finding in progress.findings.iter() {
+                                    div {
+                                        style: "display: flex; align-items: center; gap: 5px; margin: 2px 0; font-size: 10px;",
+                                        span {
+                                            style: "padding: 0px 4px; border-radius: 2px; font-weight: 700; font-size: 9px; text-transform: uppercase; background: {severity_color(&finding.severity)}; color: #fff;",
+                                            "{finding.severity}"
+                                        }
+                                        span { style: "color: #c9d1d9;", "{finding.title}" }
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                // Most recent single screenshot (fallback when screenshots vec is empty)
-                if progress.screenshots.is_empty() {
-                    if let Some(ref screenshot) = progress.screenshot {
+                    // Right: screenshot feed (vertical stack, most recent on top)
+                    if has_screenshots {
                         div {
-                            style: "margin-bottom: 6px; max-width: 200px; border: 1px solid #00ff8830; border-radius: 3px; overflow: hidden;",
-                            img {
-                                src: "data:image/png;base64,{screenshot}",
-                                style: "width: 100%; height: auto; display: block;",
-                            }
-                        }
-                    }
-                }
-                // Rolling log (compact terminal)
-                if !progress.log.is_empty() {
-                    div {
-                        style: "background: #010409; border: 1px solid #161b22; border-radius: 3px; padding: 4px 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; max-height: 120px; overflow-y: auto; line-height: 1.4;",
-                        for entry in progress.log.iter().rev().take(8).collect::<Vec<_>>().into_iter().rev() {
-                            div {
-                                style: "color: #6e7681; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
-                                span {
-                                    style: "color: #363b42; margin-right: 5px;",
-                                    "{entry.step:>2}"
+                            style: "width: 180px; flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto;",
+                            if let Some(ref screenshot) = progress.screenshot {
+                                div {
+                                    style: "border: 1px solid #00ff8840; border-radius: 3px; overflow: hidden;",
+                                    img {
+                                        src: "data:image/png;base64,{screenshot}",
+                                        style: "width: 100%; height: auto; display: block;",
+                                    }
                                 }
-                                "{entry.action}"
                             }
-                        }
-                    }
-                }
-                // Findings ticker
-                if !progress.findings.is_empty() {
-                    div {
-                        style: "margin-top: 6px;",
-                        for finding in progress.findings.iter() {
-                            div {
-                                style: "display: flex; align-items: center; gap: 5px; margin: 2px 0; font-size: 10px;",
-                                span {
-                                    style: "padding: 0px 4px; border-radius: 2px; font-weight: 700; font-size: 9px; text-transform: uppercase; background: {severity_color(&finding.severity)}; color: #fff;",
-                                    "{finding.severity}"
+                            for shot in progress.screenshots.iter().rev().take(3) {
+                                div {
+                                    style: "border: 1px solid #21262d; border-radius: 3px; overflow: hidden; opacity: 0.7;",
+                                    img {
+                                        src: "data:image/png;base64,{shot}",
+                                        style: "width: 100%; height: 60px; object-fit: cover; display: block;",
+                                    }
                                 }
-                                span { style: "color: #c9d1d9;", "{finding.title}" }
                             }
                         }
                     }
                 }
             }
-            style { "@keyframes ww-pulse {{ 0%,100% {{ opacity:1; }} 50% {{ opacity:0.2; }} }} @keyframes ww-rec {{ 0%,100% {{ opacity:1; }} 50% {{ opacity:0; }} }}" }
+            style { "@keyframes ww-pulse {{ 0%,100% {{ opacity:1; }} 50% {{ opacity:0.2; }} }}" }
         }
     } else {
-        // Not running — show nothing (completed state handled by render_webwright_screenshots)
         rsx! {}
     }
 }
