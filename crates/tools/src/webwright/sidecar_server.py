@@ -97,7 +97,13 @@ async def run_explore_task(task: str, url: str, max_steps: int, output_dir: str,
                         seen_files.add(str(f))
                         name = f.name
                         if name.endswith(".png"):
-                            emit_step(step_n, f"screenshot: {name}")
+                            # Read and base64 encode for live preview
+                            import base64
+                            try:
+                                b64 = base64.b64encode(f.read_bytes()).decode()
+                                emit({"type": "step", "n": step_n, "action": f"screenshot: {name}", "screenshot": b64})
+                            except:
+                                emit_step(step_n, f"screenshot: {name}")
                             step_n += 1
                         elif name.endswith(".sh"):
                             # Step scripts contain the action
