@@ -311,11 +311,11 @@ pub fn render_live_progress(status_text: &str) -> Element {
                     if has_screenshots {
                         div {
                             style: "width: 280px; flex-shrink: 0; display: flex; flex-direction: column; gap: 4px;",
-                            // Primary (most recent) — large
+                            // Primary (most recent) — large, max-height capped with scroll
                             if let Some(ref screenshot) = progress.screenshot {
                                 div {
                                     class: "webwright-thumb",
-                                    style: "border: 1px solid #00ff8840; border-radius: 4px; overflow: hidden; cursor: pointer;",
+                                    style: "border: 1px solid #00ff8840; border-radius: 4px; overflow-y: auto; max-height: 220px; cursor: pointer;",
                                     img {
                                         class: "webwright-thumb-img",
                                         src: "data:image/png;base64,{screenshot}",
@@ -345,6 +345,11 @@ pub fn render_live_progress(status_text: &str) -> Element {
                 }
             }
             style { "@keyframes ww-pulse {{ 0%,100% {{ opacity:1; }} 50% {{ opacity:0.2; }} }}" }
+            // Modal for clicking screenshots (re-attaches on each render)
+            {
+                let modal_js = "(function(){document.querySelectorAll('.webwright-thumb').forEach(function(el){if(el._ww)return;el._ww=1;el.onclick=function(){var img=this.querySelector('.webwright-thumb-img');if(!img)return;var overlay=document.createElement('div');overlay.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(2,4,8,0.95);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer;backdrop-filter:blur(4px);';var close=function(){document.body.removeChild(overlay);document.removeEventListener(\"keydown\",esc);};overlay.onclick=close;var esc=function(e){if(e.key===\"Escape\"||e.key===\"ArrowLeft\"||e.key===\"ArrowRight\")close();};document.addEventListener(\"keydown\",esc);var big=document.createElement('img');big.src=img.src;big.style.cssText='max-width:92vw;max-height:90vh;object-fit:contain;border-radius:6px;border:1px solid #21262d;';overlay.appendChild(big);document.body.appendChild(overlay);};});})()";
+                rsx! { script { dangerous_inner_html: "{modal_js}" } }
+            }
         }
     } else {
         rsx! {}
