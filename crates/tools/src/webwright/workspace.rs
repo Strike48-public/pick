@@ -152,7 +152,7 @@ impl WebwrightWorkspace {
             let filename = file.rsplit('/').next().unwrap_or(file);
             if filename.ends_with(".py") && filename != "script.py" {
                 scripts.push(visible_path.clone());
-            } else if filename.ends_with(".png") {
+            } else if filename.ends_with(".png") || filename.ends_with(".jpg") || filename.ends_with(".jpeg") {
                 screenshots.push(visible_path.clone());
             } else if filename.ends_with(".json") || filename.ends_with(".log") {
                 logs.push(visible_path.clone());

@@ -96,7 +96,7 @@ async def run_explore_task(task: str, url: str, max_steps: int, output_dir: str,
                     if f.is_file() and str(f) not in seen_files:
                         seen_files.add(str(f))
                         name = f.name
-                        if name.endswith(".png"):
+                        if name.endswith((".png", ".jpg", ".jpeg")):
                             # Read and base64 encode for live preview
                             import base64
                             try:

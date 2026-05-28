@@ -338,7 +338,7 @@ fn render_webwright_screenshots(result_json: &str) -> Element {
         .unwrap_or(&Vec::new())
         .iter()
         .filter_map(|p| p.as_str().map(|s| s.to_string()))
-        .filter(|p| p.contains("final_"))
+        .filter(|p| p.contains("final_") && (p.ends_with(".png") || p.ends_with(".jpg") || p.ends_with(".jpeg")))
         .collect();
 
     if paths.is_empty() {
@@ -363,7 +363,12 @@ fn render_webwright_screenshots(result_json: &str) -> Element {
                 use base64::Engine;
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 let filename = rel_path.rsplit('/').next().unwrap_or("screenshot").to_string();
-                let data_uri = format!("data:image/png;base64,{}", b64);
+                let mime = if rel_path.ends_with(".jpg") || rel_path.ends_with(".jpeg") {
+                    "image/jpeg"
+                } else {
+                    "image/png"
+                };
+                let data_uri = format!("data:{};base64,{}", mime, b64);
                 (filename, data_uri)
             })
         })
