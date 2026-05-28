@@ -193,7 +193,7 @@ impl PentestTool for WebwrightTool {
             let use_sidecar = std::env::var("WEBWRIGHT_SIDECAR").unwrap_or_else(|_| "1".to_string()) != "0";
             let task_str_for_sidecar = param_str_opt(&params, "task").unwrap_or_default();
             let sidecar_result = if use_sidecar {
-                try_sidecar_execution(&mode, &start_url, &task_str_for_sidecar, &workspace, &env_exports).await
+                try_sidecar_execution(&mode, &start_url, &task_str_for_sidecar, &workspace, &env_exports, timeout_secs).await
             } else {
                 None
             };
@@ -353,6 +353,7 @@ async fn try_sidecar_execution(
     task: &str,
     workspace: &WebwrightWorkspace,
     env_exports: &str,
+    timeout_secs: u64,
 ) -> Option<pentest_platform::CommandResult> {
     let mut guard = SIDECAR.lock().await;
 
@@ -397,9 +398,9 @@ async fn try_sidecar_execution(
     // Signal start for live UI (per-task)
     live_state::start(&workspace.task_id);
 
-    // Subscribe and wait for completion
+    // Subscribe and wait for completion — timeout matches what the user requested
     let mut rx = sidecar.subscribe();
-    let timeout = tokio::time::Duration::from_secs(300);
+    let timeout = tokio::time::Duration::from_secs(timeout_secs);
     let deadline = tokio::time::Instant::now() + timeout;
     let mut findings: Vec<live_state::WebwrightFinding> = Vec::new();
     let mut log: Vec<live_state::LogEntry> = Vec::new();
