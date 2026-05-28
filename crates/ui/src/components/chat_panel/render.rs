@@ -307,25 +307,36 @@ pub fn render_live_progress(status_text: &str) -> Element {
                             }
                         }
                     }
-                    // Right: screenshot feed (vertical stack, most recent on top)
+                    // Right: primary screenshot large, thumbnails below
                     if has_screenshots {
                         div {
-                            style: "width: 180px; flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto;",
+                            style: "width: 280px; flex-shrink: 0; display: flex; flex-direction: column; gap: 4px;",
+                            // Primary (most recent) — large
                             if let Some(ref screenshot) = progress.screenshot {
                                 div {
-                                    style: "border: 1px solid #00ff8840; border-radius: 3px; overflow: hidden;",
+                                    class: "webwright-thumb",
+                                    style: "border: 1px solid #00ff8840; border-radius: 4px; overflow: hidden; cursor: pointer;",
                                     img {
+                                        class: "webwright-thumb-img",
                                         src: "data:image/png;base64,{screenshot}",
                                         style: "width: 100%; height: auto; display: block;",
                                     }
                                 }
                             }
-                            for shot in progress.screenshots.iter().rev().take(3) {
+                            // Older thumbnails — small horizontal strip
+                            if progress.screenshots.len() > 1 {
                                 div {
-                                    style: "border: 1px solid #21262d; border-radius: 3px; overflow: hidden; opacity: 0.7;",
-                                    img {
-                                        src: "data:image/png;base64,{shot}",
-                                        style: "width: 100%; height: 60px; object-fit: cover; display: block;",
+                                    style: "display: flex; gap: 3px; overflow-x: auto;",
+                                    for shot in progress.screenshots.iter().rev().skip(1).take(6) {
+                                        div {
+                                            class: "webwright-thumb",
+                                            style: "flex-shrink: 0; width: 56px; height: 38px; border: 1px solid #21262d; border-radius: 2px; overflow: hidden; cursor: pointer; opacity: 0.75;",
+                                            img {
+                                                class: "webwright-thumb-img",
+                                                src: "data:image/png;base64,{shot}",
+                                                style: "width: 100%; height: 100%; object-fit: cover;",
+                                            }
+                                        }
                                     }
                                 }
                             }
