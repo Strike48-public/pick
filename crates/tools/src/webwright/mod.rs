@@ -402,6 +402,7 @@ async fn try_sidecar_execution(
     let timeout = tokio::time::Duration::from_secs(300);
     let deadline = tokio::time::Instant::now() + timeout;
     let mut findings: Vec<live_state::WebwrightFinding> = Vec::new();
+    let mut log: Vec<live_state::LogEntry> = Vec::new();
 
     loop {
         let event = tokio::select! {
@@ -419,11 +420,28 @@ async fn try_sidecar_execution(
         match &event {
             SidecarEvent::Step { n, action, screenshot } => {
                 tracing::info!("[webwright-sidecar] step {}: {}", n, action);
+                // Skip useless lines (UUIDs, blank lines, directory paths)
+                let useful = !action.is_empty()
+                    && !action.contains("_2026")
+                    && action.len() > 5;
+                if useful {
+                    log.push(live_state::LogEntry {
+                        step: *n,
+                        action: action.clone(),
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                    });
+                    // Keep last 20 entries
+                    if log.len() > 20 { log.remove(0); }
+                }
                 live_state::update(live_state::WebwrightProgress {
                     step: *n,
-                    action: action.clone(),
+                    action: if useful { action.clone() } else { "working...".to_string() },
                     screenshot: screenshot.clone(),
                     findings: findings.clone(),
+                    log: log.clone(),
                     running: true,
                     task_id: workspace.task_id.clone(),
                 });
@@ -439,6 +457,7 @@ async fn try_sidecar_execution(
                     action: format!("Found: {}", title),
                     screenshot: None,
                     findings: findings.clone(),
+                    log: log.clone(),
                     running: true,
                     task_id: workspace.task_id.clone(),
                 });

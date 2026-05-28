@@ -229,38 +229,53 @@ pub fn render_live_progress(status_text: &str) -> Element {
     let progress = progress_signal.read().clone();
 
     if progress.running {
-        // Rich live webwright widget
+        // Rich live webwright widget with rolling log
         let step_text = format!("Step {} — {}", progress.step, progress.action);
-        let finding_count = progress.findings.len();
 
         rsx! {
             div {
-                style: "padding: 8px 0;",
-                // Step indicator with pulsing dot
+                style: "padding: 8px 0; max-width: 500px;",
+                // Current step with pulsing dot
                 div {
-                    style: "display: flex; align-items: center; gap: 8px; margin-bottom: 6px;",
+                    style: "display: flex; align-items: center; gap: 8px; margin-bottom: 8px;",
                     div {
                         style: "width: 8px; height: 8px; border-radius: 50%; background: #00ff88; animation: pulse 1.5s infinite; flex-shrink: 0;",
                     }
                     span {
-                        style: "font-size: 13px; color: #00ff88; font-family: monospace;",
+                        style: "font-size: 12px; color: #00ff88; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
                         "{step_text}"
+                    }
+                }
+                // Rolling log
+                if !progress.log.is_empty() {
+                    div {
+                        style: "background: #0d1117; border: 1px solid #21262d; border-radius: 4px; padding: 6px 8px; font-family: monospace; font-size: 11px; max-height: 150px; overflow-y: auto;",
+                        for entry in progress.log.iter() {
+                            div {
+                                style: "color: #8b949e; padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+                                span {
+                                    style: "color: #484f58; margin-right: 6px;",
+                                    "[{entry.step}]"
+                                }
+                                "{entry.action}"
+                            }
+                        }
                     }
                 }
                 // Live screenshot (if available)
                 if let Some(ref screenshot) = progress.screenshot {
                     div {
-                        style: "margin: 6px 0; max-width: 280px; border: 1px solid #00ff8840; border-radius: 4px; overflow: hidden;",
+                        style: "margin-top: 8px; max-width: 280px; border: 1px solid #00ff8840; border-radius: 4px; overflow: hidden;",
                         img {
                             src: "data:image/png;base64,{screenshot}",
                             style: "width: 100%; height: auto; display: block; opacity: 0.9;",
                         }
                     }
                 }
-                // Findings ticker
-                if finding_count > 0 {
+                // Findings
+                if !progress.findings.is_empty() {
                     div {
-                        style: "margin-top: 6px; font-size: 11px;",
+                        style: "margin-top: 8px; font-size: 11px;",
                         for finding in progress.findings.iter() {
                             div {
                                 style: "display: flex; align-items: center; gap: 6px; margin: 2px 0;",
@@ -277,7 +292,6 @@ pub fn render_live_progress(status_text: &str) -> Element {
                     }
                 }
             }
-            // Pulse animation
             style { "@keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.3; }} }}" }
         }
     } else {

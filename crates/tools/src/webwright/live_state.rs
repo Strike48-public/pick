@@ -7,6 +7,14 @@ use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 use tokio::sync::watch;
 
+/// A single log entry in the rolling progress.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub step: u32,
+    pub action: String,
+    pub timestamp: u64,
+}
+
 /// A single progress update from a running webwright task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebwrightProgress {
@@ -18,6 +26,8 @@ pub struct WebwrightProgress {
     pub screenshot: Option<String>,
     /// Accumulated findings so far
     pub findings: Vec<WebwrightFinding>,
+    /// Rolling log of steps (latest at end, max 20)
+    pub log: Vec<LogEntry>,
     /// Whether the task is still running
     pub running: bool,
     /// Task ID (for matching to the right widget)
@@ -38,6 +48,7 @@ impl Default for WebwrightProgress {
             action: String::new(),
             screenshot: None,
             findings: Vec::new(),
+            log: Vec::new(),
             running: false,
             task_id: String::new(),
         }
@@ -67,6 +78,7 @@ pub fn start(task_id: &str) {
         action: "initializing...".to_string(),
         screenshot: None,
         findings: Vec::new(),
+        log: Vec::new(),
         running: true,
         task_id: task_id.to_string(),
     });
