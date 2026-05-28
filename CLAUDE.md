@@ -14,7 +14,7 @@ Pick is a multi-platform penetration testing connector built with Dioxus (Rust).
 - Rust (stable 1.92+)
 - Dioxus (UI framework)
 - Tokio (async runtime)
-- Strike48 SDK (Matrix communication)
+- Strike48 SDK (connector protocol)
 
 ---
 
@@ -44,8 +44,8 @@ Pick reads its connection settings from a `.env` file at the repository root:
 
 - `STRIKE48_HOST` — WebSocket URL of the Strike48 instance, e.g. `wss://your-tenant.example.com:443`
 - `STRIKE48_TENANT` — Tenant identifier registered on that instance
-- `MATRIX_API_URL` — HTTPS URL of the Matrix API for the same instance
-- `MATRIX_TENANT_ID` — Same tenant identifier; kept separate so a future split is non-breaking
+- `MATRIX_API_URL` — HTTPS URL of the Strike48 API (legacy variable name, refers to Strike48's API endpoint)
+- `MATRIX_TENANT_ID` — Same tenant identifier as `STRIKE48_TENANT` (legacy variable, kept for backward compatibility)
 - `RUST_LOG` — Tracing filter, default `debug` for development
 
 `run-pentest.sh` provides safe defaults pointing at `localhost` so the script
