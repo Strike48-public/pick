@@ -99,7 +99,11 @@ fn render_tool_call(tc: &ToolCallInfo, expanded_tools: &mut Signal<Vec<String>>)
         ToolCallStatus::Failed => "tool-status-error",
         _ => "tool-status-pending",
     };
-    let status_display = status.to_string();
+    let status_display = match status {
+        ToolCallStatus::Success => "success".to_string(),
+        ToolCallStatus::Failed => "failed".to_string(),
+        _ => "running".to_string(),
+    };
 
     rsx! {
         div { class: "chat-tool-call",
