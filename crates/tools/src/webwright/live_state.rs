@@ -1,10 +1,11 @@
 //! Global live state for webwright execution progress.
 //!
-//! Provides a shared channel between the tool execution (sidecar) and the UI.
-//! The chat panel subscribes to updates and renders them reactively.
+//! Supports multiple concurrent tasks keyed by task_id.
+//! Each tool call widget subscribes to its own task's progress.
 
 use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 use tokio::sync::watch;
 
 /// A single log entry in the rolling progress.
@@ -12,26 +13,6 @@ use tokio::sync::watch;
 pub struct LogEntry {
     pub step: u32,
     pub action: String,
-    pub timestamp: u64,
-}
-
-/// A single progress update from a running webwright task.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebwrightProgress {
-    /// Current step number (0 = initializing)
-    pub step: u32,
-    /// Human-readable description of what's happening
-    pub action: String,
-    /// Base64-encoded screenshot at this step (if available)
-    pub screenshot: Option<String>,
-    /// Accumulated findings so far
-    pub findings: Vec<WebwrightFinding>,
-    /// Rolling log of steps (latest at end, max 20)
-    pub log: Vec<LogEntry>,
-    /// Whether the task is still running
-    pub running: bool,
-    /// Task ID (for matching to the right widget)
-    pub task_id: String,
 }
 
 /// A finding discovered during execution.
@@ -41,12 +22,29 @@ pub struct WebwrightFinding {
     pub title: String,
 }
 
+/// Progress state for a single webwright task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebwrightProgress {
+    pub step: u32,
+    pub action: String,
+    /// Base64-encoded screenshot at this step (most recent)
+    pub screenshot: Option<String>,
+    /// All screenshots captured so far (base64, most recent first)
+    pub screenshots: Vec<String>,
+    pub findings: Vec<WebwrightFinding>,
+    /// Rolling log (last 20 entries)
+    pub log: Vec<LogEntry>,
+    pub running: bool,
+    pub task_id: String,
+}
+
 impl Default for WebwrightProgress {
     fn default() -> Self {
         Self {
             step: 0,
             action: String::new(),
             screenshot: None,
+            screenshots: Vec::new(),
             findings: Vec::new(),
             log: Vec::new(),
             running: false,
@@ -55,40 +53,75 @@ impl Default for WebwrightProgress {
     }
 }
 
-/// Global watch channel for live webwright progress.
-/// The sender is used by the sidecar event loop.
-/// The receiver is cloned by the chat panel to render live updates.
-static PROGRESS: LazyLock<(watch::Sender<WebwrightProgress>, watch::Receiver<WebwrightProgress>)> =
-    LazyLock::new(|| watch::channel(WebwrightProgress::default()));
+/// Registry of active task progress channels (sender + one receiver for peeking).
+static TASKS: LazyLock<Mutex<HashMap<String, (watch::Sender<WebwrightProgress>, watch::Receiver<WebwrightProgress>)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Get a receiver for live progress updates (used by UI).
-pub fn subscribe() -> watch::Receiver<WebwrightProgress> {
-    PROGRESS.1.clone()
+/// Get or create a receiver for a specific task's progress.
+pub fn subscribe(task_id: &str) -> watch::Receiver<WebwrightProgress> {
+    let mut tasks = TASKS.lock().unwrap();
+    let (tx, _rx) = tasks
+        .entry(task_id.to_string())
+        .or_insert_with(|| watch::channel(WebwrightProgress::default()));
+    tx.subscribe()
 }
 
-/// Push a progress update (used by sidecar event loop).
-pub fn update(progress: WebwrightProgress) {
-    let _ = PROGRESS.0.send(progress);
+/// Get the current state for a task.
+pub fn peek(task_id: &str) -> WebwrightProgress {
+    let tasks = TASKS.lock().unwrap();
+    tasks
+        .get(task_id)
+        .map(|(_, rx)| rx.borrow().clone())
+        .unwrap_or_default()
 }
 
-/// Signal that execution has started.
+/// Check if ANY task is currently running.
+pub fn any_running() -> bool {
+    let tasks = TASKS.lock().unwrap();
+    tasks.values().any(|(_, rx)| rx.borrow().running)
+}
+
+/// Get all currently running task IDs.
+pub fn running_tasks() -> Vec<String> {
+    let tasks = TASKS.lock().unwrap();
+    tasks
+        .iter()
+        .filter(|(_, (_, rx))| rx.borrow().running)
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// Push a progress update for a specific task.
+pub fn update(task_id: &str, progress: WebwrightProgress) {
+    let mut tasks = TASKS.lock().unwrap();
+    let (tx, _) = tasks
+        .entry(task_id.to_string())
+        .or_insert_with(|| watch::channel(WebwrightProgress::default()));
+    let _ = tx.send(progress);
+}
+
+/// Signal that a task has started.
 pub fn start(task_id: &str) {
-    let _ = PROGRESS.0.send(WebwrightProgress {
-        step: 0,
-        action: "initializing...".to_string(),
-        screenshot: None,
-        findings: Vec::new(),
-        log: Vec::new(),
-        running: true,
-        task_id: task_id.to_string(),
-    });
+    update(
+        task_id,
+        WebwrightProgress {
+            step: 0,
+            action: "initializing...".to_string(),
+            running: true,
+            task_id: task_id.to_string(),
+            ..Default::default()
+        },
+    );
 }
 
-/// Signal that execution has completed.
+/// Signal that a task has completed.
 pub fn complete(task_id: &str) {
-    let _ = PROGRESS.0.send(WebwrightProgress {
-        running: false,
-        task_id: task_id.to_string(),
-        ..WebwrightProgress::default()
-    });
+    let tasks = TASKS.lock().unwrap();
+    if let Some((tx, _)) = tasks.get(task_id) {
+        let _ = tx.send(WebwrightProgress {
+            running: false,
+            task_id: task_id.to_string(),
+            ..Default::default()
+        });
+    }
 }

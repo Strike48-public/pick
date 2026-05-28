@@ -719,3 +719,61 @@ print(json.dumps(summary))
     println!("  DOM snapshots: {}", dom_snaps.len());
     println!("===============================\n");
 }
+
+/// Test that parallel webwright tasks maintain independent progress state.
+#[tokio::test]
+async fn parallel_tasks_have_independent_progress() {
+    use pentest_tools::webwright::live_state;
+
+    // Start two tasks
+    live_state::start("task-a");
+    live_state::start("task-b");
+
+    // Update them independently
+    live_state::update("task-a", live_state::WebwrightProgress {
+        step: 5,
+        action: "task A step 5".to_string(),
+        running: true,
+        task_id: "task-a".to_string(),
+        ..Default::default()
+    });
+
+    live_state::update("task-b", live_state::WebwrightProgress {
+        step: 3,
+        action: "task B step 3".to_string(),
+        running: true,
+        task_id: "task-b".to_string(),
+        ..Default::default()
+    });
+
+    // Verify they're independent
+    let a = live_state::peek("task-a");
+    let b = live_state::peek("task-b");
+
+    assert_eq!(a.step, 5);
+    assert_eq!(a.action, "task A step 5");
+    assert_eq!(a.task_id, "task-a");
+
+    assert_eq!(b.step, 3);
+    assert_eq!(b.action, "task B step 3");
+    assert_eq!(b.task_id, "task-b");
+
+    // Both should be running
+    assert!(a.running);
+    assert!(b.running);
+    assert_eq!(live_state::running_tasks().len(), 2);
+
+    // Complete one — the other stays running
+    live_state::complete("task-a");
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let a_done = live_state::peek("task-a");
+    let b_still = live_state::peek("task-b");
+
+    assert!(!a_done.running);
+    assert!(b_still.running);
+    assert_eq!(b_still.step, 3);
+
+    // Clean up
+    live_state::complete("task-b");
+}

@@ -394,7 +394,7 @@ async fn try_sidecar_execution(
         return None;
     }
 
-    // Signal start for live UI
+    // Signal start for live UI (per-task)
     live_state::start(&workspace.task_id);
 
     // Subscribe and wait for completion
@@ -428,18 +428,15 @@ async fn try_sidecar_execution(
                     log.push(live_state::LogEntry {
                         step: *n,
                         action: action.clone(),
-                        timestamp: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
                     });
                     // Keep last 20 entries
                     if log.len() > 20 { log.remove(0); }
                 }
-                live_state::update(live_state::WebwrightProgress {
+                live_state::update(&workspace.task_id, live_state::WebwrightProgress {
                     step: *n,
                     action: if useful { action.clone() } else { "working...".to_string() },
                     screenshot: screenshot.clone(),
+                    screenshots: Vec::new(), // TODO: accumulate
                     findings: findings.clone(),
                     log: log.clone(),
                     running: true,
@@ -452,10 +449,11 @@ async fn try_sidecar_execution(
                     severity: severity.clone(),
                     title: title.clone(),
                 });
-                live_state::update(live_state::WebwrightProgress {
+                live_state::update(&workspace.task_id, live_state::WebwrightProgress {
                     step: 0,
                     action: format!("Found: {}", title),
                     screenshot: None,
+                    screenshots: Vec::new(),
                     findings: findings.clone(),
                     log: log.clone(),
                     running: true,

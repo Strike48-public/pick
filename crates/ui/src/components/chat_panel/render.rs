@@ -217,20 +217,31 @@ pub fn format_relative_time(iso: &str) -> String {
     format!("{}d ago", days)
 }
 
-/// Render the live progress widget or fallback to the standard thinking dots.
-/// When webwright is running via sidecar, shows a rich live feed of steps/screenshots.
+/// Render the live progress widget for a webwright tool call.
+/// Subscribes to the specific task's progress channel.
 pub fn render_live_progress(status_text: &str) -> Element {
-    // Poll the watch channel into a Dioxus signal for reactivity
+    // Find the most recent running task (or any task with progress)
     let mut progress_signal = use_signal(|| pentest_tools::webwright::live_state::WebwrightProgress::default());
 
     use_future(move || async move {
-        let mut rx = pentest_tools::webwright::live_state::subscribe();
         loop {
-            // Wait for changes
-            if rx.changed().await.is_err() {
-                break;
+            // Find active tasks and subscribe to one
+            let tasks = pentest_tools::webwright::live_state::running_tasks();
+            if let Some(task_id) = tasks.first() {
+                let mut rx = pentest_tools::webwright::live_state::subscribe(task_id);
+                loop {
+                    if rx.changed().await.is_err() {
+                        break;
+                    }
+                    let p = rx.borrow().clone();
+                    let still_running = p.running;
+                    progress_signal.set(p);
+                    if !still_running {
+                        break;
+                    }
+                }
             }
-            progress_signal.set(rx.borrow().clone());
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
     });
 
