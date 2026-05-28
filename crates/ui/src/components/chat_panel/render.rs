@@ -122,9 +122,13 @@ fn render_tool_call(tc: &ToolCallInfo, expanded_tools: &mut Signal<Vec<String>>)
                 span { class: "chat-tool-name", "{name}" }
                 span { class: "chat-tool-status {status_class}", "{status_display}" }
             }
-            // Show webwright screenshots ALWAYS (not just when expanded)
+            // Webwright: show live progress while running, screenshots when done
             if name == "webwright" {
-                if let Some(ref result_str) = result {
+                if result.is_none() && error.is_none() {
+                    // In-progress: show live widget
+                    {render_live_progress("")}
+                } else if let Some(ref result_str) = result {
+                    // Complete: show screenshot thumbnails
                     {render_webwright_screenshots(result_str)}
                 }
             }
