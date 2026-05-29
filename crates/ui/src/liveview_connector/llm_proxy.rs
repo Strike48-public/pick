@@ -163,7 +163,10 @@ async fn handle_llm_request(
         None => {
             // Auto-create a conversation for webwright's LLM calls
             tracing::info!("LLM proxy: creating conversation for webwright");
-            match client.create_conversation(Some("webwright-browser-agent")).await {
+            match client
+                .create_conversation(Some("webwright-browser-agent"))
+                .await
+            {
                 Ok(id) => {
                     let mut conv_guard = state.conversation_id.write().await;
                     *conv_guard = Some(id.clone());
@@ -184,19 +187,17 @@ async fn handle_llm_request(
     };
     let agent_id = match agent_id {
         Some(id) => id,
-        None => {
-            match upsert_webwright_agent(client).await {
-                Ok(id) => {
-                    let mut guard = state.agent_id.write().await;
-                    *guard = Some(id.clone());
-                    id
-                }
-                Err(e) => {
-                    tracing::error!("LLM proxy: failed to upsert webwright agent: {}", e);
-                    String::new()
-                }
+        None => match upsert_webwright_agent(client).await {
+            Ok(id) => {
+                let mut guard = state.agent_id.write().await;
+                *guard = Some(id.clone());
+                id
             }
-        }
+            Err(e) => {
+                tracing::error!("LLM proxy: failed to upsert webwright agent: {}", e);
+                String::new()
+            }
+        },
     };
 
     // Send to Strike48 and get response
@@ -247,9 +248,7 @@ Output your actions as structured JSON with thought, python_code, and done field
 Generate clean, replayable Playwright scripts for any vulnerabilities found.";
 
 /// Find or create the webwright browser exploration agent.
-async fn upsert_webwright_agent(
-    client: &MatrixChatClient,
-) -> pentest_core::error::Result<String> {
+async fn upsert_webwright_agent(client: &MatrixChatClient) -> pentest_core::error::Result<String> {
     use pentest_core::matrix::CreateAgentInput;
 
     // Check if the agent already exists

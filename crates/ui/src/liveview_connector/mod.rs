@@ -686,9 +686,7 @@ impl LiveViewConnector {
             agent_id: Arc::new(RwLock::new(None)),
         };
         let llm_proxy_router = llm_proxy::create_llm_proxy_routes(llm_state);
-        let llm_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .ok();
+        let llm_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.ok();
         if let Some(listener) = llm_listener {
             let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
             // Store port so webwright tool can read it

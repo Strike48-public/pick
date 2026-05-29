@@ -173,12 +173,13 @@ pub async fn run_event_loop(
                     message,
                     ..
                 } => {
-                    signals.terminal_lines.write().push(
-                        TerminalLine::info(format!(
+                    signals
+                        .terminal_lines
+                        .write()
+                        .push(TerminalLine::info(format!(
                             "[tool] {} step {}: {}",
                             tool_name, step, message
-                        )),
-                    );
+                        )));
                 }
             },
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,

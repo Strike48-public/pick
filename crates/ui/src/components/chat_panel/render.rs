@@ -8,7 +8,11 @@ use pulldown_cmark::{html, Options, Parser};
 // Message rendering with rich parts
 // ---------------------------------------------------------------------------
 
-pub fn render_message(msg: &ChatMessage, expanded_tools: &mut Signal<Vec<String>>) -> Element {
+pub fn render_message(
+    msg: &ChatMessage,
+    expanded_tools: &mut Signal<Vec<String>>,
+    show_sender: bool,
+) -> Element {
     let is_user = msg.sender_type == "USER";
     let bubble_class = if is_user {
         "chat-bubble chat-bubble-user"
@@ -28,7 +32,9 @@ pub fn render_message(msg: &ChatMessage, expanded_tools: &mut Signal<Vec<String>
             div {
                 key: "{msg_id}",
                 class: "{bubble_class}",
-                div { class: "chat-bubble-sender", "{sender}" }
+                if show_sender {
+                    div { class: "chat-bubble-sender", "{sender}" }
+                }
                 div {
                     class: "chat-bubble-text chat-markdown",
                     dangerous_inner_html: "{html}",
@@ -48,7 +54,9 @@ pub fn render_message(msg: &ChatMessage, expanded_tools: &mut Signal<Vec<String>
         div {
             key: "{msg_id}",
             class: "{bubble_class}",
-            div { class: "chat-bubble-sender", "{sender}" }
+            if show_sender {
+                div { class: "chat-bubble-sender", "{sender}" }
+            }
             for part in msg.parts.iter() {
                 {match part {
                     MessagePart::Text(text) => {

@@ -101,10 +101,7 @@ impl SidecarProcess {
 
         // Build the proot command that runs the sidecar server
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let rootfs = format!(
-            "{}/.local/share/pentest-sandbox/blackarch-rootfs",
-            home
-        );
+        let rootfs = format!("{}/.local/share/pentest-sandbox/blackarch-rootfs", home);
         let proot_bin = format!("{}/.local/share/pentest-sandbox/bin/proot", home);
 
         // The sidecar_server.py is embedded in the rootfs at a known path
@@ -126,13 +123,21 @@ impl SidecarProcess {
         let mut child = Command::new(&proot_bin)
             .args([
                 "-0",
-                "-r", &rootfs,
-                "-b", "/dev",
-                "-b", "/proc",
-                "-b", "/sys",
-                "-b", "/etc/resolv.conf",
-                "-w", "/tmp",
-                "/bin/bash", "-c", &cmd_str,
+                "-r",
+                &rootfs,
+                "-b",
+                "/dev",
+                "-b",
+                "/proc",
+                "-b",
+                "/sys",
+                "-b",
+                "/etc/resolv.conf",
+                "-w",
+                "/tmp",
+                "/bin/bash",
+                "-c",
+                &cmd_str,
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -175,7 +180,9 @@ impl SidecarProcess {
                 break;
             }
             if tokio::time::Instant::now() > deadline {
-                return Err(Error::ToolExecution("Sidecar did not become ready in 10s".into()));
+                return Err(Error::ToolExecution(
+                    "Sidecar did not become ready in 10s".into(),
+                ));
             }
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
@@ -265,7 +272,8 @@ mod tests {
 
     #[test]
     fn event_deserializes_complete() {
-        let line = r#"{"type":"complete","summary":"Found 3 vulns","artifacts":{"scripts":["a.py"]}}"#;
+        let line =
+            r#"{"type":"complete","summary":"Found 3 vulns","artifacts":{"scripts":["a.py"]}}"#;
         let event = SidecarEvent::from_json_line(line).unwrap();
         match event {
             SidecarEvent::Complete { summary, .. } => {

@@ -141,8 +141,14 @@ pub async fn ensure_webwright_installed(platform: &impl CommandExec) -> Result<(
 
     match pw_install {
         Ok(r) if r.exit_code == 0 => info!("Playwright Chromium installed"),
-        Ok(r) => warn!("Playwright browser install returned {}: {}", r.exit_code, r.stderr),
-        Err(e) => warn!("Playwright browser install failed: {} (browser may not work)", e),
+        Ok(r) => warn!(
+            "Playwright browser install returned {}: {}",
+            r.exit_code, r.stderr
+        ),
+        Err(e) => warn!(
+            "Playwright browser install failed: {} (browser may not work)",
+            e
+        ),
     }
 
     Ok(())

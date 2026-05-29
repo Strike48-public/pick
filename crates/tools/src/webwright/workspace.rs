@@ -46,8 +46,7 @@ impl WebwrightWorkspace {
         );
 
         // Also create in connector workspace (for Files panel) — we'll copy after
-        let connector_dir = connector_workspace
-            .map(|ws| ws.join("webwright").join(&task_id));
+        let connector_dir = connector_workspace.map(|ws| ws.join("webwright").join(&task_id));
         if let Some(ref cd) = connector_dir {
             std::fs::create_dir_all(cd)
                 .map_err(|e| Error::ToolExecution(format!("Failed to create workspace: {}", e)))?;
@@ -152,7 +151,10 @@ impl WebwrightWorkspace {
             let filename = file.rsplit('/').next().unwrap_or(file);
             if filename.ends_with(".py") && filename != "script.py" {
                 scripts.push(visible_path.clone());
-            } else if filename.ends_with(".png") || filename.ends_with(".jpg") || filename.ends_with(".jpeg") {
+            } else if filename.ends_with(".png")
+                || filename.ends_with(".jpg")
+                || filename.ends_with(".jpeg")
+            {
                 screenshots.push(visible_path.clone());
             } else if filename.ends_with(".json") || filename.ends_with(".log") {
                 logs.push(visible_path.clone());
@@ -197,10 +199,14 @@ impl WebwrightWorkspace {
                 }
                 count
             }
-            let count = copy_dir(std::path::Path::new(&self.host_dir), std::path::Path::new(dest));
+            let count = copy_dir(
+                std::path::Path::new(&self.host_dir),
+                std::path::Path::new(dest),
+            );
             tracing::info!(
                 "[webwright] copied {} files from rootfs to connector workspace: {}",
-                count, dest
+                count,
+                dest
             );
         }
     }
@@ -221,8 +227,13 @@ mod tests {
         let ws = WebwrightWorkspace {
             task_id: "test-123".to_string(),
             sandbox_dir: "/tmp/webwright/test-123".to_string(),
-            host_dir: "/home/user/.local/share/pentest-sandbox/blackarch-rootfs/tmp/webwright/test-123".to_string(),
-            connector_dir: Some("/home/user/.local/share/pentest-connector/workspaces/abc/webwright/test-123".to_string()),
+            host_dir:
+                "/home/user/.local/share/pentest-sandbox/blackarch-rootfs/tmp/webwright/test-123"
+                    .to_string(),
+            connector_dir: Some(
+                "/home/user/.local/share/pentest-connector/workspaces/abc/webwright/test-123"
+                    .to_string(),
+            ),
         };
         assert_eq!(ws.config_path(), "/tmp/webwright/test-123/config.yaml");
         assert_eq!(ws.script_path(), "/tmp/webwright/test-123/script.py");

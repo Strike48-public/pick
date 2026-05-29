@@ -730,21 +730,27 @@ async fn parallel_tasks_have_independent_progress() {
     live_state::start("task-b");
 
     // Update them independently
-    live_state::update("task-a", live_state::WebwrightProgress {
-        step: 5,
-        action: "task A step 5".to_string(),
-        running: true,
-        task_id: "task-a".to_string(),
-        ..Default::default()
-    });
+    live_state::update(
+        "task-a",
+        live_state::WebwrightProgress {
+            step: 5,
+            action: "task A step 5".to_string(),
+            running: true,
+            task_id: "task-a".to_string(),
+            ..Default::default()
+        },
+    );
 
-    live_state::update("task-b", live_state::WebwrightProgress {
-        step: 3,
-        action: "task B step 3".to_string(),
-        running: true,
-        task_id: "task-b".to_string(),
-        ..Default::default()
-    });
+    live_state::update(
+        "task-b",
+        live_state::WebwrightProgress {
+            step: 3,
+            action: "task B step 3".to_string(),
+            running: true,
+            task_id: "task-b".to_string(),
+            ..Default::default()
+        },
+    );
 
     // Verify they're independent
     let a = live_state::peek("task-a");

@@ -316,7 +316,8 @@ fn build_env_exports() -> String {
         }
     } else {
         // Point at Pick's local LLM proxy (dynamic port stored in env)
-        let proxy_port = std::env::var("PICK_LLM_PROXY_PORT").unwrap_or_else(|_| "9100".to_string());
+        let proxy_port =
+            std::env::var("PICK_LLM_PROXY_PORT").unwrap_or_else(|_| "9100".to_string());
         exports.push(format!(
             "export OPENAI_BASE_URL={}",
             shell_escape(&format!("http://127.0.0.1:{}/v1", proxy_port))
@@ -331,7 +332,10 @@ fn build_env_exports() -> String {
     // - SSL_CERT_FILE/SSL_CERT_DIR: NixOS paths don't exist in proot
     // - TMPDIR: NixOS nix-shell paths don't exist in proot
     // - DISPLAY/WAYLAND_DISPLAY: headless, no display needed
-    exports.push("unset SSL_CERT_FILE SSL_CERT_DIR TMPDIR DISPLAY WAYLAND_DISPLAY XDG_RUNTIME_DIR".to_string());
+    exports.push(
+        "unset SSL_CERT_FILE SSL_CERT_DIR TMPDIR DISPLAY WAYLAND_DISPLAY XDG_RUNTIME_DIR"
+            .to_string(),
+    );
     exports.push("export TMPDIR=/tmp".to_string());
     exports.push("export HOME=/root".to_string());
     // Chromium needs --no-sandbox in proot (no real namespaces available).
@@ -369,7 +373,10 @@ async fn try_sidecar_execution(
                 *guard = Some(proc);
             }
             Err(e) => {
-                tracing::warn!("[webwright-sidecar] failed to spawn: {}, falling back to subprocess", e);
+                tracing::warn!(
+                    "[webwright-sidecar] failed to spawn: {}, falling back to subprocess",
+                    e
+                );
                 return None;
             }
         }
@@ -420,51 +427,67 @@ async fn try_sidecar_execution(
         };
 
         match &event {
-            SidecarEvent::Step { n, action, screenshot } => {
+            SidecarEvent::Step {
+                n,
+                action,
+                screenshot,
+            } => {
                 tracing::info!("[webwright-sidecar] step {}: {}", n, action);
                 // Skip useless lines (UUIDs, blank lines, directory paths)
-                let useful = !action.is_empty()
-                    && !action.contains("_2026")
-                    && action.len() > 5;
+                let useful = !action.is_empty() && !action.contains("_2026") && action.len() > 5;
                 if useful {
                     log.push(live_state::LogEntry {
                         step: *n,
                         action: action.clone(),
                     });
                     // Keep last 20 entries
-                    if log.len() > 20 { log.remove(0); }
+                    if log.len() > 20 {
+                        log.remove(0);
+                    }
                 }
                 // Accumulate screenshots into the gallery
                 if let Some(ref shot) = screenshot {
                     screenshots.push(shot.clone());
                 }
-                live_state::update(&workspace.task_id, live_state::WebwrightProgress {
-                    step: *n,
-                    action: if useful { action.clone() } else { "working...".to_string() },
-                    screenshot: screenshot.clone(),
-                    screenshots: screenshots.clone(),
-                    findings: findings.clone(),
-                    log: log.clone(),
-                    running: true,
-                    task_id: workspace.task_id.clone(),
-                });
+                live_state::update(
+                    &workspace.task_id,
+                    live_state::WebwrightProgress {
+                        step: *n,
+                        action: if useful {
+                            action.clone()
+                        } else {
+                            "working...".to_string()
+                        },
+                        screenshot: screenshot.clone(),
+                        screenshots: screenshots.clone(),
+                        findings: findings.clone(),
+                        log: log.clone(),
+                        running: true,
+                        task_id: workspace.task_id.clone(),
+                    },
+                );
             }
-            SidecarEvent::Finding { severity, title, .. } => {
+            SidecarEvent::Finding {
+                severity, title, ..
+            } => {
                 tracing::info!("[webwright-sidecar] finding: [{}] {}", severity, title);
                 findings.push(live_state::WebwrightFinding {
                     severity: severity.clone(),
                     title: title.clone(),
                 });
-                live_state::update(&workspace.task_id, live_state::WebwrightProgress {
-                    step: 0,
-                    action: format!("Found: {}", title),
-                    screenshot: None,
-                    screenshots: Vec::new(),
-                    findings: findings.clone(),
-                    log: log.clone(),
-                    running: true,
-                    task_id: workspace.task_id.clone(),
-                });
+                live_state::update(
+                    &workspace.task_id,
+                    live_state::WebwrightProgress {
+                        step: 0,
+                        action: format!("Found: {}", title),
+                        screenshot: None,
+                        screenshots: Vec::new(),
+                        findings: findings.clone(),
+                        log: log.clone(),
+                        running: true,
+                        task_id: workspace.task_id.clone(),
+                    },
+                );
             }
             SidecarEvent::Complete { summary, .. } => {
                 tracing::info!("[webwright-sidecar] complete: {}", summary);
