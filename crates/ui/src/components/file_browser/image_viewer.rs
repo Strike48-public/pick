@@ -61,10 +61,11 @@ pub(super) fn ImageViewer(props: ImageViewerProps) -> Element {
             div { class: "file-toolbar",
                 button {
                     class: "file-toolbar-back",
+                    title: "Back to files",
                     onclick: move |_| {
                         on_back.call(());
                     },
-                    "\u{2190}"
+                    "← Back"
                 }
                 span { class: "file-toolbar-name", "{filename}" }
                 if let Some((b64, mime, _size, _modified)) = image_data.read().as_ref() {
