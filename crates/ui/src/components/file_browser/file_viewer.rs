@@ -62,10 +62,11 @@ pub(super) fn FileViewer(props: FileViewerProps) -> Element {
             div { class: "file-toolbar",
                 button {
                     class: "file-toolbar-back",
+                    title: "Back to files",
                     onclick: move |_| {
                         on_back.call(());
                     },
-                    "\u{2190}"
+                    "← Back"
                 }
                 span { class: "file-toolbar-name", "{filename}" }
                 span { class: "file-toolbar-meta", "{syntax_name}" }
