@@ -1,6 +1,7 @@
 //! Tool execution routing and result formatting.
 
 use crate::ipc::{IpcAddr, IpcStream};
+use pentest_core::strikekit_client::StrikeKitClient;
 use pentest_core::tools::{ToolContext, ToolRegistry, ToolResult};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -261,6 +262,18 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
             }
         };
 
+        // Upload artifacts to StrikeKit in the background if engagement context is available.
+        // This handles webwright screenshots, scripts, and DOM snapshots.
+        if result.success && tool_name == "webwright" {
+            if let Some(engagement_id) = extract_engagement_id(&req.context) {
+                let sk_client = StrikeKitClient::new(Arc::clone(&matrix_tx));
+                let artifacts = result.data.get("artifacts").cloned().unwrap_or_default();
+                tokio::spawn(async move {
+                    upload_artifacts_to_strikekit(sk_client, &engagement_id, &artifacts).await;
+                });
+            }
+        }
+
         serde_json::to_vec(&result).unwrap_or_default()
     };
 
@@ -394,12 +407,105 @@ impl LiveViewConnector {
     }
 }
 
+/// Extract engagement_id from the execute request context.
+/// Checks both a top-level key and the nested agent_context JSON.
+fn extract_engagement_id(context: &HashMap<String, String>) -> Option<String> {
+    // Direct key
+    if let Some(eid) = context.get("engagement_id") {
+        return Some(eid.clone());
+    }
+    // Nested in agent_context JSON
+    let agent_ctx_str = context.get("agent_context")?;
+    let parsed: Value = serde_json::from_str(agent_ctx_str).ok()?;
+    parsed
+        .get("engagement_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Upload webwright artifacts (screenshots, scripts, DOM snapshots) to StrikeKit.
+async fn upload_artifacts_to_strikekit(
+    client: StrikeKitClient,
+    engagement_id: &str,
+    artifacts: &Value,
+) {
+    let mut count = 0;
+
+    // Screenshots
+    if let Some(paths) = artifacts["screenshots"].as_array() {
+        for path_val in paths {
+            if let Some(path) = path_val.as_str() {
+                client
+                    .upload_file(engagement_id, path, "screenshot", "webwright")
+                    .await;
+                count += 1;
+            }
+        }
+    }
+
+    // Scripts
+    if let Some(paths) = artifacts["scripts"].as_array() {
+        for path_val in paths {
+            if let Some(path) = path_val.as_str() {
+                client
+                    .upload_file(engagement_id, path, "code", "webwright")
+                    .await;
+                count += 1;
+            }
+        }
+    }
+
+    // DOM snapshots
+    if let Some(paths) = artifacts["dom_snapshots"].as_array() {
+        for path_val in paths {
+            if let Some(path) = path_val.as_str() {
+                client
+                    .upload_file(engagement_id, path, "file", "webwright")
+                    .await;
+                count += 1;
+            }
+        }
+    }
+
+    if count > 0 {
+        tracing::info!(
+            "[strikekit] Uploaded {} webwright artifacts for engagement {}",
+            count,
+            engagement_id
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn tool_payload_limit_value() {
-        // Verify the defensive limit constant is set correctly
-        const MAX_TOOL_PAYLOAD: usize = 5 * 1024 * 1024; // 5 MB
+        const MAX_TOOL_PAYLOAD: usize = 5 * 1024 * 1024;
         assert_eq!(MAX_TOOL_PAYLOAD, 5_242_880);
+    }
+
+    #[test]
+    fn extract_engagement_id_direct() {
+        let mut ctx = HashMap::new();
+        ctx.insert("engagement_id".to_string(), "abc-123".to_string());
+        assert_eq!(extract_engagement_id(&ctx), Some("abc-123".to_string()));
+    }
+
+    #[test]
+    fn extract_engagement_id_from_agent_context() {
+        let mut ctx = HashMap::new();
+        ctx.insert(
+            "agent_context".to_string(),
+            r#"{"engagement_id":"xyz-789","phase":"recon"}"#.to_string(),
+        );
+        assert_eq!(extract_engagement_id(&ctx), Some("xyz-789".to_string()));
+    }
+
+    #[test]
+    fn extract_engagement_id_missing() {
+        let ctx = HashMap::new();
+        assert_eq!(extract_engagement_id(&ctx), None);
     }
 }

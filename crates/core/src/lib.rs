@@ -21,6 +21,7 @@ pub mod seed;
 pub mod settings;
 pub mod specialist_spawner;
 pub mod state;
+pub mod strikekit_client;
 pub mod terminal;
 pub mod theme_loader;
 pub mod timeout;
