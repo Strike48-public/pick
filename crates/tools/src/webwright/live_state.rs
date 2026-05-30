@@ -38,16 +38,14 @@ pub struct WebwrightProgress {
     pub task_id: String,
 }
 
-type TaskRegistry = HashMap<
-    String,
-    (
-        watch::Sender<WebwrightProgress>,
-        watch::Receiver<WebwrightProgress>,
-    ),
->;
+type TaskChannel = (
+    watch::Sender<WebwrightProgress>,
+    watch::Receiver<WebwrightProgress>,
+);
 
 /// Registry of active task progress channels (sender + one receiver for peeking).
-static TASKS: LazyLock<Mutex<TaskRegistry>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static TASKS: LazyLock<Mutex<HashMap<String, TaskChannel>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Get or create a receiver for a specific task's progress.
 pub fn subscribe(task_id: &str) -> watch::Receiver<WebwrightProgress> {

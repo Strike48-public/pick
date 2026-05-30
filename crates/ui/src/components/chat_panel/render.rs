@@ -215,6 +215,7 @@ pub fn format_relative_time(iso: &str) -> String {
 pub fn WebwrightGallery(result: Option<String>, error: Option<String>) -> Element {
     // Modal state: (all_images as data URIs, current index)
     let mut modal_open = use_signal(|| Option::<(Vec<String>, usize)>::None);
+    #[allow(clippy::redundant_closure)]
     let mut progress_signal =
         use_signal(pentest_tools::webwright::live_state::WebwrightProgress::default);
 
