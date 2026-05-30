@@ -223,6 +223,13 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
         ctx.metadata
             .insert("instance_id".to_string(), instance_id.clone());
 
+        // Forward session token from execute request context (if provided by StrikeKit)
+        // so tools like webwright can authenticate with the LLM proxy.
+        if let Some(token) = req.context.get("session_token") {
+            ctx.metadata
+                .insert("session_token".to_string(), token.clone());
+        }
+
         // Set aggression level
         ctx = ctx.with_aggression_level(aggression_level);
 

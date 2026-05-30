@@ -130,7 +130,10 @@ impl PentestTool for WebwrightTool {
             tracing::info!("[webwright] workspace created: sandbox={} host={}", workspace.path(), workspace.host_path());
 
             // Build env vars for webwright (forward API keys from Pick's environment)
-            let env_exports = build_env_exports();
+            // If a session token was provided in the tool context (from StrikeKit),
+            // pass it as the OPENAI_API_KEY so the LLM proxy can authenticate.
+            let session_token = ctx.metadata.get("session_token").cloned();
+            let env_exports = build_env_exports(session_token.as_deref());
 
             // Build command based on mode
             let (args, probe_desc) = match mode.as_str() {
@@ -292,7 +295,7 @@ impl PentestTool for WebwrightTool {
 /// 2. Otherwise, point at Pick's local LLM proxy (port 3030) with a dummy key
 ///
 /// The local proxy translates OpenAI requests → Strike48 conversation messages.
-fn build_env_exports() -> String {
+fn build_env_exports(session_token: Option<&str>) -> String {
     let mut exports = Vec::new();
 
     // Check if user provided their own API key
@@ -322,10 +325,10 @@ fn build_env_exports() -> String {
             "export OPENAI_BASE_URL={}",
             shell_escape(&format!("http://127.0.0.1:{}/v1", proxy_port))
         ));
-        exports.push(format!(
-            "export OPENAI_API_KEY={}",
-            shell_escape("pick-internal")
-        ));
+        // Use the session token as the API key if available (the LLM proxy
+        // will use it as a Matrix auth token). Otherwise use dummy key.
+        let api_key = session_token.unwrap_or("pick-internal");
+        exports.push(format!("export OPENAI_API_KEY={}", shell_escape(api_key)));
     }
 
     // Sanitize host env vars that leak into proot and cause issues:

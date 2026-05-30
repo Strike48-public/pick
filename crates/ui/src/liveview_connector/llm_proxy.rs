@@ -4,7 +4,12 @@
 //! Completions format. Translates requests into conversation messages via
 //! the Matrix client.
 
-use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    routing::post,
+    Json, Router,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -107,6 +112,7 @@ fn extract_prompt_from_input(input: &Value) -> String {
 /// forward to Strike48 via conversation, and return a Responses-format reply.
 async fn handle_llm_request(
     State(state): State<LlmProxyState>,
+    headers: HeaderMap,
     Json(request): Json<ResponsesApiRequest>,
 ) -> Result<Json<ResponsesApiResponse>, StatusCode> {
     // Extract prompt from input
@@ -123,34 +129,44 @@ async fn handle_llm_request(
         prompt.len()
     );
 
-    // Get Matrix client (try shared state first, fall back to session token)
-    let client_guard = state.matrix_client.read().await;
-    if client_guard.is_none() {
-        drop(client_guard);
-        // Try initializing from session token (set when iframe loads)
-        let token = crate::session::get_auth_token();
-        if !token.is_empty() {
-            let api_url = std::env::var("MATRIX_API_URL").unwrap_or_default();
-            if !api_url.is_empty() {
-                let mut client = MatrixChatClient::new(&api_url);
-                client.set_auth_token(&token);
-                let mut guard = state.matrix_client.write().await;
-                *guard = Some(client);
-                tracing::info!("LLM proxy: initialized matrix client from session token");
-            }
-        }
-    } else {
-        drop(client_guard);
-    }
+    // Check for Authorization header — if caller provides a real token (not
+    // the dummy "pick-internal"), use it directly as the Matrix session token.
+    let bearer_token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|t| *t != "pick-internal" && !t.is_empty())
+        .map(|t| t.to_string());
 
-    let client_guard = state.matrix_client.read().await;
-    let client = match client_guard.as_ref() {
-        Some(c) => c,
+    // Resolve the auth token for this request.
+    // Priority: 1) Bearer token from request header, 2) global session token
+    let effective_token = bearer_token.or_else(|| {
+        let t = crate::session::get_auth_token();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    });
+
+    let effective_token = match effective_token {
+        Some(t) => t,
         None => {
-            tracing::error!("LLM proxy: Matrix client not available (no session token)");
+            tracing::error!(
+                "LLM proxy: no auth token available (no bearer header, no session token)"
+            );
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
     };
+
+    let api_url = std::env::var("MATRIX_API_URL").unwrap_or_default();
+    if api_url.is_empty() {
+        tracing::error!("LLM proxy: MATRIX_API_URL not set");
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    let mut client = MatrixChatClient::new(&api_url);
+    client.set_auth_token(&effective_token);
 
     // Get or create conversation (auto-create on first use)
     let conv_id = {
@@ -187,7 +203,7 @@ async fn handle_llm_request(
     };
     let agent_id = match agent_id {
         Some(id) => id,
-        None => match upsert_webwright_agent(client).await {
+        None => match upsert_webwright_agent(&client).await {
             Ok(id) => {
                 let mut guard = state.agent_id.write().await;
                 *guard = Some(id.clone());
