@@ -271,6 +271,13 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
 
         // Upload artifacts to StrikeKit in the background if engagement context is available.
         // This handles webwright screenshots, scripts, and DOM snapshots.
+        if tool_name == "webwright" {
+            tracing::info!(
+                "[strikekit] webwright completed: success={}, has_engagement_id={}",
+                result.success,
+                extract_engagement_id(&req.context).is_some()
+            );
+        }
         if result.success && tool_name == "webwright" {
             if let Some(engagement_id) = extract_engagement_id(&req.context) {
                 let sk_client = StrikeKitClient::new(Arc::clone(&matrix_tx));
