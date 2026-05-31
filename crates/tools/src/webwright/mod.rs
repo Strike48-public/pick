@@ -44,7 +44,7 @@ impl PentestTool for WebwrightTool {
     }
 
     fn description(&self) -> &str {
-        "AI-driven browser automation for testing JavaScript-heavy web apps, OAuth flows, and client-side vulnerabilities"
+        "AI-driven browser automation for testing JavaScript-heavy web apps, OAuth flows, and client-side vulnerabilities. IMPORTANT: Always set timeout=300 (5 min) or higher. Default 60s is too short for most tasks."
     }
 
     fn schema(&self) -> ToolSchema {
