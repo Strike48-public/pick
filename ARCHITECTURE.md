@@ -80,11 +80,11 @@ pick/
 #### `crates/ui`
 - Dioxus UI components: Shared across all platforms
 - LiveView server: Headless mode serves UI over WebSocket
-- Themes: 8 built-in themes (Dark, Light, Matrix, etc.)
+- Themes: 9 built-in themes (Strike48, Dark, Light, Dracula, Gruvbox, TokyoNight, Matrix, Cyberpunk, Nord) plus custom theme support
 - Tool execution UI: Input forms, output display, evidence viewer
 
 #### `crates/tools`
-- Tool implementations: 80+ pentest tools
+- Tool implementations: 90+ pentest tools
 - External tool wrappers: BlackArch integrations (nmap, masscan, etc.)
 - Evidence producers: Convert tool output to evidence nodes
 - Three-agent pipeline: Red Team, Validator, Report agents
@@ -145,14 +145,21 @@ Tool Output → Evidence Node → Validator → Report Agent → Final Finding
 
 ### Evidence Node Structure
 
+The actual `EvidenceNode` struct from `crates/core/src/evidence.rs`:
+
 ```rust
 pub struct EvidenceNode {
-    pub id: String,              // Unique identifier
-    pub tool_name: String,       // Which tool produced this
-    pub timestamp: DateTime,     // When it was produced
-    pub data: serde_json::Value, // Tool-specific output
-    pub provenance: Provenance,  // Chain of custody
-    pub validation: Validation,  // Validator agent results
+    pub id: String,                           // Stable, globally unique identifier
+    pub node_type: String,                    // "finding", "host", "service", etc.
+    pub title: String,                        // One-line human-readable title
+    pub description: String,                  // Multi-paragraph report body content
+    pub affected_target: String,              // IP, CIDR, hostname, URL, etc.
+    pub severity_history: Vec<SeverityHistoryEntry>, // Ordered severity history
+    pub validation_status: ValidationStatus,  // Pending, Confirmed, Revised, etc.
+    pub confidence: f32,                      // 0.0..=1.0 confidence score
+    pub provenance: Option<Provenance>,       // Reproducibility metadata
+    pub metadata: HashMap<String, serde_json::Value>, // Tool-specific detail
+    pub created_at: DateTime<Utc>,            // Graph insertion timestamp
 }
 ```
 

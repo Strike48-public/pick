@@ -245,7 +245,7 @@ git pull origin main
 cargo build --release
 
 # Verify update
-./target/release/pentest-headless --version
+./target/release/pentest-agent --version
 ```
 
 ---
