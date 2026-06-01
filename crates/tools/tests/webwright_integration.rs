@@ -17,6 +17,7 @@ use serde_json::json;
 
 /// Test that execute mode runs a Python script and captures output.
 #[tokio::test]
+#[ignore = "Requires bwrap-capable sandbox to auto-install webwright - unavailable on GitHub Actions runners"]
 async fn execute_mode_runs_script_and_captures_output() {
     let tool = WebwrightTool;
     let ctx = ToolContext::default();
@@ -58,6 +59,7 @@ print(json.dumps(result))
 
 /// Test that execute mode script can create artifacts that get collected.
 #[tokio::test]
+#[ignore = "Requires bwrap-capable sandbox to auto-install webwright - unavailable on GitHub Actions runners"]
 async fn execute_mode_collects_script_artifacts() {
     let tool = WebwrightTool;
     let ctx = ToolContext::default();
@@ -312,6 +314,7 @@ async fn missing_start_url_rejected() {
 
 /// Test workspace creation and artifact collection with real filesystem.
 #[tokio::test]
+#[ignore = "Asserts on sandbox /tmp/webwright path; workspace only populates the rootfs host path - requires mounted sandbox"]
 async fn workspace_creates_and_collects_artifacts() {
     let platform = pentest_platform::get_platform();
 
@@ -537,6 +540,7 @@ fn findings_ingestion_maps_all_severity_levels() {
 
 /// End-to-end: Python script simulates full Webwright run, evidence flows through.
 #[tokio::test]
+#[ignore = "Requires bwrap-capable sandbox to auto-install webwright - unavailable on GitHub Actions runners"]
 async fn end_to_end_simulated_webwright_run() {
     let tool = WebwrightTool;
     let ctx = ToolContext::default();

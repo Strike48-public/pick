@@ -216,7 +216,7 @@ pub fn WebwrightGallery(result: Option<String>, error: Option<String>) -> Elemen
     // Modal state: (all_images as data URIs, current index)
     let mut modal_open = use_signal(|| Option::<(Vec<String>, usize)>::None);
     let mut progress_signal =
-        use_signal(|| pentest_tools::webwright::live_state::WebwrightProgress::default());
+        use_signal(pentest_tools::webwright::live_state::WebwrightProgress::default);
 
     let is_live = result.is_none() && error.is_none();
 

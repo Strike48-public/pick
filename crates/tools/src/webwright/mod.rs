@@ -119,6 +119,25 @@ impl PentestTool for WebwrightTool {
                 ));
             }
 
+            // Validate mode + mode-specific params before triggering auto-install,
+            // so misuse surfaces a clear error instead of being masked by an
+            // environment-dependent install failure (e.g. bwrap unavailable in CI).
+            if mode != "explore" && mode != "execute" {
+                return Err(pentest_core::error::Error::InvalidParams(
+                    "mode must be 'explore' or 'execute'".into(),
+                ));
+            }
+            if mode == "explore" && task.as_deref().unwrap_or("").is_empty() {
+                return Err(pentest_core::error::Error::InvalidParams(
+                    "task parameter is required for explore mode".into(),
+                ));
+            }
+            if mode == "execute" && script.as_deref().unwrap_or("").is_empty() {
+                return Err(pentest_core::error::Error::InvalidParams(
+                    "script parameter is required for execute mode".into(),
+                ));
+            }
+
             // Ensure webwright is installed (auto-installs in sandbox)
             tracing::info!("[webwright] checking installation...");
             install::ensure_webwright_installed(&platform).await?;
