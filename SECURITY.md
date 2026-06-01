@@ -19,7 +19,7 @@ We recommend always running the latest version from the `main` branch or the mos
 
 ### How to Report
 
-Send security vulnerability reports to: **security@strike48.com**
+Send security vulnerability reports to: **security@strike48.com** (or open a private security advisory on GitHub)
 
 ### What to Include
 
@@ -34,18 +34,22 @@ Please provide:
 
 ### Response Timeline
 
-- **Initial response:** Within 48 hours
-- **Status update:** Within 7 days
-- **Fix timeline:** Varies by severity (see below)
+As an open-source project, we aim for:
+
+- **Initial acknowledgment:** Within 7 days
+- **Status updates:** As investigation progresses
+- **Fix timeline:** Varies by severity and maintainer availability (see below)
+
+These are target timelines, not guarantees. We prioritize security issues but work on this project as capacity allows.
 
 ### Severity Levels
 
-| Level | Description | Fix Timeline |
-|-------|-------------|--------------|
-| **Critical** | Remote code execution, authentication bypass | 1-3 days |
-| **High** | Privilege escalation, sensitive data exposure | 7 days |
-| **Medium** | Information disclosure, DoS | 30 days |
-| **Low** | Minor issues with limited impact | 90 days |
+| Level | Description | Target Fix Timeline |
+|-------|-------------|---------------------|
+| **Critical** | Remote code execution, authentication bypass | As soon as possible |
+| **High** | Privilege escalation, sensitive data exposure | 1-2 weeks |
+| **Medium** | Information disclosure, DoS | 4-8 weeks |
+| **Low** | Minor issues with limited impact | Best effort |
 
 ---
 
@@ -185,23 +189,23 @@ Pick integrates 70+ external BlackArch tools. We do not audit third-party tool c
 
 ### Evidence Integrity
 
-- Immutable evidence nodes
-- Provenance tracking (chain of custody)
-- Cryptographic hashing of evidence data
-- Validator agent verifies evidence quality
+- Structured evidence lifecycle (validator-controlled state transitions)
+- Provenance tracking (tool version, command sequence, timestamps)
+- Validator agent verifies evidence quality before publication
+- Evidence nodes carry immutable provenance for reproduction
 
-### Audit Logging
+### Logging
 
-- All tool executions logged
-- Connector registration/unregistration logged
-- Evidence submission logged
-- Timestamps in UTC
+- Tool execution events logged with timestamps
+- Connector lifecycle events logged
+- Evidence generation logged
+- All timestamps in UTC
 
 ### Network Security
 
-- TLS 1.2+ required for production
+- TLS encryption for all network communication (enforced by underlying Rust TLS stack)
 - WebSocket Secure (wss://) for connector protocol
-- Certificate pinning (optional, Strike48 server configuration)
+- Certificate validation enabled by default (disable with `MATRIX_TLS_INSECURE` for dev/test only)
 
 ---
 
