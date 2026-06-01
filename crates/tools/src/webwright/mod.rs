@@ -44,7 +44,7 @@ impl PentestTool for WebwrightTool {
     }
 
     fn description(&self) -> &str {
-        "AI-driven browser automation for testing JavaScript-heavy web apps, OAuth flows, and client-side vulnerabilities. IMPORTANT: Always set timeout=300 (5 min) or higher. Default 60s is too short for most tasks."
+        "Headless browser (Playwright) for screenshots and web app testing. Only two modes: 'explore' and 'execute'. For screenshots, use mode=explore with a task like 'capture a screenshot of the page'. Always set timeout=300."
     }
 
     fn schema(&self) -> ToolSchema {
@@ -62,35 +62,35 @@ impl PentestTool for WebwrightTool {
             .param(ToolParam::required(
                 "mode",
                 ParamType::String,
-                "Execution mode: 'explore' (autonomous AI-driven) or 'execute' (replay script)",
+                "ONLY 'explore' or 'execute'. No other modes exist. Use 'explore' for screenshots, page analysis, navigation, and testing. Use 'execute' ONLY to replay a Python/Playwright script you provide in the 'script' parameter.",
             ))
             .param(ToolParam::required(
                 "start_url",
                 ParamType::String,
-                "Target URL to start browsing from (e.g., 'https://target.com')",
+                "Target URL (e.g., 'https://192.168.1.1:8443'). The browser navigates here first.",
             ))
             .param(ToolParam::optional(
                 "task",
                 ParamType::String,
-                "Natural language objective for explore mode (e.g., 'test all forms for XSS')",
+                "Required for explore mode. Natural language instruction for the browser agent. Examples: 'Capture a screenshot of this page and report what you see', 'Navigate to /admin and screenshot the login form', 'Test all input fields for XSS'.",
                 json!(""),
             ))
             .param(ToolParam::optional(
                 "script",
                 ParamType::String,
-                "Python/Playwright script content for execute mode",
+                "Required for execute mode ONLY. Full Python/Playwright script content to replay. Not used in explore mode.",
                 json!(""),
             ))
             .param(ToolParam::optional(
                 "max_steps",
                 ParamType::Integer,
-                "Maximum agent loop iterations for explore mode (default: 50)",
+                "Max AI reasoning steps for explore mode (default: 50)",
                 json!(50),
             ))
             .param(ToolParam::required(
                 "timeout",
                 ParamType::Integer,
-                "Timeout in seconds. MUST be set explicitly. Use 300 for most tasks, 600 for complex multi-page explorations.",
+                "Timeout in seconds. MUST be 300 or higher. Browser startup + navigation takes time.",
             ))
             .platforms(vec![Platform::Desktop, Platform::Android, Platform::Tui])
     }
