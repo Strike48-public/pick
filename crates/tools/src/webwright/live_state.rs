@@ -23,7 +23,7 @@ pub struct WebwrightFinding {
 }
 
 /// Progress state for a single webwright task.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WebwrightProgress {
     pub step: u32,
     pub action: String,
@@ -38,33 +38,16 @@ pub struct WebwrightProgress {
     pub task_id: String,
 }
 
-impl Default for WebwrightProgress {
-    fn default() -> Self {
-        Self {
-            step: 0,
-            action: String::new(),
-            screenshot: None,
-            screenshots: Vec::new(),
-            findings: Vec::new(),
-            log: Vec::new(),
-            running: false,
-            task_id: String::new(),
-        }
-    }
-}
+/// Sender + retained receiver pair, kept alive so `peek` and new subscribers
+/// can always observe the latest value.
+type ProgressChannel = (
+    watch::Sender<WebwrightProgress>,
+    watch::Receiver<WebwrightProgress>,
+);
 
 /// Registry of active task progress channels (sender + one receiver for peeking).
-static TASKS: LazyLock<
-    Mutex<
-        HashMap<
-            String,
-            (
-                watch::Sender<WebwrightProgress>,
-                watch::Receiver<WebwrightProgress>,
-            ),
-        >,
-    >,
-> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static TASKS: LazyLock<Mutex<HashMap<String, ProgressChannel>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Get or create a receiver for a specific task's progress.
 pub fn subscribe(task_id: &str) -> watch::Receiver<WebwrightProgress> {

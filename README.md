@@ -1,6 +1,8 @@
-# Dioxus Pentest Connector
+# Pick
 
-A multiplatform penetration testing connector application built with [Dioxus](https://dioxuslabs.com/) and integrated with the [Strike48 Connector SDK](https://github.com/strike48/strike48-rs).
+A multiplatform penetration testing connector built with [Dioxus](https://dioxuslabs.com/) and integrated with the [Strike48 Connector SDK](https://github.com/strike48/strike48-rs).
+
+**Pick** connects Strike48 to local penetration testing tools, executing them securely on the machine where it runs.
 
 ## Architecture
 
@@ -50,24 +52,44 @@ See [`docs/UI_FEATURES.md`](docs/UI_FEATURES.md) for complete customization guid
 
 ### Penetration Testing Tools
 
-The connector implements 9 penetration testing tools:
+Pick integrates **90+ penetration testing tools** across multiple categories:
 
-| Tool | Description |
-|------|-------------|
-| `port_scan` | TCP port scanning with concurrent connections |
-| `device_info` | System/device information gathering |
-| `wifi_scan` | WiFi network enumeration |
-| `arp_table` | ARP cache reading |
-| `ssdp_discover` | UPnP device discovery |
-| `network_discover` | mDNS service discovery |
-| `screenshot` | Screen capture (base64 PNG) |
-| `traffic_capture` | Network packet capture (requires privileges) |
-| `execute_command` | Shell command execution |
+**Native Tools (24):**
+- Network scanning (port_scan, arp_table, ssdp_discover, network_discover)
+- WiFi testing (wifi_scan, wifi_scan_detailed, autopwn suite)
+- Web vulnerability scanning
+- Credential testing and harvesting
+- Evidence collection (screenshot, traffic_capture)
+- System enumeration and command execution
+
+**External Tool Integrations (70+):**
+- **Network:** nmap, masscan, rustscan, unicornscan
+- **Web:** nikto, sqlmap, nuclei, ffuf, feroxbuster, gobuster
+- **WiFi:** aircrack-ng, bettercap, responder
+- **Enumeration:** subfinder, amass, enum4linux, smbmap
+- **Exploitation:** hydra, john, hashcat, crackmapexec
+- **And many more...**
+
+See [docs/TOOLS.md](docs/TOOLS.md) for the complete tool catalog.
+
+### Three-Agent Validation Pipeline
+
+Evidence quality assurance through specialized agents:
+- **Red Team Agent** - Tool execution and evidence generation
+- **Validator Agent** - Quality verification and validation
+- **Report Agent** - Finding synthesis and reporting
+
+### Recent Features
+
+- **Android Root Detection** (PR #123) - Detect rooted Android devices
+- **Agent ERROR Status Detection** (PR #134) - Surface token limit notices
+- **Strike48 Default Theme** (PR #120) - Professional default theme
+- **Chat Panel Routing** (PR #132) - Fixed LiveView event handling
 
 ## Project Structure
 
 ```
-dioxus-connector/
+pick/
 ├── crates/
 │   ├── core/          # Core types, state management, SDK integration
 │   ├── platform/      # Platform abstraction (desktop, android, ios)
@@ -79,7 +101,6 @@ dioxus-connector/
 │   ├── web/           # Web app (dioxus-liveview + axum)
 │   ├── tui/           # Terminal app (dioxus-tui)
 │   └── mobile/        # Mobile app (dioxus-mobile)
-└── EPIC_PLAN.md       # Detailed implementation plan
 ```
 
 ## Building
@@ -195,7 +216,7 @@ Environment variables:
 4. Tools can also be triggered remotely via the Strike48 API (e.g., by an AI agent)
 5. All tool execution happens locally on the machine running the app
 
-This is the same architecture as the [android-pentest-connector](../android-pentest-connector) - a native app that is both a UI and a connector.
+Pick is a native app that is both a UI and a connector - the same architecture proven in production environments.
 
 ## Development
 

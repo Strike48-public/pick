@@ -65,6 +65,11 @@ pub fn set_oauth_callback_port(port: u16) -> Result<()> {
     jni_bridge::set_oauth_callback_port(port)
 }
 
+// Root detection: see `system::RootStatus` and `system::check_root_access` for
+// full documentation, including the explicit warning that this is informational
+// and not a security boundary.
+pub use system::{check_root_access, RootStatus};
+
 /// Android platform provider
 pub struct AndroidPlatform;
 
