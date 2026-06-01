@@ -1,14 +1,15 @@
 # Pick Documentation
 
-Complete documentation for the Pick penetration testing connector.
+Complete documentation for Pick, the multiplatform penetration testing connector.
 
 ## Getting Started
 
-- **[Quick Install Guide](QUICK_INSTALL.md)** - Get running in 5 minutes
-- **[Installation Guide](INSTALLATION.md)** - Complete installation instructions, troubleshooting, and platform guides
-- **[Build Troubleshooting](BUILD_TROUBLESHOOTING.md)** - Fix common build errors (OpenSSL, pkg-config, protoc, linker issues)
-- **[Runtime Troubleshooting](RUNTIME_TROUBLESHOOTING.md)** - Fix runtime errors (workspace, resources, connections, permissions)
-- **[Main README](../README.md)** - Project overview, features, and architecture
+- **[Main README](../README.md)** - Project overview, features, and quick start
+- **[Quick Start](../RUNNING.md)** - Running Pick in 5 minutes
+- **[Installation Guide](INSTALLATION.md)** - Complete installation instructions
+- **[Contributing Guide](../CONTRIBUTING.md)** - How to contribute to Pick
+- **[Build Troubleshooting](BUILD_TROUBLESHOOTING.md)** - Fix common build errors
+- **[Runtime Troubleshooting](RUNTIME_TROUBLESHOOTING.md)** - Fix runtime errors
 
 ## User Guides
 
@@ -16,7 +17,15 @@ Complete documentation for the Pick penetration testing connector.
 - **[Autopwn Guide](AUTOPWN.md)** - Automated penetration testing workflows
 - **[Autopwn Testing](autopwn-testing-guide.md)** - Testing autopwn scenarios
 
-## Technical Documentation
+## Core Documentation
+
+- **[Architecture](../ARCHITECTURE.md)** - System design and implementation details
+- **[Tool Catalog](TOOLS.md)** - Complete list of 90+ integrated tools
+- **[Glossary](GLOSSARY.md)** - Terminology reference
+- **[Security Policy](../SECURITY.md)** - Vulnerability reporting and security best practices
+- **[System Architecture](SYSTEM_ARCHITECTURE.md)** - Detailed ecosystem architecture
+
+## Technical Guides
 
 - **[Network Restoration](network-restoration.md)** - WiFi recovery procedures
 - **[Token Expiration Fix](token-expiration-fix.md)** - Authentication troubleshooting
@@ -25,8 +34,8 @@ Complete documentation for the Pick penetration testing connector.
 
 ## Product & Planning
 
-- **[Customer Features](PICK_CUSTOMER_FEATURES.md)** - Feature roadmap and customer requests
-- **[Competitive Analysis](COMPETITIVE_ANALYSIS_TRIAGE.md)** - Market analysis and positioning
+- **[Customer Features](PICK_CUSTOMER_FEATURES.md)** - Feature roadmap
+- **[Security Audit Results](SECURITY_AUDIT_RESULTS.md)** - Security assessment findings
 
 ## Quick Reference
 

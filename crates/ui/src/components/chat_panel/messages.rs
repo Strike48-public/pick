@@ -43,7 +43,9 @@ pub fn MessageList(props: MessageListProps) -> Element {
     let agent_status_text = props.agent_status_text;
     let selected_agent = props.selected_agent;
 
-    // Auto-scroll effect: scroll down when new messages arrive or agent is thinking.
+    // Auto-scroll and chart post-process when new messages arrive or agent is thinking.
+    // Chart processing was previously per-bubble via `onmounted`, but that triggers a
+    // panic in dioxus-liveview 0.7.x convert_mounted_data on history reload (issue #130).
     let prev_msg_count = use_hook(|| std::cell::Cell::new(0usize));
     use_effect(move || {
         let current_count = messages.read().len();
@@ -55,6 +57,9 @@ pub fn MessageList(props: MessageListProps) -> Element {
                     document::eval("scrollToBottomIfNotScrolled('.chat-messages')").await
                 {
                     tracing::warn!("JS eval failed (auto-scroll): {e}");
+                }
+                if let Err(e) = document::eval("triggerChartPostProcess()").await {
+                    tracing::warn!("JS eval failed (chart post-process): {e}");
                 }
             });
         }

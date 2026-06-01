@@ -117,6 +117,66 @@
     };
 
     /**
+     * Install document-level delegated listeners for the chat textarea:
+     *  - `input` events auto-resize the textarea between 40px and 200px,
+     *  - `keydown` Enter (no Shift) dispatches a send,
+     *  - `click` on a `.chat-send-btn` dispatches a send.
+     *
+     * `sendCallback` is invoked with the textarea text on each send trigger.
+     * It is wired to `dioxus.send` by Rust so submissions return over the
+     * eval channel instead of through dioxus's broken `convert_form_data`
+     * path (#130). The callback is overwritten on every call so a re-mounted
+     * ChatInput points the listeners at the new eval's `dioxus.send`.
+     *
+     * Idempotent for the listener install; the callback rebind is intentional.
+     */
+    window.installChatSendBridge = function(sendCallback) {
+        window.__chatSendDispatch = sendCallback;
+        if (window.__chatSendBridgeInstalled) return;
+        window.__chatSendBridgeInstalled = true;
+
+        function fireSend() {
+            var el = document.querySelector('.chat-textarea');
+            if (!el || el.disabled) return;
+            var text = el.value;
+            if (!text || !text.trim()) return;
+            if (typeof window.__chatSendDispatch === 'function') {
+                window.__chatSendDispatch(text);
+            }
+        }
+
+        // Auto-resize on every keystroke.
+        document.addEventListener('input', function(e) {
+            var t = e.target;
+            if (t && t.classList && t.classList.contains('chat-textarea')) {
+                t.style.height = 'auto';
+                t.style.height = Math.min(Math.max(t.scrollHeight, 40), 200) + 'px';
+            }
+        });
+
+        // Enter (no Shift) inside the chat textarea sends.
+        document.addEventListener('keydown', function(e) {
+            var t = e.target;
+            if (t && t.classList && t.classList.contains('chat-textarea')
+                && e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                fireSend();
+            }
+        });
+
+        // Send button click sends. preventDefault stops the native form-submit
+        // path (button is type="submit") so we don't trigger any dioxus
+        // onsubmit listener — there shouldn't be one, but be defensive.
+        document.addEventListener('click', function(e) {
+            var t = e.target;
+            if (t && t.classList && t.classList.contains('chat-send-btn')) {
+                e.preventDefault();
+                fireSend();
+            }
+        });
+    };
+
+    /**
      * Trigger chart post-processing (mermaid + echarts) on the next animation frame.
      * Calls window.__processChatCharts if it has been defined by chart_processor.js.
      */

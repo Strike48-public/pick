@@ -337,7 +337,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // ---- connect handler ----
     let mut on_connect = move |(mut new_config, remember): (ConnectorConfig, bool)| {
         let device_id = settings.peek().device_id.clone();
-        new_config.instance_id = device_id;
 
         match ConnectorConfig::normalize_host(&new_config.host) {
             Ok(h) => new_config.host = h,
@@ -346,6 +345,12 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 return;
             }
         }
+
+        // Scope the connector identity per env so each Strike48 host gets its own
+        // credential + approval. A single global device_id reuses one credential
+        // for every env, so a token minted for env A is rejected by env B.
+        new_config.instance_id =
+            ConnectorConfig::env_scoped_instance_id(&device_id, &new_config.host);
         config.set(new_config.clone());
         status.set(ConnectorStatus::Connecting);
         connecting_step.set(Some(ConnectingStep::Connecting));

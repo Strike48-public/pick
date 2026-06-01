@@ -1,6 +1,6 @@
-# Quick Start Guide - Running the Pentest Connector
+# Quick Start Guide - Running Pick
 
-This guide shows the **easiest ways** to run the connector with proper WiFi hardware access.
+This guide shows the **easiest ways** to run Pick with proper WiFi hardware access.
 
 ---
 
@@ -91,10 +91,10 @@ cp .env.example .env
 
 **Option C - Using shell alias (add to ~/.bashrc or ~/.zshrc):**
 ```bash
-alias pentest='cd ~/Code/dioxus-connector && just run-headless-env'
+alias pick='cd ~/Code/pick && just run-headless-env'
 
 # Then just run:
-pentest
+pick
 ```
 
 ---
@@ -260,7 +260,7 @@ See [docs/BWRAP_SUDO_EXPLAINED.md](docs/BWRAP_SUDO_EXPLAINED.md) for technical d
 2. **Configure**: Edit `.env` file with your Strike48 instance
 3. **Create alias** (optional): Add to `~/.bashrc` or `~/.zshrc`:
    ```bash
-   alias pentest='cd ~/Code/dioxus-connector && ./run-pentest.sh headless'
+   alias pick='cd ~/Code/pick && ./run-pentest.sh headless'
    ```
 4. **Test WiFi tools**: Try `list_wifi_interfaces` or click "Autopwn"
 
