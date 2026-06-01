@@ -329,9 +329,9 @@ See [docs/GLOSSARY.md](docs/GLOSSARY.md) for complete variable reference.
 - `CONNECTOR_NAME` - Gateway identity name (default: `pentest-connector`)
 - `RUST_LOG` - Logging verbosity (default: `info`)
 
-**Legacy (Strike48 API):**
-- `MATRIX_API_URL` - Strike48 API endpoint (legacy name)
-- `MATRIX_TENANT_ID` - Tenant ID for API (legacy name)
+**Strike48 API (Matrix Protocol):**
+- `MATRIX_API_URL` - Strike48 GraphQL API endpoint (typically same server as STRIKE48_HOST)
+- `MATRIX_TENANT_ID` - Tenant ID for API calls (same value as STRIKE48_TENANT)
 
 ---
 

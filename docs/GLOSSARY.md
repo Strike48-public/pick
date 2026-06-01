@@ -50,8 +50,9 @@ A unit of evidence produced by a tool execution, with provenance tracking and va
 | `STRIKE48_TOKEN` | JWT authentication token (optional) | `eyJhbGc...` |
 | `STRIKE48_TLS` | Enable/disable TLS | `true` or `false` |
 
-### Strike48 API (Legacy "Matrix" Variables)
-These variables reference Strike48's API layer. The "MATRIX" prefix is a legacy internal name for Strike48's protocol:
+### Strike48 API (Matrix Protocol Variables)
+
+These variables configure Pick's connection to Strike48's GraphQL API layer, which uses the "Matrix" protocol for agent chat integration:
 
 | Variable | Purpose | Notes |
 |----------|---------|-------|
@@ -59,7 +60,7 @@ These variables reference Strike48's API layer. The "MATRIX" prefix is a legacy 
 | `MATRIX_TENANT_ID` | Tenant ID for API calls | Same value as STRIKE48_TENANT |
 | `MATRIX_TLS_INSECURE` | Accept self-signed certs | Development/testing only |
 
-**Deprecation note:** These variables remain for backward compatibility but may be consolidated to `STRIKE48_API_*` in future versions.
+**Note:** The "MATRIX" prefix refers to Strike48's API protocol layer. These variables remain separate from `STRIKE48_*` connector protocol variables for architectural flexibility, though they typically point to the same Strike48 server.
 
 ### Other Configuration
 | Variable | Purpose | Example |
@@ -95,7 +96,7 @@ Converting tool output to validated evidence nodes with provenance tracking
 ## UI Terms
 
 ### Matrix Theme
-One of Pick's 8 built-in UI themes - green-on-black Matrix movie aesthetic. Not related to the Strike48 protocol.
+One of Pick's 9 built-in UI themes - green-on-black Matrix movie aesthetic. Not related to the Strike48 API protocol.
 
 ### Easter Egg
 Konami code (↑↑↓↓←→←→BA) activates a Matrix rain animation in the UI.

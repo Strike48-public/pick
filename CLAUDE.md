@@ -44,8 +44,8 @@ Pick reads its connection settings from a `.env` file at the repository root:
 
 - `STRIKE48_HOST` — WebSocket URL of the Strike48 instance, e.g. `wss://your-tenant.example.com:443`
 - `STRIKE48_TENANT` — Tenant identifier registered on that instance
-- `MATRIX_API_URL` — HTTPS URL of the Strike48 API (legacy variable name, refers to Strike48's API endpoint)
-- `MATRIX_TENANT_ID` — Same tenant identifier as `STRIKE48_TENANT` (legacy variable, kept for backward compatibility)
+- `MATRIX_API_URL` — HTTPS URL of Strike48's GraphQL API layer (typically same server as STRIKE48_HOST)
+- `MATRIX_TENANT_ID` — Same tenant identifier as `STRIKE48_TENANT` (kept separate for architectural flexibility)
 - `RUST_LOG` — Tracing filter, default `debug` for development
 
 `run-pentest.sh` provides safe defaults pointing at `localhost` so the script
