@@ -12,6 +12,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap as StdHashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -21,7 +22,9 @@ use pentest_core::matrix::{ChatClient, MatrixChatClient};
 #[derive(Clone)]
 pub struct LlmProxyState {
     pub matrix_client: Arc<RwLock<Option<MatrixChatClient>>>,
-    pub conversation_id: Arc<RwLock<Option<String>>>,
+    /// Per-task conversations: task_id → conversation_id
+    pub conversations: Arc<RwLock<StdHashMap<String, String>>>,
+    /// Shared agent ID (one webwright agent persona for all tasks)
     pub agent_id: Arc<RwLock<Option<String>>>,
 }
 
@@ -131,12 +134,30 @@ async fn handle_llm_request(
 
     // Check for Authorization header — if caller provides a real token (not
     // the dummy "pick-internal"), use it directly as the Matrix session token.
-    let bearer_token = headers
+    // Format can be "Bearer <token>" or "Bearer <token>:<task_id>" to scope conversations.
+    let raw_bearer = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .filter(|t| *t != "pick-internal" && !t.is_empty())
         .map(|t| t.to_string());
+
+    // Parse optional task_id from bearer (format: "token:task_id")
+    let (bearer_token, bearer_task_id) = match raw_bearer {
+        Some(ref val) => {
+            if let Some((token, tid)) = val.rsplit_once(':') {
+                // Only treat as task_id if the last segment looks like a UUID
+                if tid.len() >= 32 && tid.contains('-') {
+                    (Some(token.to_string()), Some(tid.to_string()))
+                } else {
+                    (Some(val.clone()), None)
+                }
+            } else {
+                (Some(val.clone()), None)
+            }
+        }
+        None => (None, None),
+    };
 
     // Resolve the auth token for this request.
     // Priority: 1) Bearer token from request header
@@ -176,24 +197,34 @@ async fn handle_llm_request(
     let mut client = MatrixChatClient::new(&api_url);
     client.set_auth_token(&effective_token);
 
-    // Get or create conversation (auto-create on first use)
-    let conv_id = {
-        let conv_guard = state.conversation_id.read().await;
-        conv_guard.clone()
+    // Each task gets its own conversation to avoid interleaving.
+    // Task ID comes from: bearer token suffix, X-Task-Id header, or "default".
+    let task_id = bearer_task_id
+        .or_else(|| {
+            headers
+                .get("x-task-id")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "default".to_string());
+
+    // Look up or create a conversation for this task
+    let conversation_id = {
+        let convs = state.conversations.read().await;
+        convs.get(&task_id).cloned()
     };
 
-    let conversation_id = match conv_id {
+    let conversation_id = match conversation_id {
         Some(id) => id,
         None => {
-            // Auto-create a conversation for webwright's LLM calls
-            tracing::info!("LLM proxy: creating conversation for webwright");
+            tracing::info!("LLM proxy: creating conversation for task {}", task_id);
             match client
                 .create_conversation(Some("webwright-browser-agent"))
                 .await
             {
                 Ok(id) => {
-                    let mut conv_guard = state.conversation_id.write().await;
-                    *conv_guard = Some(id.clone());
+                    let mut convs = state.conversations.write().await;
+                    convs.insert(task_id.clone(), id.clone());
                     id
                 }
                 Err(e) => {

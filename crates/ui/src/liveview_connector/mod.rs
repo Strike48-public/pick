@@ -694,7 +694,7 @@ impl LiveViewConnector {
         // Bind to port 0 to let the OS pick an available port, then store it.
         let llm_state = llm_proxy::LlmProxyState {
             matrix_client: self.matrix_client.clone(),
-            conversation_id: Arc::new(RwLock::new(None)),
+            conversations: Arc::new(RwLock::new(std::collections::HashMap::new())),
             agent_id: Arc::new(RwLock::new(None)),
         };
         let llm_proxy_router = llm_proxy::create_llm_proxy_routes(llm_state);

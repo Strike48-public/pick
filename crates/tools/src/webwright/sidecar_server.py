@@ -73,9 +73,19 @@ async def run_explore_task(task: str, url: str, max_steps: int, output_dir: str,
 
         emit_step(1, f"starting exploration: {task}")
 
+        # Override OPENAI_API_KEY to include task_id so the LLM proxy can
+        # route each task to its own conversation (format: "token:task_id")
+        env = os.environ.copy()
+        base_key = env.get("OPENAI_API_KEY", "pick-internal")
+        # Strip any existing task_id suffix before appending new one
+        if ":" in base_key and len(base_key.split(":")[-1]) >= 32:
+            base_key = base_key.rsplit(":", 1)[0]
+        env["OPENAI_API_KEY"] = f"{base_key}:{task_id}"
+
         # Run as subprocess (avoids nested event loop issues)
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
