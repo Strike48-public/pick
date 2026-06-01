@@ -119,7 +119,7 @@ Each app IS a connector - it registers with Strike48 and executes tools locally.
 
 - **GitHub Issues:** [Strike48-public/pick/issues](https://github.com/Strike48-public/pick/issues)
 - **Strike48 Support:** Contact your administrator
-- **Security Issues:** security@strike48.com
+- **Security Issues:** [GitHub Security Advisories](https://github.com/Strike48-public/pick/security/advisories/new) (see [SECURITY.md](../SECURITY.md))
 
 ## Contributing
 

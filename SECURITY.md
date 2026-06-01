@@ -19,7 +19,9 @@ We recommend always running the latest version from the `main` branch or the mos
 
 ### How to Report
 
-Send security vulnerability reports to: **security@strike48.com** (or open a private security advisory on GitHub)
+Send security vulnerability reports via **[GitHub Security Advisories](https://github.com/Strike48-public/pick/security/advisories/new)** (private)
+
+_(Email contact will be added once established)_
 
 ### What to Include
 
@@ -284,8 +286,8 @@ Pick processes security testing data that may include:
 
 ## Security Contacts
 
-- **Vulnerability Reports:** security@strike48.com
-- **General Security Questions:** GitHub Discussions
+- **Vulnerability Reports:** [GitHub Security Advisories](https://github.com/Strike48-public/pick/security/advisories/new)
+- **General Security Questions:** [GitHub Discussions](https://github.com/Strike48-public/pick/discussions)
 - **Strike48 Support:** Contact your administrator
 
 ---

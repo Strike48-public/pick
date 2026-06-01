@@ -215,9 +215,11 @@ We use Gitleaks to scan for secrets. If you accidentally commit a secret:
 
 ### Security Issues
 
-Report security vulnerabilities to: **security@strike48.com**
+Report security vulnerabilities via **[GitHub Security Advisories](https://github.com/Strike48-public/pick/security/advisories/new)** (private).
 
 Do NOT open public GitHub issues for security vulnerabilities.
+
+See [SECURITY.md](SECURITY.md) for full details.
 
 ---
 
