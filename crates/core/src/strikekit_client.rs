@@ -94,6 +94,7 @@ impl StrikeKitClient {
     async fn invoke<T: Serialize>(&self, capability_id: &str, payload: &T) -> Result<(), String> {
         let payload_bytes =
             serde_json::to_vec(payload).map_err(|e| format!("serialize payload: {}", e))?;
+        let payload_len = payload_bytes.len();
 
         let request = InvokeCapabilityRequest {
             request_id: Uuid::new_v4().to_string(),
@@ -112,10 +113,23 @@ impl StrikeKitClient {
 
         let guard = self.stream_tx.read().await;
         match guard.as_ref() {
-            Some(tx) => tx
-                .send(message)
-                .map_err(|_| "gRPC stream closed".to_string()),
-            None => Err("gRPC stream not connected".to_string()),
+            Some(tx) => {
+                let result = tx
+                    .send(message)
+                    .map_err(|_| "gRPC stream closed".to_string());
+                if result.is_ok() {
+                    tracing::info!(
+                        "[strikekit] invoke sent: capability={} payload_size={}",
+                        capability_id,
+                        payload_len
+                    );
+                }
+                result
+            }
+            None => {
+                tracing::warn!("[strikekit] invoke failed: stream_tx is None (not connected)");
+                Err("gRPC stream not connected".to_string())
+            }
         }
     }
 }
