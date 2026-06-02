@@ -202,6 +202,10 @@ async fn handle_llm_request(
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    tracing::info!(
+        "LLM proxy: creating client with token len={}",
+        effective_token.len()
+    );
     let mut client = MatrixChatClient::new(&api_url);
     client.set_auth_token(&effective_token);
 
