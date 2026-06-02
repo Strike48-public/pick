@@ -226,8 +226,17 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
         // Forward session token from execute request context (if provided by StrikeKit)
         // so tools like webwright can authenticate with the LLM proxy.
         if let Some(token) = req.context.get("session_token") {
+            tracing::info!(
+                "[tools] session_token found in context (len={})",
+                token.len()
+            );
             ctx.metadata
                 .insert("session_token".to_string(), token.clone());
+        } else {
+            tracing::debug!(
+                "[tools] no session_token in context, keys={:?}",
+                req.context.keys().collect::<Vec<_>>()
+            );
         }
 
         // Set aggression level
