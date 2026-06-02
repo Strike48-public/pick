@@ -250,16 +250,25 @@ pub fn WebwrightGallery(task_id: String, result: Option<String>, error: Option<S
     use_future(move || {
         let tid = subscribe_task_id.clone();
         async move {
-            // Resolve the real webwright task_id. The widget may have:
-            // - A real task_id (from completed result JSON)
-            // - A request_id (tool call ID) that maps to a task_id via the registry
             loop {
-                // Check if this ID maps to a real task via request_id → task_id registry
+                // Try direct task_id match first (works for completed results)
                 let real_tid = pentest_tools::webwright::live_state::task_for_request(&tid)
-                    .unwrap_or_else(|| tid.clone());
+                    .or_else(|| {
+                        let p = pentest_tools::webwright::live_state::peek(&tid);
+                        if p.running || p.step > 0 {
+                            Some(tid.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    // Fallback: subscribe to the active sidecar task
+                    .or_else(|| {
+                        pentest_tools::webwright::live_state::running_tasks()
+                            .first()
+                            .cloned()
+                    });
 
-                let progress = pentest_tools::webwright::live_state::peek(&real_tid);
-                if progress.running || progress.step > 0 {
+                if let Some(real_tid) = real_tid {
                     let mut rx = pentest_tools::webwright::live_state::subscribe(&real_tid);
                     loop {
                         if rx.changed().await.is_err() {
