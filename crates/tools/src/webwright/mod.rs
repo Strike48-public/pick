@@ -27,12 +27,10 @@ use self::sidecar::{SidecarCommand, SidecarEvent, SidecarProcess};
 use self::workspace::WebwrightWorkspace;
 use crate::external::runner::{param_str_opt, param_str_or};
 use crate::util::param_u64;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 /// Global sidecar instance — shared across tool invocations for warm browser reuse.
-static SIDECAR: std::sync::LazyLock<Arc<Mutex<Option<SidecarProcess>>>> =
-    std::sync::LazyLock::new(|| Arc::new(Mutex::new(None)));
+// Sidecars are now per-task (spawned fresh for each webwright invocation).
+// No global singleton — parallel tasks each get their own browser process.
 
 /// Webwright browser automation tool.
 pub struct WebwrightTool;
@@ -363,30 +361,22 @@ async fn try_sidecar_execution(
     env_exports: &str,
     timeout_secs: u64,
 ) -> Option<pentest_platform::CommandResult> {
-    let mut guard = SIDECAR.lock().await;
+    // Spawn a fresh sidecar for this task (enables parallel execution)
+    let proxy_port: u16 = std::env::var("PICK_LLM_PROXY_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(9100);
 
-    // Spawn sidecar if not running
-    if guard.is_none() || !guard.as_ref().unwrap().is_alive().await {
-        let proxy_port: u16 = std::env::var("PICK_LLM_PROXY_PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(9100);
-
-        match SidecarProcess::spawn(env_exports, proxy_port).await {
-            Ok(proc) => {
-                *guard = Some(proc);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "[webwright-sidecar] failed to spawn: {}, falling back to subprocess",
-                    e
-                );
-                return None;
-            }
+    let sidecar = match SidecarProcess::spawn(env_exports, proxy_port).await {
+        Ok(proc) => proc,
+        Err(e) => {
+            tracing::warn!(
+                "[webwright-sidecar] failed to spawn: {}, falling back to subprocess",
+                e
+            );
+            return None;
         }
-    }
-
-    let sidecar = guard.as_ref().unwrap();
+    };
 
     // Send command
     let cmd = match mode {
