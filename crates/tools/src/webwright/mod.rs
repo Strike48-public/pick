@@ -148,12 +148,6 @@ impl PentestTool for WebwrightTool {
             let workspace = WebwrightWorkspace::create(&platform, ctx.workspace_path.as_deref()).await?;
             tracing::info!("[webwright] workspace created: sandbox={} host={}", workspace.path(), workspace.host_path());
 
-            // If StrikeKit provided a session token, store it where the LLM proxy
-            // can find it. The sidecar is a long-lived process whose env is fixed at
-            // spawn, so the proxy needs another path to get per-request auth.
-            if let Some(token) = ctx.metadata.get("session_token") {
-                std::env::set_var("PICK_SESSION_TOKEN", token);
-            }
             let env_exports = build_env_exports(None);
 
             // Build command based on mode

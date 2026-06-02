@@ -230,6 +230,7 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
                 "[tools] session_token found in context (len={})",
                 token.len()
             );
+            pentest_core::session_token::set(token);
             ctx.metadata
                 .insert("session_token".to_string(), token.clone());
         } else {
