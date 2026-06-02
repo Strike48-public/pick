@@ -148,7 +148,13 @@ async fn handle_llm_request(
             if let Some((token, tid)) = val.rsplit_once(':') {
                 // Only treat as task_id if the last segment looks like a UUID
                 if tid.len() >= 32 && tid.contains('-') {
-                    (Some(token.to_string()), Some(tid.to_string()))
+                    // Filter out "pick-internal" after splitting
+                    let tok = if token == "pick-internal" {
+                        None
+                    } else {
+                        Some(token.to_string())
+                    };
+                    (tok, Some(tid.to_string()))
                 } else {
                     (Some(val.clone()), None)
                 }
