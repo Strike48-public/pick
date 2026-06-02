@@ -296,8 +296,14 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
             if let Some(engagement_id) = extract_engagement_id(&req.context) {
                 let sk_client = StrikeKitClient::new(Arc::clone(&matrix_tx));
                 let artifacts = result.data.get("artifacts").cloned().unwrap_or_default();
+                // workspace_path is needed to resolve relative artifact paths
+                let ws_path = workspace_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 tokio::spawn(async move {
-                    upload_artifacts_to_strikekit(sk_client, &engagement_id, &artifacts).await;
+                    upload_artifacts_to_strikekit(sk_client, &engagement_id, &artifacts, &ws_path)
+                        .await;
                 });
             }
         }
@@ -456,15 +462,25 @@ async fn upload_artifacts_to_strikekit(
     client: StrikeKitClient,
     engagement_id: &str,
     artifacts: &Value,
+    workspace_path: &str,
 ) {
     let mut count = 0;
+
+    // Resolve a potentially relative path against the workspace
+    let resolve = |path: &str| -> String {
+        if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("{}/{}", workspace_path, path)
+        }
+    };
 
     // Screenshots
     if let Some(paths) = artifacts["screenshots"].as_array() {
         for path_val in paths {
             if let Some(path) = path_val.as_str() {
                 client
-                    .upload_file(engagement_id, path, "screenshot", "webwright")
+                    .upload_file(engagement_id, &resolve(path), "screenshot", "webwright")
                     .await;
                 count += 1;
             }
@@ -476,7 +492,7 @@ async fn upload_artifacts_to_strikekit(
         for path_val in paths {
             if let Some(path) = path_val.as_str() {
                 client
-                    .upload_file(engagement_id, path, "code", "webwright")
+                    .upload_file(engagement_id, &resolve(path), "code", "webwright")
                     .await;
                 count += 1;
             }
@@ -488,7 +504,7 @@ async fn upload_artifacts_to_strikekit(
         for path_val in paths {
             if let Some(path) = path_val.as_str() {
                 client
-                    .upload_file(engagement_id, path, "file", "webwright")
+                    .upload_file(engagement_id, &resolve(path), "file", "webwright")
                     .await;
                 count += 1;
             }
