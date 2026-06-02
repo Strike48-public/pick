@@ -42,7 +42,7 @@ impl PentestTool for WebwrightTool {
     }
 
     fn description(&self) -> &str {
-        "AI-driven browser automation for testing JavaScript-heavy web apps, OAuth flows, and client-side vulnerabilities"
+        "Headless browser (Playwright) for screenshots and web app testing. Only two modes: 'explore' and 'execute'. For screenshots, use mode=explore with a task like 'capture a screenshot of the page'. Always set timeout=600."
     }
 
     fn schema(&self) -> ToolSchema {
@@ -88,7 +88,7 @@ impl PentestTool for WebwrightTool {
             .param(ToolParam::required(
                 "timeout",
                 ParamType::Integer,
-                "Timeout in seconds. MUST be set explicitly. Use 300 for most tasks, 600 for complex multi-page explorations.",
+                "Timeout in seconds. MUST be 600 or higher. Browser startup + LLM reasoning + navigation all take time. Default 600.",
             ))
             .platforms(vec![Platform::Desktop, Platform::Android, Platform::Tui])
     }
@@ -107,7 +107,10 @@ impl PentestTool for WebwrightTool {
             let task = param_str_opt(&params, "task");
             let script = param_str_opt(&params, "script");
             let _max_steps = param_u64(&params, "max_steps", 50); // reserved for future sidecar use
-            let timeout_secs = param_u64(&params, "timeout", 60);
+            // Reserve 10s before the connector framework's timeout to return gracefully
+            // rather than getting killed mid-execution (which triggers circuit breaker).
+            let raw_timeout = param_u64(&params, "timeout", 600);
+            let timeout_secs = raw_timeout.saturating_sub(10).max(30);
 
             tracing::info!("[webwright] execute start: mode={} url={} timeout={}s", mode, start_url, timeout_secs);
 
