@@ -154,7 +154,9 @@ impl PentestTool for WebwrightTool {
                 crate::webwright::live_state::register_request(req_id, &workspace.task_id);
             }
 
-            let env_exports = build_env_exports(None);
+            // Pass session token so each sidecar authenticates as the correct user
+            let session_token = ctx.metadata.get("session_token").map(|s| s.as_str());
+            let env_exports = build_env_exports(session_token);
 
             // Build command based on mode
             let (args, probe_desc) = match mode.as_str() {

@@ -166,24 +166,9 @@ async fn handle_llm_request(
     };
 
     // Resolve the auth token for this request.
-    // Priority: 1) Bearer token from request header
-    //           2) PICK_SESSION_TOKEN env var (set by webwright when StrikeKit provides one)
-    //           3) Global session token (set when iframe connects)
-    let platform_token = {
-        let t = pentest_core::session_token::get();
-        if t.is_empty() {
-            None
-        } else {
-            Some(t)
-        }
-    };
-    tracing::debug!(
-        "LLM proxy auth: bearer={}, platform_token_len={}, session_len={}",
-        bearer_token.as_ref().map(|t| t.len()).unwrap_or(0),
-        platform_token.as_ref().map(|t| t.len()).unwrap_or(0),
-        crate::session::get_auth_token().len()
-    );
-    let effective_token = bearer_token.or(platform_token).or_else(|| {
+    // Priority: 1) Bearer token from request (each sidecar sends the real token)
+    //           2) Global session token (interactive use via iframe)
+    let effective_token = bearer_token.or_else(|| {
         let t = crate::session::get_auth_token();
         if t.is_empty() {
             None

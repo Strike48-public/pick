@@ -18,7 +18,6 @@ pub mod paths;
 pub mod provenance;
 pub mod rendering;
 pub mod seed;
-pub mod session_token;
 pub mod settings;
 pub mod specialist_spawner;
 pub mod state;
