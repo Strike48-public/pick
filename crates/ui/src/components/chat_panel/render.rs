@@ -236,8 +236,9 @@ pub fn WebwrightGallery(task_id: String, result: Option<String>, error: Option<S
     use_future(move || {
         let tid = subscribe_task_id.clone();
         async move {
+            // Poll until our specific task appears in the registry
             loop {
-                // Try direct task_id match first (works for completed results)
+                // Resolve: request_id → task_id, or use tid directly if it's already a task_id
                 let real_tid = pentest_tools::webwright::live_state::task_for_request(&tid)
                     .or_else(|| {
                         let p = pentest_tools::webwright::live_state::peek(&tid);
@@ -246,12 +247,6 @@ pub fn WebwrightGallery(task_id: String, result: Option<String>, error: Option<S
                         } else {
                             None
                         }
-                    })
-                    // Fallback: subscribe to the active sidecar task
-                    .or_else(|| {
-                        pentest_tools::webwright::live_state::running_tasks()
-                            .first()
-                            .cloned()
                     });
 
                 if let Some(real_tid) = real_tid {
