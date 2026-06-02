@@ -148,6 +148,11 @@ impl PentestTool for WebwrightTool {
             let workspace = WebwrightWorkspace::create(&platform, ctx.workspace_path.as_deref()).await?;
             tracing::info!("[webwright] workspace created: sandbox={} host={}", workspace.path(), workspace.host_path());
 
+            // Register request_id → task_id mapping so the UI widget can bind to the correct stream
+            if let Some(req_id) = ctx.metadata.get("request_id") {
+                crate::webwright::live_state::register_request(req_id, &workspace.task_id);
+            }
+
             let env_exports = build_env_exports(None);
 
             // Build command based on mode

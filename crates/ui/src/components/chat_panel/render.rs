@@ -236,30 +236,17 @@ pub fn WebwrightGallery(task_id: String, result: Option<String>, error: Option<S
     use_future(move || {
         let tid = subscribe_task_id.clone();
         async move {
-            // Poll until we find our task (it may not exist yet when widget renders)
+            // Resolve the real webwright task_id. The widget may have:
+            // - A real task_id (from completed result JSON)
+            // - A request_id (tool call ID) that maps to a task_id via the registry
             loop {
-                // Try subscribing directly (works if task_id is a real webwright task)
-                let progress = pentest_tools::webwright::live_state::peek(&tid);
+                // Check if this ID maps to a real task via request_id → task_id registry
+                let real_tid = pentest_tools::webwright::live_state::task_for_request(&tid)
+                    .unwrap_or_else(|| tid.clone());
+
+                let progress = pentest_tools::webwright::live_state::peek(&real_tid);
                 if progress.running || progress.step > 0 {
-                    let mut rx = pentest_tools::webwright::live_state::subscribe(&tid);
-                    loop {
-                        if rx.changed().await.is_err() {
-                            break;
-                        }
-                        let p = rx.borrow().clone();
-                        let still_running = p.running;
-                        progress_signal.set(p);
-                        if !still_running {
-                            break;
-                        }
-                    }
-                    break;
-                }
-                // Fallback: find any running task and show it
-                // (covers in-progress case where task_id is the tool call ID, not webwright's UUID)
-                let running = pentest_tools::webwright::live_state::running_tasks();
-                if let Some(real_tid) = running.first() {
-                    let mut rx = pentest_tools::webwright::live_state::subscribe(real_tid);
+                    let mut rx = pentest_tools::webwright::live_state::subscribe(&real_tid);
                     loop {
                         if rx.changed().await.is_err() {
                             break;
