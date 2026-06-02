@@ -219,9 +219,11 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
             None => ToolContext::default(),
         };
 
-        // Add instance_id to context metadata for tools to use
+        // Add instance_id and request_id to context metadata for tools to use
         ctx.metadata
             .insert("instance_id".to_string(), instance_id.clone());
+        ctx.metadata
+            .insert("request_id".to_string(), request_id.clone());
 
         // Forward session token from execute request context (if provided by StrikeKit)
         // so tools like webwright can authenticate with the LLM proxy.

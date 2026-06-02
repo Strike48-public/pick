@@ -47,6 +47,23 @@ type TaskChannel = (
 static TASKS: LazyLock<Mutex<HashMap<String, TaskChannel>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Maps request_id (tool call ID) → webwright task_id so widgets can find their task.
+static REQUEST_TO_TASK: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Register a mapping from request_id to task_id.
+pub fn register_request(request_id: &str, task_id: &str) {
+    REQUEST_TO_TASK
+        .lock()
+        .unwrap()
+        .insert(request_id.to_string(), task_id.to_string());
+}
+
+/// Look up the task_id for a given request_id.
+pub fn task_for_request(request_id: &str) -> Option<String> {
+    REQUEST_TO_TASK.lock().unwrap().get(request_id).cloned()
+}
+
 /// Get or create a receiver for a specific task's progress.
 pub fn subscribe(task_id: &str) -> watch::Receiver<WebwrightProgress> {
     let mut tasks = TASKS.lock().unwrap();
