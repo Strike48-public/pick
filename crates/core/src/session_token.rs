@@ -13,10 +13,15 @@ pub fn set(token: &str) {
     if let Ok(mut guard) = TOKEN.write() {
         guard.clear();
         guard.push_str(token);
+        tracing::info!("[session_token] SET len={}", token.len());
+    } else {
+        tracing::error!("[session_token] SET FAILED — RwLock poisoned");
     }
 }
 
 /// Get the current session token (empty string if not set).
 pub fn get() -> String {
-    TOKEN.read().map(|g| g.clone()).unwrap_or_default()
+    let result = TOKEN.read().map(|g| g.clone()).unwrap_or_default();
+    tracing::info!("[session_token] GET len={}", result.len());
+    result
 }
