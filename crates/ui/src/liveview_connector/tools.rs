@@ -225,11 +225,14 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
 
         // Forward session token from execute request context (if provided by StrikeKit)
         // so tools like webwright can authenticate with the LLM proxy.
+        // Set it immediately as env var so the LLM proxy can use it for ANY tool call,
+        // not just webwright (the sidecar may already be running from a prior call).
         if let Some(token) = req.context.get("session_token") {
             tracing::info!(
                 "[tools] session_token found in context (len={})",
                 token.len()
             );
+            std::env::set_var("PICK_SESSION_TOKEN", token);
             ctx.metadata
                 .insert("session_token".to_string(), token.clone());
         } else {
