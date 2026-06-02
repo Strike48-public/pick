@@ -122,7 +122,14 @@ fn render_tool_call(tc: &ToolCallInfo, expanded_tools: &mut Signal<Vec<String>>)
             }
             // Webwright: show live progress while running, screenshots when done
             if name == "webwright" {
-                WebwrightGallery { result: result.clone(), error: error.clone() }
+                // Extract task_id from result (completed) or use tool call ID as fallback
+                {
+                    let task_id = result.as_ref()
+                        .and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok())
+                        .and_then(|v| v.get("task_id").and_then(|t| t.as_str()).map(|s| s.to_string()))
+                        .unwrap_or_else(|| tc.id.clone());
+                    rsx! { WebwrightGallery { task_id: task_id, result: result.clone(), error: error.clone() } }
+                }
             }
             if is_expanded {
                 div { class: "chat-tool-details",
@@ -212,7 +219,7 @@ pub fn format_relative_time(iso: &str) -> String {
 /// Webwright widget component — handles both live progress and completed gallery.
 /// Uses Dioxus signals for the lightbox modal instead of fragile inline scripts.
 #[component]
-pub fn WebwrightGallery(result: Option<String>, error: Option<String>) -> Element {
+pub fn WebwrightGallery(task_id: String, result: Option<String>, error: Option<String>) -> Element {
     // Modal state: (all_images as data URIs, current index)
     let mut modal_open = use_signal(|| Option::<(Vec<String>, usize)>::None);
     #[allow(clippy::redundant_closure)]
@@ -221,25 +228,53 @@ pub fn WebwrightGallery(result: Option<String>, error: Option<String>) -> Elemen
 
     let is_live = result.is_none() && error.is_none();
 
-    // Subscribe to live progress updates
-    use_future(move || async move {
-        loop {
-            let tasks = pentest_tools::webwright::live_state::running_tasks();
-            if let Some(task_id) = tasks.first() {
-                let mut rx = pentest_tools::webwright::live_state::subscribe(task_id);
-                loop {
-                    if rx.changed().await.is_err() {
-                        break;
+    // Subscribe to live progress for THIS task.
+    // For completed calls, task_id comes from the result JSON.
+    // For in-progress calls, task_id is the tool call ID — we subscribe and
+    // wait for a matching task to appear in the registry.
+    let subscribe_task_id = task_id.clone();
+    use_future(move || {
+        let tid = subscribe_task_id.clone();
+        async move {
+            // Poll until we find our task (it may not exist yet when widget renders)
+            loop {
+                // Try subscribing directly (works if task_id is a real webwright task)
+                let progress = pentest_tools::webwright::live_state::peek(&tid);
+                if progress.running || progress.step > 0 {
+                    let mut rx = pentest_tools::webwright::live_state::subscribe(&tid);
+                    loop {
+                        if rx.changed().await.is_err() {
+                            break;
+                        }
+                        let p = rx.borrow().clone();
+                        let still_running = p.running;
+                        progress_signal.set(p);
+                        if !still_running {
+                            break;
+                        }
                     }
-                    let p = rx.borrow().clone();
-                    let still_running = p.running;
-                    progress_signal.set(p);
-                    if !still_running {
-                        break;
-                    }
+                    break;
                 }
+                // Fallback: find any running task and show it
+                // (covers in-progress case where task_id is the tool call ID, not webwright's UUID)
+                let running = pentest_tools::webwright::live_state::running_tasks();
+                if let Some(real_tid) = running.first() {
+                    let mut rx = pentest_tools::webwright::live_state::subscribe(real_tid);
+                    loop {
+                        if rx.changed().await.is_err() {
+                            break;
+                        }
+                        let p = rx.borrow().clone();
+                        let still_running = p.running;
+                        progress_signal.set(p);
+                        if !still_running {
+                            break;
+                        }
+                    }
+                    break;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
     });
 
