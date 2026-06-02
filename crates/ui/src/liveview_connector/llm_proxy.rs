@@ -163,20 +163,23 @@ async fn handle_llm_request(
     // Priority: 1) Bearer token from request header
     //           2) PICK_SESSION_TOKEN env var (set by webwright when StrikeKit provides one)
     //           3) Global session token (set when iframe connects)
-    let effective_token = bearer_token
-        .or_else(|| {
-            std::env::var("PICK_SESSION_TOKEN")
-                .ok()
-                .filter(|t| !t.is_empty())
-        })
-        .or_else(|| {
-            let t = crate::session::get_auth_token();
-            if t.is_empty() {
-                None
-            } else {
-                Some(t)
-            }
-        });
+    let env_token = std::env::var("PICK_SESSION_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
+    tracing::debug!(
+        "LLM proxy auth: bearer={}, env_token_len={}, session_len={}",
+        bearer_token.as_ref().map(|t| t.len()).unwrap_or(0),
+        env_token.as_ref().map(|t| t.len()).unwrap_or(0),
+        crate::session::get_auth_token().len()
+    );
+    let effective_token = bearer_token.or(env_token).or_else(|| {
+        let t = crate::session::get_auth_token();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    });
 
     let effective_token = match effective_token {
         Some(t) => t,
