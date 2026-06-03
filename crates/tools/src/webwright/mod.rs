@@ -91,6 +91,8 @@ struct ExecutionPlan {
     probe_desc: String,
     /// Effective timeout (after the connector-deadline subtraction).
     timeout_secs: u64,
+    /// Hard cap on sidecar steps. Enforced by Pick even if the sidecar ignores it.
+    max_steps: u32,
 }
 
 /// Parsed-and-validated inputs to [`build_execution_plan`]. Bundled into a
@@ -162,6 +164,7 @@ fn build_execution_plan(inputs: PlanInputs<'_>) -> ExecutionPlan {
                 sidecar_command,
                 probe_desc,
                 timeout_secs,
+                max_steps,
             }
         }
         WebwrightMode::Execute => {
@@ -185,6 +188,7 @@ fn build_execution_plan(inputs: PlanInputs<'_>) -> ExecutionPlan {
                 sidecar_command,
                 probe_desc,
                 timeout_secs,
+                max_steps,
             }
         }
     }
@@ -600,12 +604,18 @@ async fn try_sidecar_execution(
         }
     };
 
+    tracing::info!(
+        "[webwright-sidecar] sending command: {}",
+        plan.sidecar_command.to_json_line().trim()
+    );
+
     if let Err(e) = sidecar.send(plan.sidecar_command.clone()).await {
         tracing::warn!("[webwright-sidecar] send failed: {}, falling back", e);
         return None;
     }
 
     let timeout_secs = plan.timeout_secs;
+    let max_steps = plan.max_steps;
 
     // Signal start for live UI (per-task)
     live_state::start(&workspace.task_id);
@@ -687,6 +697,16 @@ async fn try_sidecar_execution(
                         task_id: workspace.task_id.clone(),
                     },
                 );
+
+                if *n >= max_steps {
+                    tracing::warn!(
+                        "[webwright-sidecar] step limit reached ({}/{}), cancelling",
+                        n,
+                        max_steps
+                    );
+                    let _ = sidecar.send(SidecarCommand::Cancel).await;
+                    break;
+                }
             }
             SidecarEvent::Finding {
                 severity, title, ..
