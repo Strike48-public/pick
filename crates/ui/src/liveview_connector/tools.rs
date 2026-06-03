@@ -136,6 +136,64 @@ pub(crate) struct ExecuteParams {
     pub matrix_api_url: Option<String>,
 }
 
+/// Redact a context value if its key looks sensitive.
+///
+/// Keys whose lowercase form contains any of `token`, `secret`, `key`,
+/// `password`, or `auth` have their value replaced with
+/// `<redacted:len=N>` where `N` is the byte length of the original value.
+/// All other values are returned unchanged.
+pub(crate) fn redact_sensitive(key: &str, value: &str) -> String {
+    const SENSITIVE_NEEDLES: &[&str] = &["token", "secret", "key", "password", "auth"];
+    let key_lc = key.to_ascii_lowercase();
+    if SENSITIVE_NEEDLES
+        .iter()
+        .any(|needle| key_lc.contains(needle))
+    {
+        format!("<redacted:len={}>", value.len())
+    } else {
+        value.to_string()
+    }
+}
+
+/// Log the full set of context key/value pairs from an ExecuteRequest at INFO,
+/// one pair per line, with sensitive values redacted. Lines are prefixed with
+/// `[execreq-ctx]` for grep-ability and tagged with request_id + tool name.
+fn log_execute_request_context(
+    request_id: &str,
+    tool_name: &str,
+    context: &HashMap<String, String>,
+) {
+    tracing::info!(
+        "[execreq-ctx] request_id={} tool={} context_key_count={}",
+        request_id,
+        tool_name,
+        context.len(),
+    );
+    if context.is_empty() {
+        tracing::info!(
+            "[execreq-ctx] request_id={} tool={} (no context keys)",
+            request_id,
+            tool_name,
+        );
+        return;
+    }
+    // Sort keys so log order is deterministic across runs — makes diffs against
+    // the platform-side log readable.
+    let mut keys: Vec<&String> = context.keys().collect();
+    keys.sort();
+    for key in keys {
+        let raw = context.get(key).map(String::as_str).unwrap_or("");
+        let rendered = redact_sensitive(key, raw);
+        tracing::info!(
+            "[execreq-ctx] request_id={} tool={} {}={}",
+            request_id,
+            tool_name,
+            key,
+            rendered,
+        );
+    }
+}
+
 /// Standalone execute handler that can run in a background task.
 /// `matrix_tx` is shared via Arc so the task always uses the current sender
 /// even if the gRPC stream was cycled while the tool was running.
@@ -225,17 +283,10 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
         // live-state bindings under it. Forwarded by the platform in req.context["tool_call_id"].
         populate_tool_metadata(&mut ctx.metadata, &instance_id, &request_id, &req.context);
 
-        // Diagnostic: dump context keys so we can see what the platform actually sends.
-        // Lets us catch missing context fields (e.g. session_token absent in StrikeKit runs).
-        let ctx_keys: Vec<&String> = req.context.keys().collect();
-        tracing::info!(
-            "[tool] {} ExecuteRequest context keys: {:?} (session_token={}, tool_call_id={}, engagement_id={})",
-            tool_name,
-            ctx_keys,
-            req.context.get("session_token").map(|s| s.len()).unwrap_or(0),
-            req.context.get("tool_call_id").map(|s| s.as_str()).unwrap_or("<absent>"),
-            req.context.get("engagement_id").map(|s| s.as_str()).unwrap_or("<absent>"),
-        );
+        // Dump the full ExecuteRequest context map at INFO so we can reconcile what
+        // Pick received against what the platform thinks it sent. Sensitive values
+        // are redacted (length preserved). One line per key, sorted deterministically.
+        log_execute_request_context(&request_id, tool_name, &req.context);
 
         // Forward session token from execute request context (if provided by StrikeKit)
         // so tools like webwright can pass it to their sidecar for LLM proxy auth.
@@ -548,6 +599,75 @@ mod tests {
     fn tool_payload_limit_value() {
         const MAX_TOOL_PAYLOAD: usize = 5 * 1024 * 1024;
         assert_eq!(MAX_TOOL_PAYLOAD, 5_242_880);
+    }
+
+    #[test]
+    fn redact_sensitive_passes_plain_keys_through() {
+        assert_eq!(
+            redact_sensitive("tool_call_id", "call-abc-123"),
+            "call-abc-123"
+        );
+        assert_eq!(redact_sensitive("engagement_id", "eng-42"), "eng-42");
+        assert_eq!(
+            redact_sensitive("agent_context", "{\"foo\":1}"),
+            "{\"foo\":1}"
+        );
+    }
+
+    #[test]
+    fn redact_sensitive_redacts_session_token() {
+        assert_eq!(
+            redact_sensitive("session_token", "abcdef123456"),
+            "<redacted:len=12>"
+        );
+    }
+
+    #[test]
+    fn redact_sensitive_redacts_auth_token() {
+        assert_eq!(redact_sensitive("auth_token", "xyz"), "<redacted:len=3>");
+    }
+
+    #[test]
+    fn redact_sensitive_redacts_api_key() {
+        assert_eq!(
+            redact_sensitive("api_key", "sk-1234567890"),
+            "<redacted:len=13>"
+        );
+    }
+
+    #[test]
+    fn redact_sensitive_redacts_bare_secret() {
+        assert_eq!(redact_sensitive("secret", "hunter2"), "<redacted:len=7>");
+    }
+
+    #[test]
+    fn redact_sensitive_redacts_password() {
+        assert_eq!(
+            redact_sensitive("user_password", "letmein"),
+            "<redacted:len=7>"
+        );
+    }
+
+    #[test]
+    fn redact_sensitive_matching_is_case_insensitive() {
+        assert_eq!(redact_sensitive("Session_Token", "abc"), "<redacted:len=3>");
+        assert_eq!(redact_sensitive("API_KEY", "abc"), "<redacted:len=3>");
+        assert_eq!(redact_sensitive("AUTH", "abc"), "<redacted:len=3>");
+        assert_eq!(redact_sensitive("PASSWORD", "abc"), "<redacted:len=3>");
+    }
+
+    #[test]
+    fn redact_sensitive_empty_value_still_surfaces() {
+        assert_eq!(redact_sensitive("session_token", ""), "<redacted:len=0>");
+    }
+
+    #[test]
+    fn redact_sensitive_partial_substring_matches() {
+        assert_eq!(
+            redact_sensitive("x_custom_auth_header", "v"),
+            "<redacted:len=1>"
+        );
+        assert_eq!(redact_sensitive("private_key_pem", "v"), "<redacted:len=1>");
     }
 
     #[test]
