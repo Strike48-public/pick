@@ -178,8 +178,14 @@ mod tests {
         register_request(tool_call_id, workspace_task_id);
         register_request(request_id, workspace_task_id);
 
-        assert_eq!(task_for_request(tool_call_id), Some(workspace_task_id.to_string()));
-        assert_eq!(task_for_request(request_id), Some(workspace_task_id.to_string()));
+        assert_eq!(
+            task_for_request(tool_call_id),
+            Some(workspace_task_id.to_string())
+        );
+        assert_eq!(
+            task_for_request(request_id),
+            Some(workspace_task_id.to_string())
+        );
     }
 
     #[test]
