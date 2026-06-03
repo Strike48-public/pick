@@ -46,22 +46,37 @@ impl StrikeKitClient {
         Self { stream_tx }
     }
 
-    /// Upload a binary artifact to StrikeKit. Fire-and-forget.
-    pub async fn upload_artifact(&self, req: UploadArtifactRequest) {
-        if let Err(e) = self.invoke("upload_artifact", &req).await {
-            tracing::warn!("Failed to upload artifact to StrikeKit: {}", e);
+    /// Upload a binary artifact to StrikeKit.
+    ///
+    /// Returns `Ok(())` if the invoke message was handed off to the gRPC stream,
+    /// or `Err(reason)` if the stream is closed/unavailable or serialization
+    /// failed. The platform's actual processing is still asynchronous (this is
+    /// a fire-and-forget invoke), so a successful return only proves the
+    /// message was queued, not that the artifact landed.
+    pub async fn upload_artifact(&self, req: UploadArtifactRequest) -> Result<(), String> {
+        match self.invoke("upload_artifact", &req).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                tracing::warn!("Failed to upload artifact to StrikeKit: {}", e);
+                Err(e)
+            }
         }
     }
 
     /// Upload a file from disk as an artifact. Convenience wrapper that reads
     /// the file and base64-encodes it.
+    ///
+    /// Returns `Ok(())` on a queued upload, or `Err(reason)` if the file could
+    /// not be read or the invoke failed to enqueue. Callers (e.g. webwright
+    /// post-execution upload) use this to count successes vs. failures so the
+    /// outcome can be reported back to the LLM/UI.
     pub async fn upload_file(
         &self,
         engagement_id: &str,
         file_path: &str,
         evidence_type: &str,
         source: &str,
-    ) {
+    ) -> Result<(), String> {
         let path = std::path::Path::new(file_path);
         let filename = path
             .file_name()
@@ -82,10 +97,11 @@ impl StrikeKitClient {
                     finding_id: None,
                     path: Some(file_path.to_string()),
                 })
-                .await;
+                .await
             }
             Err(e) => {
                 tracing::warn!("Failed to read artifact file {}: {}", file_path, e);
+                Err(format!("read {}: {}", file_path, e))
             }
         }
     }

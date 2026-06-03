@@ -3,6 +3,7 @@
 use crate::ipc::{IpcAddr, IpcStream};
 use pentest_core::strikekit_client::StrikeKitClient;
 use pentest_core::tools::{ToolContext, ToolRegistry, ToolResult};
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -334,8 +335,14 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
             }
         };
 
-        // Upload artifacts to StrikeKit in the background if engagement context is available.
+        // Upload artifacts to StrikeKit if engagement context is available.
         // This handles webwright screenshots, scripts, and DOM snapshots.
+        //
+        // We await the upload (instead of fire-and-forget) so the outcome lands
+        // in the tool result payload — the LLM/UI need to know whether artifacts
+        // actually arrived. The latency penalty (a few hundred ms per file over
+        // local gRPC) is paid after the multi-second webwright run, so it's
+        // negligible compared to total tool time.
         if tool_name == "webwright" {
             tracing::info!(
                 "[strikekit] webwright completed: success={}, has_engagement_id={}",
@@ -343,7 +350,7 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
                 extract_engagement_id(&req.context).is_some()
             );
         }
-        if result.success && tool_name == "webwright" {
+        let upload_status: Option<UploadStatus> = if result.success && tool_name == "webwright" {
             if let Some(engagement_id) = extract_engagement_id(&req.context) {
                 let sk_client = StrikeKitClient::new(Arc::clone(&matrix_tx));
                 let artifacts = result.data.get("artifacts").cloned().unwrap_or_default();
@@ -352,14 +359,36 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
                     .as_ref()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default();
-                tokio::spawn(async move {
+                Some(
                     upload_artifacts_to_strikekit(sk_client, &engagement_id, &artifacts, &ws_path)
-                        .await;
-                });
+                        .await,
+                )
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
-        serde_json::to_vec(&result).unwrap_or_default()
+        // If we have an upload status, splice it into data.artifacts.upload_status
+        // before serializing the response. We mutate the JSON rather than widening
+        // the ToolResult API — only one tool (webwright) cares about this field,
+        // and adding an Option<Value> to ToolResult would force every tool/test
+        // to think about it.
+        //
+        // When there is no upload_status (non-StrikeKit conversation, or no
+        // engagement_id), the key is OMITTED entirely — we never inject a
+        // fake-zero status, so consumers can distinguish "no uploads attempted"
+        // from "uploads attempted, all failed".
+        match serde_json::to_value(&result) {
+            Ok(mut result_json) => {
+                if let Some(status) = upload_status {
+                    inject_upload_status(&mut result_json, &status);
+                }
+                serde_json::to_vec(&result_json).unwrap_or_default()
+            }
+            Err(_) => serde_json::to_vec(&result).unwrap_or_default(),
+        }
     };
 
     // Send response — read the current sender at completion time (may be a new stream after reconnect)
@@ -528,14 +557,90 @@ fn extract_engagement_id(context: &HashMap<String, String>) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Reported outcome of a StrikeKit artifact upload batch.
+///
+/// Serialized into `data.artifacts.upload_status` on the webwright tool result
+/// so the LLM and chat-panel widget can see whether artifacts actually
+/// reached the platform. Counts cover the number of files we *tried* to upload
+/// vs. the number that returned without error from the gRPC enqueue (the
+/// platform's downstream processing is still asynchronous, so a success here
+/// only proves the message was queued, not that it landed in storage).
+///
+/// `failed` is capped to avoid blowing up the tool result on pathological
+/// runs where every file fails; overflow is preserved as a final synthetic
+/// entry of the form `"... and N more"`.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct UploadStatus {
+    pub attempted: usize,
+    pub succeeded: usize,
+    pub failed: Vec<String>,
+    pub started_at_ms: i64,
+    pub duration_ms: u64,
+    pub engagement_id: String,
+}
+
+/// Cap on how many failed paths we keep verbatim before collapsing the rest
+/// into a single overflow entry. Keeps the tool result payload bounded.
+const UPLOAD_STATUS_FAILED_LIMIT: usize = 10;
+
+/// Splice an [`UploadStatus`] into a serialized ToolResult JSON under
+/// `data.artifacts.upload_status`. Defensively creates `data` and
+/// `data.artifacts` as empty objects if either is missing so the splice
+/// always lands somewhere queryable.
+fn inject_upload_status(result_json: &mut Value, status: &UploadStatus) {
+    let status_val = match serde_json::to_value(status) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let obj = match result_json.as_object_mut() {
+        Some(o) => o,
+        None => return,
+    };
+
+    let data_entry = obj
+        .entry("data".to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    let data_obj = match data_entry.as_object_mut() {
+        Some(o) => o,
+        // data exists but is not an object (e.g. Null for error results) — overwrite
+        None => {
+            *data_entry = Value::Object(Default::default());
+            data_entry.as_object_mut().unwrap()
+        }
+    };
+
+    let artifacts_entry = data_obj
+        .entry("artifacts".to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    let artifacts_obj = match artifacts_entry.as_object_mut() {
+        Some(o) => o,
+        None => {
+            *artifacts_entry = Value::Object(Default::default());
+            artifacts_entry.as_object_mut().unwrap()
+        }
+    };
+
+    artifacts_obj.insert("upload_status".to_string(), status_val);
+}
+
 /// Upload webwright artifacts (screenshots, scripts, DOM snapshots) to StrikeKit.
+///
+/// Returns an [`UploadStatus`] describing what was attempted vs. what landed,
+/// so the caller can splice the outcome into the tool result payload for the
+/// LLM/UI to observe.
 async fn upload_artifacts_to_strikekit(
     client: StrikeKitClient,
     engagement_id: &str,
     artifacts: &Value,
     workspace_path: &str,
-) {
-    let mut count = 0;
+) -> UploadStatus {
+    let started_at_ms = chrono::Utc::now().timestamp_millis();
+    let start = std::time::Instant::now();
+
+    let mut attempted: usize = 0;
+    let mut succeeded: usize = 0;
+    let mut failed: Vec<String> = Vec::new();
 
     // Resolve a potentially relative path against the workspace
     let resolve = |path: &str| -> String {
@@ -546,48 +651,66 @@ async fn upload_artifacts_to_strikekit(
         }
     };
 
-    // Screenshots
-    if let Some(paths) = artifacts["screenshots"].as_array() {
-        for path_val in paths {
-            if let Some(path) = path_val.as_str() {
-                client
-                    .upload_file(engagement_id, &resolve(path), "screenshot", "webwright")
-                    .await;
-                count += 1;
+    // Track overflow beyond UPLOAD_STATUS_FAILED_LIMIT so we can collapse the
+    // tail into a single synthetic "... and N more" entry. Keeps the payload
+    // bounded even on runs where every artifact fails.
+    let mut overflow: usize = 0;
+
+    // (artifact-array key, evidence_type) — matches the prior shape
+    let categories: [(&str, &str); 3] = [
+        ("screenshots", "screenshot"),
+        ("scripts", "code"),
+        ("dom_snapshots", "file"),
+    ];
+
+    for (key, evidence_type) in categories.iter() {
+        if let Some(paths) = artifacts[*key].as_array() {
+            for path_val in paths {
+                if let Some(path) = path_val.as_str() {
+                    attempted += 1;
+                    let resolved = resolve(path);
+                    match client
+                        .upload_file(engagement_id, &resolved, evidence_type, "webwright")
+                        .await
+                    {
+                        Ok(()) => succeeded += 1,
+                        Err(_) => {
+                            if failed.len() < UPLOAD_STATUS_FAILED_LIMIT {
+                                failed.push(path.to_string());
+                            } else {
+                                overflow += 1;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
-    // Scripts
-    if let Some(paths) = artifacts["scripts"].as_array() {
-        for path_val in paths {
-            if let Some(path) = path_val.as_str() {
-                client
-                    .upload_file(engagement_id, &resolve(path), "code", "webwright")
-                    .await;
-                count += 1;
-            }
-        }
+    if overflow > 0 {
+        failed.push(format!("... and {} more", overflow));
     }
 
-    // DOM snapshots
-    if let Some(paths) = artifacts["dom_snapshots"].as_array() {
-        for path_val in paths {
-            if let Some(path) = path_val.as_str() {
-                client
-                    .upload_file(engagement_id, &resolve(path), "file", "webwright")
-                    .await;
-                count += 1;
-            }
-        }
-    }
+    let duration_ms = start.elapsed().as_millis() as u64;
 
-    if count > 0 {
+    if attempted > 0 {
         tracing::info!(
-            "[strikekit] Uploaded {} webwright artifacts for engagement {}",
-            count,
-            engagement_id
+            "[strikekit] webwright artifact upload: attempted={} succeeded={} failed={} duration_ms={} engagement={}",
+            attempted,
+            succeeded,
+            failed.len(),
+            duration_ms,
+            engagement_id,
         );
+    }
+
+    UploadStatus {
+        attempted,
+        succeeded,
+        failed,
+        started_at_ms,
+        duration_ms,
+        engagement_id: engagement_id.to_string(),
     }
 }
 
@@ -734,5 +857,120 @@ mod tests {
 
         assert!(!metadata.contains_key("tool_call_id"));
         assert_eq!(metadata.get("request_id"), Some(&"agent-12345".to_string()));
+    }
+
+    #[test]
+    fn upload_status_serializes_with_expected_keys() {
+        // The LLM/UI look up these exact keys on data.artifacts.upload_status.
+        // Renaming any of them is a breaking change for downstream consumers.
+        let status = UploadStatus {
+            attempted: 3,
+            succeeded: 2,
+            failed: vec!["screenshots/foo.png".to_string()],
+            started_at_ms: 1_700_000_000_000,
+            duration_ms: 250,
+            engagement_id: "eng-42".to_string(),
+        };
+
+        let v = serde_json::to_value(&status).expect("serialize UploadStatus");
+        let obj = v
+            .as_object()
+            .expect("UploadStatus must serialize as object");
+
+        // Field names are part of the contract; assert exact match.
+        let expected_keys: std::collections::BTreeSet<&str> = [
+            "attempted",
+            "succeeded",
+            "failed",
+            "started_at_ms",
+            "duration_ms",
+            "engagement_id",
+        ]
+        .into_iter()
+        .collect();
+        let actual_keys: std::collections::BTreeSet<&str> =
+            obj.keys().map(|s| s.as_str()).collect();
+        assert_eq!(
+            actual_keys, expected_keys,
+            "UploadStatus JSON keys drifted from the LLM/UI contract"
+        );
+
+        assert_eq!(obj["attempted"], 3);
+        assert_eq!(obj["succeeded"], 2);
+        assert_eq!(obj["failed"][0], "screenshots/foo.png");
+        assert_eq!(obj["started_at_ms"], 1_700_000_000_000_i64);
+        assert_eq!(obj["duration_ms"], 250);
+        assert_eq!(obj["engagement_id"], "eng-42");
+    }
+
+    #[test]
+    fn inject_upload_status_lands_under_data_artifacts() {
+        let mut result_json = serde_json::json!({
+            "success": true,
+            "data": {
+                "artifacts": {
+                    "screenshots": ["a.png"]
+                }
+            },
+            "error": null,
+            "duration_ms": 100
+        });
+        let status = UploadStatus {
+            attempted: 1,
+            succeeded: 1,
+            failed: Vec::new(),
+            started_at_ms: 0,
+            duration_ms: 5,
+            engagement_id: "e".to_string(),
+        };
+        inject_upload_status(&mut result_json, &status);
+        let injected = &result_json["data"]["artifacts"]["upload_status"];
+        assert_eq!(injected["attempted"], 1);
+        assert_eq!(injected["succeeded"], 1);
+        assert_eq!(injected["engagement_id"], "e");
+        // Original siblings preserved
+        assert_eq!(result_json["data"]["artifacts"]["screenshots"][0], "a.png");
+    }
+
+    #[test]
+    fn inject_upload_status_creates_missing_artifacts_object() {
+        let mut result_json = serde_json::json!({
+            "success": true,
+            "data": {},
+            "error": null,
+            "duration_ms": 0
+        });
+        let status = UploadStatus {
+            attempted: 0,
+            succeeded: 0,
+            failed: Vec::new(),
+            started_at_ms: 0,
+            duration_ms: 0,
+            engagement_id: "e".to_string(),
+        };
+        inject_upload_status(&mut result_json, &status);
+        assert!(result_json["data"]["artifacts"]["upload_status"].is_object());
+    }
+
+    #[test]
+    fn inject_upload_status_handles_null_data() {
+        // Error results have data: null. We still want to surface upload_status
+        // when present (though in practice we only inject on success).
+        let mut result_json = serde_json::json!({
+            "success": false,
+            "data": null,
+            "error": "boom",
+            "duration_ms": 0
+        });
+        let status = UploadStatus {
+            attempted: 0,
+            succeeded: 0,
+            failed: Vec::new(),
+            started_at_ms: 0,
+            duration_ms: 0,
+            engagement_id: "e".to_string(),
+        };
+        inject_upload_status(&mut result_json, &status);
+        assert!(result_json["data"]["artifacts"]["upload_status"].is_object());
     }
 }
