@@ -28,11 +28,14 @@ pub enum SidecarCommand {
         output_dir: String,
         task_id: String,
     },
-    /// Execute a pre-written script.
+    /// Execute a pre-written Playwright script. The sidecar writes the script
+    /// to `<output_dir>/script.py` and runs it; the `url` is purely informational
+    /// (the script itself drives any navigation).
     ExecuteScript {
         script: String,
         url: String,
         output_dir: String,
+        task_id: String,
     },
     /// Cancel the current task.
     Cancel,

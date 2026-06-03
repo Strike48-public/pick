@@ -7,9 +7,10 @@ tasks for faster startup and enables live progress streaming.
 
 Protocol:
   Pick -> Sidecar (stdin):
-    {"type": "start_task", "mode": "explore", "task": "...", "url": "...", "max_steps": 50}
-    {"type": "execute_script", "script": "...", "url": "..."}
+    {"type": "start_task", "mode": "explore", "task": "...", "url": "...", "max_steps": 50, "output_dir": "...", "task_id": "..."}
+    {"type": "execute_script", "script": "...", "url": "...", "output_dir": "...", "task_id": "..."}
     {"type": "cancel"}
+    {"type": "shutdown"}
 
   Sidecar -> Pick (stdout):
     {"type": "step", "n": 1, "action": "navigating to ...", "screenshot": "<base64 or null>"}
@@ -229,6 +230,8 @@ async def main():
                     task_id=task_id,
                 )
             elif cmd.get("mode") == "execute":
+                # Backward-compat: older callers routed execute mode through start_task.
+                # Prefer the dedicated execute_script command type going forward.
                 await run_execute_task(
                     script=cmd.get("script", ""),
                     url=cmd.get("url", ""),
@@ -236,6 +239,14 @@ async def main():
                 )
             else:
                 emit_error(f"Unknown mode: {cmd.get('mode')}")
+
+        elif cmd_type == "execute_script":
+            output_dir = cmd.get("output_dir", f"/tmp/webwright/{cmd.get('task_id', 'adhoc')}")
+            await run_execute_task(
+                script=cmd.get("script", ""),
+                url=cmd.get("url", ""),
+                output_dir=output_dir,
+            )
 
         elif cmd_type == "cancel":
             if current_task and not current_task.done():

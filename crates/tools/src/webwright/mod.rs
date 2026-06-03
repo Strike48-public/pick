@@ -14,7 +14,7 @@ pub mod sidecar;
 pub mod workspace;
 
 use async_trait::async_trait;
-use pentest_core::error::Result;
+use pentest_core::error::{Error, Result};
 use pentest_core::provenance::{ProbeCommand, Provenance};
 use pentest_core::tools::{
     execute_timed_with_provenance, ExternalDependency, ParamType, PentestTool, Platform,
@@ -31,6 +31,166 @@ use crate::util::param_u64;
 
 // Sidecars are spawned fresh per task — no global singleton, so parallel webwright
 // invocations each get their own browser process.
+
+/// Which webwright mode is being executed. Mirrors the `mode` tool parameter, but
+/// parsed once at the top of `execute` so the rest of the pipeline stops re-checking
+/// strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebwrightMode {
+    /// Autonomous LLM-driven exploration of `start_url` toward `task`.
+    Explore,
+    /// Replay a user-supplied Playwright script.
+    Execute,
+}
+
+impl WebwrightMode {
+    fn parse(s: &str) -> Result<Self> {
+        match s {
+            "explore" => Ok(Self::Explore),
+            "execute" => Ok(Self::Execute),
+            _ => Err(Error::InvalidParams(
+                "mode must be 'explore' or 'execute'".into(),
+            )),
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Explore => "explore",
+            Self::Execute => "execute",
+        }
+    }
+}
+
+/// Everything both execution paths need to run a webwright task.
+///
+/// Built once by [`build_execution_plan`] from the parsed tool parameters and the
+/// workspace, then handed to either [`try_sidecar_execution`] (warm browser, live
+/// progress) or [`run_subprocess`] (fallback). Keeping the build separate from the
+/// dispatch means schema changes happen in one place and the two paths cannot drift.
+struct ExecutionPlan {
+    mode: WebwrightMode,
+    start_url: String,
+    /// For [`WebwrightMode::Execute`] this is the Python source; the orchestrator
+    /// writes it to `workspace.script_path()` before dispatch.
+    script_content: Option<String>,
+    /// `bash -c <line>` command line used by the subprocess fallback. Already
+    /// includes env exports.
+    shell_command_line: String,
+    /// Sidecar message describing the same work.
+    sidecar_command: SidecarCommand,
+    /// Human-readable provenance description.
+    probe_desc: String,
+    /// Effective timeout (after the connector-deadline subtraction).
+    timeout_secs: u64,
+}
+
+/// Parsed-and-validated inputs to [`build_execution_plan`]. Bundled into a
+/// struct to keep the helper signature short and to give the test suite a
+/// natural place to assemble inputs without 8-argument call sites.
+struct PlanInputs<'a> {
+    mode: WebwrightMode,
+    start_url: &'a str,
+    task: &'a str,
+    script: &'a str,
+    workspace: &'a WebwrightWorkspace,
+    env_exports: &'a str,
+    timeout_secs: u64,
+    max_steps: u32,
+}
+
+/// Build the single source-of-truth execution plan for one webwright invocation.
+///
+/// Pure: does no I/O, touches no globals. Callers are expected to have already
+/// validated `start_url` (non-empty), the mode-specific params (task/script),
+/// and constructed the workspace.
+fn build_execution_plan(inputs: PlanInputs<'_>) -> ExecutionPlan {
+    let PlanInputs {
+        mode,
+        start_url,
+        task,
+        script,
+        workspace,
+        env_exports,
+        timeout_secs,
+        max_steps,
+    } = inputs;
+    let proxy_port = std::env::var("PICK_LLM_PROXY_PORT")
+        .unwrap_or_else(|_| constants::DEFAULT_LLM_PROXY_PORT_STR.to_string());
+
+    match mode {
+        WebwrightMode::Explore => {
+            // Override model endpoint to use Pick's local LLM proxy. Must include
+            // base.yaml + model_openai.yaml explicitly since adding any -c flag
+            // replaces the defaults.
+            let endpoint = std::env::var("OPENAI_BASE_URL")
+                .unwrap_or_else(|_| format!("http://127.0.0.1:{}/v1/chat/completions", proxy_port));
+            let shell_command_line = format!(
+                "{} python3 -m webwright.run.cli -c base.yaml -c model_openai.yaml -c model.openai_endpoint={} -t {} --start-url {} --output-dir {} --task-id {}",
+                env_exports,
+                shell_escape(&endpoint),
+                shell_escape(task),
+                shell_escape(start_url),
+                shell_escape(&workspace.path()),
+                shell_escape(&workspace.task_id),
+            );
+            let probe_desc = format!(
+                "webwright explore --start-url {} --task \"{}\"",
+                start_url, task
+            );
+            let sidecar_command = SidecarCommand::StartTask {
+                mode: "explore".to_string(),
+                task: task.to_string(),
+                url: start_url.to_string(),
+                max_steps,
+                output_dir: workspace.path(),
+                task_id: workspace.task_id.clone(),
+            };
+            ExecutionPlan {
+                mode,
+                start_url: start_url.to_string(),
+                script_content: None,
+                shell_command_line,
+                sidecar_command,
+                probe_desc,
+                timeout_secs,
+            }
+        }
+        WebwrightMode::Execute => {
+            let shell_command_line = format!(
+                "{} python3 {}",
+                env_exports,
+                shell_escape(&workspace.script_path()),
+            );
+            let probe_desc = format!("webwright execute script on {}", start_url);
+            let sidecar_command = SidecarCommand::ExecuteScript {
+                script: script.to_string(),
+                url: start_url.to_string(),
+                output_dir: workspace.path(),
+                task_id: workspace.task_id.clone(),
+            };
+            ExecutionPlan {
+                mode,
+                start_url: start_url.to_string(),
+                script_content: Some(script.to_string()),
+                shell_command_line,
+                sidecar_command,
+                probe_desc,
+                timeout_secs,
+            }
+        }
+    }
+}
+
+/// Reserve some headroom before the connector framework's deadline so we can
+/// return cleanly instead of being killed mid-execution (which trips the circuit
+/// breaker). `raw_timeout - 10`, clamped at a 30s floor so a user-supplied tiny
+/// timeout still leaves us *some* runway.
+fn effective_timeout_secs(raw_timeout: u64) -> u64 {
+    raw_timeout
+        .saturating_sub(10)
+        .max(constants::MIN_EFFECTIVE_TIMEOUT_SECS)
+}
 
 /// Webwright browser automation tool.
 pub struct WebwrightTool;
@@ -102,39 +262,32 @@ impl PentestTool for WebwrightTool {
             let platform = get_platform();
             let t0 = std::time::Instant::now();
 
-            let mode = param_str_or(&params, "mode", "explore");
+            let mode_str = param_str_or(&params, "mode", "explore");
             let start_url = param_str_or(&params, "start_url", "");
-            let task = param_str_opt(&params, "task");
-            let script = param_str_opt(&params, "script");
-            let _max_steps = param_u64(&params, "max_steps", 50); // reserved for future sidecar use
-            // Reserve 10s before the connector framework's timeout to return gracefully
-            // rather than getting killed mid-execution (which triggers circuit breaker).
+            let task = param_str_opt(&params, "task").unwrap_or_default();
+            let script = param_str_opt(&params, "script").unwrap_or_default();
+            let max_steps = param_u64(&params, "max_steps", 50) as u32;
             let raw_timeout = param_u64(&params, "timeout", 600);
-            let timeout_secs = raw_timeout.saturating_sub(10).max(30);
+            let timeout_secs = effective_timeout_secs(raw_timeout);
 
-            tracing::info!("[webwright] execute start: mode={} url={} timeout={}s", mode, start_url, timeout_secs);
+            tracing::info!("[webwright] execute start: mode={} url={} timeout={}s", mode_str, start_url, timeout_secs);
 
+            // Parse and validate everything before any I/O so misuse surfaces a clear
+            // error instead of being masked by an environment-dependent install failure
+            // (e.g. bwrap unavailable in CI).
             if start_url.is_empty() {
-                return Err(pentest_core::error::Error::InvalidParams(
+                return Err(Error::InvalidParams(
                     "start_url parameter is required".into(),
                 ));
             }
-
-            // Validate mode + mode-specific params before triggering auto-install,
-            // so misuse surfaces a clear error instead of being masked by an
-            // environment-dependent install failure (e.g. bwrap unavailable in CI).
-            if mode != "explore" && mode != "execute" {
-                return Err(pentest_core::error::Error::InvalidParams(
-                    "mode must be 'explore' or 'execute'".into(),
-                ));
-            }
-            if mode == "explore" && task.as_deref().unwrap_or("").is_empty() {
-                return Err(pentest_core::error::Error::InvalidParams(
+            let mode = WebwrightMode::parse(&mode_str)?;
+            if mode == WebwrightMode::Explore && task.is_empty() {
+                return Err(Error::InvalidParams(
                     "task parameter is required for explore mode".into(),
                 ));
             }
-            if mode == "execute" && script.as_deref().unwrap_or("").is_empty() {
-                return Err(pentest_core::error::Error::InvalidParams(
+            if mode == WebwrightMode::Execute && script.is_empty() {
+                return Err(Error::InvalidParams(
                     "script parameter is required for execute mode".into(),
                 ));
             }
@@ -181,85 +334,53 @@ impl PentestTool for WebwrightTool {
             let session_token = ctx.metadata.get("session_token").map(|s| s.as_str());
             let env_exports = build_env_exports(session_token);
 
-            // Build command based on mode
-            let (args, probe_desc) = match mode.as_str() {
-                "explore" => {
-                    let task_str = task.unwrap_or_default();
-                    if task_str.is_empty() {
-                        return Err(pentest_core::error::Error::InvalidParams(
-                            "task parameter is required for explore mode".into(),
-                        ));
-                    }
-                    // Override model endpoint to use Pick's local LLM proxy.
-                    // Must include base.yaml + model_openai.yaml explicitly since
-                    // adding any -c flag replaces the defaults.
-                    let proxy_port = std::env::var("PICK_LLM_PROXY_PORT")
-                        .unwrap_or_else(|_| constants::DEFAULT_LLM_PROXY_PORT_STR.to_string());
-                    let endpoint = std::env::var("OPENAI_BASE_URL")
-                        .unwrap_or_else(|_| format!("http://127.0.0.1:{}/v1/chat/completions", proxy_port));
-                    let cmd = format!(
-                        "{} python3 -m webwright.run.cli -c base.yaml -c model_openai.yaml -c model.openai_endpoint={} -t {} --start-url {} --output-dir {} --task-id {}",
-                        env_exports,
-                        shell_escape(&endpoint),
-                        shell_escape(&task_str),
-                        shell_escape(&start_url),
-                        shell_escape(&workspace.path()),
-                        shell_escape(&workspace.task_id),
-                    );
-                    let args = vec!["-c".to_string(), cmd];
-                    let desc = format!(
-                        "webwright explore --start-url {} --task \"{}\"",
-                        start_url, task_str
-                    );
-                    (args, desc)
-                }
-                "execute" => {
-                    let script_content = script.unwrap_or_default();
-                    if script_content.is_empty() {
-                        return Err(pentest_core::error::Error::InvalidParams(
-                            "script parameter is required for execute mode".into(),
-                        ));
-                    }
-                    workspace.write_script(&script_content).await?;
-                    let cmd = format!(
-                        "{} python3 {}",
-                        env_exports,
-                        shell_escape(&workspace.script_path()),
-                    );
-                    let args = vec!["-c".to_string(), cmd];
-                    let desc = format!("webwright execute script on {}", start_url);
-                    (args, desc)
-                }
-                _ => {
-                    return Err(pentest_core::error::Error::InvalidParams(
-                        "mode must be 'explore' or 'execute'".into(),
-                    ));
-                }
-            };
+            // Single source of truth for "what to run". Both dispatch paths
+            // (sidecar + subprocess) read from this plan.
+            let plan = build_execution_plan(PlanInputs {
+                mode,
+                start_url: &start_url,
+                task: &task,
+                script: &script,
+                workspace: &workspace,
+                env_exports: &env_exports,
+                timeout_secs,
+                max_steps,
+            });
 
-            let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            // Execute-mode plans carry the script content; write it to the workspace
+            // so the subprocess fallback can find it on disk. The sidecar path reads
+            // the content straight from the plan and writes it inside the sandbox.
+            if let Some(ref content) = plan.script_content {
+                workspace.write_script(content).await?;
+            }
 
-            // Sidecar mode is default (warm browser, live updates). Disable with WEBWRIGHT_SIDECAR=0.
+            // Sidecar is default (warm browser, live updates). Disable with WEBWRIGHT_SIDECAR=0.
             let use_sidecar = std::env::var("WEBWRIGHT_SIDECAR").unwrap_or_else(|_| "1".to_string()) != "0";
-            let task_str_for_sidecar = param_str_opt(&params, "task").unwrap_or_default();
             let sidecar_result = if use_sidecar {
-                try_sidecar_execution(&mode, &start_url, &task_str_for_sidecar, &workspace, &env_exports, timeout_secs).await
+                try_sidecar_execution(&plan, &workspace, &env_exports).await
             } else {
                 None
             };
 
             let result = if let Some(r) = sidecar_result {
-                tracing::info!("[webwright] sidecar execution complete ({:.1}s elapsed)", t0.elapsed().as_secs_f32());
+                tracing::info!(
+                    "[webwright] sidecar execution complete ({:.1}s elapsed)",
+                    t0.elapsed().as_secs_f32()
+                );
                 r
             } else {
-                // Subprocess fallback
-                tracing::info!("[webwright] launching subprocess (timeout={}s, {:.1}s elapsed)", timeout_secs, t0.elapsed().as_secs_f32());
-                let r = platform
-                    .execute_command("bash", &args_refs, Duration::from_secs(timeout_secs))
-                    .await?;
+                tracing::info!(
+                    "[webwright] launching subprocess (timeout={}s, {:.1}s elapsed)",
+                    timeout_secs,
+                    t0.elapsed().as_secs_f32()
+                );
+                let r = run_subprocess(&plan, &platform).await?;
                 tracing::info!(
                     "[webwright] subprocess exited: code={} stdout_len={} stderr_len={} ({:.1}s elapsed)",
-                    r.exit_code, r.stdout.len(), r.stderr.len(), t0.elapsed().as_secs_f32()
+                    r.exit_code,
+                    r.stdout.len(),
+                    r.stderr.len(),
+                    t0.elapsed().as_secs_f32()
                 );
                 r
             };
@@ -276,7 +397,7 @@ impl PentestTool for WebwrightTool {
             let provenance = Provenance::new(
                 "webwright",
                 "0.1.0",
-                ProbeCommand::from_exact(&probe_desc),
+                ProbeCommand::from_exact(&plan.probe_desc),
                 &result.stdout,
             );
 
@@ -321,8 +442,8 @@ impl PentestTool for WebwrightTool {
             };
 
             let data = json!({
-                "mode": mode,
-                "start_url": start_url,
+                "mode": plan.mode.as_str(),
+                "start_url": plan.start_url,
                 "exit_code": result.exit_code,
                 "stdout": stdout_truncated,
                 "stderr": result.stderr,
@@ -411,14 +532,32 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Try to execute via the sidecar process. Returns None if sidecar unavailable.
+/// Run the plan as a one-shot subprocess (`bash -c <plan.shell_command_line>`).
+///
+/// This is the fallback path when the sidecar can't be spawned or is disabled
+/// via `WEBWRIGHT_SIDECAR=0`. No live progress, no warm browser — just exec and
+/// collect the final stdout/stderr.
+async fn run_subprocess(
+    plan: &ExecutionPlan,
+    platform: &impl CommandExec,
+) -> Result<pentest_platform::CommandResult> {
+    let args = ["-c", plan.shell_command_line.as_str()];
+    platform
+        .execute_command("bash", &args, Duration::from_secs(plan.timeout_secs))
+        .await
+}
+
+/// Try to execute the plan via the sidecar process. Returns `None` if the
+/// sidecar couldn't be spawned or the command couldn't be sent, so the
+/// orchestrator can fall back to [`run_subprocess`].
+///
+/// Both [`WebwrightMode::Explore`] and [`WebwrightMode::Execute`] are supported
+/// — the plan's [`SidecarCommand`] already encodes which one. Live progress is
+/// pumped into [`live_state`] keyed by `workspace.task_id`.
 async fn try_sidecar_execution(
-    mode: &str,
-    start_url: &str,
-    task: &str,
+    plan: &ExecutionPlan,
     workspace: &WebwrightWorkspace,
     env_exports: &str,
-    timeout_secs: u64,
 ) -> Option<pentest_platform::CommandResult> {
     // Spawn a fresh sidecar for this task (enables parallel execution).
     // env_exports already encodes OPENAI_BASE_URL with the proxy port.
@@ -433,23 +572,12 @@ async fn try_sidecar_execution(
         }
     };
 
-    // Send command
-    let cmd = match mode {
-        "explore" => SidecarCommand::StartTask {
-            mode: "explore".to_string(),
-            task: task.to_string(),
-            url: start_url.to_string(),
-            max_steps: 50,
-            output_dir: workspace.path(),
-            task_id: workspace.task_id.clone(),
-        },
-        _ => return None, // Only explore mode supported via sidecar for now
-    };
-
-    if let Err(e) = sidecar.send(cmd).await {
+    if let Err(e) = sidecar.send(plan.sidecar_command.clone()).await {
         tracing::warn!("[webwright-sidecar] send failed: {}, falling back", e);
         return None;
     }
+
+    let timeout_secs = plan.timeout_secs;
 
     // Signal start for live UI (per-task)
     live_state::start(&workspace.task_id);
@@ -578,7 +706,17 @@ async fn try_sidecar_execution(
 
 #[cfg(test)]
 mod tests {
-    use super::shell_escape;
+    use super::*;
+
+    /// Build a synthetic plan via the public helper. Uses a workspace produced by
+    /// `WebwrightWorkspace::create` with no connector dir, so we don't touch the
+    /// filesystem beyond the constructor's random task_id.
+    async fn make_workspace() -> WebwrightWorkspace {
+        let platform = pentest_platform::get_platform();
+        WebwrightWorkspace::create(&platform, None)
+            .await
+            .expect("workspace create with no connector dir is infallible")
+    }
 
     fn unescape_through_bash(escaped: &str) -> String {
         // Use bash to evaluate the escaped string; if our escaper is correct,
@@ -635,5 +773,188 @@ mod tests {
     #[test]
     fn shell_escape_roundtrip_empty() {
         assert_eq!(unescape_through_bash(&shell_escape("")), "");
+    }
+
+    // ---------------------------------------------------------------------
+    // ExecutionPlan
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn webwright_mode_parses_known_values_and_rejects_others() {
+        assert_eq!(
+            WebwrightMode::parse("explore").unwrap(),
+            WebwrightMode::Explore
+        );
+        assert_eq!(
+            WebwrightMode::parse("execute").unwrap(),
+            WebwrightMode::Execute
+        );
+        let err = WebwrightMode::parse("bogus").unwrap_err();
+        assert!(
+            err.to_string().contains("mode must be"),
+            "unexpected error message: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn effective_timeout_subtracts_ten_seconds() {
+        assert_eq!(effective_timeout_secs(600), 590);
+        assert_eq!(effective_timeout_secs(300), 290);
+    }
+
+    #[test]
+    fn effective_timeout_clamps_at_floor_for_tiny_inputs() {
+        // The floor matches the constant; verifying the constraint, not the literal.
+        let floor = constants::MIN_EFFECTIVE_TIMEOUT_SECS;
+        assert_eq!(effective_timeout_secs(0), floor);
+        assert_eq!(effective_timeout_secs(5), floor);
+        assert_eq!(effective_timeout_secs(35), floor.max(25));
+        // Above the floor: subtraction wins.
+        assert!(effective_timeout_secs(120) >= floor);
+        assert_eq!(effective_timeout_secs(120), 110);
+    }
+
+    #[tokio::test]
+    async fn build_plan_explore_emits_explore_shell_and_start_task_sidecar() {
+        let workspace = make_workspace().await;
+        let plan = build_execution_plan(PlanInputs {
+            mode: WebwrightMode::Explore,
+            start_url: "https://target.example",
+            task: "test all forms for XSS",
+            script: "",
+            workspace: &workspace,
+            env_exports: "export FOO=bar;",
+            timeout_secs: 120,
+            max_steps: 42,
+        });
+
+        assert_eq!(plan.mode, WebwrightMode::Explore);
+        assert_eq!(plan.start_url, "https://target.example");
+        assert!(plan.script_content.is_none());
+        assert_eq!(plan.timeout_secs, 120);
+
+        // probe_desc must name the mode + URL + task so we can read it in audit logs.
+        assert!(plan.probe_desc.starts_with("webwright explore"));
+        assert!(plan.probe_desc.contains("https://target.example"));
+        assert!(plan.probe_desc.contains("test all forms for XSS"));
+
+        // shell line carries the env exports verbatim and points at the CLI.
+        assert!(plan.shell_command_line.contains("export FOO=bar;"));
+        assert!(plan
+            .shell_command_line
+            .contains("python3 -m webwright.run.cli"));
+        assert!(plan
+            .shell_command_line
+            .contains("--start-url 'https://target.example'"));
+        assert!(plan
+            .shell_command_line
+            .contains("--output-dir '/tmp/webwright/"));
+
+        // Sidecar command is StartTask with mode="explore" and the same max_steps
+        // the orchestrator parsed from params.
+        match &plan.sidecar_command {
+            SidecarCommand::StartTask {
+                mode,
+                task,
+                url,
+                max_steps,
+                output_dir,
+                task_id,
+            } => {
+                assert_eq!(mode, "explore");
+                assert_eq!(task, "test all forms for XSS");
+                assert_eq!(url, "https://target.example");
+                assert_eq!(*max_steps, 42);
+                assert_eq!(output_dir, &workspace.path());
+                assert_eq!(task_id, &workspace.task_id);
+            }
+            other => panic!("explore plan should emit StartTask, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn build_plan_execute_writes_script_path_and_execute_script_sidecar() {
+        let workspace = make_workspace().await;
+        let script_body = "print('hi')";
+        let plan = build_execution_plan(PlanInputs {
+            mode: WebwrightMode::Execute,
+            start_url: "https://target.example",
+            task: "",
+            script: script_body,
+            workspace: &workspace,
+            env_exports: "export FOO=bar;",
+            timeout_secs: 90,
+            max_steps: 10,
+        });
+
+        assert_eq!(plan.mode, WebwrightMode::Execute);
+        assert_eq!(plan.start_url, "https://target.example");
+        assert_eq!(plan.script_content.as_deref(), Some(script_body));
+        assert_eq!(plan.timeout_secs, 90);
+
+        // probe_desc must indicate we're in execute mode + which target.
+        assert!(plan.probe_desc.contains("execute script"));
+        assert!(plan.probe_desc.contains("https://target.example"));
+
+        // shell line runs `python3 <workspace>/script.py`.
+        assert!(plan.shell_command_line.contains("export FOO=bar;"));
+        assert!(plan.shell_command_line.contains("python3 "));
+        let expected_script = format!("'{}'", workspace.script_path());
+        assert!(
+            plan.shell_command_line.contains(&expected_script),
+            "shell line missing quoted script path {}: {}",
+            expected_script,
+            plan.shell_command_line
+        );
+
+        // Sidecar carries the raw script body + output dir + task id.
+        match &plan.sidecar_command {
+            SidecarCommand::ExecuteScript {
+                script,
+                url,
+                output_dir,
+                task_id,
+            } => {
+                assert_eq!(script, script_body);
+                assert_eq!(url, "https://target.example");
+                assert_eq!(output_dir, &workspace.path());
+                assert_eq!(task_id, &workspace.task_id);
+            }
+            other => panic!("execute plan should emit ExecuteScript, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn build_plan_explore_shell_contains_required_cli_flags() {
+        // Regression: when this string drifts (someone renames a flag), the
+        // subprocess fallback silently breaks. Pin the flag names here.
+        let workspace = make_workspace().await;
+        let plan = build_execution_plan(PlanInputs {
+            mode: WebwrightMode::Explore,
+            start_url: "https://target.example",
+            task: "task",
+            script: "",
+            workspace: &workspace,
+            env_exports: "",
+            timeout_secs: 60,
+            max_steps: 50,
+        });
+        for flag in [
+            "-c base.yaml",
+            "-c model_openai.yaml",
+            "-c model.openai_endpoint=",
+            "-t 'task'",
+            "--start-url",
+            "--output-dir",
+            "--task-id",
+        ] {
+            assert!(
+                plan.shell_command_line.contains(flag),
+                "shell command line is missing required flag {:?}: {}",
+                flag,
+                plan.shell_command_line
+            );
+        }
     }
 }

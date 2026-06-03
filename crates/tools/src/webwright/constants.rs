@@ -56,6 +56,12 @@ pub const SIDECAR_READY_POLL_INTERVAL_MS: u64 = 100;
 /// receiving the `Shutdown` command, before we send `SIGKILL`.
 pub const SIDECAR_SHUTDOWN_GRACE_MS: u64 = 500;
 
+/// Floor for the post-subtraction effective timeout (see
+/// `mod::effective_timeout_secs`). If an agent supplies a tiny `timeout`, we
+/// still need enough budget for proot to come up and Playwright to launch
+/// before we can usefully report anything back.
+pub const MIN_EFFECTIVE_TIMEOUT_SECS: u64 = 30;
+
 // ---------------------------------------------------------------------------
 // Progress / live-state
 // ---------------------------------------------------------------------------
