@@ -122,13 +122,24 @@ fn render_tool_call(tc: &ToolCallInfo, expanded_tools: &mut Signal<Vec<String>>)
             }
             // Webwright: show live progress while running, screenshots when done
             if name == "webwright" {
-                // Extract task_id from result (completed) or use tool call ID as fallback
+                // Extract task_id from result (completed) or use tool call ID as fallback.
+                // For running calls we ALSO pass a content signature so the widget can find
+                // its task even when the platform's tool_call_id doesn't match tc.id.
                 {
                     let task_id = result.as_ref()
                         .and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok())
                         .and_then(|v| v.get("task_id").and_then(|t| t.as_str()).map(|s| s.to_string()))
                         .unwrap_or_else(|| tc.id.clone());
-                    rsx! { WebwrightGallery { task_id: task_id, result: result.clone(), error: error.clone() } }
+                    let signature = pentest_tools::webwright::live_state::signature_for_call(
+                        &tc.name,
+                        tc.arguments.as_deref().unwrap_or(""),
+                    );
+                    rsx! { WebwrightGallery {
+                        task_id: task_id,
+                        signature: signature,
+                        result: result.clone(),
+                        error: error.clone(),
+                    } }
                 }
             }
             if is_expanded {
@@ -219,7 +230,14 @@ pub fn format_relative_time(iso: &str) -> String {
 /// Webwright widget component — handles both live progress and completed gallery.
 /// Uses Dioxus signals for the lightbox modal instead of fragile inline scripts.
 #[component]
-pub fn WebwrightGallery(task_id: String, result: Option<String>, error: Option<String>) -> Element {
+pub fn WebwrightGallery(
+    task_id: String,
+    /// Content signature for fallback lookup when the tool_call_id doesn't resolve
+    /// (e.g. platform ID namespace mismatch). Empty string means no signature.
+    signature: String,
+    result: Option<String>,
+    error: Option<String>,
+) -> Element {
     // Modal state: (all_images as data URIs, current index)
     let mut modal_open = use_signal(|| Option::<(Vec<String>, usize)>::None);
     #[allow(clippy::redundant_closure)]
@@ -230,16 +248,25 @@ pub fn WebwrightGallery(task_id: String, result: Option<String>, error: Option<S
 
     // Subscribe to live progress for THIS task.
     // For completed calls, task_id comes from the result JSON.
-    // For in-progress calls, task_id is the tool call ID — we subscribe and
-    // wait for a matching task to appear in the registry.
+    // For in-progress calls we resolve via (in order):
+    //   1. task_for_request(tc.id)             — works when platform IDs align
+    //   2. task_for_request(signature)         — content-hash fallback
+    //   3. peek(tc.id)                         — handles case where tc.id IS the task_id
     let subscribe_task_id = task_id.clone();
+    let subscribe_signature = signature.clone();
     use_future(move || {
         let tid = subscribe_task_id.clone();
+        let sig = subscribe_signature.clone();
         async move {
-            // Poll until our specific task appears in the registry
             loop {
-                // Resolve: request_id → task_id, or use tid directly if it's already a task_id
                 let real_tid = pentest_tools::webwright::live_state::task_for_request(&tid)
+                    .or_else(|| {
+                        if sig.is_empty() {
+                            None
+                        } else {
+                            pentest_tools::webwright::live_state::task_for_request(&sig)
+                        }
+                    })
                     .or_else(|| {
                         let p = pentest_tools::webwright::live_state::peek(&tid);
                         if p.running || p.step > 0 {

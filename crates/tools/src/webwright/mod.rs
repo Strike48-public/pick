@@ -148,25 +148,27 @@ impl PentestTool for WebwrightTool {
             let workspace = WebwrightWorkspace::create(&platform, ctx.workspace_path.as_deref()).await?;
             tracing::info!("[webwright] workspace created: sandbox={} host={}", workspace.path(), workspace.host_path());
 
-            // Register binding so the chat-panel widget can find this task's live stream.
-            // The widget looks up by tc.id (= toolCall.id from the platform conversation),
-            // which the platform forwards as context["tool_call_id"]. Fall back to request_id
-            // for older platform versions that don't forward it (mapping won't resolve, but
-            // the registration is harmless).
-            let binding_keys: Vec<&str> = ctx
-                .metadata
-                .get("tool_call_id")
-                .map(|s| s.as_str())
-                .into_iter()
-                .chain(ctx.metadata.get("request_id").map(|s| s.as_str()))
-                .collect();
-            if binding_keys.is_empty() {
-                tracing::warn!(
-                    "[webwright] no tool_call_id or request_id in ctx.metadata — UI widget will not bind"
-                );
+            // Register bindings so the chat-panel widget can find this task's live stream.
+            // Widgets look up by tc.id (= toolCall.id from the platform conversation). The
+            // platform forwards a tool_call_id in ExecuteRequest.context, but that may not
+            // match what ends up in the conversation (different ID namespaces). To make the
+            // binding robust we register under THREE keys:
+            //   1. tool_call_id from context (the platform's claimed identifier)
+            //   2. request_id (the gRPC stream request id, fallback for older platforms)
+            //   3. a content signature hash(tool_name + arguments) — the widget computes
+            //      the same hash from its own (tc.name, tc.arguments) and can find the
+            //      task even when no platform ID matches.
+            let signature = live_state::signature_for_call("webwright", &params.to_string());
+            let mut binding_keys: Vec<String> = Vec::new();
+            if let Some(v) = ctx.metadata.get("tool_call_id") {
+                binding_keys.push(v.clone());
             }
+            if let Some(v) = ctx.metadata.get("request_id") {
+                binding_keys.push(v.clone());
+            }
+            binding_keys.push(signature);
             for key in &binding_keys {
-                crate::webwright::live_state::register_request(key, &workspace.task_id);
+                live_state::register_request(key, &workspace.task_id);
             }
             tracing::info!(
                 "[webwright] registered live-state bindings: {:?} -> task_id={}",
