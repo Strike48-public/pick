@@ -6,6 +6,7 @@
 //! - `execute`: Replay a Playwright script for validation/evidence capture
 
 pub mod config;
+pub mod constants;
 pub mod evidence;
 pub mod install;
 pub mod live_state;
@@ -192,7 +193,8 @@ impl PentestTool for WebwrightTool {
                     // Override model endpoint to use Pick's local LLM proxy.
                     // Must include base.yaml + model_openai.yaml explicitly since
                     // adding any -c flag replaces the defaults.
-                    let proxy_port = std::env::var("PICK_LLM_PROXY_PORT").unwrap_or_else(|_| "9100".to_string());
+                    let proxy_port = std::env::var("PICK_LLM_PROXY_PORT")
+                        .unwrap_or_else(|_| constants::DEFAULT_LLM_PROXY_PORT_STR.to_string());
                     let endpoint = std::env::var("OPENAI_BASE_URL")
                         .unwrap_or_else(|_| format!("http://127.0.0.1:{}/v1/chat/completions", proxy_port));
                     let cmd = format!(
@@ -308,8 +310,12 @@ impl PentestTool for WebwrightTool {
 
             // Truncate stdout to avoid blowing up WebSocket frame limits.
             // Webwright can produce very large output (>100MB with debug info).
-            let stdout_truncated = if result.stdout.len() > 4000 {
-                format!("{}... (truncated, {} bytes total)", &result.stdout[..4000], result.stdout.len())
+            let stdout_truncated = if result.stdout.len() > constants::STDOUT_TRUNCATION_THRESHOLD_BYTES {
+                format!(
+                    "{}... (truncated, {} bytes total)",
+                    &result.stdout[..constants::STDOUT_TRUNCATION_THRESHOLD_BYTES],
+                    result.stdout.len()
+                )
             } else {
                 result.stdout.clone()
             };
@@ -364,8 +370,8 @@ fn build_env_exports(session_token: Option<&str>) -> String {
         }
     } else {
         // Point at Pick's local LLM proxy (dynamic port stored in env)
-        let proxy_port =
-            std::env::var("PICK_LLM_PROXY_PORT").unwrap_or_else(|_| "9100".to_string());
+        let proxy_port = std::env::var("PICK_LLM_PROXY_PORT")
+            .unwrap_or_else(|_| constants::DEFAULT_LLM_PROXY_PORT_STR.to_string());
         exports.push(format!(
             "export OPENAI_BASE_URL={}",
             shell_escape(&format!("http://127.0.0.1:{}/v1", proxy_port))
@@ -483,18 +489,18 @@ async fn try_sidecar_execution(
                         step: *n,
                         action: action.clone(),
                     });
-                    // Keep last 20 entries
-                    if log.len() > 20 {
+                    // Cap the rolling log so live UI frames stay small.
+                    if log.len() > constants::MAX_LIVE_LOG_ENTRIES {
                         log.remove(0);
                     }
                 }
-                // Accumulate screenshots into the gallery, capped at 20 (each base64
-                // entry is ~100-500 KB; uncapped this is a real memory leak on long runs).
+                // Accumulate screenshots into the gallery, capped so each live UI
+                // frame stays small. Each base64 entry is ~100-500 KB; uncapped this
+                // is a real memory leak on long runs.
                 if let Some(ref shot) = screenshot {
                     screenshots.push(shot.clone());
-                    const MAX_SCREENSHOTS: usize = 20;
-                    if screenshots.len() > MAX_SCREENSHOTS {
-                        let drop = screenshots.len() - MAX_SCREENSHOTS;
+                    if screenshots.len() > constants::MAX_LIVE_SCREENSHOTS {
+                        let drop = screenshots.len() - constants::MAX_LIVE_SCREENSHOTS;
                         screenshots.drain(0..drop);
                     }
                 }

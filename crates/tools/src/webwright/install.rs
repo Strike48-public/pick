@@ -18,11 +18,7 @@ const SIDECAR_SERVER_PY: &str = include_str!("sidecar_server.py");
 /// Write the sidecar server script into the proot rootfs `/tmp` so the sidecar
 /// can find it at a known path. Idempotent; only writes if the content differs.
 fn ensure_sidecar_server_script() {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let path = format!(
-        "{}/.local/share/pentest-sandbox/blackarch-rootfs/tmp/webwright_sidecar_server.py",
-        home
-    );
+    let path = super::constants::sidecar_server_script_path();
     let needs_write = match std::fs::read(&path) {
         Ok(existing) => existing != SIDECAR_SERVER_PY.as_bytes(),
         Err(_) => true,

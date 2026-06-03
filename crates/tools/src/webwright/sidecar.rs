@@ -13,6 +13,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, Mutex};
 
+use super::constants;
+
 /// Messages sent from Pick to the Webwright sidecar.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -101,12 +103,12 @@ impl SidecarProcess {
     /// server script to `<rootfs>/tmp/webwright_sidecar_server.py` and that
     /// `env_exports` already sets `OPENAI_BASE_URL` and `OPENAI_API_KEY`.
     pub async fn spawn(env_exports: &str) -> Result<Self> {
-        let (event_tx, _) = broadcast::channel(100);
+        let (event_tx, _) = broadcast::channel(constants::SIDECAR_EVENT_CHANNEL_CAPACITY);
 
-        // Build the proot command that runs the sidecar server
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let rootfs = format!("{}/.local/share/pentest-sandbox/blackarch-rootfs", home);
-        let proot_bin = format!("{}/.local/share/pentest-sandbox/bin/proot", home);
+        // Build the proot command that runs the sidecar server.
+        let rootfs = constants::rootfs_dir();
+        let proot_bin = constants::proot_binary_path();
+        let rootfs_str = rootfs.to_string_lossy().to_string();
 
         // env_exports (from build_env_exports) sets OPENAI_BASE_URL and OPENAI_API_KEY
         // to the values that route to Pick's LLM proxy with the session_token as
@@ -117,15 +119,16 @@ impl SidecarProcess {
             "export PATH=/usr/bin:/usr/local/bin:/bin:/sbin; \
              {} \
              export PLAYWRIGHT_CHROMIUM_SANDBOX=0; \
-             python3 /tmp/webwright_sidecar_server.py",
-            env_exports
+             python3 {}",
+            env_exports,
+            constants::sidecar_server_sandbox_path()
         );
 
         let mut child = Command::new(&proot_bin)
             .args([
                 "-0",
                 "-r",
-                &rootfs,
+                &rootfs_str,
                 "-b",
                 "/dev",
                 "-b",
@@ -178,18 +181,23 @@ impl SidecarProcess {
             });
         }
 
-        // Wait for ready signal (up to 10s)
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+        // Wait for ready signal.
+        let deadline = tokio::time::Instant::now()
+            + tokio::time::Duration::from_secs(constants::SIDECAR_READY_TIMEOUT_SECS);
         loop {
             if *process.is_ready.lock().await {
                 break;
             }
             if tokio::time::Instant::now() > deadline {
-                return Err(Error::ToolExecution(
-                    "Sidecar did not become ready in 10s".into(),
-                ));
+                return Err(Error::ToolExecution(format!(
+                    "Sidecar did not become ready in {}s",
+                    constants::SIDECAR_READY_TIMEOUT_SECS
+                )));
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(
+                constants::SIDECAR_READY_POLL_INTERVAL_MS,
+            ))
+            .await;
         }
 
         tracing::info!("[webwright-sidecar] process spawned and ready");
@@ -225,7 +233,10 @@ impl SidecarProcess {
     pub async fn shutdown(&self) {
         let _ = self.send(SidecarCommand::Shutdown).await;
         // Give it a moment to exit
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(
+            constants::SIDECAR_SHUTDOWN_GRACE_MS,
+        ))
+        .await;
         // Force kill if still running
         if let Some(mut child) = self.child.lock().await.take() {
             let _ = child.kill().await;

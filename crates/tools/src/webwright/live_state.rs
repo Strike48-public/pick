@@ -199,11 +199,14 @@ pub fn complete(task_id: &str) {
         }
     }
     // Deferred prune so the maps don't grow unbounded across the connector's lifetime.
-    // 60s gives widgets enough time to receive the running=false notification and any
+    // Delay gives widgets enough time to receive the running=false notification and any
     // late conversation polls a chance to find the entry.
     let task_id_owned = task_id.to_string();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(
+            super::constants::LIVE_STATE_PURGE_DELAY_SECS,
+        ))
+        .await;
         purge_task(&task_id_owned);
     });
 }

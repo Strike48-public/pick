@@ -36,14 +36,12 @@ impl WebwrightWorkspace {
         let task_id = Uuid::new_v4().to_string();
 
         // Sandbox dir: accessible inside proot via rootfs /tmp
-        let sandbox_dir = format!("/tmp/webwright/{}", task_id);
+        let sandbox_dir = super::constants::sandbox_task_workspace(&task_id);
 
         // Host dir: where artifacts actually land (rootfs path on host)
-        let rootfs_str = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let rootfs_host_path = format!(
-            "{}/.local/share/pentest-sandbox/blackarch-rootfs/tmp/webwright/{}",
-            rootfs_str, task_id
-        );
+        let rootfs_host_path = super::constants::host_task_workspace(&task_id)
+            .to_string_lossy()
+            .into_owned();
 
         // Also create in connector workspace (for Files panel) — we'll copy after
         let connector_dir = connector_workspace.map(|ws| ws.join("webwright").join(&task_id));
