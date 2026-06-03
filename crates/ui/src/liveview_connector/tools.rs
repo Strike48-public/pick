@@ -1,7 +1,6 @@
 //! Tool execution routing and result formatting.
 
 use crate::ipc::{IpcAddr, IpcStream};
-use pentest_core::strikekit_client::StrikeKitClient;
 use pentest_core::tools::{ToolContext, ToolRegistry, ToolResult};
 use serde::Serialize;
 use serde_json::Value;
@@ -131,6 +130,7 @@ pub(crate) struct ExecuteParams {
     pub workspace_path: Option<PathBuf>,
     pub instance_id: String,
     pub matrix_tx: Arc<RwLock<Option<mpsc::UnboundedSender<StreamMessage>>>>,
+    pub connector_client: Arc<RwLock<Option<strike48_connector::ConnectorClient>>>,
     pub event_tx: broadcast::Sender<ConnectorEvent>,
     pub aggression_level: pentest_core::aggression::AggressionLevel,
     pub agent_name: String,
@@ -204,6 +204,7 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
         workspace_path,
         instance_id,
         matrix_tx,
+        connector_client,
         event_tx,
         aggression_level,
         agent_name,
@@ -352,17 +353,32 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
         }
         let upload_status: Option<UploadStatus> = if result.success && tool_name == "webwright" {
             if let Some(engagement_id) = extract_engagement_id(&req.context) {
-                let sk_client = StrikeKitClient::new(Arc::clone(&matrix_tx));
-                let artifacts = result.data.get("artifacts").cloned().unwrap_or_default();
-                // workspace_path is needed to resolve relative artifact paths
-                let ws_path = workspace_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                Some(
-                    upload_artifacts_to_strikekit(sk_client, &engagement_id, &artifacts, &ws_path)
+                let client_guard = connector_client.read().await;
+                if let Some(ref client) = *client_guard {
+                    let session_token = req
+                        .context
+                        .get("session_token")
+                        .cloned()
+                        .unwrap_or_default();
+                    let artifacts = result.data.get("artifacts").cloned().unwrap_or_default();
+                    let ws_path = workspace_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    Some(
+                        upload_artifacts_to_strikekit(
+                            client,
+                            &engagement_id,
+                            &session_token,
+                            &artifacts,
+                            &ws_path,
+                        )
                         .await,
-                )
+                    )
+                } else {
+                    tracing::warn!("[strikekit] connector_client not available for upload");
+                    None
+                }
             } else {
                 None
             }
@@ -467,6 +483,7 @@ impl LiveViewConnector {
                 workspace_path: self.workspace_path.clone(),
                 instance_id: self.config.instance_id.clone(),
                 matrix_tx: Arc::clone(&self.matrix_tx),
+                connector_client: Arc::clone(&self.connector_client),
                 event_tx: self.event_tx.clone(),
                 aggression_level: self.config.aggression_level,
                 agent_name: self.config.connector_name.clone(),
@@ -624,25 +641,29 @@ fn inject_upload_status(result_json: &mut Value, status: &UploadStatus) {
     artifacts_obj.insert("upload_status".to_string(), status_val);
 }
 
-/// Upload webwright artifacts (screenshots, scripts, DOM snapshots) to StrikeKit.
+/// Upload webwright artifacts (screenshots, scripts, DOM snapshots) to StrikeKit
+/// via the SDK's `invoke_capability` (request/response, not fire-and-forget).
 ///
 /// Returns an [`UploadStatus`] describing what was attempted vs. what landed,
 /// so the caller can splice the outcome into the tool result payload for the
 /// LLM/UI to observe.
 async fn upload_artifacts_to_strikekit(
-    client: StrikeKitClient,
+    client: &strike48_connector::ConnectorClient,
     engagement_id: &str,
+    session_token: &str,
     artifacts: &Value,
     workspace_path: &str,
 ) -> UploadStatus {
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
     let started_at_ms = chrono::Utc::now().timestamp_millis();
     let start = std::time::Instant::now();
 
     let mut attempted: usize = 0;
     let mut succeeded: usize = 0;
     let mut failed: Vec<String> = Vec::new();
+    let mut overflow: usize = 0;
 
-    // Resolve a potentially relative path against the workspace
     let resolve = |path: &str| -> String {
         if path.starts_with('/') {
             path.to_string()
@@ -651,12 +672,6 @@ async fn upload_artifacts_to_strikekit(
         }
     };
 
-    // Track overflow beyond UPLOAD_STATUS_FAILED_LIMIT so we can collapse the
-    // tail into a single synthetic "... and N more" entry. Keeps the payload
-    // bounded even on runs where every artifact fails.
-    let mut overflow: usize = 0;
-
-    // (artifact-array key, evidence_type) — matches the prior shape
     let categories: [(&str, &str); 3] = [
         ("screenshots", "screenshot"),
         ("scripts", "code"),
@@ -669,12 +684,62 @@ async fn upload_artifacts_to_strikekit(
                 if let Some(path) = path_val.as_str() {
                     attempted += 1;
                     let resolved = resolve(path);
+
+                    let file_bytes = match tokio::fs::read(&resolved).await {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!("[strikekit] failed to read {}: {}", resolved, e);
+                            if failed.len() < UPLOAD_STATUS_FAILED_LIMIT {
+                                failed.push(path.to_string());
+                            } else {
+                                overflow += 1;
+                            }
+                            continue;
+                        }
+                    };
+
+                    let filename = std::path::Path::new(&resolved)
+                        .file_name()
+                        .and_then(|f| f.to_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    let payload = serde_json::json!({
+                        "engagement_id": engagement_id,
+                        "filename": filename,
+                        "content_base64": BASE64.encode(&file_bytes),
+                        "evidence_type": evidence_type,
+                        "title": filename,
+                        "source": "webwright",
+                        "path": path,
+                    });
+
+                    let payload_bytes = serde_json::to_vec(&payload).unwrap_or_default();
+
+                    let mut context = HashMap::new();
+                    if !session_token.is_empty() {
+                        context.insert("session_token".to_string(), session_token.to_string());
+                    }
+
+                    let options = strike48_connector::InvokeOptions {
+                        capability_id: Some("upload_artifact".to_string()),
+                        timeout_ms: Some(30000),
+                        // TODO: switch to fire_and_forget=false once we migrate to
+                        // ConnectorRunner (which handles InvokeResponse routing).
+                        // Our custom message loop can't dispatch responses back to
+                        // the SDK's pending_invokes map.
+                        fire_and_forget: Some(true),
+                        payload_encoding: Some(PayloadEncoding::Json),
+                        context: Some(context),
+                    };
+
                     match client
-                        .upload_file(engagement_id, &resolved, evidence_type, "webwright")
+                        .invoke_capability("strikekit://evidence", payload_bytes, options)
                         .await
                     {
-                        Ok(()) => succeeded += 1,
-                        Err(_) => {
+                        Ok(_) => succeeded += 1,
+                        Err(e) => {
+                            tracing::warn!("[strikekit] invoke failed for {}: {}", path, e);
                             if failed.len() < UPLOAD_STATUS_FAILED_LIMIT {
                                 failed.push(path.to_string());
                             } else {

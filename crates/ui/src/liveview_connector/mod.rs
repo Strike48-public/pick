@@ -262,6 +262,8 @@ pub struct LiveViewConnector {
     /// Shared sender for the current gRPC stream. Wrapped in Arc<RwLock> so
     /// background tool tasks can still deliver results after a reconnect.
     pub(crate) matrix_tx: Arc<RwLock<Option<mpsc::UnboundedSender<StreamMessage>>>>,
+    /// SDK client for invoke_capability (artifact uploads, etc). Set when connected.
+    pub(crate) connector_client: Arc<RwLock<Option<ConnectorClient>>>,
     pub(crate) event_tx: broadcast::Sender<ConnectorEvent>,
     pub(crate) shutdown: Arc<AtomicBool>,
     pub(crate) liveview_handle: Option<LiveViewHandle>,
@@ -312,6 +314,7 @@ impl LiveViewConnector {
             workspace_path,
             ws_connections: Arc::new(DashMap::new()),
             matrix_tx: Arc::new(RwLock::new(None)),
+            connector_client: Arc::new(RwLock::new(None)),
             event_tx,
             shutdown: Arc::new(AtomicBool::new(false)),
             liveview_handle: None,
@@ -1004,10 +1007,12 @@ impl LiveViewConnector {
             connection_failures = 0;
 
             *self.matrix_tx.write().await = Some(tx);
+            *self.connector_client.write().await = Some(client);
 
             self.run_message_loop(rx).await;
 
             *self.matrix_tx.write().await = None;
+            *self.connector_client.write().await = None;
 
             if self.shutdown.load(Ordering::SeqCst) {
                 break;
@@ -1269,10 +1274,11 @@ impl LiveViewConnector {
                                     workspace_path: self.workspace_path.clone(),
                                     instance_id: self.config.instance_id.clone(),
                                     matrix_tx: Arc::clone(&self.matrix_tx),
+                                    connector_client: Arc::clone(&self.connector_client),
                                     event_tx: self.event_tx.clone(),
                                     aggression_level: self.config.aggression_level,
                                     agent_name: self.config.connector_name.clone(),
-                                    matrix_api_url: None, // Will be extracted from matrix config if needed
+                                    matrix_api_url: None,
                                 };
                                 tokio::spawn(async move {
                                     handle_execute_impl(req, params).await;
