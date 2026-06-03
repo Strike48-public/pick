@@ -635,9 +635,16 @@ async fn try_sidecar_execution(
                 Err(_) => break,
             },
             _ = tokio::time::sleep_until(deadline) => {
-                tracing::warn!("[webwright-sidecar] timed out waiting for completion");
+                tracing::warn!("[webwright-sidecar] timed out waiting for completion ({}s)", timeout_secs);
                 let _ = sidecar.send(SidecarCommand::Cancel).await;
-                break;
+                live_state::complete(&workspace.task_id);
+                return Some(pentest_platform::CommandResult {
+                    stdout: format!("Webwright timed out after {}s (task still had work to do)", timeout_secs),
+                    stderr: String::new(),
+                    exit_code: 0,
+                    timed_out: false, // we handled it gracefully, not a hard timeout
+                    duration_ms: (timeout_secs * 1000) as u64,
+                });
             }
         };
 
@@ -705,7 +712,17 @@ async fn try_sidecar_execution(
                         max_steps
                     );
                     let _ = sidecar.send(SidecarCommand::Cancel).await;
-                    break;
+                    live_state::complete(&workspace.task_id);
+                    return Some(pentest_platform::CommandResult {
+                        stdout: format!(
+                            "Webwright reached step limit ({} steps). Partial results collected.",
+                            max_steps
+                        ),
+                        stderr: String::new(),
+                        exit_code: 0,
+                        timed_out: false,
+                        duration_ms: 0,
+                    });
                 }
             }
             SidecarEvent::Finding {
