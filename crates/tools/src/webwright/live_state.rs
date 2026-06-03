@@ -183,14 +183,40 @@ pub fn start(task_id: &str) {
 }
 
 /// Signal that a task has completed.
+///
+/// Marks the task `running: false` and schedules a deferred cleanup of both the task
+/// channel and any request→task bindings pointing at it. The delay lets any in-flight
+/// widget see the final state before entries disappear.
 pub fn complete(task_id: &str) {
-    let tasks = TASKS.lock().unwrap();
-    if let Some((tx, _)) = tasks.get(task_id) {
-        let _ = tx.send(WebwrightProgress {
-            running: false,
-            task_id: task_id.to_string(),
-            ..Default::default()
-        });
+    {
+        let tasks = TASKS.lock().unwrap();
+        if let Some((tx, _)) = tasks.get(task_id) {
+            let _ = tx.send(WebwrightProgress {
+                running: false,
+                task_id: task_id.to_string(),
+                ..Default::default()
+            });
+        }
+    }
+    // Deferred prune so the maps don't grow unbounded across the connector's lifetime.
+    // 60s gives widgets enough time to receive the running=false notification and any
+    // late conversation polls a chance to find the entry.
+    let task_id_owned = task_id.to_string();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        purge_task(&task_id_owned);
+    });
+}
+
+/// Remove a task and every request→task binding that resolves to it.
+fn purge_task(task_id: &str) {
+    {
+        let mut tasks = TASKS.lock().unwrap();
+        tasks.remove(task_id);
+    }
+    {
+        let mut map = REQUEST_TO_TASK.lock().unwrap();
+        map.retain(|_, v| v != task_id);
     }
 }
 
@@ -281,6 +307,39 @@ mod tests {
         // Not valid JSON — should hash verbatim, not panic
         let s = signature_for_call("webwright", "not-json-at-all");
         assert!(s.starts_with("sig:"));
+    }
+
+    #[test]
+    fn purge_removes_task_and_all_its_bindings() {
+        let task_id = "ws-purge-test-uuid";
+        let tool_call_id = "call_purge_test_xyz";
+        let request_id = "agent-purge-test-99";
+        let signature = "sig:purge-test-abc";
+
+        register_request(tool_call_id, task_id);
+        register_request(request_id, task_id);
+        register_request(signature, task_id);
+        // Ensure a task channel exists so purge has something to drop
+        let _rx = subscribe(task_id);
+
+        purge_task(task_id);
+
+        assert_eq!(task_for_request(tool_call_id), None);
+        assert_eq!(task_for_request(request_id), None);
+        assert_eq!(task_for_request(signature), None);
+    }
+
+    #[test]
+    fn purge_leaves_unrelated_bindings_alone() {
+        register_request("keep_me_1", "task-keep");
+        register_request("drop_me_1", "task-drop");
+        register_request("drop_me_2", "task-drop");
+
+        purge_task("task-drop");
+
+        assert_eq!(task_for_request("keep_me_1"), Some("task-keep".to_string()));
+        assert_eq!(task_for_request("drop_me_1"), None);
+        assert_eq!(task_for_request("drop_me_2"), None);
     }
 
     #[test]
