@@ -290,11 +290,7 @@ async fn upload_artifacts_to_strikekit(
                     let options = strike48_connector::InvokeOptions {
                         capability_id: Some("upload_artifact".to_string()),
                         timeout_ms: Some(30000),
-                        // TODO: switch to fire_and_forget=false once we migrate to
-                        // ConnectorRunner (which handles InvokeResponse routing).
-                        // Our custom message loop can't dispatch responses back to
-                        // the SDK's pending_invokes map.
-                        fire_and_forget: Some(true),
+                        fire_and_forget: Some(false),
                         payload_encoding: Some(PayloadEncoding::Json),
                         context: Some(context),
                     };
@@ -303,7 +299,21 @@ async fn upload_artifacts_to_strikekit(
                         .invoke_capability("strikekit://evidence", payload_bytes, options)
                         .await
                     {
-                        Ok(_) => succeeded += 1,
+                        Ok(Some(resp)) if resp.success => succeeded += 1,
+                        Ok(Some(resp)) => {
+                            tracing::warn!(
+                                "[strikekit] upload rejected for {}: {}",
+                                path,
+                                resp.error
+                            );
+                            if failed.len() < UPLOAD_STATUS_FAILED_LIMIT {
+                                failed.push(path.to_string());
+                            } else {
+                                overflow += 1;
+                            }
+                            continue;
+                        }
+                        Ok(None) => succeeded += 1,
                         Err(e) => {
                             tracing::warn!("[strikekit] invoke failed for {}: {}", path, e);
                             if failed.len() < UPLOAD_STATUS_FAILED_LIMIT {
