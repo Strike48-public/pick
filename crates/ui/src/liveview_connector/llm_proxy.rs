@@ -26,6 +26,9 @@ pub struct LlmProxyState {
     pub conversations: Arc<RwLock<StdHashMap<String, String>>>,
     /// Shared agent ID (one webwright agent persona for all tasks)
     pub agent_id: Arc<RwLock<Option<String>>>,
+    /// Held during agent upsert so only one concurrent request creates the agent.
+    /// Subsequent concurrent requests wait, then re-read `agent_id` from the cache.
+    pub agent_upsert_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// OpenAI Responses API request (what webwright sends).
@@ -234,24 +237,33 @@ async fn handle_llm_request(
         }
     };
 
-    // Get or upsert the webwright browser exploration agent
+    // Get or upsert the webwright browser exploration agent.
+    // Single-flight: hold agent_upsert_lock so concurrent requests don't both call
+    // create_agent. Once the first request populates agent_id, others read the cache.
     let agent_id = {
-        let agent_guard = state.agent_id.read().await;
-        agent_guard.clone()
-    };
-    let agent_id = match agent_id {
-        Some(id) => id,
-        None => match upsert_webwright_agent(&client).await {
-            Ok(id) => {
-                let mut guard = state.agent_id.write().await;
-                *guard = Some(id.clone());
-                id
+        let cached = state.agent_id.read().await.clone();
+        match cached {
+            Some(id) => id,
+            None => {
+                let _upsert_guard = state.agent_upsert_lock.lock().await;
+                // Re-check under lock — another request may have populated the cache.
+                let cached = state.agent_id.read().await.clone();
+                if let Some(id) = cached {
+                    id
+                } else {
+                    match upsert_webwright_agent(&client).await {
+                        Ok(id) => {
+                            *state.agent_id.write().await = Some(id.clone());
+                            id
+                        }
+                        Err(e) => {
+                            tracing::error!("LLM proxy: failed to upsert webwright agent: {}", e);
+                            String::new()
+                        }
+                    }
+                }
             }
-            Err(e) => {
-                tracing::error!("LLM proxy: failed to upsert webwright agent: {}", e);
-                String::new()
-            }
-        },
+        }
     };
 
     // Send to Strike48 and get response

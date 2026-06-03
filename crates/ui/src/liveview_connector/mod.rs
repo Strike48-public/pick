@@ -696,6 +696,7 @@ impl LiveViewConnector {
             matrix_client: self.matrix_client.clone(),
             conversations: Arc::new(RwLock::new(std::collections::HashMap::new())),
             agent_id: Arc::new(RwLock::new(None)),
+            agent_upsert_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
         let llm_proxy_router = llm_proxy::create_llm_proxy_routes(llm_state);
         let llm_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.ok();
