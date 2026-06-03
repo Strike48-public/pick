@@ -225,6 +225,18 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
         // live-state bindings under it. Forwarded by the platform in req.context["tool_call_id"].
         populate_tool_metadata(&mut ctx.metadata, &instance_id, &request_id, &req.context);
 
+        // Diagnostic: dump context keys so we can see what the platform actually sends.
+        // Lets us catch missing context fields (e.g. session_token absent in StrikeKit runs).
+        let ctx_keys: Vec<&String> = req.context.keys().collect();
+        tracing::info!(
+            "[tool] {} ExecuteRequest context keys: {:?} (session_token={}, tool_call_id={}, engagement_id={})",
+            tool_name,
+            ctx_keys,
+            req.context.get("session_token").map(|s| s.len()).unwrap_or(0),
+            req.context.get("tool_call_id").map(|s| s.as_str()).unwrap_or("<absent>"),
+            req.context.get("engagement_id").map(|s| s.as_str()).unwrap_or("<absent>"),
+        );
+
         // Forward session token from execute request context (if provided by StrikeKit)
         // so tools like webwright can pass it to their sidecar for LLM proxy auth.
         if let Some(token) = req.context.get("session_token") {
