@@ -87,14 +87,52 @@ pub fn render_message(
     }
 }
 
+fn webwright_display_name(args: &Option<String>) -> String {
+    let Some(args_str) = args else {
+        return "webwright".to_string();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(args_str) else {
+        return "webwright".to_string();
+    };
+    let mode = v.get("mode").and_then(|m| m.as_str()).unwrap_or("explore");
+    let summary = if mode == "execute" {
+        v.get("start_url")
+            .and_then(|u| u.as_str())
+            .unwrap_or("script")
+            .to_string()
+    } else {
+        v.get("task")
+            .and_then(|t| t.as_str())
+            .map(|t| {
+                if t.len() > 60 {
+                    format!("{}...", &t[..57])
+                } else {
+                    t.to_string()
+                }
+            })
+            .or_else(|| v.get("start_url").and_then(|u| u.as_str()).map(|s| s.to_string()))
+            .unwrap_or_default()
+    };
+    if summary.is_empty() {
+        format!("webwright {}", mode)
+    } else {
+        format!("webwright {} \u{2014} {}", mode, summary)
+    }
+}
+
 fn render_tool_call(tc: &ToolCallInfo, expanded_tools: &mut Signal<Vec<String>>) -> Element {
     let is_expanded = expanded_tools.read().contains(&tc.id);
     let tc_id_toggle = tc.id.clone();
-    let name = tc.name.clone();
+    let display_name = if tc.name == "webwright" {
+        webwright_display_name(&tc.arguments)
+    } else {
+        tc.name.clone()
+    };
     let status = tc.status;
     let args = tc.arguments.clone();
     let result = tc.result.clone();
     let error = tc.error.clone();
+    let name = tc.name.clone();
 
     let status_class = match status {
         ToolCallStatus::Success => "tool-status-success",
@@ -125,7 +163,7 @@ fn render_tool_call(tc: &ToolCallInfo, expanded_tools: &mut Signal<Vec<String>>)
                 span { class: "chat-tool-icon",
                     if is_expanded { "v " } else { "> " }
                 }
-                span { class: "chat-tool-name", "{name}" }
+                span { class: "chat-tool-name", "{display_name}" }
                 span { class: "chat-tool-status {status_class}", "{status_display}" }
             }
             // Webwright: show live progress while running, screenshots when done
