@@ -27,9 +27,9 @@ pub struct WebwrightFinding {
 pub struct WebwrightProgress {
     pub step: u32,
     pub action: String,
-    /// Base64-encoded screenshot at this step (most recent)
+    /// File path to the most recent screenshot on disk.
     pub screenshot: Option<String>,
-    /// All screenshots captured so far (base64, most recent first)
+    /// File paths of all screenshots captured so far (newest last).
     pub screenshots: Vec<String>,
     pub findings: Vec<WebwrightFinding>,
     /// Rolling log (last 20 entries)
@@ -55,14 +55,14 @@ static REQUEST_TO_TASK: LazyLock<Mutex<HashMap<String, String>>> =
 pub fn register_request(request_id: &str, task_id: &str) {
     REQUEST_TO_TASK
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(request_id.to_string(), task_id.to_string());
 }
 
 /// Look up the task_id for a given request_id.
 pub fn task_for_request(request_id: &str) -> Option<String> {
     let known: Vec<String> = {
-        let map = REQUEST_TO_TASK.lock().unwrap();
+        let map = REQUEST_TO_TASK.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(v) = map.get(request_id) {
             return Some(v.clone());
         }
@@ -127,7 +127,7 @@ fn canonicalize_json(s: &str) -> String {
 
 /// Get or create a receiver for a specific task's progress.
 pub fn subscribe(task_id: &str) -> watch::Receiver<WebwrightProgress> {
-    let mut tasks = TASKS.lock().unwrap();
+    let mut tasks = TASKS.lock().unwrap_or_else(|e| e.into_inner());
     let (tx, _rx) = tasks
         .entry(task_id.to_string())
         .or_insert_with(|| watch::channel(WebwrightProgress::default()));
@@ -136,7 +136,7 @@ pub fn subscribe(task_id: &str) -> watch::Receiver<WebwrightProgress> {
 
 /// Get the current state for a task.
 pub fn peek(task_id: &str) -> WebwrightProgress {
-    let tasks = TASKS.lock().unwrap();
+    let tasks = TASKS.lock().unwrap_or_else(|e| e.into_inner());
     tasks
         .get(task_id)
         .map(|(_, rx)| rx.borrow().clone())
@@ -145,13 +145,13 @@ pub fn peek(task_id: &str) -> WebwrightProgress {
 
 /// Check if ANY task is currently running.
 pub fn any_running() -> bool {
-    let tasks = TASKS.lock().unwrap();
+    let tasks = TASKS.lock().unwrap_or_else(|e| e.into_inner());
     tasks.values().any(|(_, rx)| rx.borrow().running)
 }
 
 /// Get all currently running task IDs.
 pub fn running_tasks() -> Vec<String> {
-    let tasks = TASKS.lock().unwrap();
+    let tasks = TASKS.lock().unwrap_or_else(|e| e.into_inner());
     tasks
         .iter()
         .filter(|(_, (_, rx))| rx.borrow().running)
@@ -161,7 +161,7 @@ pub fn running_tasks() -> Vec<String> {
 
 /// Push a progress update for a specific task.
 pub fn update(task_id: &str, progress: WebwrightProgress) {
-    let mut tasks = TASKS.lock().unwrap();
+    let mut tasks = TASKS.lock().unwrap_or_else(|e| e.into_inner());
     let (tx, _) = tasks
         .entry(task_id.to_string())
         .or_insert_with(|| watch::channel(WebwrightProgress::default()));
@@ -189,7 +189,7 @@ pub fn start(task_id: &str) {
 /// widget see the final state before entries disappear.
 pub fn complete(task_id: &str) {
     {
-        let tasks = TASKS.lock().unwrap();
+        let tasks = TASKS.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((tx, _)) = tasks.get(task_id) {
             let _ = tx.send(WebwrightProgress {
                 running: false,
@@ -214,11 +214,11 @@ pub fn complete(task_id: &str) {
 /// Remove a task and every request→task binding that resolves to it.
 fn purge_task(task_id: &str) {
     {
-        let mut tasks = TASKS.lock().unwrap();
+        let mut tasks = TASKS.lock().unwrap_or_else(|e| e.into_inner());
         tasks.remove(task_id);
     }
     {
-        let mut map = REQUEST_TO_TASK.lock().unwrap();
+        let mut map = REQUEST_TO_TASK.lock().unwrap_or_else(|e| e.into_inner());
         map.retain(|_, v| v != task_id);
     }
 }

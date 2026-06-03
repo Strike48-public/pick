@@ -21,6 +21,7 @@ pub use live_state::{
 };
 
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use pentest_core::error::{Error, Result};
 use pentest_core::provenance::{ProbeCommand, Provenance};
 use pentest_core::tools::{
@@ -539,6 +540,26 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Heuristic: action text that is just a UUID, a timestamp, or looks like a
+/// generated ID isn't useful for the live log widget.
+fn looks_like_uuid_or_timestamp(s: &str) -> bool {
+    let s = s.trim();
+    // UUID pattern: 8-4-4-4-12 hex chars
+    if s.len() == 36 && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return true;
+    }
+    // Timestamp-like: starts with 4 digits (year) followed by - or _
+    if s.len() > 10 {
+        let prefix: String = s.chars().take(5).collect();
+        if prefix.chars().take(4).all(|c| c.is_ascii_digit())
+            && matches!(prefix.chars().nth(4), Some('-' | '_' | 'T'))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Run the plan as a one-shot subprocess (`bash -c <plan.shell_command_line>`).
 ///
 /// This is the fallback path when the sidecar can't be spawned or is disabled
@@ -617,8 +638,11 @@ async fn try_sidecar_execution(
                 screenshot,
             } => {
                 tracing::info!("[webwright-sidecar] step {}: {}", n, action);
-                // Skip useless lines (UUIDs, blank lines, directory paths)
-                let useful = !action.is_empty() && !action.contains("_2026") && action.len() > 5;
+                // Skip useless lines (UUIDs, timestamps, directory paths)
+                let useful = !action.is_empty()
+                    && action.len() > 5
+                    && !action.starts_with('/')
+                    && !looks_like_uuid_or_timestamp(action);
                 if useful {
                     log.push(live_state::LogEntry {
                         step: *n,
@@ -629,14 +653,21 @@ async fn try_sidecar_execution(
                         log.remove(0);
                     }
                 }
-                // Accumulate screenshots into the gallery, capped so each live UI
-                // frame stays small. Each base64 entry is ~100-500 KB; uncapped this
-                // is a real memory leak on long runs.
+                // Write screenshots to disk and store only the file path.
+                // Keeps memory usage constant regardless of task length.
                 if let Some(ref shot) = screenshot {
-                    screenshots.push(shot.clone());
-                    if screenshots.len() > constants::MAX_LIVE_SCREENSHOTS {
-                        let drop = screenshots.len() - constants::MAX_LIVE_SCREENSHOTS;
-                        screenshots.drain(0..drop);
+                    let shot_dir = format!("{}/live_screenshots", workspace.host_path());
+                    let _ = std::fs::create_dir_all(&shot_dir);
+                    let shot_path = format!("{}/step_{:04}.png", shot_dir, n);
+                    if let Ok(bytes) = BASE64.decode(shot) {
+                        if std::fs::write(&shot_path, &bytes).is_ok() {
+                            screenshots.push(shot_path.clone());
+                            if screenshots.len() > constants::MAX_LIVE_SCREENSHOTS {
+                                let drop_count =
+                                    screenshots.len() - constants::MAX_LIVE_SCREENSHOTS;
+                                screenshots.drain(0..drop_count);
+                            }
+                        }
                     }
                 }
                 live_state::update(
@@ -648,7 +679,7 @@ async fn try_sidecar_execution(
                         } else {
                             "working...".to_string()
                         },
-                        screenshot: screenshot.clone(),
+                        screenshot: screenshots.last().cloned(),
                         screenshots: screenshots.clone(),
                         findings: findings.clone(),
                         log: log.clone(),

@@ -1,11 +1,16 @@
 //! Message rendering: rich parts, tool calls, markdown, and chart post-processing.
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use dioxus::prelude::*;
 use pentest_core::matrix::{ChatMessage, MessagePart, ToolCallInfo, ToolCallStatus};
 use pentest_tools::webwright::{
     live_peek, live_subscribe, signature_for_call, task_for_request, WebwrightProgress,
 };
 use pulldown_cmark::{html, Options, Parser};
+
+fn base64_encode(bytes: &[u8]) -> String {
+    BASE64.encode(bytes)
+}
 
 // ---------------------------------------------------------------------------
 // Message rendering with rich parts
@@ -336,12 +341,17 @@ fn render_live_widget(
     let step_text = format!("Step {} \u{2014} {}", progress.step, progress.action);
     let has_screenshots = !progress.screenshots.is_empty() || progress.screenshot.is_some();
 
-    // Collect all live screenshot URIs for the modal (newest first, matching grid display order)
+    // Collect all live screenshot URIs for the modal (newest first, matching grid display order).
+    // Screenshots are stored as file paths on disk; read and base64-encode for display.
     let all_uris: Vec<String> = progress
         .screenshots
         .iter()
         .rev()
-        .map(|b64| format!("data:image/png;base64,{}", b64))
+        .filter_map(|path| {
+            std::fs::read(path)
+                .ok()
+                .map(|bytes| format!("data:image/png;base64,{}", base64_encode(&bytes)))
+        })
         .collect();
 
     rsx! {
@@ -405,11 +415,11 @@ fn render_live_widget(
                     div {
                         style: "flex-shrink: 0; display: flex; flex-direction: row; gap: 6px; max-width: 420px;",
                         // Primary (most recent) screenshot — left side, scrollable
-                        if let Some(ref screenshot) = progress.screenshot {
+                        if !all_uris.is_empty() {
                             {
-                                let uri = format!("data:image/png;base64,{}", screenshot);
                                 let all = all_uris.clone();
-                                let idx = 0_usize; // newest is first in reversed list
+                                let uri = all[0].clone();
+                                let idx = 0_usize;
                                 let mut modal = *modal_open;
                                 rsx! {
                                     div {
@@ -425,14 +435,14 @@ fn render_live_widget(
                             }
                         }
                         // Thumbnail grid — right of primary, wraps in 3 columns
-                        if progress.screenshots.len() > 1 {
+                        if all_uris.len() > 1 {
                             div {
                                 style: "flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; align-content: start; max-height: 240px; overflow-y: auto;",
-                                for (i, shot) in progress.screenshots.iter().rev().skip(1).take(12).enumerate() {
+                                for (i, uri) in all_uris.iter().skip(1).take(12).enumerate() {
                                     {
-                                        let uri = format!("data:image/png;base64,{}", shot);
                                         let all = all_uris.clone();
-                                        let idx = i + 1; // grid starts at index 1 (after primary)
+                                        let uri = uri.clone();
+                                        let idx = i + 1;
                                         let mut modal = *modal_open;
                                         let key = format!("thumb-{}", idx);
                                         rsx! {

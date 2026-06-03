@@ -18,6 +18,12 @@ use tokio::sync::RwLock;
 
 use pentest_core::matrix::{ChatClient, MatrixChatClient};
 
+/// Maximum number of per-task conversations to retain. When exceeded, the oldest
+/// entries are evicted (LRU-ish: we just drain excess since insertion order is
+/// not tracked in HashMap — acceptable since eviction is rare and only prevents
+/// unbounded growth).
+const MAX_CONVERSATIONS: usize = 100;
+
 /// Shared state for the LLM proxy.
 #[derive(Clone)]
 pub struct LlmProxyState {
@@ -227,6 +233,14 @@ async fn handle_llm_request(
                 Ok(id) => {
                     let mut convs = state.conversations.write().await;
                     convs.insert(task_id.clone(), id.clone());
+                    // Evict oldest entries if map grows too large
+                    if convs.len() > MAX_CONVERSATIONS {
+                        let excess = convs.len() - MAX_CONVERSATIONS;
+                        let keys: Vec<_> = convs.keys().take(excess).cloned().collect();
+                        for k in keys {
+                            convs.remove(&k);
+                        }
+                    }
                     id
                 }
                 Err(e) => {

@@ -78,9 +78,16 @@ pub enum SidecarEvent {
 impl SidecarCommand {
     /// Serialize to JSON line (newline-terminated).
     pub fn to_json_line(&self) -> String {
-        let mut s = serde_json::to_string(self).unwrap_or_default();
-        s.push('\n');
-        s
+        match serde_json::to_string(self) {
+            Ok(mut s) => {
+                s.push('\n');
+                s
+            }
+            Err(e) => {
+                tracing::error!("[webwright-sidecar] failed to serialize command: {}", e);
+                String::from("{}\n")
+            }
+        }
     }
 }
 
@@ -158,6 +165,7 @@ impl SidecarProcess {
 
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
 
         let process = Self {
             child: Arc::new(Mutex::new(Some(child))),
@@ -165,6 +173,17 @@ impl SidecarProcess {
             event_tx: event_tx.clone(),
             is_ready: Arc::new(Mutex::new(false)),
         };
+
+        // Drain stderr to tracing to prevent pipe buffer deadlock.
+        if let Some(stderr) = stderr {
+            tokio::spawn(async move {
+                let reader = BufReader::new(stderr);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tracing::debug!(target: "webwright_sidecar_stderr", "{}", line);
+                }
+            });
+        }
 
         // Spawn event reader task
         if let Some(stdout) = stdout {

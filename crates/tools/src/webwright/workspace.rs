@@ -66,9 +66,11 @@ impl WebwrightWorkspace {
             .map_err(|e| Error::ToolExecution(format!("Failed to serialize config: {}", e)))?;
 
         // Write to the rootfs host path (visible inside proot as sandbox_dir)
-        std::fs::create_dir_all(&self.host_dir)
+        tokio::fs::create_dir_all(&self.host_dir)
+            .await
             .map_err(|e| Error::ToolExecution(format!("Failed to create dir: {}", e)))?;
-        std::fs::write(format!("{}/config.yaml", self.host_dir), yaml.as_bytes())
+        tokio::fs::write(format!("{}/config.yaml", self.host_dir), yaml.as_bytes())
+            .await
             .map_err(|e| Error::ToolExecution(format!("Failed to write config: {}", e)))?;
 
         Ok(())
@@ -76,9 +78,11 @@ impl WebwrightWorkspace {
 
     /// Write a Python script to workspace (host-side rootfs path).
     pub async fn write_script(&self, content: &str) -> Result<()> {
-        std::fs::create_dir_all(&self.host_dir)
+        tokio::fs::create_dir_all(&self.host_dir)
+            .await
             .map_err(|e| Error::ToolExecution(format!("Failed to create dir: {}", e)))?;
-        std::fs::write(format!("{}/script.py", self.host_dir), content.as_bytes())
+        tokio::fs::write(format!("{}/script.py", self.host_dir), content.as_bytes())
+            .await
             .map_err(|e| Error::ToolExecution(format!("Failed to write script: {}", e)))?;
 
         Ok(())

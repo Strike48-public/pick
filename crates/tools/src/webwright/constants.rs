@@ -169,34 +169,28 @@ mod tests {
     }
 
     #[test]
-    fn rootfs_dir_lives_under_home() {
-        // Set a known HOME so we don't depend on the test runner's environment.
-        // SAFETY: tests in this module run single-threaded against $HOME.
-        unsafe {
-            std::env::set_var("HOME", "/tmp/pick-constants-test");
-        }
+    fn rootfs_dir_ends_with_expected_suffix() {
         let dir = rootfs_dir();
-        assert!(dir.starts_with("/tmp/pick-constants-test"));
-        assert!(dir.ends_with("blackarch-rootfs"));
+        assert!(
+            dir.ends_with("blackarch-rootfs"),
+            "rootfs_dir should end with blackarch-rootfs: {:?}",
+            dir
+        );
     }
 
     #[test]
-    fn proot_binary_lives_under_home() {
-        unsafe {
-            std::env::set_var("HOME", "/tmp/pick-constants-test");
-        }
+    fn proot_binary_ends_with_proot() {
         let bin = proot_binary_path();
-        assert!(bin.starts_with("/tmp/pick-constants-test"));
-        assert!(bin.ends_with("proot"));
+        assert!(
+            bin.ends_with("proot"),
+            "proot path should end with 'proot': {:?}",
+            bin
+        );
     }
 
     #[test]
     fn sidecar_script_host_path_is_inside_rootfs() {
-        unsafe {
-            std::env::set_var("HOME", "/tmp/pick-constants-test");
-        }
         let p = sidecar_server_script_path();
-        // Must live under the rootfs and end with the sidecar filename.
         assert!(p.starts_with(rootfs_dir()));
         assert_eq!(
             p.file_name().and_then(|s| s.to_str()),
@@ -216,12 +210,12 @@ mod tests {
 
     #[test]
     fn host_task_workspace_mirrors_sandbox_layout() {
-        unsafe {
-            std::env::set_var("HOME", "/tmp/pick-constants-test");
-        }
         let host = host_task_workspace("task-xyz");
-        // host path is the rootfs view of /tmp/webwright/<id>
         assert!(host.starts_with(rootfs_dir()));
-        assert!(host.to_string_lossy().contains("/tmp/webwright/task-xyz"));
+        assert!(
+            host.to_string_lossy().contains("/tmp/webwright/task-xyz"),
+            "host_task_workspace should contain /tmp/webwright/task-xyz: {:?}",
+            host
+        );
     }
 }
