@@ -2,6 +2,9 @@
 
 use dioxus::prelude::*;
 use pentest_core::matrix::{ChatMessage, MessagePart, ToolCallInfo, ToolCallStatus};
+use pentest_tools::webwright::{
+    live_peek, live_subscribe, signature_for_call, task_for_request, WebwrightProgress,
+};
 use pulldown_cmark::{html, Options, Parser};
 
 // ---------------------------------------------------------------------------
@@ -130,7 +133,7 @@ fn render_tool_call(tc: &ToolCallInfo, expanded_tools: &mut Signal<Vec<String>>)
                         .and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok())
                         .and_then(|v| v.get("task_id").and_then(|t| t.as_str()).map(|s| s.to_string()))
                         .unwrap_or_else(|| tc.id.clone());
-                    let signature = pentest_tools::webwright::live_state::signature_for_call(
+                    let signature = signature_for_call(
                         &tc.name,
                         tc.arguments.as_deref().unwrap_or(""),
                     );
@@ -241,8 +244,7 @@ pub fn WebwrightGallery(
     // Modal state: (all_images as data URIs, current index)
     let mut modal_open = use_signal(|| Option::<(Vec<String>, usize)>::None);
     #[allow(clippy::redundant_closure)]
-    let mut progress_signal =
-        use_signal(pentest_tools::webwright::live_state::WebwrightProgress::default);
+    let mut progress_signal = use_signal(WebwrightProgress::default);
 
     let is_live = result.is_none() && error.is_none();
 
@@ -259,16 +261,16 @@ pub fn WebwrightGallery(
         let sig = subscribe_signature.clone();
         async move {
             loop {
-                let real_tid = pentest_tools::webwright::live_state::task_for_request(&tid)
+                let real_tid = task_for_request(&tid)
                     .or_else(|| {
                         if sig.is_empty() {
                             None
                         } else {
-                            pentest_tools::webwright::live_state::task_for_request(&sig)
+                            task_for_request(&sig)
                         }
                     })
                     .or_else(|| {
-                        let p = pentest_tools::webwright::live_state::peek(&tid);
+                        let p = live_peek(&tid);
                         if p.running || p.step > 0 {
                             Some(tid.clone())
                         } else {
@@ -277,7 +279,7 @@ pub fn WebwrightGallery(
                     });
 
                 if let Some(real_tid) = real_tid {
-                    let mut rx = pentest_tools::webwright::live_state::subscribe(&real_tid);
+                    let mut rx = live_subscribe(&real_tid);
                     loop {
                         if rx.changed().await.is_err() {
                             break;
@@ -324,7 +326,7 @@ pub fn WebwrightGallery(
 
 /// Render the live progress panel (log + screenshots).
 fn render_live_widget(
-    progress: &pentest_tools::webwright::live_state::WebwrightProgress,
+    progress: &WebwrightProgress,
     modal_open: &mut Signal<Option<(Vec<String>, usize)>>,
 ) -> Element {
     if !progress.running {

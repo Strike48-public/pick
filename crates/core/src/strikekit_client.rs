@@ -135,3 +135,92 @@ impl StrikeKitClient {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upload_artifact_request_serializes_required_fields() {
+        let req = UploadArtifactRequest {
+            engagement_id: "eng-123".to_string(),
+            filename: "screenshot.png".to_string(),
+            content_base64: "aGVsbG8=".to_string(),
+            evidence_type: None,
+            title: None,
+            source: None,
+            finding_id: None,
+            path: None,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["engagement_id"], "eng-123");
+        assert_eq!(json["filename"], "screenshot.png");
+        assert_eq!(json["content_base64"], "aGVsbG8=");
+        // Optional fields should be absent (skip_serializing_if)
+        assert!(json.get("evidence_type").is_none());
+        assert!(json.get("finding_id").is_none());
+    }
+
+    #[test]
+    fn upload_artifact_request_includes_optional_fields_when_set() {
+        let req = UploadArtifactRequest {
+            engagement_id: "eng-456".to_string(),
+            filename: "exploit.py".to_string(),
+            content_base64: "cHJpbnQ=".to_string(),
+            evidence_type: Some("script".to_string()),
+            title: Some("XSS exploit".to_string()),
+            source: Some("webwright".to_string()),
+            finding_id: Some("finding-789".to_string()),
+            path: Some("/workspace/exploit.py".to_string()),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["evidence_type"], "script");
+        assert_eq!(json["title"], "XSS exploit");
+        assert_eq!(json["source"], "webwright");
+        assert_eq!(json["finding_id"], "finding-789");
+        assert_eq!(json["path"], "/workspace/exploit.py");
+    }
+
+    #[tokio::test]
+    async fn client_returns_error_when_stream_not_connected() {
+        let stream_tx = Arc::new(RwLock::new(None));
+        let client = StrikeKitClient::new(stream_tx);
+        let result = client
+            .upload_artifact(UploadArtifactRequest {
+                engagement_id: "eng".to_string(),
+                filename: "f.txt".to_string(),
+                content_base64: "".to_string(),
+                evidence_type: None,
+                title: None,
+                source: None,
+                finding_id: None,
+                path: None,
+            })
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn client_queues_message_when_stream_connected() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let stream_tx = Arc::new(RwLock::new(Some(tx)));
+        let client = StrikeKitClient::new(stream_tx);
+        let result = client
+            .upload_artifact(UploadArtifactRequest {
+                engagement_id: "eng".to_string(),
+                filename: "f.txt".to_string(),
+                content_base64: "".to_string(),
+                evidence_type: None,
+                title: None,
+                source: None,
+                finding_id: None,
+                path: None,
+            })
+            .await;
+        assert!(result.is_ok());
+        // Verify a message was actually sent
+        let msg = rx.try_recv().unwrap();
+        assert!(msg.message.is_some());
+    }
+}

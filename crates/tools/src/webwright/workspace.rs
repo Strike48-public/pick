@@ -235,4 +235,47 @@ mod tests {
         assert_eq!(ws.script_path(), "/tmp/webwright/test-123/script.py");
         assert_eq!(ws.path(), "/tmp/webwright/test-123");
     }
+
+    #[tokio::test]
+    async fn copy_to_connector_workspace_copies_files() {
+        let tmp = std::env::temp_dir().join(format!("pick-ws-test-{}", Uuid::new_v4()));
+        let connector_dir = tmp.join("connector");
+
+        let ws = WebwrightWorkspace {
+            task_id: "copy-test".to_string(),
+            sandbox_dir: "/tmp/webwright/copy-test".to_string(),
+            host_dir: tmp.join("host").to_string_lossy().to_string(),
+            connector_dir: Some(connector_dir.to_string_lossy().to_string()),
+        };
+
+        // Create host dir with files
+        std::fs::create_dir_all(&ws.host_dir).unwrap();
+        std::fs::write(format!("{}/a.txt", ws.host_dir), b"hello").unwrap();
+        std::fs::create_dir_all(format!("{}/sub", ws.host_dir)).unwrap();
+        std::fs::write(format!("{}/sub/b.txt", ws.host_dir), b"world").unwrap();
+
+        ws.copy_to_connector_workspace();
+
+        assert!(connector_dir.join("a.txt").exists());
+        assert!(connector_dir.join("sub/b.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(connector_dir.join("a.txt")).unwrap(),
+            "hello"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn copy_to_connector_workspace_noop_when_none() {
+        let ws = WebwrightWorkspace {
+            task_id: "noop-test".to_string(),
+            sandbox_dir: "/tmp/webwright/noop-test".to_string(),
+            host_dir: "/tmp/nonexistent-pick-ws-test".to_string(),
+            connector_dir: None,
+        };
+        // Should not panic or error
+        ws.copy_to_connector_workspace();
+    }
 }

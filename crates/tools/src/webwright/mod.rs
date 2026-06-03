@@ -13,6 +13,13 @@ pub mod live_state;
 pub mod sidecar;
 pub mod workspace;
 
+// Re-export UI-facing API so external crates (pentest-ui) depend on a stable
+// boundary rather than reaching into live_state internals.
+pub use live_state::{
+    peek as live_peek, signature_for_call, subscribe as live_subscribe, task_for_request,
+    WebwrightProgress,
+};
+
 use async_trait::async_trait;
 use pentest_core::error::{Error, Result};
 use pentest_core::provenance::{ProbeCommand, Provenance};
@@ -956,5 +963,101 @@ mod tests {
                 plan.shell_command_line
             );
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // build_env_exports
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn env_exports_uses_proxy_when_no_user_key() {
+        // Clear any user-provided key so we hit the proxy path.
+        std::env::remove_var("OPENAI_API_KEY");
+        let exports = build_env_exports(Some("my-session-token"));
+        assert!(
+            exports.contains("OPENAI_BASE_URL='http://127.0.0.1:"),
+            "should set OPENAI_BASE_URL to local proxy: {}",
+            exports
+        );
+        assert!(
+            exports.contains("OPENAI_API_KEY='my-session-token'"),
+            "should use session_token as API key: {}",
+            exports
+        );
+    }
+
+    #[test]
+    fn env_exports_falls_back_to_pick_internal_without_token() {
+        std::env::remove_var("OPENAI_API_KEY");
+        let exports = build_env_exports(None);
+        assert!(
+            exports.contains("OPENAI_API_KEY='pick-internal'"),
+            "should use 'pick-internal' when no session_token: {}",
+            exports
+        );
+    }
+
+    #[test]
+    fn env_exports_sanitizes_nix_vars() {
+        std::env::remove_var("OPENAI_API_KEY");
+        let exports = build_env_exports(None);
+        assert!(
+            exports.contains("unset SSL_CERT_FILE"),
+            "should unset SSL_CERT_FILE: {}",
+            exports
+        );
+        assert!(
+            exports.contains("export TMPDIR=/tmp"),
+            "should reset TMPDIR: {}",
+            exports
+        );
+        assert!(
+            exports.contains("PLAYWRIGHT_CHROMIUM_SANDBOX=0"),
+            "should disable chromium sandbox: {}",
+            exports
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // WebwrightWorkspace::collect_artifacts
+    // ---------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn collect_artifacts_classifies_by_extension() {
+        let platform = pentest_platform::get_platform();
+        let ws = WebwrightWorkspace::create(&platform, None).await.unwrap();
+
+        // Write test files to the host_dir
+        std::fs::create_dir_all(ws.host_path()).unwrap();
+        std::fs::write(format!("{}/exploit.py", ws.host_path()), b"# code").unwrap();
+        std::fs::write(format!("{}/page.png", ws.host_path()), b"PNG").unwrap();
+        std::fs::write(format!("{}/trace.json", ws.host_path()), b"{}").unwrap();
+        std::fs::write(format!("{}/snap.html", ws.host_path()), b"<html>").unwrap();
+        std::fs::write(format!("{}/readme.txt", ws.host_path()), b"hi").unwrap();
+        // config.yaml and script.py should be excluded
+        std::fs::write(format!("{}/config.yaml", ws.host_path()), b"x").unwrap();
+        std::fs::write(format!("{}/script.py", ws.host_path()), b"x").unwrap();
+
+        let artifacts = ws.collect_artifacts(&platform).await.unwrap();
+
+        assert_eq!(artifacts["scripts"].as_array().unwrap().len(), 1);
+        assert_eq!(artifacts["screenshots"].as_array().unwrap().len(), 1);
+        assert_eq!(artifacts["logs"].as_array().unwrap().len(), 1);
+        assert_eq!(artifacts["dom_snapshots"].as_array().unwrap().len(), 1);
+        assert_eq!(artifacts["other"].as_array().unwrap().len(), 1);
+        assert_eq!(artifacts["total_files"], 7); // 5 classified + config + script in total count
+
+        // Cleanup
+        ws.cleanup(&platform).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn collect_artifacts_empty_workspace_returns_zero() {
+        let platform = pentest_platform::get_platform();
+        let ws = WebwrightWorkspace::create(&platform, None).await.unwrap();
+
+        let artifacts = ws.collect_artifacts(&platform).await.unwrap();
+        assert_eq!(artifacts["total_files"], 0);
+        assert!(artifacts["scripts"].as_array().unwrap().is_empty());
     }
 }
