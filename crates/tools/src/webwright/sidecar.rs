@@ -100,7 +100,7 @@ impl SidecarEvent {
 
 /// Manages the sidecar Python process.
 pub struct SidecarProcess {
-    child: Arc<Mutex<Option<Child>>>,
+    _child: Arc<Mutex<Option<Child>>>,
     stdin: Arc<Mutex<Option<tokio::process::ChildStdin>>>,
     event_tx: broadcast::Sender<SidecarEvent>,
     is_ready: Arc<Mutex<bool>>,
@@ -168,7 +168,7 @@ impl SidecarProcess {
         let stderr = child.stderr.take();
 
         let process = Self {
-            child: Arc::new(Mutex::new(Some(child))),
+            _child: Arc::new(Mutex::new(Some(child))),
             stdin: Arc::new(Mutex::new(stdin)),
             event_tx: event_tx.clone(),
             is_ready: Arc::new(Mutex::new(false)),
@@ -244,34 +244,6 @@ impl SidecarProcess {
     /// Subscribe to events from the sidecar.
     pub fn subscribe(&self) -> broadcast::Receiver<SidecarEvent> {
         self.event_tx.subscribe()
-    }
-
-    /// Check if the sidecar is ready.
-    pub async fn is_ready(&self) -> bool {
-        *self.is_ready.lock().await
-    }
-
-    /// Shutdown the sidecar gracefully.
-    pub async fn shutdown(&self) {
-        let _ = self.send(SidecarCommand::Shutdown).await;
-        // Give it a moment to exit
-        tokio::time::sleep(tokio::time::Duration::from_millis(
-            constants::SIDECAR_SHUTDOWN_GRACE_MS,
-        ))
-        .await;
-        // Force kill if still running
-        if let Some(mut child) = self.child.lock().await.take() {
-            let _ = child.kill().await;
-        }
-    }
-
-    /// Check if the process is still alive.
-    pub async fn is_alive(&self) -> bool {
-        if let Some(ref mut child) = *self.child.lock().await {
-            child.try_wait().ok().flatten().is_none()
-        } else {
-            false
-        }
     }
 }
 
