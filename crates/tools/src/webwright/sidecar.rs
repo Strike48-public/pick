@@ -96,7 +96,11 @@ pub struct SidecarProcess {
 
 impl SidecarProcess {
     /// Spawn the sidecar process inside the proot sandbox.
-    pub async fn spawn(env_exports: &str, proxy_port: u16) -> Result<Self> {
+    ///
+    /// Assumes `install::ensure_webwright_installed` has already written the sidecar
+    /// server script to `<rootfs>/tmp/webwright_sidecar_server.py` and that
+    /// `env_exports` already sets `OPENAI_BASE_URL` and `OPENAI_API_KEY`.
+    pub async fn spawn(env_exports: &str) -> Result<Self> {
         let (event_tx, _) = broadcast::channel(100);
 
         // Build the proot command that runs the sidecar server
@@ -104,20 +108,17 @@ impl SidecarProcess {
         let rootfs = format!("{}/.local/share/pentest-sandbox/blackarch-rootfs", home);
         let proot_bin = format!("{}/.local/share/pentest-sandbox/bin/proot", home);
 
-        // The sidecar_server.py is embedded in the rootfs at a known path
-        let server_script = include_str!("sidecar_server.py");
-        let script_path = format!("{}/tmp/webwright_sidecar_server.py", rootfs);
-        std::fs::write(&script_path, server_script)
-            .map_err(|e| Error::ToolExecution(format!("Failed to write sidecar script: {}", e)))?;
-
+        // env_exports (from build_env_exports) sets OPENAI_BASE_URL and OPENAI_API_KEY
+        // to the values that route to Pick's LLM proxy with the session_token as
+        // bearer. Do NOT re-export those here — earlier versions hardcoded
+        // OPENAI_API_KEY='pick-internal' after env_exports, clobbering the real
+        // session token and breaking auth for headless StrikeKit runs.
         let cmd_str = format!(
             "export PATH=/usr/bin:/usr/local/bin:/bin:/sbin; \
              {} \
-             export OPENAI_BASE_URL='http://127.0.0.1:{}/v1'; \
-             export OPENAI_API_KEY='pick-internal'; \
              export PLAYWRIGHT_CHROMIUM_SANDBOX=0; \
              python3 /tmp/webwright_sidecar_server.py",
-            env_exports, proxy_port
+            env_exports
         );
 
         let mut child = Command::new(&proot_bin)
@@ -142,6 +143,10 @@ impl SidecarProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            // SIGKILL the proot child (and the Chromium subtree underneath) when the
+            // SidecarProcess is dropped. Without this an early return from
+            // try_sidecar_execution would orphan a browser process per failed task.
+            .kill_on_drop(true)
             .spawn()
             .map_err(|e| Error::ToolExecution(format!("Failed to spawn sidecar: {}", e)))?;
 

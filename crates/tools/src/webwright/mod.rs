@@ -393,7 +393,14 @@ fn build_env_exports(session_token: Option<&str>) -> String {
     format!("{};", exports.join("; "))
 }
 
-/// Simple shell escaping — wraps in single quotes, escaping any internal single quotes.
+/// Shell-escape a string for safe embedding inside a `bash -c` command line.
+///
+/// Wraps in single quotes; any internal single quote is closed (`'`), backslash-escaped
+/// (`\'`), and reopened (`'`) — the canonical POSIX pattern. The output is always safe
+/// against shell-metacharacter injection from the input, including session tokens, URLs,
+/// and user-supplied task descriptions.
+///
+/// Tested in `shell_escape_*` below; do not "simplify" without re-running those tests.
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -407,13 +414,9 @@ async fn try_sidecar_execution(
     env_exports: &str,
     timeout_secs: u64,
 ) -> Option<pentest_platform::CommandResult> {
-    // Spawn a fresh sidecar for this task (enables parallel execution)
-    let proxy_port: u16 = std::env::var("PICK_LLM_PROXY_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(9100);
-
-    let sidecar = match SidecarProcess::spawn(env_exports, proxy_port).await {
+    // Spawn a fresh sidecar for this task (enables parallel execution).
+    // env_exports already encodes OPENAI_BASE_URL with the proxy port.
+    let sidecar = match SidecarProcess::spawn(env_exports).await {
         Ok(proc) => proc,
         Err(e) => {
             tracing::warn!(
@@ -485,9 +488,15 @@ async fn try_sidecar_execution(
                         log.remove(0);
                     }
                 }
-                // Accumulate screenshots into the gallery
+                // Accumulate screenshots into the gallery, capped at 20 (each base64
+                // entry is ~100-500 KB; uncapped this is a real memory leak on long runs).
                 if let Some(ref shot) = screenshot {
                     screenshots.push(shot.clone());
+                    const MAX_SCREENSHOTS: usize = 20;
+                    if screenshots.len() > MAX_SCREENSHOTS {
+                        let drop = screenshots.len() - MAX_SCREENSHOTS;
+                        screenshots.drain(0..drop);
+                    }
                 }
                 live_state::update(
                     &workspace.task_id,
@@ -559,4 +568,66 @@ async fn try_sidecar_execution(
 
     // If we get here, something went wrong
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_escape;
+
+    fn unescape_through_bash(escaped: &str) -> String {
+        // Use bash to evaluate the escaped string; if our escaper is correct,
+        // the round-trip should be lossless.
+        let output = std::process::Command::new("bash")
+            .args(["-c", &format!("printf %s {}", escaped)])
+            .output()
+            .expect("bash exists");
+        assert!(
+            output.status.success(),
+            "bash failed for input: {}",
+            escaped
+        );
+        String::from_utf8(output.stdout).expect("utf8")
+    }
+
+    #[test]
+    fn shell_escape_roundtrip_plain() {
+        let s = "hello world";
+        assert_eq!(unescape_through_bash(&shell_escape(s)), s);
+    }
+
+    #[test]
+    fn shell_escape_roundtrip_single_quote() {
+        let s = "it's a test";
+        assert_eq!(unescape_through_bash(&shell_escape(s)), s);
+    }
+
+    #[test]
+    fn shell_escape_roundtrip_double_quote_and_dollar() {
+        let s = r#"$(rm -rf /) "evil" `nope`"#;
+        assert_eq!(unescape_through_bash(&shell_escape(s)), s);
+    }
+
+    #[test]
+    fn shell_escape_roundtrip_backslash() {
+        let s = r"a\b\c";
+        assert_eq!(unescape_through_bash(&shell_escape(s)), s);
+    }
+
+    #[test]
+    fn shell_escape_roundtrip_session_token_like() {
+        // JWTs use dots and dashes; throw in dangerous characters too
+        let s = "eyJhbGc.iOiJSUzI.signa-ture'+`whoami`+";
+        assert_eq!(unescape_through_bash(&shell_escape(s)), s);
+    }
+
+    #[test]
+    fn shell_escape_roundtrip_newline_and_tab() {
+        let s = "line1\nline2\ttab";
+        assert_eq!(unescape_through_bash(&shell_escape(s)), s);
+    }
+
+    #[test]
+    fn shell_escape_roundtrip_empty() {
+        assert_eq!(unescape_through_bash(&shell_escape("")), "");
+    }
 }
