@@ -541,7 +541,7 @@ fn render_completed_gallery(
                                 img {
                                     src: "{duri}",
                                     alt: "{fname}",
-                                    style: "width: 100%; height: 96px; object-fit: cover; display: block;",
+                                    style: "width: 100%; height: 96px; object-fit: cover; object-position: top; display: block;",
                                 }
                                 div {
                                     style: "padding: 4px 6px; font-size: 9px; color: #8b949e; font-family: 'JetBrains Mono', monospace; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;",
