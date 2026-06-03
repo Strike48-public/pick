@@ -61,7 +61,19 @@ pub fn register_request(request_id: &str, task_id: &str) {
 
 /// Look up the task_id for a given request_id.
 pub fn task_for_request(request_id: &str) -> Option<String> {
-    REQUEST_TO_TASK.lock().unwrap().get(request_id).cloned()
+    let map = REQUEST_TO_TASK.lock().unwrap();
+    let result = map.get(request_id).cloned();
+    if result.is_none() {
+        // Diagnostic: surface every miss so we can see what the widget is asking for
+        // vs what the executor registered. Spammy but only fires when the binding fails.
+        let known: Vec<&String> = map.keys().collect();
+        tracing::warn!(
+            "[live_state] task_for_request MISS: query={:?}, registered_keys={:?}",
+            request_id,
+            known
+        );
+    }
+    result
 }
 
 /// Get or create a receiver for a specific task's progress.
@@ -130,5 +142,48 @@ pub fn complete(task_id: &str) {
             task_id: task_id.to_string(),
             ..Default::default()
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn widget_lookup_resolves_via_tool_call_id() {
+        // Simulates the chat-panel widget flow:
+        // - Platform sends tc.id = "call_abc" in the conversation message
+        // - Pick registers binding under that tool_call_id → workspace task_id
+        // - Widget looks up task_for_request("call_abc") to find its live stream
+        let tool_call_id = "call_widget_lookup_test_abc";
+        let workspace_task_id = "ws-widget-lookup-test-uuid";
+
+        register_request(tool_call_id, workspace_task_id);
+
+        assert_eq!(
+            task_for_request(tool_call_id),
+            Some(workspace_task_id.to_string()),
+            "widget must resolve its live stream via the tool_call_id used in chat messages"
+        );
+    }
+
+    #[test]
+    fn dual_registration_supports_legacy_request_id_lookup() {
+        // Older platform versions don't forward tool_call_id; webwright registers
+        // under request_id as a fallback. Verify both keys resolve to the same task.
+        let tool_call_id = "call_dual_reg_xyz";
+        let request_id = "agent-99999999";
+        let workspace_task_id = "ws-dual-reg-uuid";
+
+        register_request(tool_call_id, workspace_task_id);
+        register_request(request_id, workspace_task_id);
+
+        assert_eq!(task_for_request(tool_call_id), Some(workspace_task_id.to_string()));
+        assert_eq!(task_for_request(request_id), Some(workspace_task_id.to_string()));
+    }
+
+    #[test]
+    fn missing_binding_returns_none() {
+        assert_eq!(task_for_request("never-registered-id-zzz"), None);
     }
 }

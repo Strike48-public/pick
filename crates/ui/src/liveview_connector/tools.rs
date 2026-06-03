@@ -219,11 +219,11 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
             None => ToolContext::default(),
         };
 
-        // Add instance_id and request_id to context metadata for tools to use
-        ctx.metadata
-            .insert("instance_id".to_string(), instance_id.clone());
-        ctx.metadata
-            .insert("request_id".to_string(), request_id.clone());
+        // Add instance_id, request_id, and tool_call_id to context metadata for tools.
+        // tool_call_id is the platform agent's ID for the calling tool_call (e.g. "call_abc");
+        // the chat-panel widget keys live-progress lookups on it, so tools must register their
+        // live-state bindings under it. Forwarded by the platform in req.context["tool_call_id"].
+        populate_tool_metadata(&mut ctx.metadata, &instance_id, &request_id, &req.context);
 
         // Forward session token from execute request context (if provided by StrikeKit)
         // so tools like webwright can pass it to their sidecar for LLM proxy auth.
@@ -429,6 +429,26 @@ impl LiveViewConnector {
     }
 }
 
+/// Copy IDs from the platform's ExecuteRequest context into the ToolContext metadata.
+///
+/// Sets `instance_id`, `request_id` always; copies `tool_call_id` from req.context when present
+/// and non-empty. Tools that need a stable widget-binding ID should read `tool_call_id` first,
+/// falling back to `request_id` for compatibility with platform versions that don't forward it.
+fn populate_tool_metadata(
+    metadata: &mut HashMap<String, String>,
+    instance_id: &str,
+    request_id: &str,
+    req_context: &HashMap<String, String>,
+) {
+    metadata.insert("instance_id".to_string(), instance_id.to_string());
+    metadata.insert("request_id".to_string(), request_id.to_string());
+    if let Some(tool_call_id) = req_context.get("tool_call_id") {
+        if !tool_call_id.is_empty() {
+            metadata.insert("tool_call_id".to_string(), tool_call_id.clone());
+        }
+    }
+}
+
 /// Extract engagement_id from the execute request context.
 /// Checks both a top-level key and the nested agent_context JSON.
 fn extract_engagement_id(context: &HashMap<String, String>) -> Option<String> {
@@ -539,5 +559,48 @@ mod tests {
     fn extract_engagement_id_missing() {
         let ctx = HashMap::new();
         assert_eq!(extract_engagement_id(&ctx), None);
+    }
+
+    #[test]
+    fn populate_tool_metadata_forwards_tool_call_id() {
+        let mut req_ctx = HashMap::new();
+        req_ctx.insert("tool_call_id".to_string(), "call_abc_xyz".to_string());
+        req_ctx.insert("engagement_id".to_string(), "eng-1".to_string());
+
+        let mut metadata = HashMap::new();
+        populate_tool_metadata(&mut metadata, "inst-1", "agent-12345", &req_ctx);
+
+        assert_eq!(metadata.get("instance_id"), Some(&"inst-1".to_string()));
+        assert_eq!(metadata.get("request_id"), Some(&"agent-12345".to_string()));
+        assert_eq!(
+            metadata.get("tool_call_id"),
+            Some(&"call_abc_xyz".to_string()),
+            "tool_call_id from req.context must be forwarded for widget binding"
+        );
+    }
+
+    #[test]
+    fn populate_tool_metadata_skips_empty_tool_call_id() {
+        let mut req_ctx = HashMap::new();
+        req_ctx.insert("tool_call_id".to_string(), "".to_string());
+
+        let mut metadata = HashMap::new();
+        populate_tool_metadata(&mut metadata, "inst-1", "agent-12345", &req_ctx);
+
+        assert_eq!(
+            metadata.get("tool_call_id"),
+            None,
+            "empty tool_call_id should be ignored so tools fall back to request_id"
+        );
+    }
+
+    #[test]
+    fn populate_tool_metadata_omits_tool_call_id_when_absent() {
+        let req_ctx = HashMap::new();
+        let mut metadata = HashMap::new();
+        populate_tool_metadata(&mut metadata, "inst-1", "agent-12345", &req_ctx);
+
+        assert!(!metadata.contains_key("tool_call_id"));
+        assert_eq!(metadata.get("request_id"), Some(&"agent-12345".to_string()));
     }
 }

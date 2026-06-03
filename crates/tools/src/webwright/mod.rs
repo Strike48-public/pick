@@ -28,9 +28,8 @@ use self::workspace::WebwrightWorkspace;
 use crate::external::runner::{param_str_opt, param_str_or};
 use crate::util::param_u64;
 
-/// Global sidecar instance — shared across tool invocations for warm browser reuse.
-// Sidecars are now per-task (spawned fresh for each webwright invocation).
-// No global singleton — parallel tasks each get their own browser process.
+// Sidecars are spawned fresh per task — no global singleton, so parallel webwright
+// invocations each get their own browser process.
 
 /// Webwright browser automation tool.
 pub struct WebwrightTool;
@@ -149,10 +148,31 @@ impl PentestTool for WebwrightTool {
             let workspace = WebwrightWorkspace::create(&platform, ctx.workspace_path.as_deref()).await?;
             tracing::info!("[webwright] workspace created: sandbox={} host={}", workspace.path(), workspace.host_path());
 
-            // Register request_id → task_id mapping so the UI widget can bind to the correct stream
-            if let Some(req_id) = ctx.metadata.get("request_id") {
-                crate::webwright::live_state::register_request(req_id, &workspace.task_id);
+            // Register binding so the chat-panel widget can find this task's live stream.
+            // The widget looks up by tc.id (= toolCall.id from the platform conversation),
+            // which the platform forwards as context["tool_call_id"]. Fall back to request_id
+            // for older platform versions that don't forward it (mapping won't resolve, but
+            // the registration is harmless).
+            let binding_keys: Vec<&str> = ctx
+                .metadata
+                .get("tool_call_id")
+                .map(|s| s.as_str())
+                .into_iter()
+                .chain(ctx.metadata.get("request_id").map(|s| s.as_str()))
+                .collect();
+            if binding_keys.is_empty() {
+                tracing::warn!(
+                    "[webwright] no tool_call_id or request_id in ctx.metadata — UI widget will not bind"
+                );
             }
+            for key in &binding_keys {
+                crate::webwright::live_state::register_request(key, &workspace.task_id);
+            }
+            tracing::info!(
+                "[webwright] registered live-state bindings: {:?} -> task_id={}",
+                binding_keys,
+                workspace.task_id
+            );
 
             // Pass session token so each sidecar authenticates as the correct user
             let session_token = ctx.metadata.get("session_token").map(|s| s.as_str());
