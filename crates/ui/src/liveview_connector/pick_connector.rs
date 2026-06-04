@@ -23,7 +23,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use strike48_connector::{
     AppManifest, AppPageRequest, AppPageResponse, BaseConnector, BodyEncoding, ConnectorBehavior,
-    ConnectorClient, ConnectorHandle, NavigationConfig, PayloadEncoding, TaskTypeSchema,
+    ConnectorHandle, NavigationConfig, PayloadEncoding, TaskTypeSchema,
     WsCloseRequest, WsFrame, WsFrameType, WsOpenRequest,
 };
 use tokio::sync::{broadcast, mpsc, RwLock};
@@ -47,10 +47,9 @@ pub(crate) struct PickConnector {
     pub aggression_level: pentest_core::aggression::AggressionLevel,
     /// IPC address for the local LiveView server (set after start_liveview_server)
     pub ipc_addr: Arc<RwLock<Option<IpcAddr>>>,
-    /// SDK client reference for invoke_capability in background tool tasks.
-    /// Populated by `LiveViewConnector` after the runner is created (via `ConnectorRunner`'s
-    /// internal client). Tools that need invoke (e.g. webwright artifact upload) read this.
-    pub connector_client: Arc<RwLock<Option<ConnectorClient>>>,
+    /// Reference to the ConnectorRunner for invoke_capability calls (artifact uploads).
+    /// Set after the runner is created, before `.run()` is called.
+    pub runner: Arc<RwLock<Option<Arc<strike48_connector::ConnectorRunner>>>>,
     /// Matrix API URL derived from config for tool context
     pub matrix_api_url: String,
 }
@@ -310,8 +309,8 @@ impl BaseConnector for PickConnector {
                 // Upload artifacts (webwright) if applicable
                 let upload_status = if result.success && tool_name == "webwright" {
                     if let Some(engagement_id) = tools::extract_engagement_id_pub(context) {
-                        let client_guard = self.connector_client.read().await;
-                        if let Some(ref client) = *client_guard {
+                        let runner_guard = self.runner.read().await;
+                        if let Some(ref runner) = *runner_guard {
                             let session_token = context
                                 .get("session_token")
                                 .cloned()
@@ -324,8 +323,8 @@ impl BaseConnector for PickConnector {
                                 .map(|p| p.to_string_lossy().to_string())
                                 .unwrap_or_default();
                             Some(
-                                tools::upload_artifacts_to_strikekit_pub(
-                                    client,
+                                tools::upload_artifacts_via_runner(
+                                    runner,
                                     &engagement_id,
                                     &session_token,
                                     &artifacts,
@@ -335,7 +334,7 @@ impl BaseConnector for PickConnector {
                             )
                         } else {
                             tracing::warn!(
-                                "[strikekit] connector_client not available for upload"
+                                "[strikekit] runner not available for artifact upload"
                             );
                             None
                         }

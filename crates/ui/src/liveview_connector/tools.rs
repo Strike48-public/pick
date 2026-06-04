@@ -4,7 +4,6 @@ use crate::ipc::{IpcAddr, IpcStream};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
-use strike48_connector::PayloadEncoding;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Perform an HTTP GET over the IPC transport, returning (status, content_type, body).
@@ -208,13 +207,13 @@ fn inject_upload_status(result_json: &mut Value, status: &UploadStatus) {
 }
 
 /// Upload webwright artifacts (screenshots, scripts, DOM snapshots) to StrikeKit
-/// via the SDK's `invoke_capability` (request/response, not fire-and-forget).
+/// via the SDK's `ConnectorRunner::invoke_capability` (request/response).
 ///
 /// Returns an [`UploadStatus`] describing what was attempted vs. what landed,
 /// so the caller can splice the outcome into the tool result payload for the
 /// LLM/UI to observe.
-async fn upload_artifacts_to_strikekit(
-    client: &strike48_connector::ConnectorClient,
+pub(crate) async fn upload_artifacts_via_runner(
+    runner: &strike48_connector::ConnectorRunner,
     engagement_id: &str,
     session_token: &str,
     artifacts: &Value,
@@ -280,39 +279,23 @@ async fn upload_artifacts_to_strikekit(
                         "path": path,
                     });
 
-                    let payload_bytes = serde_json::to_vec(&payload).unwrap_or_default();
-
                     let mut context = HashMap::new();
                     if !session_token.is_empty() {
                         context.insert("session_token".to_string(), session_token.to_string());
                     }
 
-                    let options = strike48_connector::InvokeOptions {
+                    let options = strike48_connector::InvokeCapabilityOptions {
                         capability_id: Some("upload_artifact".to_string()),
                         timeout_ms: Some(30000),
                         fire_and_forget: Some(false),
-                        payload_encoding: Some(PayloadEncoding::Json),
                         context: Some(context),
                     };
 
-                    match client
-                        .invoke_capability("strikekit://evidence", payload_bytes, options)
+                    match runner
+                        .invoke_capability("strikekit://evidence", payload, options)
                         .await
                     {
-                        Ok(Some(resp)) if resp.success => succeeded += 1,
-                        Ok(Some(resp)) => {
-                            tracing::warn!(
-                                "[strikekit] upload rejected for {}: {}",
-                                path,
-                                resp.error
-                            );
-                            if failed.len() < UPLOAD_STATUS_FAILED_LIMIT {
-                                failed.push(path.to_string());
-                            } else {
-                                overflow += 1;
-                            }
-                            continue;
-                        }
+                        Ok(Some(_)) => succeeded += 1,
                         Ok(None) => succeeded += 1,
                         Err(e) => {
                             tracing::warn!("[strikekit] invoke failed for {}: {}", path, e);
@@ -371,17 +354,6 @@ pub(crate) fn extract_engagement_id_pub(context: &HashMap<String, String>) -> Op
     extract_engagement_id(context)
 }
 
-/// Public wrapper for `upload_artifacts_to_strikekit`.
-pub(crate) async fn upload_artifacts_to_strikekit_pub(
-    client: &strike48_connector::ConnectorClient,
-    engagement_id: &str,
-    session_token: &str,
-    artifacts: &Value,
-    workspace_path: &str,
-) -> UploadStatus {
-    upload_artifacts_to_strikekit(client, engagement_id, session_token, artifacts, workspace_path)
-        .await
-}
 
 /// Public wrapper for `inject_upload_status`.
 pub(crate) fn inject_upload_status_pub(result_json: &mut Value, status: &UploadStatus) {

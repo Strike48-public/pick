@@ -643,7 +643,7 @@ async fn try_sidecar_execution(
                     stderr: String::new(),
                     exit_code: 0,
                     timed_out: false, // we handled it gracefully, not a hard timeout
-                    duration_ms: (timeout_secs * 1000) as u64,
+                    duration_ms: timeout_secs * 1000,
                 });
             }
         };

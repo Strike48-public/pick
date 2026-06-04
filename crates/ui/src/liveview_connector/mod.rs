@@ -56,7 +56,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use strike48_connector::ConnectorClient;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -189,7 +188,6 @@ pub struct LiveViewConnector {
     pub(crate) workspace_path: Option<PathBuf>,
     pub(crate) ws_connections: Arc<DashMap<String, WsConnectionState>>,
     /// SDK client for invoke_capability (artifact uploads, etc). Set when connected.
-    pub(crate) connector_client: Arc<RwLock<Option<ConnectorClient>>>,
     pub(crate) event_tx: broadcast::Sender<ConnectorEvent>,
     pub(crate) shutdown: Arc<AtomicBool>,
     pub(crate) liveview_handle: Option<LiveViewHandle>,
@@ -233,7 +231,6 @@ impl LiveViewConnector {
             tools: tools_arc,
             workspace_path,
             ws_connections: Arc::new(DashMap::new()),
-            connector_client: Arc::new(RwLock::new(None)),
             event_tx,
             shutdown: Arc::new(AtomicBool::new(false)),
             liveview_handle: None,
@@ -705,13 +702,17 @@ impl LiveViewConnector {
             instance_id: self.config.instance_id.clone(),
             aggression_level: self.config.aggression_level,
             ipc_addr: ipc_addr.clone(),
-            connector_client: self.connector_client.clone(),
+            runner: Arc::new(RwLock::new(None)),
             matrix_api_url: self.derive_matrix_api_url(),
         });
 
         // Create the ConnectorRunner — it manages connection lifecycle, auth,
         // registration, keepalive, OTT exchange, and reconnection.
-        let runner = ConnectorRunner::new(sdk_config, pick_connector.clone());
+        let runner = Arc::new(ConnectorRunner::new(sdk_config, pick_connector.clone()));
+
+        // Give the PickConnector a reference to the runner so execute_with_context
+        // can call invoke_capability for artifact uploads.
+        *pick_connector.runner.write().await = Some(runner.clone());
 
         // Get shutdown handle so we can stop the runner from our shutdown method
         let shutdown_handle = runner.shutdown_handle();
