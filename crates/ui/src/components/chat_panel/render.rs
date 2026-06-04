@@ -146,7 +146,7 @@ fn render_tool_call(tc: &ToolCallInfo, expanded_tools: &mut Signal<Vec<String>>)
     };
 
     rsx! {
-        div { class: "chat-tool-call",
+        div { class: "chat-tool-call", style: "margin-bottom: 8px; border-bottom: 1px solid #21262d; padding-bottom: 8px;",
             div {
                 class: "chat-tool-header",
                 onclick: {
