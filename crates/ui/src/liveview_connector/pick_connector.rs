@@ -137,15 +137,21 @@ impl BaseConnector for PickConnector {
         metadata.insert("app_manifest".to_string(), manifest_json);
         metadata.insert("timeout_ms".to_string(), "300000".to_string());
 
-        let tools = self.tools.blocking_read();
-        let tool_names: Vec<String> = tools.names().iter().map(|s| s.to_string()).collect();
-        metadata.insert("tool_names".to_string(), tool_names.join(","));
+        if let Some(tools) = self.tools.try_read().ok() {
+            let tool_names: Vec<String> = tools.names().iter().map(|s| s.to_string()).collect();
+            metadata.insert("tool_names".to_string(), tool_names.join(","));
+        }
 
         metadata
     }
 
     fn capabilities(&self) -> Vec<TaskTypeSchema> {
-        let tools = self.tools.blocking_read();
+        // These sync callbacks are called from within the tokio runtime so we
+        // cannot use blocking_read(). try_read() is acceptable because the tools
+        // registry is written once at startup and never mutated during execution.
+        let Some(tools) = self.tools.try_read().ok() else {
+            return Vec::new();
+        };
         tools
             .schemas()
             .iter()
