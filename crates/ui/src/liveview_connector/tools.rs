@@ -7,7 +7,10 @@ use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Perform an HTTP GET over the IPC transport, returning (status, content_type, body).
-pub(crate) async fn ipc_http_get(addr: &IpcAddr, path: &str) -> Result<(u16, String, Vec<u8>), String> {
+pub(crate) async fn ipc_http_get(
+    addr: &IpcAddr,
+    path: &str,
+) -> Result<(u16, String, Vec<u8>), String> {
     let mut stream = IpcStream::connect(addr)
         .await
         .map_err(|e| format!("IPC connect to {}: {}", addr, e))?;
@@ -121,7 +124,6 @@ fn log_execute_request_context(
         );
     }
 }
-
 
 /// Extract engagement_id from the execute request context.
 /// Checks both a top-level key and the nested agent_context JSON.
@@ -354,7 +356,6 @@ pub(crate) fn extract_engagement_id_pub(context: &HashMap<String, String>) -> Op
     extract_engagement_id(context)
 }
 
-
 /// Public wrapper for `inject_upload_status`.
 pub(crate) fn inject_upload_status_pub(result_json: &mut Value, status: &UploadStatus) {
     inject_upload_status(result_json, status);
@@ -461,7 +462,6 @@ mod tests {
         let ctx = HashMap::new();
         assert_eq!(extract_engagement_id(&ctx), None);
     }
-
 
     #[test]
     fn upload_status_serializes_with_expected_keys() {

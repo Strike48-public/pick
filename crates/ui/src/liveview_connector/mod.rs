@@ -747,9 +747,7 @@ impl LiveViewConnector {
         tokio::spawn(async move {
             // Give the runner time to connect and register
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-            let _ = event_tx_clone.send(ConnectorEvent::StatusChanged(
-                ConnectorStatus::Registered,
-            ));
+            let _ = event_tx_clone.send(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
         });
 
         // Run the connector — this blocks until shutdown or non-recoverable error

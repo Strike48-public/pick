@@ -23,8 +23,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use strike48_connector::{
     AppManifest, AppPageRequest, AppPageResponse, BaseConnector, BodyEncoding, ConnectorBehavior,
-    ConnectorHandle, NavigationConfig, PayloadEncoding, TaskTypeSchema,
-    WsCloseRequest, WsFrame, WsFrameType, WsOpenRequest,
+    ConnectorHandle, NavigationConfig, PayloadEncoding, TaskTypeSchema, WsCloseRequest, WsFrame,
+    WsFrameType, WsOpenRequest,
 };
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -137,7 +137,7 @@ impl BaseConnector for PickConnector {
         metadata.insert("app_manifest".to_string(), manifest_json);
         metadata.insert("timeout_ms".to_string(), "300000".to_string());
 
-        if let Some(tools) = self.tools.try_read().ok() {
+        if let Ok(tools) = self.tools.try_read() {
             let tool_names: Vec<String> = tools.names().iter().map(|s| s.to_string()).collect();
             metadata.insert("tool_names".to_string(), tool_names.join(","));
         }
@@ -149,7 +149,7 @@ impl BaseConnector for PickConnector {
         // These sync callbacks are called from within the tokio runtime so we
         // cannot use blocking_read(). try_read() is acceptable because the tools
         // registry is written once at startup and never mutated during execution.
-        let Some(tools) = self.tools.try_read().ok() else {
+        let Ok(tools) = self.tools.try_read() else {
             return Vec::new();
         };
         tools
@@ -246,10 +246,7 @@ impl BaseConnector for PickConnector {
                 // Populate metadata (instance_id, request_id, tool_call_id)
                 // We don't have a request_id from the SDK's perspective here
                 // (the runner handles it), but we can extract from context.
-                let request_id = context
-                    .get("request_id")
-                    .cloned()
-                    .unwrap_or_default();
+                let request_id = context.get("request_id").cloned().unwrap_or_default();
                 ctx.metadata
                     .insert("instance_id".to_string(), self.instance_id.clone());
                 ctx.metadata
@@ -308,10 +305,8 @@ impl BaseConnector for PickConnector {
                     if let Some(engagement_id) = tools::extract_engagement_id_pub(context) {
                         let runner_guard = self.runner.read().await;
                         if let Some(ref runner) = *runner_guard {
-                            let session_token = context
-                                .get("session_token")
-                                .cloned()
-                                .unwrap_or_default();
+                            let session_token =
+                                context.get("session_token").cloned().unwrap_or_default();
                             let artifacts =
                                 result.data.get("artifacts").cloned().unwrap_or_default();
                             let ws_path = self
@@ -330,9 +325,7 @@ impl BaseConnector for PickConnector {
                                 .await,
                             )
                         } else {
-                            tracing::warn!(
-                                "[strikekit] runner not available for artifact upload"
-                            );
+                            tracing::warn!("[strikekit] runner not available for artifact upload");
                             None
                         }
                     } else {
@@ -393,8 +386,7 @@ impl BaseConnector for PickConnector {
 
                         // Initialize Matrix HTTP client
                         if !api_url.is_empty() {
-                            let mut client =
-                                pentest_core::matrix::MatrixChatClient::new(&api_url);
+                            let mut client = pentest_core::matrix::MatrixChatClient::new(&api_url);
                             client.set_auth_token(token);
                             *self.matrix_client.write().await = Some(client);
                             tracing::info!("Matrix HTTP client initialized");
@@ -489,10 +481,9 @@ impl BaseConnector for PickConnector {
                                             WsFrameType::Text,
                                             BASE64.encode(text.as_bytes()).into_bytes(),
                                         ),
-                                        WsMessage::Binary(data) => (
-                                            WsFrameType::Binary,
-                                            BASE64.encode(&data).into_bytes(),
-                                        ),
+                                        WsMessage::Binary(data) => {
+                                            (WsFrameType::Binary, BASE64.encode(&data).into_bytes())
+                                        }
                                         WsMessage::Ping(data) => {
                                             (WsFrameType::Ping, BASE64.encode(&data).into_bytes())
                                         }
@@ -500,10 +491,7 @@ impl BaseConnector for PickConnector {
                                             (WsFrameType::Pong, BASE64.encode(&data).into_bytes())
                                         }
                                         WsMessage::Close(_) => {
-                                            tracing::info!(
-                                                "Backend WS closed: {}",
-                                                conn_id_read
-                                            );
+                                            tracing::info!("Backend WS closed: {}", conn_id_read);
                                             break;
                                         }
                                         WsMessage::Frame(_) => continue,
@@ -513,10 +501,7 @@ impl BaseConnector for PickConnector {
                                         .send_ws_frame(&conn_id_read, frame_type, data)
                                         .await
                                     {
-                                        tracing::error!(
-                                            "Error sending frame to platform: {}",
-                                            e
-                                        );
+                                        tracing::error!("Error sending frame to platform: {}", e);
                                         break;
                                     }
                                 }

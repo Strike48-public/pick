@@ -110,7 +110,11 @@ fn webwright_display_name(args: &Option<String>) -> String {
                     t.to_string()
                 }
             })
-            .or_else(|| v.get("start_url").and_then(|u| u.as_str()).map(|s| s.to_string()))
+            .or_else(|| {
+                v.get("start_url")
+                    .and_then(|u| u.as_str())
+                    .map(|s| s.to_string())
+            })
             .unwrap_or_default()
     };
     if summary.is_empty() {
