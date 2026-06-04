@@ -44,7 +44,7 @@ pub(crate) struct PickConnector {
     pub matrix_client: Arc<RwLock<Option<pentest_core::matrix::MatrixChatClient>>>,
     pub connector_name: String,
     pub instance_id: String,
-    pub aggression_level: pentest_core::aggression::AggressionLevel,
+    pub aggression_level: Arc<RwLock<pentest_core::aggression::AggressionLevel>>,
     /// IPC address for the local LiveView server (set after start_liveview_server)
     pub ipc_addr: Arc<RwLock<Option<IpcAddr>>>,
     /// Reference to the ConnectorRunner for invoke_capability calls (artifact uploads).
@@ -137,41 +137,32 @@ impl BaseConnector for PickConnector {
         metadata.insert("app_manifest".to_string(), manifest_json);
         metadata.insert("timeout_ms".to_string(), "300000".to_string());
 
-        // tool_names for legacy compatibility
-        let tools_handle = self.tools.try_read();
-        if let Ok(tools) = tools_handle {
-            let tool_names: Vec<String> = tools.names().iter().map(|s| s.to_string()).collect();
-            metadata.insert("tool_names".to_string(), tool_names.join(","));
-        }
+        let tools = self.tools.blocking_read();
+        let tool_names: Vec<String> = tools.names().iter().map(|s| s.to_string()).collect();
+        metadata.insert("tool_names".to_string(), tool_names.join(","));
 
         metadata
     }
 
     fn capabilities(&self) -> Vec<TaskTypeSchema> {
-        // Build TaskTypeSchema from tool registry schemas
-        let tools_handle = self.tools.try_read();
-        match tools_handle {
-            Ok(tools) => {
-                tools
-                    .schemas()
-                    .iter()
-                    .map(|schema| {
-                        let json_schema = schema.to_json_schema();
-                        TaskTypeSchema {
-                            task_type_id: schema.name.clone(),
-                            name: schema.name.clone(),
-                            description: schema.description.clone(),
-                            category: String::new(),
-                            icon: String::new(),
-                            input_schema_json: serde_json::to_string(&json_schema)
-                                .unwrap_or_else(|_| "{}".to_string()),
-                            output_schema_json: "{}".to_string(),
-                        }
-                    })
-                    .collect()
-            }
-            Err(_) => Vec::new(),
-        }
+        let tools = self.tools.blocking_read();
+        tools
+            .schemas()
+            .iter()
+            .map(|schema| {
+                let json_schema = schema.to_json_schema();
+                TaskTypeSchema {
+                    task_type_id: schema.name.clone(),
+                    name: schema.name.clone(),
+                    description: schema.description.clone(),
+                    category: String::new(),
+                    icon: String::new(),
+                    input_schema_json: serde_json::to_string(&json_schema)
+                        .unwrap_or_else(|_| "{}".to_string()),
+                    output_schema_json: "{}".to_string(),
+                }
+            })
+            .collect()
     }
 
     fn supported_encodings(&self) -> Vec<PayloadEncoding> {
@@ -274,7 +265,7 @@ impl BaseConnector for PickConnector {
                 tools::log_execute_request_context_pub(&request_id, &tool_name, context);
 
                 // Set aggression level and agent name
-                ctx = ctx.with_aggression_level(self.aggression_level);
+                ctx = ctx.with_aggression_level(*self.aggression_level.read().await);
                 ctx = ctx.with_agent_name(self.connector_name.clone());
 
                 // Create Matrix client if API URL is available

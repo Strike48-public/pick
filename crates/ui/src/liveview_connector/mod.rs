@@ -618,8 +618,9 @@ impl LiveViewConnector {
         let llm_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.ok();
         if let Some(listener) = llm_listener {
             let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-            // Store port so webwright tool can read it
-            std::env::set_var("PICK_LLM_PROXY_PORT", port.to_string());
+            // SAFETY: Called once at startup before any tool execution begins.
+            // The webwright tool reads this via std::env::var to discover the proxy port.
+            unsafe { std::env::set_var("PICK_LLM_PROXY_PORT", port.to_string()) };
             tracing::info!("LLM proxy listening on http://127.0.0.1:{}", port);
             tokio::spawn(async move {
                 if let Err(e) = axum::serve(listener, llm_proxy_router).await {
@@ -700,7 +701,7 @@ impl LiveViewConnector {
             matrix_client: self.matrix_client.clone(),
             connector_name: self.config.connector_name.clone(),
             instance_id: self.config.instance_id.clone(),
-            aggression_level: self.config.aggression_level,
+            aggression_level: Arc::new(RwLock::new(self.config.aggression_level)),
             ipc_addr: ipc_addr.clone(),
             runner: Arc::new(RwLock::new(None)),
             matrix_api_url: self.derive_matrix_api_url(),
