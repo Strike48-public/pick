@@ -6,6 +6,8 @@ use pentest_core::config::ShellMode;
 use pentest_core::error::{Error, Result};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// An interactive PTY shell session.
@@ -183,10 +185,18 @@ impl PtyShell {
                 Self::build_bwrap_cmd(config, cwd)
             }
             SandboxBackend::Proot => {
-                tracing::info!("Building proot command for PTY shell");
                 let proot_path = ProotExecutor::get_proot_path(config)
                     .await
                     .map_err(|e| Error::ToolExecution(format!("Proot binary not found: {e}")))?;
+                let is_executable = std::fs::metadata(&proot_path)
+                    .map(|m| m.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false);
+                tracing::info!(
+                    "[PtyShell] proot binary: path={} exists={} executable={}",
+                    proot_path.display(),
+                    proot_path.exists(),
+                    is_executable,
+                );
                 Self::build_proot_cmd(config, &proot_path, cwd)
             }
             SandboxBackend::Wsl => {
@@ -199,10 +209,14 @@ impl PtyShell {
             }
         };
 
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| Error::ToolExecution(format!("Failed to spawn sandboxed shell: {e}")))?;
+        let child = pair.slave.spawn_command(cmd).map_err(|e| {
+            tracing::error!(
+                "[PtyShell::spawn_sandboxed] spawn_command failed: {} (backend={:?})",
+                e,
+                backend,
+            );
+            Error::ToolExecution(format!("Failed to spawn sandboxed shell: {e}"))
+        })?;
 
         tracing::info!("Sandboxed shell spawned successfully");
 
