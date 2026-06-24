@@ -224,10 +224,9 @@ Host is up.
     async fn test_discover_network_integration() {
         let result = discover_network().await;
         if let Ok(map) = result {
-            assert_eq!(map.gateway.ip.is_unspecified(), false);
-            assert_eq!(map.your_device.ip.is_unspecified(), false);
-            // Should discover at least the gateway and local device
-            assert!(map.other_devices.len() >= 0);
+            // Gateway and local device must resolve to real (non-0.0.0.0) IPs.
+            assert!(!map.gateway.ip.is_unspecified());
+            assert!(!map.your_device.ip.is_unspecified());
         }
     }
 }

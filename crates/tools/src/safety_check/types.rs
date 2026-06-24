@@ -4,13 +4,22 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
 /// Overall safety status of the network environment.
+///
+/// Four levels, each with a distinct meaning and intended color. Every verdict
+/// is always accompanied by the per-check reasons that produced it - the status
+/// is the headline, never the whole story.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SafetyStatus {
-    /// All checks passed, environment appears safe.
+    /// Everything checked out and was fully verified (green).
     Safe,
-    /// Some warnings detected, proceed with caution.
+    /// Nothing bad found, but at least one thing could not be fully verified
+    /// yet - e.g. gateway reputation enrichment is still pending (lime).
+    MostlySafe,
+    /// Normal public-network unknowns; take basic precautions like a VPN
+    /// (amber). Triggered by warnings or checks that could not run.
     Caution,
-    /// Critical issues detected, environment is unsafe.
+    /// Active threat detected; do not do sensitive work and consider
+    /// disconnecting (red).
     Unsafe,
 }
 
@@ -19,6 +28,9 @@ pub enum SafetyStatus {
 pub enum CheckStatus {
     /// Check passed successfully.
     Passed,
+    /// Check ran cleanly locally, but a remote verification step is still
+    /// pending (e.g. IP reputation lookup the agent must perform).
+    NeedsEnrichment,
     /// Check detected potential issues.
     Warning,
     /// Check failed, critical issue detected.
@@ -139,6 +151,7 @@ impl std::fmt::Display for SafetyStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SafetyStatus::Safe => write!(f, "SAFE"),
+            SafetyStatus::MostlySafe => write!(f, "MOSTLY SAFE"),
             SafetyStatus::Caution => write!(f, "CAUTION"),
             SafetyStatus::Unsafe => write!(f, "UNSAFE"),
         }
@@ -149,6 +162,7 @@ impl std::fmt::Display for CheckStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CheckStatus::Passed => write!(f, "PASS"),
+            CheckStatus::NeedsEnrichment => write!(f, "PENDING"),
             CheckStatus::Warning => write!(f, "WARN"),
             CheckStatus::Failed => write!(f, "FAIL"),
             CheckStatus::Unknown => write!(f, "UNKNOWN"),

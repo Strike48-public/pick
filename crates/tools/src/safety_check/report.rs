@@ -54,9 +54,9 @@ pub fn generate_recommendations(
                     action: None,
                 });
             }
-            CheckStatus::Passed => {
-                // No recommendation needed for passed checks
-            }
+            // DNS integrity has no remote-enrichment step; nothing to advise on
+            // a pass or a (not-produced) pending state.
+            CheckStatus::Passed | CheckStatus::NeedsEnrichment => {}
         }
     }
 
@@ -89,6 +89,14 @@ pub fn generate_recommendations(
                     title: "Router Threat Score Elevated".to_string(),
                     description: "The network gateway has a medium threat score. May be a public hotspot with previous abuse reports.".to_string(),
                     action: Some("Use VPN for sensitive operations.".to_string()),
+                });
+            }
+            CheckStatus::NeedsEnrichment => {
+                recommendations.push(Recommendation {
+                    priority: Priority::Low,
+                    title: "Gateway/DNS Reputation Pending".to_string(),
+                    description: "The public gateway and/or DNS resolver IPs have not yet been checked against threat-intelligence feeds. Nothing bad was found locally, but reputation is unconfirmed.".to_string(),
+                    action: Some("Reputation lookup (abuseipdb_check, virustotal) will complete this verification.".to_string()),
                 });
             }
             CheckStatus::Unknown => {

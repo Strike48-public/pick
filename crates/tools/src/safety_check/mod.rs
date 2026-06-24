@@ -128,20 +128,36 @@ pub async fn run_safety_check() -> anyhow::Result<SafetyCheckResult> {
 }
 
 /// Determine overall safety status based on individual check results.
+///
+/// Precedence (worst wins):
+/// - Unsafe: any failed check (Critical/High severity = active threat).
+/// - Caution: any warning, any check that could not run (Unknown), or a
+///   lower-severity failure - normal public-network unknowns.
+/// - Mostly Safe: nothing wrong, but a remote verification is still pending
+///   (e.g. gateway reputation enrichment the agent will perform).
+/// - Safe: everything passed and was fully verified.
 fn determine_overall_status(checks: &[CheckResult]) -> SafetyStatus {
-    let has_critical_or_high_failure = checks.iter().any(|c| {
+    let has_serious_failure = checks.iter().any(|c| {
         c.status == CheckStatus::Failed
             && (c.severity == Severity::Critical || c.severity == Severity::High)
     });
+
+    let has_minor_failure = checks.iter().any(|c| c.status == CheckStatus::Failed);
 
     let has_warning = checks.iter().any(|c| c.status == CheckStatus::Warning);
 
     let has_unknown = checks.iter().any(|c| c.status == CheckStatus::Unknown);
 
-    if has_critical_or_high_failure {
+    let has_pending = checks
+        .iter()
+        .any(|c| c.status == CheckStatus::NeedsEnrichment);
+
+    if has_serious_failure {
         SafetyStatus::Unsafe
-    } else if has_warning || has_unknown {
+    } else if has_minor_failure || has_warning || has_unknown {
         SafetyStatus::Caution
+    } else if has_pending {
+        SafetyStatus::MostlySafe
     } else {
         SafetyStatus::Safe
     }
@@ -209,5 +225,60 @@ mod tests {
         ];
 
         assert_eq!(determine_overall_status(&checks), SafetyStatus::Unsafe);
+    }
+
+    #[test]
+    fn test_determine_overall_status_mostly_safe_on_pending() {
+        // All checks clean, but one is pending remote enrichment -> Mostly Safe.
+        let checks = vec![
+            CheckResult {
+                name: "DNS Integrity".to_string(),
+                status: CheckStatus::Passed,
+                details: "OK".to_string(),
+                severity: Severity::Info,
+            },
+            CheckResult {
+                name: "Router Threat Intelligence".to_string(),
+                status: CheckStatus::NeedsEnrichment,
+                details: "Public IP pending reputation lookup".to_string(),
+                severity: Severity::Low,
+            },
+        ];
+
+        assert_eq!(determine_overall_status(&checks), SafetyStatus::MostlySafe);
+    }
+
+    #[test]
+    fn test_pending_does_not_override_warning() {
+        // A real warning outranks a pending enrichment -> Caution, not Mostly Safe.
+        let checks = vec![
+            CheckResult {
+                name: "Router Threat Intelligence".to_string(),
+                status: CheckStatus::NeedsEnrichment,
+                details: "pending".to_string(),
+                severity: Severity::Low,
+            },
+            CheckResult {
+                name: "DNS Integrity".to_string(),
+                status: CheckStatus::Warning,
+                details: "partial".to_string(),
+                severity: Severity::Medium,
+            },
+        ];
+
+        assert_eq!(determine_overall_status(&checks), SafetyStatus::Caution);
+    }
+
+    #[test]
+    fn test_minor_failure_is_caution_not_safe() {
+        // A low-severity failure must not fall through to Safe.
+        let checks = vec![CheckResult {
+            name: "Test".to_string(),
+            status: CheckStatus::Failed,
+            details: "minor".to_string(),
+            severity: Severity::Low,
+        }];
+
+        assert_eq!(determine_overall_status(&checks), SafetyStatus::Caution);
     }
 }
