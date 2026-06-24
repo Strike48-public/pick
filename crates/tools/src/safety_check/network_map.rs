@@ -23,15 +23,17 @@ struct ArpInfo {
     hostname: Option<String>,
 }
 
-/// Discover devices on the local network using ARP scanning.
+/// Discover devices on the local network and enrich them.
 ///
-/// Uses nmap with `-sn` flag (ping scan, no port scan) to quickly discover
-/// active hosts on the local subnet, then enriches each host with MAC address
-/// and hostname from the system ARP table and a vendor name via OUI lookup.
+/// Merges two host sources: an nmap `-sn` ping sweep of the local /24 (fast,
+/// finds hosts not yet contacted) and the system ARP/neighbor table (instant,
+/// cross-subnet, carries MACs). Each host is then enriched with MAC address and
+/// hostname from the ARP table and a vendor name via OUI lookup. nmap is
+/// best-effort - if it is unavailable, the ARP table alone is used.
 ///
 /// # Errors
 ///
-/// Returns error if nmap is not available or if network discovery completely fails.
+/// Returns error only if the gateway/local interface cannot be determined.
 pub async fn discover_network() -> anyhow::Result<NetworkMap> {
     tracing::debug!("Starting network device discovery");
 
@@ -41,27 +43,46 @@ pub async fn discover_network() -> anyhow::Result<NetworkMap> {
 
     tracing::info!("Discovered: gateway={}, local={}", gateway_ip, local_ip);
 
-    // Determine subnet to scan
-    let subnet = determine_subnet(&local_ip)?;
-
-    tracing::info!("Scanning subnet: {}", subnet);
-
-    // Run nmap ARP scan
-    let discovered_ips = run_nmap_arp_scan(&subnet).await?;
-
-    tracing::info!("Discovered {} hosts", discovered_ips.len());
-
-    // Best-effort ARP enrichment: MAC + hostname per IP. A failure here just
-    // means a less-detailed map, never a failed scan.
+    // Enrichment source: MAC + hostname per IP from the system ARP/neighbor
+    // table. This doubles as a discovery source - the kernel already knows
+    // every neighbor it has talked to, across subnets, instantly and with
+    // MACs. A failure here just yields a less-detailed map, never a failure.
     let arp_info = collect_arp_info().await;
+
+    // Discovery source 1: an nmap ping sweep of the local /24. Fast and finds
+    // hosts we have not yet talked to. Best-effort - on a larger network this
+    // only covers our own /24, which is why we also merge the ARP table.
+    let subnet = determine_subnet(&local_ip)?;
+    let nmap_ips = match run_nmap_arp_scan(&subnet).await {
+        Ok(ips) => {
+            tracing::info!("nmap discovered {} hosts in {}", ips.len(), subnet);
+            ips
+        }
+        Err(e) => {
+            // Not fatal: the ARP neighbor table alone is a valid host source.
+            tracing::warn!("nmap sweep unavailable ({}); relying on ARP table", e);
+            Vec::new()
+        }
+    };
+
+    // Merge both sources into a deduplicated host set. ARP contributes
+    // cross-subnet neighbors (e.g. the gateway in a /16) that a /24 sweep
+    // would miss.
+    let mut host_ips: std::collections::BTreeSet<IpAddr> = nmap_ips.into_iter().collect();
+    host_ips.extend(arp_info.keys().copied());
+
+    tracing::info!(
+        "Total unique hosts after ARP+nmap merge: {}",
+        host_ips.len()
+    );
 
     // Build device list, enriching gateway and local device too.
     let gateway = build_device(gateway_ip, &arp_info);
     let your_device = build_device(local_ip, &arp_info);
 
     let mut other_devices = Vec::new();
-    for ip in discovered_ips {
-        // Skip gateway and local IP
+    for ip in host_ips {
+        // Skip gateway and local IP (rendered separately).
         if ip == gateway_ip || ip == local_ip {
             continue;
         }

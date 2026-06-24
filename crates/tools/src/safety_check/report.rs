@@ -211,17 +211,20 @@ pub fn format_report(result: &super::types::SafetyCheckResult) -> String {
             map.other_devices.len()
         ));
 
-        // Device inventory table - only worth showing if at least one device
-        // was enriched with a hostname or vendor (otherwise it is just IPs,
-        // which the diagram already conveys).
+        // Device inventory table - shown when at least one device carries any
+        // identifying detail (MAC, hostname, or vendor). MAC is frequently the
+        // only available signal since modern phones randomize their address,
+        // so it alone is enough to justify the table. Capped so a busy network
+        // does not produce a wall of rows.
+        const MAX_TABLE_ROWS: usize = 15;
         let any_enriched = map
             .other_devices
             .iter()
-            .any(|d| d.hostname.is_some() || d.vendor.is_some());
+            .any(|d| d.mac.is_some() || d.hostname.is_some() || d.vendor.is_some());
         if any_enriched {
             output.push_str("| Device | IP | Vendor | MAC |\n");
             output.push_str("|--------|----|--------|----|\n");
-            for dev in &map.other_devices {
+            for dev in map.other_devices.iter().take(MAX_TABLE_ROWS) {
                 output.push_str(&format!(
                     "| {} | `{}` | {} | {} |\n",
                     dev.hostname.as_deref().unwrap_or("-"),
@@ -231,6 +234,13 @@ pub fn format_report(result: &super::types::SafetyCheckResult) -> String {
                 ));
             }
             output.push('\n');
+            let total = map.other_devices.len();
+            if total > MAX_TABLE_ROWS {
+                output.push_str(&format!(
+                    "*Showing {} of {} devices.*\n\n",
+                    MAX_TABLE_ROWS, total
+                ));
+            }
         }
     }
 
@@ -274,7 +284,10 @@ fn status_gloss(status: super::types::SafetyStatus) -> &'static str {
     use super::types::SafetyStatus::*;
     match status {
         Safe => "Everything we checked looked good and was verified. This network appears safe to use.",
-        MostlySafe => "Nothing harmful was found, but one check (gateway/DNS reputation) is still being verified. Likely safe - see details below.",
+        // Cause-neutral on purpose: MostlySafe can come from pending reputation
+        // enrichment OR from a large/shared network. The specific reason is
+        // surfaced in the recommendations below, so this stays general.
+        MostlySafe => "Nothing harmful was found, but this network could not be fully verified - likely a busy or shared network. Probably fine; see the notes below before doing anything sensitive.",
         Caution => "This network has the normal unknowns of a public network. Take basic precautions like using a VPN and avoiding sensitive logins.",
         Unsafe => "We found an active problem with this network. Avoid sensitive activity (banking, passwords) and consider disconnecting or switching to a mobile hotspot.",
     }
@@ -345,17 +358,18 @@ fn render_network_mermaid(map: &super::types::NetworkMap) -> String {
 /// own line inside the node. Any double-quotes are stripped to avoid breaking
 /// the Mermaid label syntax.
 fn device_label(dev: &super::types::Device) -> String {
+    // Prefer the most human-friendly identifier: hostname, then vendor, then
+    // MAC, then nothing (bare IP). MAC is included because randomized phone
+    // MACs often defeat vendor lookup, leaving the MAC as the only label.
     let primary = dev
         .hostname
         .clone()
         .or_else(|| dev.vendor.clone())
-        .unwrap_or_else(|| dev.ip.to_string());
+        .or_else(|| dev.mac.clone());
 
-    let label = if primary == dev.ip.to_string() {
-        // Avoid "IP<br/>IP" duplication when nothing was enriched.
-        primary
-    } else {
-        format!("{}<br/>{}", primary, dev.ip)
+    let label = match primary {
+        Some(name) => format!("{}<br/>{}", name, dev.ip),
+        None => dev.ip.to_string(),
     };
 
     label.replace('"', "")

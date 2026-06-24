@@ -113,8 +113,10 @@ pub async fn run_safety_check() -> anyhow::Result<SafetyCheckResult> {
         }
     };
 
-    // Determine overall status based on check results
-    let status = determine_overall_status(&checks);
+    // Determine overall status based on check results, then cap it for the
+    // realities of a large/shared network (busy networks never read a
+    // confident green "Safe").
+    let status = cap_for_network_size(determine_overall_status(&checks), &network_map);
 
     // Generate recommendations based on findings
     let recommendations = report::generate_recommendations(&checks, &network_map);
@@ -164,9 +166,87 @@ fn determine_overall_status(checks: &[CheckResult]) -> SafetyStatus {
     }
 }
 
+/// Device count above which a network is treated as "busy" - large enough that
+/// a confident green "Safe" would be misleading even when nothing is wrong.
+const BUSY_NETWORK_DEVICE_THRESHOLD: usize = 20;
+
+/// Cap a verdict for the realities of a large or shared network.
+///
+/// A network with many devices, or one spanning multiple subnets, is very
+/// likely a public/corporate network. Nothing may be wrong, but a non-technical
+/// user should not see a confident green "Safe" there - so we cap a `Safe`
+/// result down to `MostlySafe` (with the reason surfaced via recommendations).
+/// Worse verdicts (Caution/Unsafe) are never softened.
+fn cap_for_network_size(status: SafetyStatus, network_map: &Option<NetworkMap>) -> SafetyStatus {
+    // Only ever downgrade a clean "Safe"; never touch worse verdicts.
+    if status != SafetyStatus::Safe {
+        return status;
+    }
+
+    let Some(map) = network_map else {
+        return status;
+    };
+
+    let is_busy = map.other_devices.len() >= BUSY_NETWORK_DEVICE_THRESHOLD;
+    let is_multi_subnet = spans_multiple_subnets(map);
+
+    if is_busy || is_multi_subnet {
+        tracing::info!(
+            "Capping Safe -> MostlySafe (devices={}, multi_subnet={})",
+            map.other_devices.len(),
+            is_multi_subnet
+        );
+        SafetyStatus::MostlySafe
+    } else {
+        status
+    }
+}
+
+/// True if discovered devices span more than one /24, a strong signal of a
+/// larger managed network rather than a small home/cafe LAN.
+fn spans_multiple_subnets(map: &NetworkMap) -> bool {
+    use std::net::IpAddr;
+
+    fn slash24(ip: &IpAddr) -> Option<[u8; 3]> {
+        match ip {
+            IpAddr::V4(v4) => {
+                let o = v4.octets();
+                Some([o[0], o[1], o[2]])
+            }
+            // IPv6 is not part of the /24 heuristic; ignore for this signal.
+            IpAddr::V6(_) => None,
+        }
+    }
+
+    let mut seen: Option<[u8; 3]> = None;
+    for dev in &map.other_devices {
+        if let Some(prefix) = slash24(&dev.ip) {
+            match seen {
+                Some(p) if p != prefix => return true,
+                Some(_) => {}
+                None => seen = Some(prefix),
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Manual smoke test: runs the real safety check against the live network
+    /// and prints the actual Markdown report. Ignored by default (needs network
+    /// + nmap). Run with:
+    ///   cargo test -p pentest-tools safety_check::tests::live_report -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn live_report() {
+        let result = run_safety_check().await.expect("safety check should run");
+        println!("\n===== LIVE SAFETY CHECK REPORT =====\n");
+        println!("{}", report::format_report(&result));
+        println!("\n===== END =====\n");
+    }
 
     #[test]
     fn test_determine_overall_status_safe() {
@@ -281,5 +361,79 @@ mod tests {
         }];
 
         assert_eq!(determine_overall_status(&checks), SafetyStatus::Caution);
+    }
+
+    fn device_at(ip: &str) -> Device {
+        Device {
+            ip: ip.parse().unwrap(),
+            mac: None,
+            hostname: None,
+            vendor: None,
+            open_ports: Vec::new(),
+            threat_level: ThreatLevel::Safe,
+        }
+    }
+
+    fn map_with(devices: Vec<Device>) -> NetworkMap {
+        NetworkMap {
+            gateway: device_at("192.168.1.1"),
+            your_device: device_at("192.168.1.100"),
+            other_devices: devices,
+        }
+    }
+
+    #[test]
+    fn test_small_single_subnet_stays_safe() {
+        // A handful of same-subnet devices is a normal home LAN - stays Safe.
+        let map = Some(map_with(vec![
+            device_at("192.168.1.2"),
+            device_at("192.168.1.3"),
+        ]));
+        assert_eq!(
+            cap_for_network_size(SafetyStatus::Safe, &map),
+            SafetyStatus::Safe
+        );
+    }
+
+    #[test]
+    fn test_busy_network_caps_safe_to_mostly_safe() {
+        let devices: Vec<Device> = (0..25)
+            .map(|i| device_at(&format!("192.168.1.{}", 2 + i)))
+            .collect();
+        let map = Some(map_with(devices));
+        assert_eq!(
+            cap_for_network_size(SafetyStatus::Safe, &map),
+            SafetyStatus::MostlySafe
+        );
+    }
+
+    #[test]
+    fn test_multi_subnet_caps_safe_to_mostly_safe() {
+        // Only two devices, but on different /24s -> managed network -> capped.
+        let map = Some(map_with(vec![
+            device_at("172.16.26.10"),
+            device_at("172.16.3.11"),
+        ]));
+        assert_eq!(
+            cap_for_network_size(SafetyStatus::Safe, &map),
+            SafetyStatus::MostlySafe
+        );
+    }
+
+    #[test]
+    fn test_cap_never_softens_worse_verdicts() {
+        // A busy network must not soften Caution/Unsafe up to MostlySafe.
+        let devices: Vec<Device> = (0..30)
+            .map(|i| device_at(&format!("172.16.26.{}", 2 + i)))
+            .collect();
+        let map = Some(map_with(devices));
+        assert_eq!(
+            cap_for_network_size(SafetyStatus::Unsafe, &map),
+            SafetyStatus::Unsafe
+        );
+        assert_eq!(
+            cap_for_network_size(SafetyStatus::Caution, &map),
+            SafetyStatus::Caution
+        );
     }
 }
