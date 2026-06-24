@@ -165,85 +165,153 @@ pub fn generate_recommendations(
     recommendations
 }
 
-/// Format a safety check result as a human-readable report.
+/// Format a safety check result as a Markdown report for the chat panel.
+///
+/// Output is GitHub-flavored Markdown: a headline verdict with a plain-language
+/// gloss, a status table of every check, an embedded Mermaid network diagram,
+/// and prioritized recommendations. The verdict is always backed by its
+/// reasons - the status word is the headline, never the whole story.
 pub fn format_report(result: &super::types::SafetyCheckResult) -> String {
     let mut output = String::new();
 
-    // Header
-    output.push_str("=".repeat(60).as_str());
-    output.push('\n');
-    output.push_str("  NETWORK SAFETY CHECK REPORT\n");
-    output.push_str("=".repeat(60).as_str());
-    output.push('\n');
-    output.push('\n');
-
-    // Overall status
-    output.push_str(&format!("Overall Status: {}\n", result.status));
+    // Headline verdict with a one-line, non-technical gloss.
+    output.push_str("## Network Safety Check\n\n");
     output.push_str(&format!(
-        "Timestamp: {}\n",
-        result.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+        "### Verdict: {} {}\n\n",
+        status_indicator(result.status),
+        result.status
     ));
-    output.push('\n');
+    output.push_str(status_gloss(result.status));
+    output.push_str("\n\n");
 
-    // Individual checks
-    output.push_str("=".repeat(60).as_str());
-    output.push('\n');
-    output.push_str("CHECK RESULTS\n");
-    output.push_str("=".repeat(60).as_str());
-    output.push('\n');
-    output.push('\n');
-
+    // Check results as a scannable table.
+    output.push_str("### What we checked\n\n");
+    output.push_str("| Check | Result | Details |\n");
+    output.push_str("|-------|--------|--------|\n");
     for check in &result.checks {
-        output.push_str(&format!("[{}] {}\n", check.status, check.name));
-        output.push_str(&format!("  {}\n", check.details));
-        output.push('\n');
-    }
-
-    // Network map
-    if let Some(map) = &result.network_map {
-        output.push_str("=".repeat(60).as_str());
-        output.push('\n');
-        output.push_str("NETWORK MAP\n");
-        output.push_str("=".repeat(60).as_str());
-        output.push('\n');
-        output.push('\n');
-        output.push_str(&format!("Your Device: {}\n", map.your_device.ip));
-        output.push_str(&format!("Gateway: {}\n", map.gateway.ip));
         output.push_str(&format!(
-            "Other Devices: {} discovered\n",
+            "| {} | {} | {} |\n",
+            check.name,
+            check.status,
+            // Keep details single-line so the table cell stays intact.
+            check.details.replace('\n', " ")
+        ));
+    }
+    output.push('\n');
+
+    // Network map: a Mermaid diagram plus a quick textual summary.
+    if let Some(map) = &result.network_map {
+        output.push_str("### Network map\n\n");
+        output.push_str(&render_network_mermaid(map));
+        output.push('\n');
+        output.push_str(&format!(
+            "*Your device `{}` connects through gateway `{}`. {} other device(s) seen on this network.*\n\n",
+            map.your_device.ip,
+            map.gateway.ip,
             map.other_devices.len()
         ));
-        output.push('\n');
     }
 
-    // Recommendations
+    // Recommendations, already priority-sorted by the generator.
     if !result.recommendations.is_empty() {
-        output.push_str("=".repeat(60).as_str());
-        output.push('\n');
-        output.push_str("RECOMMENDATIONS\n");
-        output.push_str("=".repeat(60).as_str());
-        output.push('\n');
-        output.push('\n');
-
-        for (idx, rec) in result.recommendations.iter().enumerate() {
+        output.push_str("### Recommendations\n\n");
+        for rec in &result.recommendations {
             output.push_str(&format!(
-                "{}. {} [{:?}]\n",
-                idx + 1,
-                rec.title,
-                rec.priority
+                "- **{} ({:?})** - {}",
+                rec.title, rec.priority, rec.description
             ));
-            output.push_str(&format!("   {}\n", rec.description));
             if let Some(action) = &rec.action {
-                output.push_str(&format!("   Action: {}\n", action));
+                output.push_str(&format!(" _{}_", action));
             }
             output.push('\n');
         }
+        output.push('\n');
     }
 
-    output.push_str("=".repeat(60).as_str());
-    output.push('\n');
+    output.push_str(&format!(
+        "<sub>Checked {}</sub>\n",
+        result.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+    ));
 
     output
+}
+
+/// Short textual status indicator (no emoji per project output rules).
+fn status_indicator(status: super::types::SafetyStatus) -> &'static str {
+    use super::types::SafetyStatus::*;
+    match status {
+        Safe => "[OK]",
+        MostlySafe => "[OK~]",
+        Caution => "[!]",
+        Unsafe => "[X]",
+    }
+}
+
+/// Plain-language explanation of what the verdict means for the user.
+fn status_gloss(status: super::types::SafetyStatus) -> &'static str {
+    use super::types::SafetyStatus::*;
+    match status {
+        Safe => "Everything we checked looked good and was verified. This network appears safe to use.",
+        MostlySafe => "Nothing harmful was found, but one check (gateway/DNS reputation) is still being verified. Likely safe - see details below.",
+        Caution => "This network has the normal unknowns of a public network. Take basic precautions like using a VPN and avoiding sensitive logins.",
+        Unsafe => "We found an active problem with this network. Avoid sensitive activity (banking, passwords) and consider disconnecting or switching to a mobile hotspot.",
+    }
+}
+
+/// Render the discovered network as a Mermaid diagram.
+///
+/// Devices are colored by threat level so a malicious or suspicious host is
+/// visually obvious in the chat panel. Emitted inside a ```mermaid fence so it
+/// renders rather than showing as raw text.
+fn render_network_mermaid(map: &super::types::NetworkMap) -> String {
+    use super::types::ThreatLevel;
+
+    let mut m = String::from("```mermaid\ngraph TD\n");
+
+    // Core nodes.
+    m.push_str(&format!(
+        "    YOU[\"Your device<br/>{}\"]\n",
+        map.your_device.ip
+    ));
+    m.push_str(&format!(
+        "    GW[\"Gateway / Router<br/>{}\"]\n",
+        map.gateway.ip
+    ));
+    m.push_str("    YOU --> GW\n");
+
+    // Cap rendered devices so a busy coffee-shop network does not produce an
+    // unreadable diagram; summarize the remainder in a single node.
+    const MAX_RENDERED: usize = 12;
+    let total = map.other_devices.len();
+    for (i, dev) in map.other_devices.iter().take(MAX_RENDERED).enumerate() {
+        let label = dev.hostname.clone().unwrap_or_else(|| dev.ip.to_string());
+        m.push_str(&format!("    D{i}[\"{}<br/>{}\"]\n", label, dev.ip));
+        m.push_str(&format!("    GW --- D{i}\n"));
+        let cls = match dev.threat_level {
+            ThreatLevel::Malicious => Some("malicious"),
+            ThreatLevel::Suspicious => Some("suspicious"),
+            ThreatLevel::Safe => None,
+        };
+        if let Some(cls) = cls {
+            m.push_str(&format!("    class D{i} {cls}\n"));
+        }
+    }
+    if total > MAX_RENDERED {
+        m.push_str(&format!(
+            "    MORE[\"+{} more device(s)\"]\n    GW --- MORE\n",
+            total - MAX_RENDERED
+        ));
+    }
+
+    // Style: highlight your device and the gateway; threat classes for hosts.
+    m.push_str("    classDef you fill:#1e40af,stroke:#1e3a8a,color:#fff\n");
+    m.push_str("    classDef gw fill:#92400e,stroke:#78350f,color:#fff\n");
+    m.push_str("    classDef suspicious fill:#a16207,stroke:#854d0e,color:#fff\n");
+    m.push_str("    classDef malicious fill:#991b1b,stroke:#7f1d1d,color:#fff\n");
+    m.push_str("    class YOU you\n    class GW gw\n");
+    m.push_str("```\n");
+
+    m
 }
 
 #[cfg(test)]
@@ -312,5 +380,82 @@ mod tests {
         if recs.len() >= 2 {
             assert!(recs[0].priority as u8 <= recs[1].priority as u8);
         }
+    }
+
+    fn sample_device(ip: &str, threat: ThreatLevel) -> Device {
+        Device {
+            ip: ip.parse().unwrap(),
+            mac: None,
+            hostname: None,
+            vendor: None,
+            open_ports: Vec::new(),
+            threat_level: threat,
+        }
+    }
+
+    fn sample_result(status: SafetyStatus, map: Option<NetworkMap>) -> SafetyCheckResult {
+        SafetyCheckResult {
+            status,
+            checks: vec![CheckResult {
+                name: "DNS Integrity".to_string(),
+                status: CheckStatus::Passed,
+                details: "Validated 5 domains".to_string(),
+                severity: Severity::Info,
+            }],
+            network_map: map,
+            recommendations: generate_recommendations(&[], &None),
+            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn test_format_report_is_markdown_with_verdict() {
+        let report = format_report(&sample_result(SafetyStatus::MostlySafe, None));
+        assert!(report.contains("## Network Safety Check"));
+        assert!(report.contains("### Verdict"));
+        assert!(report.contains("MOSTLY SAFE"));
+        // Status table headers present.
+        assert!(report.contains("| Check | Result | Details |"));
+        // No legacy ASCII separator bars.
+        assert!(!report.contains("===================="));
+    }
+
+    #[test]
+    fn test_format_report_renders_mermaid_map() {
+        let map = NetworkMap {
+            gateway: sample_device("192.168.1.1", ThreatLevel::Safe),
+            your_device: sample_device("192.168.1.100", ThreatLevel::Safe),
+            other_devices: vec![
+                sample_device("192.168.1.50", ThreatLevel::Safe),
+                sample_device("192.168.1.66", ThreatLevel::Malicious),
+            ],
+        };
+        let report = format_report(&sample_result(SafetyStatus::Caution, Some(map)));
+        assert!(report.contains("```mermaid"));
+        assert!(report.contains("graph TD"));
+        // Your device and gateway nodes labeled with their IPs.
+        assert!(report.contains("192.168.1.100"));
+        assert!(report.contains("192.168.1.1"));
+        // The malicious host gets the malicious class.
+        assert!(report.contains("class D1 malicious"));
+    }
+
+    #[test]
+    fn test_mermaid_caps_large_networks() {
+        let mut others = Vec::new();
+        for i in 0..30 {
+            others.push(sample_device(
+                &format!("192.168.1.{}", 10 + i),
+                ThreatLevel::Safe,
+            ));
+        }
+        let map = NetworkMap {
+            gateway: sample_device("192.168.1.1", ThreatLevel::Safe),
+            your_device: sample_device("192.168.1.2", ThreatLevel::Safe),
+            other_devices: others,
+        };
+        let report = format_report(&sample_result(SafetyStatus::Caution, Some(map)));
+        // 30 devices, capped at 12 rendered -> a "+18 more" summary node.
+        assert!(report.contains("+18 more device(s)"));
     }
 }
