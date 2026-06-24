@@ -59,7 +59,7 @@ pub async fn check_router_threat_intel() -> anyhow::Result<CheckResult> {
 /// Get the default gateway IP address.
 async fn get_default_gateway() -> anyhow::Result<IpAddr> {
     // Use default-net crate to get gateway
-    let default_net = tokio::task::spawn_blocking(|| default_net::get_default_gateway())
+    let default_net = tokio::task::spawn_blocking(default_net::get_default_gateway)
         .await
         .context("Failed to spawn gateway detection task")?
         .map_err(|e| anyhow::anyhow!("Failed to detect default gateway: {}", e))?;

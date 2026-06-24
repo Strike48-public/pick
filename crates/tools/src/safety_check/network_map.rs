@@ -78,7 +78,7 @@ pub async fn discover_network() -> anyhow::Result<NetworkMap> {
 
 /// Get gateway and local IP address.
 async fn get_gateway_and_local_ip() -> anyhow::Result<(IpAddr, IpAddr)> {
-    let interface = tokio::task::spawn_blocking(|| default_net::get_default_interface())
+    let interface = tokio::task::spawn_blocking(default_net::get_default_interface)
         .await
         .context("Failed to spawn interface detection task")?
         .map_err(|e| anyhow::anyhow!("Failed to detect default network interface: {}", e))?;
