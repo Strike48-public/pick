@@ -210,6 +210,28 @@ pub fn format_report(result: &super::types::SafetyCheckResult) -> String {
             map.gateway.ip,
             map.other_devices.len()
         ));
+
+        // Device inventory table - only worth showing if at least one device
+        // was enriched with a hostname or vendor (otherwise it is just IPs,
+        // which the diagram already conveys).
+        let any_enriched = map
+            .other_devices
+            .iter()
+            .any(|d| d.hostname.is_some() || d.vendor.is_some());
+        if any_enriched {
+            output.push_str("| Device | IP | Vendor | MAC |\n");
+            output.push_str("|--------|----|--------|----|\n");
+            for dev in &map.other_devices {
+                output.push_str(&format!(
+                    "| {} | `{}` | {} | {} |\n",
+                    dev.hostname.as_deref().unwrap_or("-"),
+                    dev.ip,
+                    dev.vendor.as_deref().unwrap_or("-"),
+                    dev.mac.as_deref().unwrap_or("-"),
+                ));
+            }
+            output.push('\n');
+        }
     }
 
     // Recommendations, already priority-sorted by the generator.
@@ -268,6 +290,8 @@ fn render_network_mermaid(map: &super::types::NetworkMap) -> String {
 
     let mut m = String::from("```mermaid\ngraph TD\n");
 
+    // (helper `device_label` defined below)
+
     // Core nodes.
     m.push_str(&format!(
         "    YOU[\"Your device<br/>{}\"]\n",
@@ -284,8 +308,7 @@ fn render_network_mermaid(map: &super::types::NetworkMap) -> String {
     const MAX_RENDERED: usize = 12;
     let total = map.other_devices.len();
     for (i, dev) in map.other_devices.iter().take(MAX_RENDERED).enumerate() {
-        let label = dev.hostname.clone().unwrap_or_else(|| dev.ip.to_string());
-        m.push_str(&format!("    D{i}[\"{}<br/>{}\"]\n", label, dev.ip));
+        m.push_str(&format!("    D{i}[\"{}\"]\n", device_label(dev)));
         m.push_str(&format!("    GW --- D{i}\n"));
         let cls = match dev.threat_level {
             ThreatLevel::Malicious => Some("malicious"),
@@ -312,6 +335,30 @@ fn render_network_mermaid(map: &super::types::NetworkMap) -> String {
     m.push_str("```\n");
 
     m
+}
+
+/// Build a Mermaid node label for a discovered device.
+///
+/// Prefers the most human-friendly identifier available: hostname if known,
+/// otherwise the vendor name, always with the IP on a second line. A bare IP
+/// is the fallback when nothing was enriched. The `<br/>` keeps the IP on its
+/// own line inside the node. Any double-quotes are stripped to avoid breaking
+/// the Mermaid label syntax.
+fn device_label(dev: &super::types::Device) -> String {
+    let primary = dev
+        .hostname
+        .clone()
+        .or_else(|| dev.vendor.clone())
+        .unwrap_or_else(|| dev.ip.to_string());
+
+    let label = if primary == dev.ip.to_string() {
+        // Avoid "IP<br/>IP" duplication when nothing was enriched.
+        primary
+    } else {
+        format!("{}<br/>{}", primary, dev.ip)
+    };
+
+    label.replace('"', "")
 }
 
 #[cfg(test)]

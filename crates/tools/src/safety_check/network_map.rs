@@ -1,15 +1,33 @@
 //! Network device discovery and mapping.
 
+use super::oui;
 use super::types::{Device, NetworkMap, ThreatLevel};
 use anyhow::Context;
+use pentest_platform::NetworkOps;
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::process::Stdio;
 use tokio::process::Command;
 
+/// Open-port count above which a host is considered unusually exposed.
+///
+/// A device advertising this many services on a public/shared network is
+/// noteworthy (could be a server, a poorly-secured host, or an attacker's
+/// box). Kept conservative to avoid alarming a non-technical user over a
+/// normal NAS or printer.
+const SUSPICIOUS_PORT_THRESHOLD: usize = 10;
+
+/// Enrichment data for a single host, keyed by IP, drawn from the ARP table.
+struct ArpInfo {
+    mac: Option<String>,
+    hostname: Option<String>,
+}
+
 /// Discover devices on the local network using ARP scanning.
 ///
 /// Uses nmap with `-sn` flag (ping scan, no port scan) to quickly discover
-/// active hosts on the local subnet.
+/// active hosts on the local subnet, then enriches each host with MAC address
+/// and hostname from the system ARP table and a vendor name via OUI lookup.
 ///
 /// # Errors
 ///
@@ -33,24 +51,13 @@ pub async fn discover_network() -> anyhow::Result<NetworkMap> {
 
     tracing::info!("Discovered {} hosts", discovered_ips.len());
 
-    // Build device list
-    let gateway = Device {
-        ip: gateway_ip,
-        mac: None, // TODO: Get from ARP table
-        hostname: None,
-        vendor: None,
-        open_ports: Vec::new(),
-        threat_level: ThreatLevel::Safe,
-    };
+    // Best-effort ARP enrichment: MAC + hostname per IP. A failure here just
+    // means a less-detailed map, never a failed scan.
+    let arp_info = collect_arp_info().await;
 
-    let your_device = Device {
-        ip: local_ip,
-        mac: None,
-        hostname: None,
-        vendor: None,
-        open_ports: Vec::new(),
-        threat_level: ThreatLevel::Safe,
-    };
+    // Build device list, enriching gateway and local device too.
+    let gateway = build_device(gateway_ip, &arp_info);
+    let your_device = build_device(local_ip, &arp_info);
 
     let mut other_devices = Vec::new();
     for ip in discovered_ips {
@@ -58,15 +65,7 @@ pub async fn discover_network() -> anyhow::Result<NetworkMap> {
         if ip == gateway_ip || ip == local_ip {
             continue;
         }
-
-        other_devices.push(Device {
-            ip,
-            mac: None,      // TODO: Get from ARP table
-            hostname: None, // TODO: Reverse DNS lookup
-            vendor: None,   // TODO: OUI lookup
-            open_ports: Vec::new(),
-            threat_level: ThreatLevel::Safe,
-        });
+        other_devices.push(build_device(ip, &arp_info));
     }
 
     Ok(NetworkMap {
@@ -74,6 +73,82 @@ pub async fn discover_network() -> anyhow::Result<NetworkMap> {
         your_device,
         other_devices,
     })
+}
+
+/// Build an enriched [`Device`] for an IP using ARP data and OUI lookup.
+fn build_device(ip: IpAddr, arp_info: &HashMap<IpAddr, ArpInfo>) -> Device {
+    let (mac, hostname) = match arp_info.get(&ip) {
+        Some(info) => (info.mac.clone(), info.hostname.clone()),
+        None => (None, None),
+    };
+
+    let vendor = mac
+        .as_deref()
+        .and_then(oui::lookup_vendor)
+        .map(str::to_string);
+
+    let open_ports: Vec<u16> = Vec::new();
+    let threat_level = classify_threat(&open_ports);
+
+    Device {
+        ip,
+        mac,
+        hostname,
+        vendor,
+        open_ports,
+        threat_level,
+    }
+}
+
+/// Classify a host's threat level from local signals.
+///
+/// Conservative by design: only an unusually large number of open ports
+/// raises a host to Suspicious. Confirmed-malicious classification is driven
+/// by threat-intelligence enrichment (handled in the threat-intel check), not
+/// here. With no port data yet (Phase 1 does no per-host port scan) every host
+/// is Safe; the threshold is wired in for when port enrichment lands.
+fn classify_threat(open_ports: &[u16]) -> ThreatLevel {
+    if open_ports.len() >= SUSPICIOUS_PORT_THRESHOLD {
+        ThreatLevel::Suspicious
+    } else {
+        ThreatLevel::Safe
+    }
+}
+
+/// Collect MAC + hostname per IP from the system ARP table (best-effort).
+///
+/// Returns an empty map on any failure - the caller treats missing enrichment
+/// as simply less detail, not an error.
+async fn collect_arp_info() -> HashMap<IpAddr, ArpInfo> {
+    let platform = pentest_platform::get_platform();
+    let entries = match platform.get_arp_table().await {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::debug!("ARP table unavailable for enrichment: {}", e);
+            return HashMap::new();
+        }
+    };
+
+    let mut map = HashMap::new();
+    for entry in entries {
+        let Ok(ip) = entry.ip.parse::<IpAddr>() else {
+            continue;
+        };
+        // Treat an all-zero or empty MAC as absent.
+        let mac = if entry.mac.is_empty() || entry.mac == "00:00:00:00:00:00" {
+            None
+        } else {
+            Some(entry.mac)
+        };
+        map.insert(
+            ip,
+            ArpInfo {
+                mac,
+                hostname: entry.hostname,
+            },
+        );
+    }
+    map
 }
 
 /// Get gateway and local IP address.

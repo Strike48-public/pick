@@ -25,6 +25,7 @@
 
 mod dns_check;
 mod network_map;
+mod oui;
 mod report;
 mod threat_intel;
 mod types;
