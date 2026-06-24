@@ -31,6 +31,22 @@ pub fn Dashboard(
 
         div { class: "dashboard",
             div { class: "dashboard-body",
+                // Safety Check section - single prominent card
+                div { class: "dashboard-section safety-check-section",
+                    h3 { class: "dashboard-section-title", "Safety Check" }
+                    div { class: "action-grid",
+                        div {
+                            class: "action-card safety-check-card",
+                            onclick: move |_| on_open_chat.call("Run a comprehensive network safety check to validate if this network is safe for penetration testing:\n\n1. DNS Integrity: Validate DNS responses aren't hijacked or poisoned\n2. Router Threat Intelligence: Check gateway against threat databases\n3. Network Device Discovery: Map local network and flag suspicious devices\n\nProvide a clear status (SAFE / CAUTION / UNSAFE) with detailed findings and actionable recommendations.".to_string()),
+                            span { class: "action-card-icon", Shield { size: 24 } }
+                            div { class: "action-card-content",
+                                span { class: "action-card-label", "Safety Check" }
+                                span { class: "action-card-description", "Verify network security before testing" }
+                            }
+                        }
+                    }
+                }
+
                 // Quick actions grid — 2x2, each opens chat with a seeded prompt
                 div { class: "dashboard-section",
                     h3 { class: "dashboard-section-title", "Quick Actions" }

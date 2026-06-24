@@ -20,6 +20,7 @@ pub mod port_scan;
 pub mod provenance_support;
 pub mod read_file;
 pub mod registry; // Quick action registry for UI
+pub mod safety_check; // NEW: Network safety validation
 pub mod screenshot;
 pub mod service_banner;
 pub mod session_export;
