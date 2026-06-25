@@ -190,10 +190,8 @@ impl WebwrightWorkspace {
                         let dst_path = dst.join(entry.file_name());
                         if src_path.is_dir() {
                             count += copy_dir(&src_path, &dst_path);
-                        } else {
-                            if std::fs::copy(&src_path, &dst_path).is_ok() {
-                                count += 1;
-                            }
+                        } else if std::fs::copy(&src_path, &dst_path).is_ok() {
+                            count += 1;
                         }
                     }
                 }
