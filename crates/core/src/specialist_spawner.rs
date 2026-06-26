@@ -205,7 +205,11 @@ impl SpecialistSpawner {
             SpecialistType::Api => self.policy.api_threshold,
             SpecialistType::Binary => 1, // Always spawn for binaries (rare targets)
             SpecialistType::AiSecurity => 1, // Always spawn for AI/LLM (rare targets)
-            SpecialistType::Cloud => unreachable!("handled above"),
+            SpecialistType::Cloud => {
+                unreachable!(
+                    "Cloud uses cloud_indicators, not endpoint_count; early-returned above"
+                )
+            }
         };
 
         let meets_threshold = context.attack_surface.endpoint_count >= threshold;
@@ -240,6 +244,18 @@ impl SpecialistSpawner {
             AggressionLevel::Aggressive => ind.has_any(),
             AggressionLevel::Maximum => true,
         };
+
+        // Visibility for the operator: skipping with no cloud signal at all is
+        // expected fail-safe behavior, but it is indistinguishable from a recon
+        // step that failed to populate indicators. Surface it so a missing-cloud
+        // skip can be told apart from a not-cloud skip.
+        if !spawn && !ind.has_any() {
+            tracing::debug!(
+                aggression = ?self.aggression,
+                "Cloud specialist skipped: no cloud indicators present. If the target \
+                 is cloud-hosted, recon may not have populated indicators."
+            );
+        }
 
         if spawn {
             SpawnDecision::Spawn
@@ -617,6 +633,97 @@ mod tests {
         assert_eq!(
             spawner.should_spawn(SpecialistType::Cloud, &ctx),
             SpawnDecision::Skip
+        );
+    }
+
+    #[test]
+    fn conservative_cloud_skips_signal_without_provider() {
+        // Conservative requires SSRF *and* a known provider for the metadata
+        // chain. SSRF alone (provider unknown) must skip - this pins the AND so a
+        // regression to `ssrf_available || provider.is_some()` would be caught.
+        let spawner = SpecialistSpawner::new(AggressionLevel::Conservative);
+        let ctx = make_cloud_context(CloudIndicators {
+            ssrf_available: true,
+            provider: None,
+            ..Default::default()
+        });
+        assert_eq!(
+            spawner.should_spawn(SpecialistType::Cloud, &ctx),
+            SpawnDecision::Skip
+        );
+
+        // Provider alone (no SSRF, no creds) is also not a conservative trigger.
+        let ctx = make_cloud_context(CloudIndicators {
+            provider: Some(CloudProvider::Aws),
+            ..Default::default()
+        });
+        assert_eq!(
+            spawner.should_spawn(SpecialistType::Cloud, &ctx),
+            SpawnDecision::Skip
+        );
+    }
+
+    #[test]
+    fn balanced_cloud_skips_surface_without_provider() {
+        // Balanced requires a provider AND some surface signal. Surface signals
+        // without a provider must skip - even all of them at once - pinning the
+        // `provider.is_some() && (...)` precedence.
+        let spawner = SpecialistSpawner::new(AggressionLevel::Balanced);
+        let ctx = make_cloud_context(CloudIndicators {
+            provider: None,
+            ssrf_available: true,
+            storage_endpoints: 3,
+            credentials_found: true,
+        });
+        assert_eq!(
+            spawner.should_spawn(SpecialistType::Cloud, &ctx),
+            SpawnDecision::Skip
+        );
+    }
+
+    #[test]
+    fn aggressive_cloud_spawns_on_each_indicator_in_isolation() {
+        // Aggressive spawns on any single indicator. Exercise each field alone
+        // (the existing test only covers storage) so `has_any()` is proven to
+        // check every field, including the Gcp provider variant.
+        let spawner = SpecialistSpawner::new(AggressionLevel::Aggressive);
+
+        for ind in [
+            CloudIndicators {
+                provider: Some(CloudProvider::Gcp),
+                ..Default::default()
+            },
+            CloudIndicators {
+                ssrf_available: true,
+                ..Default::default()
+            },
+            CloudIndicators {
+                credentials_found: true,
+                ..Default::default()
+            },
+        ] {
+            let ctx = make_cloud_context(ind);
+            assert_eq!(
+                spawner.should_spawn(SpecialistType::Cloud, &ctx),
+                SpawnDecision::Spawn
+            );
+        }
+    }
+
+    #[test]
+    fn cloud_spawn_is_independent_of_endpoint_count() {
+        // The Cloud path must ignore endpoint_count entirely. make_cloud_context
+        // sets it to 0; assert a spawn still happens on a cloud signal, proving
+        // Cloud does not fall through to the endpoint-threshold logic.
+        let spawner = SpecialistSpawner::new(AggressionLevel::Aggressive);
+        let ctx = make_cloud_context(CloudIndicators {
+            provider: Some(CloudProvider::Aws),
+            ..Default::default()
+        });
+        assert_eq!(ctx.attack_surface.endpoint_count, 0);
+        assert_eq!(
+            spawner.should_spawn(SpecialistType::Cloud, &ctx),
+            SpawnDecision::Spawn
         );
     }
 
