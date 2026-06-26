@@ -111,7 +111,7 @@ impl PentestTool for SpawnSpecialistTool {
     fn description(&self) -> &str {
         "Spawn a domain-specific specialist agent for deep-dive security testing. \
          Evaluates spawn policy based on aggression level and target characteristics. \
-         Specialists: web-app, api, binary, ai-security."
+         Specialists: web-app, api, binary, ai-security, cloud."
     }
 
     fn supported_platforms(&self) -> Vec<Platform> {

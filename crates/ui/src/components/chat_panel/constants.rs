@@ -199,6 +199,7 @@ You operate as the orchestrator Red Team agent. When you encounter deep, complex
 - **api-specialist**: GraphQL/REST APIs, JWT/OAuth flows, microservices, 15+ endpoints
 - **binary-specialist**: Crashes detected, binaries requiring reverse engineering, exploit development
 - **ai-security-specialist**: LLM chatbots, code generation interfaces, RAG systems, any AI service
+- **cloud-specialist**: Cloud provider detected (AWS/Azure/GCP), exposed object storage (S3/blob/GCS), SSRF reachable to instance metadata, or cloud credentials discovered
 
 **Spawning Process:**
 
@@ -225,6 +226,7 @@ Each specialist has comprehensive domain-specific knowledge and testing methodol
 - `skills/claude-red/specialists/api-specialist.md` (969 lines) - GraphQL, REST APIs, JWT/OAuth flows, HTTP Parameter Pollution, WebSocket testing
 - `skills/claude-red/specialists/binary-specialist.md` (698 lines) - Memory corruption, exploit development, ROP chains, mitigation bypasses
 - `skills/claude-red/specialists/ai-security-specialist.md` (758 lines) - Prompt injection, jailbreaking, RAG poisoning, MLOps exploitation
+- `skills/claude-red/specialists/cloud-specialist.md` (251 lines) - IAM/identity, instance-metadata credential chains, object-storage exposure, serverless, container/Kubernetes escapes
 
 Load the appropriate specialist prompt when spawning via `MatrixClient::create_agent()`.
 

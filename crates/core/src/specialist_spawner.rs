@@ -226,16 +226,26 @@ impl SpecialistSpawner {
     /// Cloud specialist spawn decision, scaled by aggression level.
     ///
     /// The thresholds mirror the pick#151 spec:
-    /// - Conservative: credentials found, OR SSRF + a known provider (the
-    ///   metadata-credential chain).
-    /// - Balanced: a provider is detected AND there is some surface to act on
-    ///   (SSRF, storage, or credentials).
+    /// - Conservative: credentials found, OR SSRF + a *classified* provider
+    ///   (Aws/Azure/Gcp). The conservative trigger is the metadata-credential
+    ///   chain, which is provider-specific (AWS IMDSv2 vs Azure `Metadata: true`
+    ///   vs GCP `Metadata-Flavor: Google`), so an SSRF against an unclassified
+    ///   (`Unknown`) provider has no actionable metadata endpoint and must skip.
+    /// - Balanced: a provider is detected (including `Unknown`) AND there is some
+    ///   surface to act on (SSRF, storage, or credentials). `Unknown` is allowed
+    ///   here because surface signals like an exposed bucket are actionable
+    ///   without knowing the exact provider.
     /// - Aggressive: any single cloud indicator.
     /// - Maximum: always spawn (treat every target as potentially cloud-hosted).
     fn should_spawn_cloud(&self, ind: &CloudIndicators) -> SpawnDecision {
         let spawn = match self.aggression {
             AggressionLevel::Conservative => {
-                ind.credentials_found || (ind.ssrf_available && ind.provider.is_some())
+                ind.credentials_found
+                    || (ind.ssrf_available
+                        && matches!(
+                            ind.provider,
+                            Some(CloudProvider::Aws | CloudProvider::Azure | CloudProvider::Gcp)
+                        ))
             }
             AggressionLevel::Balanced => {
                 ind.provider.is_some()
@@ -660,6 +670,39 @@ mod tests {
         assert_eq!(
             spawner.should_spawn(SpecialistType::Cloud, &ctx),
             SpawnDecision::Skip
+        );
+    }
+
+    #[test]
+    fn conservative_cloud_skips_unknown_provider_ssrf() {
+        // The conservative trigger is the metadata-credential chain, which is
+        // provider-specific (AWS IMDSv2 vs Azure `Metadata: true` vs GCP
+        // `Metadata-Flavor: Google`). An SSRF against an *unclassified* provider
+        // has no actionable metadata endpoint to attack, so the most cautious
+        // level must skip rather than pay for cloud enumeration that cannot fire.
+        // This pins the predicate to known providers (Aws/Azure/Gcp), not the
+        // looser `provider.is_some()` which is also true for Unknown.
+        let spawner = SpecialistSpawner::new(AggressionLevel::Conservative);
+        let ctx = make_cloud_context(CloudIndicators {
+            provider: Some(CloudProvider::Unknown),
+            ssrf_available: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            spawner.should_spawn(SpecialistType::Cloud, &ctx),
+            SpawnDecision::Skip
+        );
+
+        // Credentials in hand remain a conservative trigger regardless of
+        // provider classification - a stolen key is actionable on its own.
+        let ctx = make_cloud_context(CloudIndicators {
+            provider: Some(CloudProvider::Unknown),
+            credentials_found: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            spawner.should_spawn(SpecialistType::Cloud, &ctx),
+            SpawnDecision::Spawn
         );
     }
 
