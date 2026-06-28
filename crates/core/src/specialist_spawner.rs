@@ -832,6 +832,7 @@ mod tests {
             (SpecialistType::BINARY, "\"binary\""),
             (SpecialistType::AI_SECURITY, "\"ai-security\""),
             (SpecialistType::CLOUD, "\"cloud\""),
+            (SpecialistType::DATABASE, "\"database\""),
         ];
         for (variant, expected) in cases {
             assert_eq!(serde_json::to_string(&variant).unwrap(), expected);
@@ -1457,16 +1458,33 @@ mod tests {
     #[test]
     fn balanced_database_spawns_on_identified_engine_plus_surface() {
         let spawner = SpecialistSpawner::new(AggressionLevel::Balanced);
-        // Identified engine + any actionable surface (direct exposure here).
-        let ctx = make_database_context(DatabaseIndicators {
-            engines: vec![DbEngine::MySql],
-            direct_exposure: true,
-            ..Default::default()
-        });
-        assert_eq!(
-            spawner.should_spawn(SpecialistType::DATABASE, &ctx),
-            SpawnDecision::Spawn
-        );
+        // Identified engine + any one of the three actionable surface signals
+        // (direct exposure, SQLi, or credentials) must spawn. Exercise each
+        // branch of the OR so a regression dropping one is caught.
+        let surfaces = [
+            DatabaseIndicators {
+                engines: vec![DbEngine::MySql],
+                direct_exposure: true,
+                ..Default::default()
+            },
+            DatabaseIndicators {
+                engines: vec![DbEngine::MySql],
+                sqli_available: true,
+                ..Default::default()
+            },
+            DatabaseIndicators {
+                engines: vec![DbEngine::MySql],
+                credentials_found: true,
+                ..Default::default()
+            },
+        ];
+        for ind in surfaces {
+            let ctx = make_database_context(ind);
+            assert_eq!(
+                spawner.should_spawn(SpecialistType::DATABASE, &ctx),
+                SpawnDecision::Spawn
+            );
+        }
     }
 
     #[test]
