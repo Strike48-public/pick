@@ -82,7 +82,7 @@ impl CloudProvider {
     /// endpoint (AWS IMDSv2, Azure IMDS, GCP metadata). `Unknown` does not:
     /// the metadata-credential chain is provider-specific, so an SSRF against
     /// an unclassified provider has nothing actionable to target.
-    pub fn is_classified(&self) -> bool {
+    pub fn is_classified(self) -> bool {
         matches!(self, Self::Aws | Self::Azure | Self::Gcp)
     }
 }
@@ -605,6 +605,17 @@ mod tests {
     }
 
     #[test]
+    fn cloud_provider_is_classified() {
+        // Classified providers have documented, attackable metadata endpoints;
+        // Unknown does not. A direct test fails immediately on a `matches!`
+        // typo, rather than only via a downstream spawn-decision assertion.
+        assert!(CloudProvider::Aws.is_classified());
+        assert!(CloudProvider::Azure.is_classified());
+        assert!(CloudProvider::Gcp.is_classified());
+        assert!(!CloudProvider::Unknown.is_classified());
+    }
+
+    #[test]
     fn conservative_cloud_spawns_on_credentials() {
         let spawner = SpecialistSpawner::new(AggressionLevel::Conservative);
 
@@ -839,6 +850,20 @@ mod tests {
         let ctx = make_cloud_context(CloudIndicators {
             provider: Some(CloudProvider::Unknown),
             storage_endpoints: 2,
+            ..Default::default()
+        });
+        assert_eq!(
+            spawner.should_spawn(SpecialistType::Cloud, &ctx),
+            SpawnDecision::Spawn
+        );
+
+        // SSRF is also actionable surface at Balanced: Unknown + SSRF spawns
+        // here even though the same combination skips at Conservative (which
+        // gates the metadata chain on a classified provider). This directly
+        // pins the SSRF branch of the Balanced predicate, not just storage.
+        let ctx = make_cloud_context(CloudIndicators {
+            provider: Some(CloudProvider::Unknown),
+            ssrf_available: true,
             ..Default::default()
         });
         assert_eq!(
