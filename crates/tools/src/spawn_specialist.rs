@@ -3,13 +3,6 @@
 //! This tool is available to the Red Team agent to delegate deep-dive
 //! security testing to specialized sub-agents based on target characteristics
 //! and aggression level configuration.
-//!
-//! NOTE: This tool is currently a placeholder. Full implementation requires:
-//! 1. Matrix client injection into ToolContext
-//! 2. Aggression level propagation through ToolContext
-//! 3. Parent agent name tracking in ToolContext
-//!
-//! Once these are wired, the spawn_specialist_impl function can be used.
 
 use async_trait::async_trait;
 use pentest_core::aggression::AggressionLevel;

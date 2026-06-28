@@ -77,6 +77,16 @@ pub enum CloudProvider {
     Unknown,
 }
 
+impl CloudProvider {
+    /// Whether this provider has a documented, attackable instance-metadata
+    /// endpoint (AWS IMDSv2, Azure IMDS, GCP metadata). `Unknown` does not:
+    /// the metadata-credential chain is provider-specific, so an SSRF against
+    /// an unclassified provider has nothing actionable to target.
+    pub fn is_classified(&self) -> bool {
+        matches!(self, Self::Aws | Self::Azure | Self::Gcp)
+    }
+}
+
 /// Cloud-specific attack-surface signals used to decide whether to spawn the
 /// Cloud specialist (pick#151).
 ///
@@ -241,11 +251,7 @@ impl SpecialistSpawner {
         let spawn = match self.aggression {
             AggressionLevel::Conservative => {
                 ind.credentials_found
-                    || (ind.ssrf_available
-                        && matches!(
-                            ind.provider,
-                            Some(CloudProvider::Aws | CloudProvider::Azure | CloudProvider::Gcp)
-                        ))
+                    || (ind.ssrf_available && ind.provider.is_some_and(|p| p.is_classified()))
             }
             AggressionLevel::Balanced => {
                 ind.provider.is_some()
@@ -707,6 +713,29 @@ mod tests {
     }
 
     #[test]
+    fn conservative_cloud_spawns_on_ssrf_with_each_classified_provider() {
+        // The SSRF metadata-credential trigger fires for every *classified*
+        // provider, not just AWS. Exercise Azure and Gcp explicitly so a typo
+        // dropping a variant from `is_classified` (e.g. losing `| Azure`) is
+        // caught at the most security-critical aggression level.
+        let spawner = SpecialistSpawner::new(AggressionLevel::Conservative);
+
+        for provider in [CloudProvider::Aws, CloudProvider::Azure, CloudProvider::Gcp] {
+            let ctx = make_cloud_context(CloudIndicators {
+                provider: Some(provider),
+                ssrf_available: true,
+                ..Default::default()
+            });
+            assert_eq!(
+                spawner.should_spawn(SpecialistType::Cloud, &ctx),
+                SpawnDecision::Spawn,
+                "SSRF + {:?} should spawn at Conservative",
+                provider
+            );
+        }
+    }
+
+    #[test]
     fn balanced_cloud_skips_surface_without_provider() {
         // Balanced requires a provider AND some surface signal. Surface signals
         // without a provider must skip - even all of them at once - pinning the
@@ -788,6 +817,38 @@ mod tests {
         // Provider alone, no surface signal -> skip at balanced.
         let ctx = make_cloud_context(CloudIndicators {
             provider: Some(CloudProvider::Azure),
+            ..Default::default()
+        });
+        assert_eq!(
+            spawner.should_spawn(SpecialistType::Cloud, &ctx),
+            SpawnDecision::Skip
+        );
+    }
+
+    #[test]
+    fn balanced_cloud_allows_unknown_provider_with_surface() {
+        // Unlike Conservative (which requires a classified provider for the
+        // SSRF metadata chain), Balanced spawns on an *unclassified* provider
+        // as long as there is actionable surface - an exposed bucket is worth
+        // testing without knowing the exact cloud. This pins the Balanced
+        // predicate to the loose `provider.is_some()` so a regression to the
+        // stricter `is_classified()` check (copied from the Conservative arm)
+        // would be caught.
+        let spawner = SpecialistSpawner::new(AggressionLevel::Balanced);
+
+        let ctx = make_cloud_context(CloudIndicators {
+            provider: Some(CloudProvider::Unknown),
+            storage_endpoints: 2,
+            ..Default::default()
+        });
+        assert_eq!(
+            spawner.should_spawn(SpecialistType::Cloud, &ctx),
+            SpawnDecision::Spawn
+        );
+
+        // But an unclassified provider with no surface signal still skips.
+        let ctx = make_cloud_context(CloudIndicators {
+            provider: Some(CloudProvider::Unknown),
             ..Default::default()
         });
         assert_eq!(
