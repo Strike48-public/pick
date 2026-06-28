@@ -33,12 +33,15 @@ const MAX_EVIDENCE_NODES: usize = 10_000;
 
 /// Global pending evidence buffer.
 ///
-/// Tools push evidence here via [`push_evidence`], and the UI layer
-/// periodically drains it via [`drain_pending_evidence`].
+/// Tools push evidence here via [`push_evidence`]. The buffer is intended to be
+/// drained by [`drain_pending_evidence`] and forwarded into the report evidence
+/// graph (`pentest_ui::session`), but that drain-and-forward step is NOT wired in
+/// production today: `drain_pending_evidence` has no non-test callers, so nodes
+/// pushed here do not currently reach the report. See pick#172.
 ///
 /// # Thread Safety
 /// Protected by `RwLock` for concurrent access. Multiple tools can
-/// push evidence simultaneously, and the UI can drain without blocking
+/// push evidence simultaneously, and a drain can run without blocking
 /// tool execution (briefly blocks during the write lock acquisition).
 #[cfg(not(target_arch = "wasm32"))]
 static PENDING_EVIDENCE: LazyLock<RwLock<Vec<EvidenceNode>>> =
@@ -46,14 +49,15 @@ static PENDING_EVIDENCE: LazyLock<RwLock<Vec<EvidenceNode>>> =
 
 /// Push an evidence node to the global evidence buffer.
 ///
-/// This function is called by tools after producing findings. The evidence
-/// is stored in a global buffer that the UI layer periodically drains and
-/// adds to the evidence graph.
+/// This function is called by tools after producing findings. The evidence is
+/// stored in a global buffer. NOTE: nothing drains this buffer into the report
+/// graph in production yet (see [`PENDING_EVIDENCE`] and pick#172), so a pushed
+/// node is currently not surfaced in the generated report.
 ///
 /// # Capacity
 /// The buffer has a maximum capacity of [`MAX_EVIDENCE_NODES`]. If the
 /// buffer is full, this function logs a warning and drops the new evidence.
-/// The UI should drain evidence periodically to prevent overflow.
+/// A consumer should drain evidence periodically to prevent overflow.
 ///
 /// # Thread Safety
 /// This function is thread-safe and can be called from multiple tools
