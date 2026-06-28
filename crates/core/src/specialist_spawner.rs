@@ -1389,9 +1389,25 @@ mod tests {
     #[test]
     fn conservative_database_spawns_on_credentials() {
         let spawner = SpecialistSpawner::new(AggressionLevel::Conservative);
-        // Discovered DB credentials are actionable on their own, regardless of
-        // engine classification.
+        // Discovered DB credentials are actionable on their own (you can connect
+        // and enumerate) - regardless of engine classification. Only the SQLi
+        // trigger needs an identified engine for takeover.
         let ctx = make_database_context(DatabaseIndicators {
+            credentials_found: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            spawner.should_spawn(SpecialistType::DATABASE, &ctx),
+            SpawnDecision::Spawn
+        );
+
+        // Even with an explicitly *unidentified* engine present, credentials
+        // alone must still spawn. This pins that credentials bypass the
+        // has_identified_engine() requirement - a regression to
+        // `credentials_found && has_identified_engine()` would be caught here
+        // but not by the empty-engines case above (|| short-circuits).
+        let ctx = make_database_context(DatabaseIndicators {
+            engines: vec![DbEngine::Unknown],
             credentials_found: true,
             ..Default::default()
         });
