@@ -20,6 +20,7 @@ fn create_context(endpoint_count: usize) -> SpecialistContext {
             technologies: vec![],
             auth_mechanisms: vec![],
             entry_points: vec![],
+            cloud_indicators: Default::default(),
         },
     }
 }
@@ -35,6 +36,7 @@ fn create_context_with_hints(endpoint_count: usize) -> SpecialistContext {
             technologies: vec!["PHP".to_string(), "MySQL".to_string()],
             auth_mechanisms: vec!["Cookie-based".to_string()],
             entry_points: vec!["/login".to_string(), "/search".to_string()],
+            cloud_indicators: Default::default(),
         },
     }
 }
