@@ -21,6 +21,7 @@ fn create_context(endpoint_count: usize) -> SpecialistContext {
             auth_mechanisms: vec![],
             entry_points: vec![],
             cloud_indicators: Default::default(),
+            database_indicators: Default::default(),
         },
     }
 }
@@ -37,6 +38,7 @@ fn create_context_with_hints(endpoint_count: usize) -> SpecialistContext {
             auth_mechanisms: vec!["Cookie-based".to_string()],
             entry_points: vec!["/login".to_string(), "/search".to_string()],
             cloud_indicators: Default::default(),
+            database_indicators: Default::default(),
         },
     }
 }
@@ -47,7 +49,7 @@ fn test_conservative_skips_small_targets() {
 
     // Conservative requires 50+ endpoints for web-app
     let small_context = create_context(20);
-    let decision = spawner.should_spawn(SpecialistType::WebApp, &small_context);
+    let decision = spawner.should_spawn(SpecialistType::WEB_APP, &small_context);
     assert_eq!(
         decision,
         SpawnDecision::Skip,
@@ -56,7 +58,7 @@ fn test_conservative_skips_small_targets() {
 
     // Should spawn for 50+ endpoints
     let large_context = create_context(50);
-    let decision = spawner.should_spawn(SpecialistType::WebApp, &large_context);
+    let decision = spawner.should_spawn(SpecialistType::WEB_APP, &large_context);
     assert_eq!(
         decision,
         SpawnDecision::Spawn,
@@ -70,7 +72,7 @@ fn test_conservative_ignores_hints() {
 
     // Conservative does NOT spawn on hints alone (spawn_on_hints=false)
     let context_with_hints = create_context_with_hints(20);
-    let decision = spawner.should_spawn(SpecialistType::WebApp, &context_with_hints);
+    let decision = spawner.should_spawn(SpecialistType::WEB_APP, &context_with_hints);
     assert_eq!(
         decision,
         SpawnDecision::Skip,
@@ -84,7 +86,7 @@ fn test_balanced_spawns_on_moderate_targets() {
 
     // Balanced requires 20+ endpoints for web-app
     let small_context = create_context(10);
-    let decision = spawner.should_spawn(SpecialistType::WebApp, &small_context);
+    let decision = spawner.should_spawn(SpecialistType::WEB_APP, &small_context);
     assert_eq!(
         decision,
         SpawnDecision::Skip,
@@ -93,7 +95,7 @@ fn test_balanced_spawns_on_moderate_targets() {
 
     // Should spawn for 20+ endpoints
     let moderate_context = create_context(20);
-    let decision = spawner.should_spawn(SpecialistType::WebApp, &moderate_context);
+    let decision = spawner.should_spawn(SpecialistType::WEB_APP, &moderate_context);
     assert_eq!(
         decision,
         SpawnDecision::Spawn,
@@ -107,7 +109,7 @@ fn test_balanced_spawns_on_hints() {
 
     // Balanced DOES spawn on hints (spawn_on_hints=true)
     let context_with_hints = create_context_with_hints(10);
-    let decision = spawner.should_spawn(SpecialistType::WebApp, &context_with_hints);
+    let decision = spawner.should_spawn(SpecialistType::WEB_APP, &context_with_hints);
     assert_eq!(
         decision,
         SpawnDecision::Spawn,
@@ -121,7 +123,7 @@ fn test_aggressive_spawns_liberally() {
 
     // Aggressive requires only 5+ endpoints for web-app
     let tiny_context = create_context(3);
-    let decision = spawner.should_spawn(SpecialistType::WebApp, &tiny_context);
+    let decision = spawner.should_spawn(SpecialistType::WEB_APP, &tiny_context);
     assert_eq!(
         decision,
         SpawnDecision::Skip,
@@ -130,7 +132,7 @@ fn test_aggressive_spawns_liberally() {
 
     // Should spawn for 5+ endpoints
     let small_context = create_context(5);
-    let decision = spawner.should_spawn(SpecialistType::WebApp, &small_context);
+    let decision = spawner.should_spawn(SpecialistType::WEB_APP, &small_context);
     assert_eq!(
         decision,
         SpawnDecision::Spawn,
@@ -139,7 +141,7 @@ fn test_aggressive_spawns_liberally() {
 
     // Should definitely spawn with hints
     let context_with_hints = create_context_with_hints(3);
-    let decision = spawner.should_spawn(SpecialistType::WebApp, &context_with_hints);
+    let decision = spawner.should_spawn(SpecialistType::WEB_APP, &context_with_hints);
     assert_eq!(
         decision,
         SpawnDecision::Spawn,
@@ -153,7 +155,7 @@ fn test_maximum_spawns_everything() {
 
     // Maximum spawns for ANY target (threshold = 1)
     let minimal_context = create_context(1);
-    let decision = spawner.should_spawn(SpecialistType::WebApp, &minimal_context);
+    let decision = spawner.should_spawn(SpecialistType::WEB_APP, &minimal_context);
     assert_eq!(
         decision,
         SpawnDecision::Spawn,
@@ -162,7 +164,7 @@ fn test_maximum_spawns_everything() {
 
     // Even with zero endpoints, should spawn on hints
     let hints_only = create_context_with_hints(0);
-    let decision = spawner.should_spawn(SpecialistType::WebApp, &hints_only);
+    let decision = spawner.should_spawn(SpecialistType::WEB_APP, &hints_only);
     assert_eq!(
         decision,
         SpawnDecision::Spawn,
@@ -177,25 +179,25 @@ fn test_api_specialist_thresholds() {
     // Conservative: 30+ for API (vs 50+ for web-app)
     let conservative = SpecialistSpawner::new(AggressionLevel::Conservative);
     let context_25 = create_context(25);
-    let decision = conservative.should_spawn(SpecialistType::Api, &context_25);
+    let decision = conservative.should_spawn(SpecialistType::API, &context_25);
     assert_eq!(decision, SpawnDecision::Skip);
     let context_30 = create_context(30);
-    let decision = conservative.should_spawn(SpecialistType::Api, &context_30);
+    let decision = conservative.should_spawn(SpecialistType::API, &context_30);
     assert_eq!(decision, SpawnDecision::Spawn);
 
     // Balanced: 15+ for API (vs 20+ for web-app)
     let balanced = SpecialistSpawner::new(AggressionLevel::Balanced);
     let context_10 = create_context(10);
-    let decision = balanced.should_spawn(SpecialistType::Api, &context_10);
+    let decision = balanced.should_spawn(SpecialistType::API, &context_10);
     assert_eq!(decision, SpawnDecision::Skip);
     let context_15 = create_context(15);
-    let decision = balanced.should_spawn(SpecialistType::Api, &context_15);
+    let decision = balanced.should_spawn(SpecialistType::API, &context_15);
     assert_eq!(decision, SpawnDecision::Spawn);
 
     // Aggressive: 5+ for API (same as web-app)
     let aggressive = SpecialistSpawner::new(AggressionLevel::Aggressive);
     let context_5 = create_context(5);
-    let decision = aggressive.should_spawn(SpecialistType::Api, &context_5);
+    let decision = aggressive.should_spawn(SpecialistType::API, &context_5);
     assert_eq!(decision, SpawnDecision::Spawn);
 }
 
@@ -207,14 +209,14 @@ fn test_binary_and_ai_always_spawn() {
     let conservative = SpecialistSpawner::new(AggressionLevel::Conservative);
     let minimal_context = create_context(1);
 
-    let binary_decision = conservative.should_spawn(SpecialistType::Binary, &minimal_context);
+    let binary_decision = conservative.should_spawn(SpecialistType::BINARY, &minimal_context);
     assert_eq!(
         binary_decision,
         SpawnDecision::Spawn,
         "Binary specialist should always spawn when needed"
     );
 
-    let ai_decision = conservative.should_spawn(SpecialistType::AiSecurity, &minimal_context);
+    let ai_decision = conservative.should_spawn(SpecialistType::AI_SECURITY, &minimal_context);
     assert_eq!(
         ai_decision,
         SpawnDecision::Spawn,
