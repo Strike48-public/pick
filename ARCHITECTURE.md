@@ -168,7 +168,11 @@ pub struct EvidenceNode {
 - Bounded buffer (configurable capacity)
 - Non-blocking push operations
 - Near-full detection (80% threshold)
-- Automatic flush to Strike48
+
+> Known gap (pick#172): tool findings pushed to this buffer are not yet drained
+> into the report evidence graph in production, and there is no automatic flush to
+> Strike48 (the Matrix client carries no evidence wire types). The buffer-to-report
+> bridge is unbuilt; reports are currently populated only via direct test injection.
 
 ---
 
