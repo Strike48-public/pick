@@ -74,12 +74,31 @@ pub fn SettingsPage(
     let mut export_loading = use_signal(|| false);
     let mut export_result = use_signal(|| None::<Result<String, String>>);
 
+    // Tools catalog state
+    let mut catalog_items = use_signal(|| None::<Vec<pentest_tools::catalog::CatalogItem>>);
+    let mut catalog_loading = use_signal(|| false);
+    // binary_name currently installing, or the "__all__" sentinel for the bulk
+    // install, or None when idle.
+    let mut installing = use_signal(|| None::<String>);
+    let mut install_message = use_signal(String::new);
+    let mut install_error = use_signal(|| None::<String>);
+
     // Load seed status on mount
     use_effect(move || {
         spawn(async move {
             let manager = SeedManager::new();
             let status = manager.check_status().await;
             seed_status.set(Some(status));
+        });
+    });
+
+    // Load tool catalog on mount
+    use_effect(move || {
+        spawn(async move {
+            catalog_loading.set(true);
+            let items = pentest_tools::catalog::build_catalog_items().await;
+            catalog_items.set(Some(items));
+            catalog_loading.set(false);
         });
     });
 
@@ -233,6 +252,160 @@ pub fn SettingsPage(
                             onclick: move |_| on_start_download.call(()),
                             "Set up BlackArch"
                         }
+                    }
+                }
+            }
+
+            // Tools card
+            div { class: "settings-card dashboard-card",
+                div { class: "settings-card-header",
+                    span { class: "settings-card-icon", Download { size: 16 } }
+                    h2 { "Tools" }
+                }
+                div { class: "settings-card-body",
+                    if let Some(ref err) = install_error() {
+                        div { class: "sidebar-download-error",
+                            div { class: "setup-error-message", white_space: "pre-wrap",
+                                {err.as_str()}
+                            }
+                        }
+                    }
+
+                    // Install all recommended (bulk) action
+                    if installing() == Some("__all__".to_string()) {
+                        div { class: "sidebar-download-status",
+                            span { "Installing recommended tools... {install_message}" }
+                            div { class: "download-progress",
+                                div { class: "download-progress-fill indeterminate" }
+                            }
+                        }
+                    } else {
+                        button {
+                            class: "sidebar-download-btn",
+                            disabled: installing().is_some(),
+                            onclick: move |_| {
+                                spawn(async move {
+                                    use tokio::sync::mpsc;
+                                    installing.set(Some("__all__".to_string()));
+                                    install_error.set(None);
+                                    install_message.set(String::new());
+                                    let (tx, mut rx) = mpsc::unbounded_channel();
+                                    spawn(async move {
+                                        while let Some(msg) = rx.recv().await {
+                                            install_message.set(msg);
+                                        }
+                                    });
+                                    let progress = move |evt: pentest_tools::installers::InstallEvent| {
+                                        let _ = tx.send(evt.message);
+                                    };
+                                    let failures =
+                                        pentest_tools::catalog::install_all_recommended(&progress).await;
+                                    if !failures.is_empty() {
+                                        let detail = failures
+                                            .iter()
+                                            .map(|(bin, err)| format!("{bin}: {err}"))
+                                            .collect::<Vec<_>>()
+                                            .join("\n");
+                                        install_error.set(Some(format!(
+                                            "Some tools failed to install:\n{detail}"
+                                        )));
+                                    }
+                                    let items = pentest_tools::catalog::build_catalog_items().await;
+                                    catalog_items.set(Some(items));
+                                    installing.set(None);
+                                });
+                            },
+                            "Install all recommended"
+                        }
+                    }
+
+                    if catalog_items().is_none() && catalog_loading() {
+                        div { class: "text-dim-xs", style: "margin-top: 12px;", "Loading tools..." }
+                    } else if let Some(items) = catalog_items() {
+                        for category in tool_categories(&items) {
+                            div { class: "tool-category", style: "margin-top: 12px;",
+                                div { class: "text-dim-xs", style: "font-weight: 600; margin-bottom: 4px;",
+                                    {humanize_category(&category)}
+                                }
+                                for item in items.iter().filter(|i| i.category == category).cloned() {
+                                    div { class: "tool-row",
+                                        style: "display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0;",
+                                        div { style: "min-width: 0;",
+                                            div { "{item.display_name}" }
+                                            // Status chip
+                                            if item.state == "installed" {
+                                                span { class: "text-success text-dim-xs",
+                                                    "\u{2713} Installed"
+                                                }
+                                            } else if item.state == "missing" {
+                                                span { class: "text-dim-xs", "Not installed" }
+                                            } else if item.state == "manual" {
+                                                span { class: "text-dim-xs", "Manual" }
+                                            } else {
+                                                span { class: "text-dim-xs", "Unknown" }
+                                            }
+                                        }
+                                        // Action
+                                        if item.state == "installed" {
+                                            // No action; chip shown above.
+                                        } else if item.auto_installable {
+                                            if installing() == Some(item.binary_name.clone()) {
+                                                div { style: "flex: 1; max-width: 240px;",
+                                                    div { class: "text-dim-xs",
+                                                        "Installing... {install_message}"
+                                                    }
+                                                    div { class: "download-progress",
+                                                        div { class: "download-progress-fill indeterminate" }
+                                                    }
+                                                }
+                                            } else {
+                                                button {
+                                                    class: "sidebar-download-btn",
+                                                    disabled: installing().is_some(),
+                                                    onclick: {
+                                                        let bin = item.binary_name.clone();
+                                                        move |_| {
+                                                            let bin = bin.clone();
+                                                            spawn(async move {
+                                                                use tokio::sync::mpsc;
+                                                                installing.set(Some(bin.clone()));
+                                                                install_error.set(None);
+                                                                install_message.set(String::new());
+                                                                let (tx, mut rx) = mpsc::unbounded_channel();
+                                                                spawn(async move {
+                                                                    while let Some(msg) = rx.recv().await {
+                                                                        install_message.set(msg);
+                                                                    }
+                                                                });
+                                                                let progress = move |evt: pentest_tools::installers::InstallEvent| {
+                                                                    let _ = tx.send(evt.message);
+                                                                };
+                                                                match pentest_tools::catalog::install_by_binary(&bin, &progress).await {
+                                                                    Ok(()) => {
+                                                                        let items = pentest_tools::catalog::build_catalog_items().await;
+                                                                        catalog_items.set(Some(items));
+                                                                    }
+                                                                    Err(e) => install_error.set(Some(e.to_string())),
+                                                                }
+                                                                installing.set(None);
+                                                            });
+                                                        }
+                                                    },
+                                                    "Install"
+                                                }
+                                            }
+                                        } else if let Some(instructions) = item.manual_instructions.clone() {
+                                            div { class: "setup-error-message", white_space: "pre-wrap",
+                                                style: "flex: 1; max-width: 240px;",
+                                                "{instructions}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        div { class: "text-dim-xs", style: "margin-top: 12px;", "No tools available" }
                     }
                 }
             }
@@ -1216,4 +1389,38 @@ fn is_tier_fully_seeded(status: &[(String, bool)], tier_resources: &[&str]) -> b
     tier_resources
         .iter()
         .all(|&name| status.iter().any(|(s, exists)| s == name && *exists))
+}
+
+/// Distinct tool categories in catalog order (items arrive sorted by category).
+fn tool_categories(items: &[pentest_tools::catalog::CatalogItem]) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for item in items {
+        if !seen.iter().any(|c| c == &item.category) {
+            seen.push(item.category.clone());
+        }
+    }
+    seen
+}
+
+/// Turn a stable category key (e.g. "active_directory") into a display label.
+fn humanize_category(category: &str) -> String {
+    match category {
+        "active_directory" => "Active Directory".to_string(),
+        "web" => "Web".to_string(),
+        "network" => "Network".to_string(),
+        "post_exploit" => "Post Exploitation".to_string(),
+        "other" => "Other".to_string(),
+        // Fallback: replace underscores and capitalize each word.
+        _ => category
+            .split('_')
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
 }

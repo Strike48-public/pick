@@ -5,6 +5,7 @@
 pub mod arp_table;
 pub mod autopwn;
 pub mod begin_scan;
+pub mod catalog; // NEW: Tool catalog - discover, probe, and install external deps
 pub mod credential_harvest;
 pub mod cve_lookup;
 pub mod default_creds;
@@ -13,6 +14,7 @@ pub mod evidence_producer; // NEW: Convert tool results to evidence nodes
 pub mod execute_command;
 pub mod external; // NEW: External tool integrations (BlackArch)
 pub mod inject_test_evidence; // NEW: Test tool for three-agent pipeline
+pub mod installers; // NEW: Bespoke tool installers for the tool catalog
 pub mod lateral_movement;
 pub mod list_files;
 pub mod network_discover;
@@ -51,18 +53,19 @@ pub use device_info::DeviceInfoTool;
 pub use execute_command::ExecuteCommandTool;
 pub use external::{
     AircrackngTool, AmassTool, ArjunTool, ArpScanTool, ArpingTool, AssetfinderTool, BettercapTool,
-    CewlTool, ChangemeTool, CommixTool, CrackmapexecTool, CrunchTool, DalfoxTool, DirbTool,
-    DirsearchTool, DnsenumTool, DnsreconTool, DroopescanTool, Enum4linuxNgTool, Enum4linuxTool,
-    EvilwinrmTool, ExiftoolTool, EyewitnessTool, FeroxbusterTool, FfufDnsTool, FfufTool,
-    FierceTool, GauTool, GobusterTool, GospiderTool, HakrawlerTool, HashcatTool, Hping3Tool,
-    HttpprobeTool, HydraTool, ImpacketGetuserspnsTool, ImpacketPsexecTool, ImpacketSecretsdumpTool,
-    ImpacketWmiexecTool, JohnTool, JoomscanTool, KatanaTool, LdapsearchTool, LinpeasTool,
-    MasscanFastTool, MasscanTool, NbtscanTool, NcatTool, NetdiscoverTool, NiktoNgTool, NiktoTool,
+    BloodHoundTool, BurpSuiteTool, CertipyTool, CewlTool, ChangemeTool, CommixTool,
+    CrackmapexecTool, CrunchTool, DalfoxTool, DirbTool, DirsearchTool, DnsenumTool, DnsreconTool,
+    DroopescanTool, Enum4linuxNgTool, Enum4linuxTool, EvilwinrmTool, ExiftoolTool, EyewitnessTool,
+    FeroxbusterTool, FfufDnsTool, FfufTool, FierceTool, GauTool, GobusterTool, GospiderTool,
+    HakrawlerTool, HashcatTool, Hping3Tool, HttpprobeTool, HydraTool, ImpacketGetuserspnsTool,
+    ImpacketPsexecTool, ImpacketSecretsdumpTool, ImpacketWmiexecTool, JohnTool, JoomscanTool,
+    KatanaTool, KerbruteTool, LdapsearchTool, LinpeasTool, MasscanFastTool, MasscanTool,
+    MetasploitTool, NbtscanTool, NcatTool, NetExecTool, NetdiscoverTool, NiktoNgTool, NiktoTool,
     NmapTool, NmapVulnTool, NucleiTool, OnesixtyoneTool, ParamspiderTool, ReconNgTool,
     ResponderTool, RustScanTool, SearchsploitTool, SkipfishTool, SmbmapTool, SnmpwalkTool,
     SocatTool, SpiderfootTool, SqlmapTool, SslscanTool, SubfinderTool, Sublist3rTool, TestsslTool,
     TheHarvesterTool, TsharkTool, UnicornscanTool, Wafw00fTool, WaybackurlsTool, WfuzzTool,
-    WhatwebTool, WhoisTool, WpscanTool, XsstrikeTool,
+    WhatwebTool, WhoisTool, WpscanTool, XsstrikeTool, ZapTool,
 }; // External tools
 pub use inject_test_evidence::InjectTestEvidenceTool;
 pub use lateral_movement::LateralMovementTool;
@@ -144,6 +147,17 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(DroopescanTool); // CMS scanner
     registry.register(WhatwebTool); // Technology identifier
     registry.register(Wafw00fTool); // WAF detector
+    registry.register(ZapTool); // OWASP ZAP - headless DAST engine
+    registry.register(BurpSuiteTool); // Burp Suite - manual proxy (informational)
+
+    // Active Directory attack suite (External tools)
+    registry.register(CertipyTool); // AD CS (ESC1-8) attacks
+    registry.register(NetExecTool); // NetExec (nxc) - successor to CrackMapExec
+    registry.register(KerbruteTool); // Kerberos user enum / password spray
+    registry.register(BloodHoundTool); // AD attack-path data collection
+
+    // Framework integrations
+    registry.register(MetasploitTool); // Metasploit batch (msfvenom + resource scripts)
 
     // Credential attacks (External tools)
     registry.register(HydraTool); // Login bruteforcer (50+ protocols)

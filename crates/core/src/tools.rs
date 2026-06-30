@@ -109,15 +109,100 @@ impl ToolParam {
     }
 }
 
-/// External dependency information for tools that require installation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// How an external dependency is installed on the host or in the sandbox.
+///
+/// The default (`Pacman`) preserves the historical behavior: every tool that
+/// only called [`ExternalDependency::new`] installs via `pacman` inside the
+/// BlackArch sandbox and is expected on the host PATH in native mode. Tools
+/// that need a different mechanism (pip/uv, a vendor installer, or a
+/// license-gated download) opt into it with the builder methods below.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InstallMethod {
+    /// Install from the BlackArch/Arch repos via `pacman -S` (sandbox only).
+    /// The package name is [`ExternalDependency::package_name`].
+    #[default]
+    Pacman,
+    /// Install on the host via `apt-get install <pkg>` when sandbox is disabled.
+    /// Used for tools that are not BlackArch packages but are apt-installable.
+    AptHost,
+    /// A bespoke installer keyed by `id`, dispatched through the installer
+    /// registry (e.g. "webwright", "metasploit", "zap"). Use for anything that
+    /// is not a single repo package — pip/uv installs, multi-step setups,
+    /// services that need initialization.
+    Custom { id: String },
+    /// Cannot be auto-installed (licensing, EULA click-through, or operator
+    /// choice). The UI shows `instructions` and an optional download `url`;
+    /// no automated install is attempted. Burp Suite is the canonical example.
+    Manual {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        instructions: String,
+    },
+}
+
+/// Broad grouping used to organize tools in the catalog UI. Free-form-ish but
+/// kept as an enum so the UI can render stable section headers and so we don't
+/// accumulate typo'd category strings across ~80 tools.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCategory {
+    /// Host/port/service discovery and network mapping.
+    Network,
+    /// Web application scanning and fuzzing.
+    Web,
+    /// Active Directory, SMB, Kerberos, LDAP.
+    ActiveDirectory,
+    /// Credential attacks: cracking, spraying, dumping.
+    Credentials,
+    /// Post-exploitation, C2, lateral movement, payload generation.
+    PostExploit,
+    /// Wireless.
+    Wireless,
+    /// OSINT and reconnaissance.
+    Recon,
+    /// Forensics and evidence handling.
+    Forensics,
+    /// Anything that doesn't fit a more specific group.
+    #[default]
+    Other,
+}
+
+/// External dependency information for tools that require installation.
+///
+/// The first three fields are the historical contract used by every external
+/// tool. `install_method`, `category`, and `recommended` were added for the
+/// tool catalog (issue: unified installer) and all default such that the ~80
+/// existing `ExternalDependency::new(...)` call sites keep their original
+/// pacman-in-sandbox behavior with zero changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalDependency {
     pub binary_name: String,
     pub package_name: String,
     pub description: String,
+    /// How to install this dependency. Defaults to [`InstallMethod::Pacman`].
+    #[serde(default)]
+    pub install_method: InstallMethod,
+    /// Catalog grouping for the UI. Defaults to [`ToolCategory::Other`].
+    #[serde(default)]
+    pub category: ToolCategory,
+    /// Whether this tool is part of the default "install all recommended" set.
+    /// Dual-use / heavyweight / licensed tools set this to `false` so they are
+    /// only installed on explicit operator action.
+    #[serde(default = "default_recommended")]
+    pub recommended: bool,
+}
+
+/// Default for [`ExternalDependency::recommended`]: standard tooling is
+/// recommended unless a tool explicitly opts out (C2, licensed, very large).
+fn default_recommended() -> bool {
+    true
 }
 
 impl ExternalDependency {
+    /// Create a dependency installed via `pacman` in the sandbox (the default
+    /// for the vast majority of BlackArch-packaged tools). This is the
+    /// historical constructor — its three-argument shape is unchanged.
     pub fn new(
         binary_name: impl Into<String>,
         package_name: impl Into<String>,
@@ -127,7 +212,45 @@ impl ExternalDependency {
             binary_name: binary_name.into(),
             package_name: package_name.into(),
             description: description.into(),
+            install_method: InstallMethod::default(),
+            category: ToolCategory::default(),
+            recommended: true,
         }
+    }
+
+    /// Set an explicit install method (builder).
+    pub fn install_method(mut self, method: InstallMethod) -> Self {
+        self.install_method = method;
+        self
+    }
+
+    /// Mark this dependency as installed by a bespoke installer registered
+    /// under `id` (shorthand for `.install_method(InstallMethod::Custom{id})`).
+    pub fn custom_installer(mut self, id: impl Into<String>) -> Self {
+        self.install_method = InstallMethod::Custom { id: id.into() };
+        self
+    }
+
+    /// Mark this dependency as manual-install only (licensing / EULA / operator
+    /// choice). `instructions` is shown verbatim in the catalog UI.
+    pub fn manual(mut self, instructions: impl Into<String>, url: Option<String>) -> Self {
+        self.install_method = InstallMethod::Manual {
+            url,
+            instructions: instructions.into(),
+        };
+        self
+    }
+
+    /// Set the catalog category (builder).
+    pub fn category(mut self, category: ToolCategory) -> Self {
+        self.category = category;
+        self
+    }
+
+    /// Set whether this tool is part of the recommended default set (builder).
+    pub fn recommended(mut self, recommended: bool) -> Self {
+        self.recommended = recommended;
+        self
     }
 }
 
@@ -597,6 +720,107 @@ fn levenshtein_distance(s1: &str, s2: &str) -> usize {
     }
 
     matrix[len1][len2]
+}
+
+#[cfg(test)]
+mod external_dependency_tests {
+    //! Tests for the tool-catalog extensions to `ExternalDependency`.
+    //!
+    //! The central invariant is backward compatibility: ~80 existing tools
+    //! construct dependencies with the three-argument `new(...)` and serialize
+    //! schemas onto the Matrix wire. The new fields must default such that
+    //! those tools are unaffected, and old serialized schemas (no
+    //! install_method/category/recommended) must still deserialize.
+    use super::*;
+
+    #[test]
+    fn new_defaults_to_pacman_recommended_other() {
+        let dep = ExternalDependency::new("nmap", "nmap", "scanner");
+        assert_eq!(dep.install_method, InstallMethod::Pacman);
+        assert_eq!(dep.category, ToolCategory::Other);
+        assert!(dep.recommended);
+    }
+
+    #[test]
+    fn builders_compose() {
+        let dep = ExternalDependency::new("zaproxy", "zaproxy", "DAST")
+            .custom_installer("zap")
+            .category(ToolCategory::Web)
+            .recommended(true);
+        assert_eq!(
+            dep.install_method,
+            InstallMethod::Custom { id: "zap".into() }
+        );
+        assert_eq!(dep.category, ToolCategory::Web);
+    }
+
+    #[test]
+    fn manual_method_carries_instructions_and_url() {
+        let dep = ExternalDependency::new("burpsuite", "burpsuite", "proxy").manual(
+            "Download from PortSwigger and run the installer.",
+            Some("https://portswigger.net/burp/releases".into()),
+        );
+        match dep.install_method {
+            InstallMethod::Manual { url, instructions } => {
+                assert!(instructions.contains("PortSwigger"));
+                assert_eq!(
+                    url.as_deref(),
+                    Some("https://portswigger.net/burp/releases")
+                );
+            }
+            other => panic!("expected Manual, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn old_schema_without_new_fields_still_deserializes() {
+        // A schema serialized before the catalog fields existed.
+        let legacy = serde_json::json!({
+            "binary_name": "ffuf",
+            "package_name": "ffuf",
+            "description": "web fuzzer"
+        });
+        let dep: ExternalDependency = serde_json::from_value(legacy).expect("deserialize legacy");
+        assert_eq!(dep.install_method, InstallMethod::Pacman);
+        assert_eq!(dep.category, ToolCategory::Other);
+        assert!(dep.recommended);
+    }
+
+    #[test]
+    fn install_method_round_trips_through_json() {
+        for method in [
+            InstallMethod::Pacman,
+            InstallMethod::AptHost,
+            InstallMethod::Custom {
+                id: "metasploit".into(),
+            },
+            InstallMethod::Manual {
+                url: None,
+                instructions: "manual".into(),
+            },
+        ] {
+            let json = serde_json::to_value(&method).expect("serialize");
+            let back: InstallMethod = serde_json::from_value(json).expect("deserialize");
+            assert_eq!(method, back);
+        }
+    }
+
+    #[test]
+    fn schema_json_includes_new_dependency_fields() {
+        // to_json_schema serializes the full dependency; the catalog UI and the
+        // Matrix metadata both read these, so pin that the new fields appear.
+        let schema = ToolSchema::new("zap", "DAST").external_dependency(
+            ExternalDependency::new("zaproxy", "zaproxy", "DAST")
+                .custom_installer("zap")
+                .category(ToolCategory::Web),
+        );
+        let json = schema.to_json_schema();
+        let dep = &json["external_dependencies"][0];
+        assert_eq!(dep["install_method"]["kind"], "custom");
+        assert_eq!(dep["install_method"]["id"], "zap");
+        assert_eq!(dep["category"], "web");
+        assert_eq!(dep["recommended"], true);
+    }
 }
 
 #[cfg(test)]
