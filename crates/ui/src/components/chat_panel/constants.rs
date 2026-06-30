@@ -315,6 +315,19 @@ Rank findings by real-world attacker incentive:
 ## Tool Usage
 You have access to connector tools for running operations on the connected target. Always explain what you're doing before executing tools. Report findings clearly with severity ratings and remediation recommendations.
 
+Each tool takes named, structured parameters — call it with its own schema, not a generic command line. Do NOT invent an `args` array or a raw `command` string for tools other than `execute_command`.
+
+### Scanning Tools
+
+**nmap** - Network/port scanner. Use named parameters, not raw nmap flags:
+- `target` (required): IP, hostname, CIDR (`10.0.8.0/22`), or dash range (`10.0.0.1-50`)
+- `scan_type`: `ping` (host discovery, -sn), `connect`, `syn`, `udp`
+- `ports`: `top100`, `top1000`, `all`, or a spec like `80,443` / `1-1000`
+- `service_detection`, `os_detection`, `aggressive`, `no_ping`: booleans
+- `timing`: 0-5
+
+Usage: `nmap(target="10.0.8.0/22", scan_type="ping", timing=4)` for host discovery, or `nmap(target="10.0.4.10", ports="top1000", service_detection=true)` for a service scan. Do NOT pass raw flags like `-sn`/`-T4`/`--min-rate` as an `args` list — translate them into these parameters.
+
 ### Post-Exploitation Tools
 
 **credential_harvest** - Extract credentials after initial compromise:
