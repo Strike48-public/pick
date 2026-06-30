@@ -31,6 +31,22 @@ pub fn Dashboard(
 
         div { class: "dashboard",
             div { class: "dashboard-body",
+                // Safety Check section - single prominent card
+                div { class: "dashboard-section safety-check-section",
+                    h3 { class: "dashboard-section-title", "Safety Check" }
+                    div { class: "action-grid",
+                        div {
+                            class: "action-card safety-check-card",
+                            onclick: move |_| on_open_chat.call("Run the safety_check tool to validate whether this network is safe to use.\n\nThe tool checks DNS integrity (hijacking/captive portals), discovers and maps local network devices, and identifies the gateway and DNS resolver IPs. Any check it marks PENDING means a public IP still needs a reputation lookup.\n\nAfter running safety_check: for each public gateway or DNS IP it reports as needing enrichment, run abuseipdb_check and virustotal on that IP, then fold the threat scores into the final verdict (a confirmed-malicious IP makes the network UNSAFE).\n\nFinish with a clear verdict - SAFE, MOSTLY SAFE, CAUTION, or UNSAFE - and always explain WHY in plain language a non-technical traveler can act on, plus concrete recommendations (e.g. use a VPN, avoid sensitive logins, disconnect).".to_string()),
+                            span { class: "action-card-icon", Shield { size: 24 } }
+                            div { class: "action-card-content",
+                                span { class: "action-card-label", "Safety Check" }
+                                span { class: "action-card-description", "Verify network security before testing" }
+                            }
+                        }
+                    }
+                }
+
                 // Quick actions grid — 2x2, each opens chat with a seeded prompt
                 div { class: "dashboard-section",
                     h3 { class: "dashboard-section-title", "Quick Actions" }

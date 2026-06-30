@@ -20,6 +20,8 @@ pub mod port_scan;
 pub mod provenance_support;
 pub mod read_file;
 pub mod registry; // Quick action registry for UI
+pub mod safety_check; // NEW: Network safety validation
+pub mod safety_check_tool; // NEW: Safety check tool wrapper
 pub mod screenshot;
 pub mod service_banner;
 pub mod session_export;
@@ -68,6 +70,7 @@ pub use list_files::ListFilesTool;
 pub use network_discover::NetworkDiscoverTool;
 pub use port_scan::PortScanTool;
 pub use read_file::ReadFileTool;
+pub use safety_check_tool::SafetyCheckTool;
 pub use screenshot::ScreenshotTool;
 pub use service_banner::ServiceBannerTool;
 pub use session_export::SessionExportTool;
@@ -203,6 +206,9 @@ pub fn create_tool_registry() -> ToolRegistry {
     // Device and system info
     registry.register(DeviceInfoTool);
     registry.register(ScreenshotTool);
+
+    // Network safety validation
+    registry.register(SafetyCheckTool);
 
     // Traffic capture
     if pentest_platform::is_pcap_available() {

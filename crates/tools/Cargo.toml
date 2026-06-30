@@ -43,3 +43,4 @@ reqwest = { workspace = true }
 url = "2.5"
 urlencoding = "2.1"
 uuid = { workspace = true }
+default-net = "0.22" # Network interface detection for safety checks
