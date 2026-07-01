@@ -661,7 +661,14 @@ async fn try_sidecar_execution(
         let event = tokio::select! {
             ev = rx.recv() => match ev {
                 Ok(e) => e,
-                Err(_) => break,
+                Err(e) => {
+                    tracing::warn!(
+                        "[webwright-sidecar] event channel closed before completion ({}); \
+                         will fall back to subprocess",
+                        e
+                    );
+                    break;
+                }
             },
             _ = tokio::time::sleep_until(deadline) => {
                 tracing::warn!("[webwright-sidecar] timed out waiting for completion ({}s)", timeout_secs);
@@ -816,7 +823,13 @@ async fn try_sidecar_execution(
 
     live_state::complete(&workspace.task_id);
 
-    // If we get here, something went wrong
+    // Reached only when the event loop broke out (channel closed) without a
+    // terminal event. The break arm already logged why; return None so the
+    // orchestrator falls back to the subprocess path.
+    tracing::warn!(
+        "[webwright-sidecar] no terminal event received for task {}; returning None",
+        workspace.task_id
+    );
     None
 }
 

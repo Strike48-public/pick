@@ -297,8 +297,25 @@ pub(crate) async fn upload_artifacts_via_runner(
                         .invoke_capability("strikekit://evidence", payload, options)
                         .await
                     {
+                        // A concrete response means the platform accepted the
+                        // upload (the SDK maps `success == false` to `Err`).
                         Ok(Some(_)) => succeeded += 1,
-                        Ok(None) => succeeded += 1,
+                        // `Ok(None)` only occurs when no response receiver was
+                        // registered, i.e. fire-and-forget. We request
+                        // fire_and_forget=false, so an unconfirmed upload here is
+                        // not a success; count it as failed rather than inflate
+                        // the success tally.
+                        Ok(None) => {
+                            tracing::warn!(
+                                "[strikekit] upload for {} returned no confirmation (unexpected with fire_and_forget=false)",
+                                path
+                            );
+                            if failed.len() < UPLOAD_STATUS_FAILED_LIMIT {
+                                failed.push(path.to_string());
+                            } else {
+                                overflow += 1;
+                            }
+                        }
                         Err(e) => {
                             tracing::warn!("[strikekit] invoke failed for {}: {}", path, e);
                             if failed.len() < UPLOAD_STATUS_FAILED_LIMIT {
