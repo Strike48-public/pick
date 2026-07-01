@@ -396,6 +396,88 @@ pub async fn build_catalog_items() -> Vec<CatalogItem> {
     items
 }
 
+/// A single tool as shown on the read-only Tools overview page: its registered
+/// name, description, and a display category. Unlike [`CatalogItem`], this
+/// covers EVERY registered tool — including built-ins with no external
+/// dependency (port_scan, device_info, ...) — and does not probe install state.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ToolOverviewItem {
+    pub name: String,
+    pub description: String,
+    /// Stable lowercase category key (e.g. "active_directory", "other").
+    pub category: String,
+}
+
+/// Map a tool's name + its (optional) declared category to a display category.
+///
+/// Tools that declare an `ExternalDependency` carry an explicit
+/// [`ToolCategory`]. Built-in tools (no external dep) get a best-effort category
+/// from a small name-based heuristic so the overview page can still group them
+/// sensibly rather than dumping everything in "other".
+fn overview_category(name: &str, declared: Option<ToolCategory>) -> &'static str {
+    if let Some(cat) = declared {
+        // Reuse the serde rename for a stable key.
+        return match cat {
+            ToolCategory::Network => "network",
+            ToolCategory::Web => "web",
+            ToolCategory::ActiveDirectory => "active_directory",
+            ToolCategory::Credentials => "credentials",
+            ToolCategory::PostExploit => "post_exploit",
+            ToolCategory::Wireless => "wireless",
+            ToolCategory::Recon => "recon",
+            ToolCategory::Forensics => "forensics",
+            ToolCategory::Other => "other",
+        };
+    }
+    // Heuristic for built-ins with no declared category.
+    match name {
+        "port_scan" | "network_discover" | "ssdp_discover" | "arp_table" => "network",
+        "wifi_scan" | "wifi_scan_detailed" => "wireless",
+        "device_info" | "screenshot" | "execute_command" | "safety_check" => "system",
+        "list_files" | "read_file" | "write_file" | "session_export" => "files",
+        "web_vuln_scan" => "web",
+        "smb_enum" => "active_directory",
+        "cve_lookup" | "default_creds" | "service_banner" => "recon",
+        _ => "other",
+    }
+}
+
+/// Build the full read-only tools overview: every registered tool with a
+/// display category, sorted by (category, name). Drives the Tools page so it
+/// always reflects the live registry instead of a hand-maintained list.
+pub fn tools_overview() -> Vec<ToolOverviewItem> {
+    let registry = crate::create_tool_registry();
+    let mut items: Vec<ToolOverviewItem> = registry
+        .schemas()
+        .into_iter()
+        .map(|schema| {
+            let declared = schema.external_dependencies.first().map(|d| d.category);
+            ToolOverviewItem {
+                category: overview_category(&schema.name, declared).to_string(),
+                name: schema.name,
+                description: schema.description,
+            }
+        })
+        .collect();
+    items.sort_by(|a, b| {
+        a.category
+            .cmp(&b.category)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    items
+}
+
+/// Distinct categories present in [`tools_overview`], in display order.
+pub fn tools_overview_categories(items: &[ToolOverviewItem]) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for item in items {
+        if !seen.iter().any(|c| c == &item.category) {
+            seen.push(item.category.clone());
+        }
+    }
+    seen
+}
+
 /// Install a single catalog entry identified by its `binary_name`, emitting
 /// progress through `progress`. Rebuilds the catalog to resolve the entry so
 /// callers (e.g. the UI) only need to pass a string. Errors if no such entry
@@ -550,6 +632,54 @@ mod tests {
         let json = serde_json::to_string(&item).unwrap();
         let back: CatalogItem = serde_json::from_str(&json).unwrap();
         assert_eq!(item, back);
+    }
+
+    #[test]
+    fn tools_overview_covers_whole_registry_and_is_sorted() {
+        let overview = tools_overview();
+        let registry_count = crate::create_tool_registry().names().len();
+        // Every registered tool appears exactly once.
+        assert_eq!(
+            overview.len(),
+            registry_count,
+            "overview must include every registered tool"
+        );
+        // Includes both a built-in (no external dep) and an external tool.
+        assert!(overview.iter().any(|t| t.name == "port_scan"));
+        assert!(overview.iter().any(|t| t.name == "nmap"));
+        assert!(overview.iter().any(|t| t.name == "zap"));
+        // Sorted by (category, name).
+        for pair in overview.windows(2) {
+            assert!(
+                (pair[0].category.as_str(), pair[0].name.as_str())
+                    <= (pair[1].category.as_str(), pair[1].name.as_str()),
+                "overview must be sorted by (category, name)"
+            );
+        }
+    }
+
+    #[test]
+    fn overview_category_uses_declared_then_heuristic() {
+        // Declared category wins.
+        assert_eq!(
+            overview_category("nxc", Some(ToolCategory::ActiveDirectory)),
+            "active_directory"
+        );
+        // Built-in heuristic for a tool with no declared category.
+        assert_eq!(overview_category("port_scan", None), "network");
+        assert_eq!(overview_category("read_file", None), "files");
+        // Unknown built-in falls back to "other".
+        assert_eq!(overview_category("some_new_builtin", None), "other");
+    }
+
+    #[test]
+    fn tools_overview_categories_are_distinct_and_ordered() {
+        let overview = tools_overview();
+        let cats = tools_overview_categories(&overview);
+        let mut deduped = cats.clone();
+        deduped.dedup();
+        assert_eq!(cats.len(), deduped.len(), "categories must be distinct");
+        assert!(cats.iter().any(|c| c == "active_directory"));
     }
 
     #[tokio::test]

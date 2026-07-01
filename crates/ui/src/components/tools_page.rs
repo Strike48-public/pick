@@ -1,121 +1,81 @@
-//! Tools page — categorized grid of available connector tools
+//! Tools page — categorized grid of all connector tools.
+//!
+//! Renders directly from the live tool registry (`pentest_tools::catalog::
+//! tools_overview`) rather than a hand-maintained list, so every registered
+//! tool appears and new tools show up automatically. Clicking a tool opens the
+//! chat pre-seeded with a prompt to use it.
 
 use dioxus::prelude::*;
 
-use super::icons::{Folder, Network, Search, Terminal};
+use super::icons::{Folder, Lock, Network, Search, Shield, Terminal, Wifi};
 
-struct ToolInfo {
-    name: &'static str,
-    description: &'static str,
-}
-
-struct ToolCategory {
-    label: &'static str,
-    tools: &'static [ToolInfo],
-}
-
-const CATEGORIES: &[ToolCategory] = &[
-    ToolCategory {
-        label: "Reconnaissance",
-        tools: &[
-            ToolInfo {
-                name: "device_info",
-                description: "System info, hostname, OS, architecture",
-            },
-            ToolInfo {
-                name: "network_discover",
-                description: "ARP + mDNS + SSDP host discovery",
-            },
-            ToolInfo {
-                name: "ssdp_discover",
-                description: "UPnP/SSDP service discovery",
-            },
-        ],
-    },
-    ToolCategory {
-        label: "Network",
-        tools: &[
-            ToolInfo {
-                name: "port_scan",
-                description: "TCP port scanning with banner grab",
-            },
-            ToolInfo {
-                name: "wifi_scan",
-                description: "Nearby wireless network enumeration",
-            },
-            ToolInfo {
-                name: "arp_table",
-                description: "Local ARP cache and neighbor table",
-            },
-            ToolInfo {
-                name: "traffic_capture",
-                description: "Packet capture on network interfaces",
-            },
-        ],
-    },
-    ToolCategory {
-        label: "System",
-        tools: &[
-            ToolInfo {
-                name: "execute_command",
-                description: "Run shell commands on the target",
-            },
-            ToolInfo {
-                name: "screenshot",
-                description: "Capture screen or display output",
-            },
-        ],
-    },
-    ToolCategory {
-        label: "Files",
-        tools: &[
-            ToolInfo {
-                name: "list_files",
-                description: "Directory listing with metadata",
-            },
-            ToolInfo {
-                name: "read_file",
-                description: "Read file contents from target",
-            },
-            ToolInfo {
-                name: "write_file",
-                description: "Write or create files on target",
-            },
-        ],
-    },
-];
-
-fn render_category_icon(idx: usize) -> Element {
-    match idx {
-        0 => rsx! { Search { size: 18 } },
-        1 => rsx! { Network { size: 18 } },
-        2 => rsx! { Terminal { size: 18 } },
-        3 => rsx! { Folder { size: 18 } },
-        _ => rsx! { Search { size: 18 } },
+/// Humanize a stable category key into a section label.
+fn humanize_category(category: &str) -> &'static str {
+    match category {
+        "network" => "Network",
+        "web" => "Web",
+        "active_directory" => "Active Directory",
+        "credentials" => "Credentials",
+        "post_exploit" => "Post-Exploitation",
+        "wireless" => "Wireless",
+        "recon" => "Reconnaissance",
+        "forensics" => "Forensics",
+        "system" => "System",
+        "files" => "Files",
+        _ => "Other",
     }
 }
 
-/// Tools page — displays all available connector tools organized by category
+/// Icon per category key.
+fn render_category_icon(category: &str) -> Element {
+    match category {
+        "network" => rsx! { Network { size: 18 } },
+        "web" => rsx! { Search { size: 18 } },
+        "active_directory" => rsx! { Lock { size: 18 } },
+        "credentials" => rsx! { Lock { size: 18 } },
+        "post_exploit" => rsx! { Shield { size: 18 } },
+        "wireless" => rsx! { Wifi { size: 18 } },
+        "recon" => rsx! { Search { size: 18 } },
+        "forensics" => rsx! { Search { size: 18 } },
+        "system" => rsx! { Terminal { size: 18 } },
+        "files" => rsx! { Folder { size: 18 } },
+        _ => rsx! { Terminal { size: 18 } },
+    }
+}
+
+/// Tools page — displays all registered connector tools grouped by category.
 #[component]
 pub fn ToolsPage(on_open_chat: EventHandler<String>) -> Element {
+    // The registry is process-global and cheap to enumerate; compute once per
+    // mount and hold the result.
+    let tools = use_hook(pentest_tools::catalog::tools_overview);
+    let categories = pentest_tools::catalog::tools_overview_categories(&tools);
+    let total = tools.len();
+
     rsx! {
         style { {include_str!("css/tools_page.css")} }
 
         div { class: "tools-page",
             div { class: "tools-body",
-                for (idx, cat) in CATEGORIES.iter().enumerate() {
+                div { class: "text-dim-sm", style: "margin-bottom: 8px;",
+                    "{total} tools available" }
+                for category in categories {
                     div { class: "tools-category",
                         div { class: "tools-category-header",
                             span {
                                 class: "tools-category-icon",
-                                {render_category_icon(idx)}
+                                {render_category_icon(&category)}
                             }
-                            h3 { class: "tools-category-title", "{cat.label}" }
+                            h3 { class: "tools-category-title", "{humanize_category(&category)}" }
                         }
                         div { class: "tools-grid",
-                            for tool in cat.tools.iter() {
+                            for tool in tools.iter().filter(|t| t.category == category).cloned() {
                                 {
-                                    let prompt = format!("Use the {} tool — {}", tool.name, tool.description.to_lowercase());
+                                    let prompt = format!(
+                                        "Use the {} tool — {}",
+                                        tool.name,
+                                        tool.description.to_lowercase()
+                                    );
                                     rsx! {
                                         div {
                                             class: "tool-card dashboard-card",
