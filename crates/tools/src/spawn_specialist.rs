@@ -3,20 +3,14 @@
 //! This tool is available to the Red Team agent to delegate deep-dive
 //! security testing to specialized sub-agents based on target characteristics
 //! and aggression level configuration.
-//!
-//! NOTE: This tool is currently a placeholder. Full implementation requires:
-//! 1. Matrix client injection into ToolContext
-//! 2. Aggression level propagation through ToolContext
-//! 3. Parent agent name tracking in ToolContext
-//!
-//! Once these are wired, the spawn_specialist_impl function can be used.
 
 use async_trait::async_trait;
 use pentest_core::aggression::AggressionLevel;
 use pentest_core::error::{Error, Result};
 use pentest_core::matrix::MatrixChatClient;
 use pentest_core::specialist_spawner::{
-    AttackSurface, SpawnDecision, SpecialistContext, SpecialistSpawner, SpecialistType,
+    AttackSurface, CloudIndicators, DatabaseIndicators, SpawnDecision, SpecialistContext,
+    SpecialistSpawner, SpecialistType,
 };
 use pentest_core::tools::{execute_timed, PentestTool, Platform, ToolContext, ToolResult};
 use serde::{Deserialize, Serialize};
@@ -53,6 +47,16 @@ pub struct SpawnSpecialistInput {
     /// Entry points identified.
     #[serde(default)]
     pub entry_points: Vec<String>,
+
+    /// Cloud-specific attack-surface signals (pick#151). Defaulted so the Red
+    /// Team agent can omit it for non-cloud specialist spawns.
+    #[serde(default)]
+    pub cloud_indicators: CloudIndicators,
+
+    /// Database-specific attack-surface signals (pick#161). Defaulted so the
+    /// Red Team agent can omit it for non-database specialist spawns.
+    #[serde(default)]
+    pub database_indicators: DatabaseIndicators,
 
     /// Justification for spawning (required when overriding policy).
     #[serde(default)]
@@ -105,7 +109,7 @@ impl PentestTool for SpawnSpecialistTool {
     fn description(&self) -> &str {
         "Spawn a domain-specific specialist agent for deep-dive security testing. \
          Evaluates spawn policy based on aggression level and target characteristics. \
-         Specialists: web-app, api, binary, ai-security."
+         Specialists: web-app, api, binary, ai-security, cloud, database."
     }
 
     fn supported_platforms(&self) -> Vec<Platform> {
@@ -179,6 +183,8 @@ async fn spawn_specialist_impl(
             technologies: input.technologies,
             auth_mechanisms: input.auth_mechanisms,
             entry_points: input.entry_points,
+            cloud_indicators: input.cloud_indicators,
+            database_indicators: input.database_indicators,
         },
     };
 
@@ -294,6 +300,7 @@ async fn spawn_specialist_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pentest_core::specialist_spawner::CloudProvider;
 
     fn make_input(specialist: SpecialistType, endpoint_count: usize) -> SpawnSpecialistInput {
         SpawnSpecialistInput {
@@ -305,17 +312,69 @@ mod tests {
             technologies: vec![],
             auth_mechanisms: vec![],
             entry_points: vec![],
+            cloud_indicators: Default::default(),
+            database_indicators: Default::default(),
             justification: None,
         }
     }
 
     #[test]
     fn spawn_specialist_input_serialization() {
-        let input = make_input(SpecialistType::WebApp, 20);
+        let input = make_input(SpecialistType::WEB_APP, 20);
         let json = serde_json::to_string(&input).unwrap();
         let deserialized: SpawnSpecialistInput = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.specialist_type, SpecialistType::WebApp);
+        assert_eq!(deserialized.specialist_type, SpecialistType::WEB_APP);
         assert_eq!(deserialized.endpoint_count, 20);
+    }
+
+    #[test]
+    fn cloud_specialist_input_roundtrips_indicators() {
+        let mut input = make_input(SpecialistType::CLOUD, 0);
+        input.cloud_indicators = CloudIndicators {
+            provider: Some(CloudProvider::Aws),
+            ssrf_available: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        let deserialized: SpawnSpecialistInput = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.specialist_type, SpecialistType::CLOUD);
+        assert_eq!(
+            deserialized.cloud_indicators.provider,
+            Some(CloudProvider::Aws)
+        );
+        assert!(deserialized.cloud_indicators.ssrf_available);
+    }
+
+    #[test]
+    fn database_specialist_input_roundtrips_indicators() {
+        use pentest_core::specialist_spawner::{DatabaseIndicators, DbEngine};
+        let mut input = make_input(SpecialistType::DATABASE, 0);
+        input.database_indicators = DatabaseIndicators {
+            engines: vec![DbEngine::Postgres],
+            sqli_available: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        let deserialized: SpawnSpecialistInput = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.specialist_type, SpecialistType::DATABASE);
+        assert_eq!(
+            deserialized.database_indicators.engines,
+            vec![DbEngine::Postgres]
+        );
+        assert!(deserialized.database_indicators.sqli_available);
+    }
+
+    #[test]
+    fn cloud_specialist_input_accepts_missing_indicators() {
+        // The agent may omit cloud_indicators entirely for non-cloud spawns.
+        let json = r#"{
+            "specialist_type": "web-app",
+            "targets": ["https://example.com"],
+            "endpoint_count": 10
+        }"#;
+        let input: SpawnSpecialistInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.specialist_type, SpecialistType::WEB_APP);
+        assert!(!input.cloud_indicators.has_any());
     }
 
     #[test]

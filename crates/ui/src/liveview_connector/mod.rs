@@ -683,7 +683,20 @@ impl LiveViewConnector {
         );
 
         // Build the SDK config from our pentest_core config
-        let sdk_config = self.config.to_sdk_config();
+        let mut sdk_config = self.config.to_sdk_config();
+
+        // Report local host interfaces for infrastructure self-exclusion. The
+        // orchestrator reads `host_interfaces` from the registration's
+        // InstanceMetadata (the SDK forwards `config.metadata` there) so it
+        // can exclude this connector's host from engagement scanning (#2274).
+        // Previously injected in the hand-rolled registration message; the SDK
+        // ConnectorRunner migration moved the injection point here.
+        if let Some(ips) = pentest_platform::desktop::get_local_ipv4_addresses() {
+            tracing::info!("Reporting host interfaces for exclusion: {:?}", ips);
+            sdk_config
+                .metadata
+                .insert("host_interfaces".to_string(), ips.join(","));
+        }
 
         // Resolve the IPC address from the LiveView handle (if started)
         let ipc_addr: Arc<RwLock<Option<crate::ipc::IpcAddr>>> = Arc::new(RwLock::new(

@@ -59,6 +59,30 @@ pub const SIDECAR_READY_POLL_INTERVAL_MS: u64 = 100;
 pub const MIN_EFFECTIVE_TIMEOUT_SECS: u64 = 30;
 
 // ---------------------------------------------------------------------------
+// Completion reasons
+// ---------------------------------------------------------------------------
+//
+// A webwright sidecar run reports `exit_code: 0` whether it finished exploring,
+// hit the wall-clock deadline, or hit the step limit, on purpose, so the
+// connector framework doesn't treat a graceful early stop as a hard failure and
+// trip the circuit breaker. That makes `exit_code`/`timed_out` useless for
+// telling the three apart. These string tags are surfaced in the tool result
+// JSON under `data.completion` so the LLM and UI can distinguish a complete run
+// from a partial one without parsing English out of `stdout`.
+
+/// The sidecar reported a `Complete` event: the task finished on its own.
+pub const WEBWRIGHT_COMPLETION_COMPLETE: &str = "complete";
+
+/// The wall-clock deadline fired before the task completed; partial results.
+pub const WEBWRIGHT_COMPLETION_TIMEOUT: &str = "timeout";
+
+/// The step limit (`max_steps`) was reached before the task completed; partial.
+pub const WEBWRIGHT_COMPLETION_STEP_LIMIT: &str = "step_limit";
+
+/// The sidecar reported an `Error` event (result carries `exit_code: 1`).
+pub const WEBWRIGHT_COMPLETION_ERROR: &str = "error";
+
+// ---------------------------------------------------------------------------
 // Progress / live-state
 // ---------------------------------------------------------------------------
 

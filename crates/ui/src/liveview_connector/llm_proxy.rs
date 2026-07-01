@@ -271,8 +271,12 @@ async fn handle_llm_request(
                             id
                         }
                         Err(e) => {
+                            // Fail fast: sending to the conversation with an empty
+                            // agent_id would make a doomed downstream call. Don't
+                            // cache the failure (agent_id stays None) so the next
+                            // request retries the upsert.
                             tracing::error!("LLM proxy: failed to upsert webwright agent: {}", e);
-                            String::new()
+                            return Err(StatusCode::SERVICE_UNAVAILABLE);
                         }
                     }
                 }

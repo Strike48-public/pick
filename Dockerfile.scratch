@@ -18,7 +18,7 @@ WORKDIR /app
 
 FROM chef AS planner
 COPY . .
-RUN test -f Cargo.lock || cargo generate-lockfile
+# Cargo.lock is committed; cargo chef uses it for a reproducible recipe.
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ----------------------------------------------------------
@@ -72,15 +72,14 @@ RUN rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
 
 # Cook dependencies
 RUN RUST_TARGET=$(cat /tmp/rust-target) && \
-    cargo chef cook --release --recipe-path recipe.json \
+    cargo chef cook --release --locked --recipe-path recipe.json \
     --target "$RUST_TARGET" \
     -p pentest-headless --features pentest-platform/desktop-pcap
 
 # Build binary
 COPY . .
-RUN test -f Cargo.lock || cargo generate-lockfile
 RUN RUST_TARGET=$(cat /tmp/rust-target) && \
-    cargo build --release \
+    cargo build --release --locked \
     --target "$RUST_TARGET" \
     -p pentest-headless --features pentest-platform/desktop-pcap && \
     mkdir -p /out && \

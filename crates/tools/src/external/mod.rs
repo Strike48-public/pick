@@ -35,6 +35,12 @@ pub mod network;
 pub mod specialized;
 pub mod wireless;
 
+// Tool-catalog additions: DAST, AD attack suite, framework integrations.
+pub mod ad;
+pub mod burp;
+pub mod metasploit;
+pub mod zap;
+
 // Re-exports
 // Phase 1
 pub use ffuf::FfufTool;
@@ -77,3 +83,9 @@ pub use specialized::{
     SocatTool, SpiderfootTool, SslscanTool, TestsslTool, TheHarvesterTool, WhoisTool,
 };
 pub use wireless::AircrackngTool;
+
+// Tool-catalog additions
+pub use ad::{BloodHoundTool, CertipyTool, KerbruteTool, NetExecTool};
+pub use burp::BurpSuiteTool;
+pub use metasploit::MetasploitTool;
+pub use zap::ZapTool;

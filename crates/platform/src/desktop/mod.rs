@@ -11,6 +11,38 @@ mod wifi_attack;
 // Re-export sandbox control functions
 pub use command::{is_sandbox_enabled, set_use_sandbox};
 
+/// Returns all local non-loopback IPv4 addresses (synchronous).
+/// Used by connectors to report their host interfaces during registration.
+#[cfg(feature = "network-interface")]
+pub fn get_local_ipv4_addresses() -> Option<Vec<String>> {
+    use network_interface::{NetworkInterface as NI, NetworkInterfaceConfig};
+
+    let interfaces = NI::show().ok()?;
+    let ips: Vec<String> = interfaces
+        .into_iter()
+        .flat_map(|iface| iface.addr)
+        .filter_map(|addr| {
+            let ip = addr.ip();
+            if ip.is_ipv4() && !ip.is_loopback() {
+                Some(ip.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if ips.is_empty() {
+        None
+    } else {
+        Some(ips)
+    }
+}
+
+#[cfg(not(feature = "network-interface"))]
+pub fn get_local_ipv4_addresses() -> Option<Vec<String>> {
+    None
+}
+
 // Re-export capture session management (single source of truth)
 pub use capture::{
     get_current_packets, is_capture_active, is_pcap_available, start_current_capture,

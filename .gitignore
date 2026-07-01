@@ -1,7 +1,9 @@
 # Rust
 /target/
 **/*.rs.bk
-Cargo.lock
+# Cargo.lock IS committed: this is an application workspace, so a committed
+# lockfile gives reproducible CI/release builds and prevents surprise breakage
+# from new upstream dependency releases. CI builds with --locked.
 
 # IDE
 .idea/

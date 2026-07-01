@@ -6,8 +6,7 @@ WORKDIR /app
 # ── Stage 2: Planner ──────────────────────────────────────────
 FROM chef AS planner
 COPY . .
-# Generate lockfile if missing (Cargo.lock is gitignored)
-RUN test -f Cargo.lock || cargo generate-lockfile
+# Cargo.lock is committed; cargo chef uses it for a reproducible recipe.
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ── Stage 3: Builder ──────────────────────────────────────────
@@ -23,11 +22,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=planner /app/recipe.json recipe.json
 
 # Cook dependencies (cached as long as recipe.json is unchanged)
-RUN cargo chef cook --release --recipe-path recipe.json -p pentest-headless --features pentest-platform/desktop-pcap
+RUN cargo chef cook --release --locked --recipe-path recipe.json -p pentest-headless --features pentest-platform/desktop-pcap
 
 COPY . .
-RUN test -f Cargo.lock || cargo generate-lockfile
-RUN cargo build --release -p pentest-headless --features pentest-platform/desktop-pcap
+RUN cargo build --release --locked -p pentest-headless --features pentest-platform/desktop-pcap
 
 # ── Stage 4: Runtime ──────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime

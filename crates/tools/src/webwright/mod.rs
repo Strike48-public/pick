@@ -374,12 +374,13 @@ impl PentestTool for WebwrightTool {
                 None
             };
 
-            let result = if let Some(r) = sidecar_result {
+            let (result, completion) = if let Some((r, reason)) = sidecar_result {
                 tracing::info!(
-                    "[webwright] sidecar execution complete ({:.1}s elapsed)",
+                    "[webwright] sidecar execution complete (reason={}, {:.1}s elapsed)",
+                    reason,
                     t0.elapsed().as_secs_f32()
                 );
-                r
+                (r, reason)
             } else {
                 tracing::info!(
                     "[webwright] launching subprocess (timeout={}s, {:.1}s elapsed)",
@@ -394,7 +395,10 @@ impl PentestTool for WebwrightTool {
                     r.stderr.len(),
                     t0.elapsed().as_secs_f32()
                 );
-                r
+                // The subprocess path runs the CLI to completion under its own
+                // timeout; map its exit status onto the same completion vocabulary.
+                let reason = subprocess_completion(r.timed_out, r.exit_code);
+                (r, reason)
             };
 
             // Copy artifacts to connector workspace (for Files panel)
@@ -457,6 +461,11 @@ impl PentestTool for WebwrightTool {
                 "mode": plan.mode.as_str(),
                 "start_url": plan.start_url,
                 "exit_code": result.exit_code,
+                // Machine-readable outcome: "complete" | "timeout" | "step_limit"
+                // | "error". Distinguishes a fully-explored task from one that
+                // stopped early, all of which carry exit_code 0 on purpose so a
+                // graceful early stop doesn't trip the connector circuit breaker.
+                "completion": completion,
                 "stdout": stdout_truncated,
                 "stderr": result.stderr,
                 "artifacts": artifacts,
@@ -579,9 +588,29 @@ async fn run_subprocess(
         .await
 }
 
+/// Map a subprocess-path exit status onto the machine-readable completion
+/// vocabulary used in the tool result JSON. A hard timeout wins over the exit
+/// code; otherwise `0` is a clean finish and anything else is an error.
+fn subprocess_completion(timed_out: bool, exit_code: i32) -> &'static str {
+    if timed_out {
+        constants::WEBWRIGHT_COMPLETION_TIMEOUT
+    } else if exit_code == 0 {
+        constants::WEBWRIGHT_COMPLETION_COMPLETE
+    } else {
+        constants::WEBWRIGHT_COMPLETION_ERROR
+    }
+}
+
 /// Try to execute the plan via the sidecar process. Returns `None` if the
 /// sidecar couldn't be spawned or the command couldn't be sent, so the
 /// orchestrator can fall back to [`run_subprocess`].
+///
+/// On success returns the [`pentest_platform::CommandResult`] alongside a
+/// machine-readable completion reason (see the `WEBWRIGHT_COMPLETION_*`
+/// constants). The reason lets callers distinguish a fully-explored task from
+/// one that stopped early on a timeout or step limit; all three otherwise
+/// carry `exit_code: 0` on purpose, so the connector framework doesn't treat a
+/// graceful early stop as a hard failure and trip the circuit breaker.
 ///
 /// Both [`WebwrightMode::Explore`] and [`WebwrightMode::Execute`] are supported
 /// — the plan's [`SidecarCommand`] already encodes which one. Live progress is
@@ -590,7 +619,7 @@ async fn try_sidecar_execution(
     plan: &ExecutionPlan,
     workspace: &WebwrightWorkspace,
     env_exports: &str,
-) -> Option<pentest_platform::CommandResult> {
+) -> Option<(pentest_platform::CommandResult, &'static str)> {
     // Spawn a fresh sidecar for this task (enables parallel execution).
     // env_exports already encodes OPENAI_BASE_URL with the proxy port.
     let sidecar = match SidecarProcess::spawn(env_exports).await {
@@ -638,13 +667,16 @@ async fn try_sidecar_execution(
                 tracing::warn!("[webwright-sidecar] timed out waiting for completion ({}s)", timeout_secs);
                 let _ = sidecar.send(SidecarCommand::Cancel).await;
                 live_state::complete(&workspace.task_id);
-                return Some(pentest_platform::CommandResult {
-                    stdout: format!("Webwright timed out after {}s (task still had work to do)", timeout_secs),
-                    stderr: String::new(),
-                    exit_code: 0,
-                    timed_out: false, // we handled it gracefully, not a hard timeout
-                    duration_ms: timeout_secs * 1000,
-                });
+                return Some((
+                    pentest_platform::CommandResult {
+                        stdout: format!("Webwright timed out after {}s (task still had work to do)", timeout_secs),
+                        stderr: String::new(),
+                        exit_code: 0,
+                        timed_out: false, // we handled it gracefully, not a hard timeout
+                        duration_ms: timeout_secs * 1000,
+                    },
+                    constants::WEBWRIGHT_COMPLETION_TIMEOUT,
+                ));
             }
         };
 
@@ -713,16 +745,19 @@ async fn try_sidecar_execution(
                     );
                     let _ = sidecar.send(SidecarCommand::Cancel).await;
                     live_state::complete(&workspace.task_id);
-                    return Some(pentest_platform::CommandResult {
-                        stdout: format!(
-                            "Webwright reached step limit ({} steps). Partial results collected.",
-                            max_steps
-                        ),
-                        stderr: String::new(),
-                        exit_code: 0,
-                        timed_out: false,
-                        duration_ms: 0,
-                    });
+                    return Some((
+                        pentest_platform::CommandResult {
+                            stdout: format!(
+                                "Webwright reached step limit ({} steps). Partial results collected.",
+                                max_steps
+                            ),
+                            stderr: String::new(),
+                            exit_code: 0,
+                            timed_out: false,
+                            duration_ms: 0,
+                        },
+                        constants::WEBWRIGHT_COMPLETION_STEP_LIMIT,
+                    ));
                 }
             }
             SidecarEvent::Finding {
@@ -750,24 +785,30 @@ async fn try_sidecar_execution(
             SidecarEvent::Complete { summary, .. } => {
                 tracing::info!("[webwright-sidecar] complete: {}", summary);
                 live_state::complete(&workspace.task_id);
-                return Some(pentest_platform::CommandResult {
-                    stdout: summary.clone(),
-                    stderr: String::new(),
-                    exit_code: 0,
-                    timed_out: false,
-                    duration_ms: 0,
-                });
+                return Some((
+                    pentest_platform::CommandResult {
+                        stdout: summary.clone(),
+                        stderr: String::new(),
+                        exit_code: 0,
+                        timed_out: false,
+                        duration_ms: 0,
+                    },
+                    constants::WEBWRIGHT_COMPLETION_COMPLETE,
+                ));
             }
             SidecarEvent::Error { message } => {
                 tracing::error!("[webwright-sidecar] error: {}", message);
                 live_state::complete(&workspace.task_id);
-                return Some(pentest_platform::CommandResult {
-                    stdout: String::new(),
-                    stderr: message.clone(),
-                    exit_code: 1,
-                    timed_out: false,
-                    duration_ms: 0,
-                });
+                return Some((
+                    pentest_platform::CommandResult {
+                        stdout: String::new(),
+                        stderr: message.clone(),
+                        exit_code: 1,
+                        timed_out: false,
+                        duration_ms: 0,
+                    },
+                    constants::WEBWRIGHT_COMPLETION_ERROR,
+                ));
             }
             _ => {}
         }
@@ -806,6 +847,33 @@ mod tests {
             escaped
         );
         String::from_utf8(output.stdout).expect("utf8")
+    }
+
+    #[test]
+    fn subprocess_completion_maps_exit_status() {
+        // Hard timeout wins regardless of exit code.
+        assert_eq!(
+            subprocess_completion(true, 0),
+            constants::WEBWRIGHT_COMPLETION_TIMEOUT
+        );
+        assert_eq!(
+            subprocess_completion(true, 1),
+            constants::WEBWRIGHT_COMPLETION_TIMEOUT
+        );
+        // Clean exit is a complete run.
+        assert_eq!(
+            subprocess_completion(false, 0),
+            constants::WEBWRIGHT_COMPLETION_COMPLETE
+        );
+        // Any non-zero exit without a timeout is an error.
+        assert_eq!(
+            subprocess_completion(false, 1),
+            constants::WEBWRIGHT_COMPLETION_ERROR
+        );
+        assert_eq!(
+            subprocess_completion(false, -1),
+            constants::WEBWRIGHT_COMPLETION_ERROR
+        );
     }
 
     #[test]

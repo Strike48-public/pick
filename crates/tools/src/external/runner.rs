@@ -25,6 +25,56 @@ pub fn param_str_opt(params: &Value, key: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Extract and validate an "exclude" list parameter for scan tools.
+///
+/// Matrix injects the engagement's out-of-scope hosts into this parameter
+/// (issue #2524) so the scanner natively skips them. The value may arrive as a
+/// JSON array of strings (the canonical form Matrix sends) or as a
+/// comma-separated string (defensive, in case the LLM supplies one). Each entry
+/// is validated as an IP / CIDR / hostname via [`validate_target`] to prevent
+/// command injection through this newly-exposed parameter.
+///
+/// Returns:
+/// - `Ok(Some(joined))` — a comma-joined, validated exclusion list to pass to
+///   the tool's native `--exclude` flag,
+/// - `Ok(None)` — no exclusions present,
+/// - `Err(_)` — an entry failed validation.
+pub fn param_exclude_list(params: &Value, key: &str) -> Result<Option<String>> {
+    let raw_entries: Vec<String> = match params.get(key) {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|s| s.to_string())
+            .collect(),
+        Some(Value::String(s)) => s.split(',').map(|p| p.trim().to_string()).collect(),
+        Some(other) => {
+            return Err(Error::InvalidParams(format!(
+                "{} must be an array of hosts or a comma-separated string, got {}",
+                key, other
+            )))
+        }
+    };
+
+    let mut validated = Vec::new();
+    for entry in raw_entries {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        // Reuse the same target validator the `target` parameter uses, so an
+        // exclude entry can never smuggle in shell metacharacters.
+        let valid = pentest_core::validation::validate_target(entry)?;
+        validated.push(valid);
+    }
+
+    if validated.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(validated.join(",")))
+    }
+}
+
 /// Build command arguments with common options
 pub struct CommandBuilder {
     args: Vec<String>,
@@ -194,5 +244,64 @@ mod tests {
         let params = serde_json::json!({"key": "value"});
         assert_eq!(param_str_opt(&params, "key"), Some("value".to_string()));
         assert_eq!(param_str_opt(&params, "missing"), None);
+    }
+
+    // --- param_exclude_list (issue #2524) ---------------------------------
+
+    #[test]
+    fn exclude_list_absent_or_null_is_none() {
+        assert_eq!(
+            param_exclude_list(&serde_json::json!({}), "exclude").unwrap(),
+            None
+        );
+        assert_eq!(
+            param_exclude_list(&serde_json::json!({"exclude": null}), "exclude").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn exclude_list_empty_array_is_none() {
+        let params = serde_json::json!({"exclude": []});
+        assert_eq!(param_exclude_list(&params, "exclude").unwrap(), None);
+    }
+
+    #[test]
+    fn exclude_list_array_is_joined() {
+        let params = serde_json::json!({"exclude": ["10.0.0.1", "10.0.0.2"]});
+        assert_eq!(
+            param_exclude_list(&params, "exclude").unwrap(),
+            Some("10.0.0.1,10.0.0.2".to_string())
+        );
+    }
+
+    #[test]
+    fn exclude_list_accepts_cidr_entries() {
+        let params = serde_json::json!({"exclude": ["10.0.0.0/24"]});
+        assert_eq!(
+            param_exclude_list(&params, "exclude").unwrap(),
+            Some("10.0.0.0/24".to_string())
+        );
+    }
+
+    #[test]
+    fn exclude_list_comma_string_is_normalized() {
+        let params = serde_json::json!({"exclude": "10.0.0.1, 10.0.0.2"});
+        assert_eq!(
+            param_exclude_list(&params, "exclude").unwrap(),
+            Some("10.0.0.1,10.0.0.2".to_string())
+        );
+    }
+
+    #[test]
+    fn exclude_list_rejects_injection_attempt() {
+        let params = serde_json::json!({"exclude": ["; rm -rf /"]});
+        assert!(param_exclude_list(&params, "exclude").is_err());
+    }
+
+    #[test]
+    fn exclude_list_rejects_non_array_non_string() {
+        let params = serde_json::json!({"exclude": 1234});
+        assert!(param_exclude_list(&params, "exclude").is_err());
     }
 }

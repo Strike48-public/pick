@@ -34,8 +34,14 @@ static ACTION_REGISTRY: LazyLock<pentest_tools::registry::QuickActionRegistry> =
 type SharedToolRegistry = Arc<RwLock<Option<Arc<TokioRwLock<ToolRegistry>>>>>;
 static TOOL_REGISTRY: LazyLock<SharedToolRegistry> = LazyLock::new(|| Arc::new(RwLock::new(None)));
 
-/// Process-wide evidence graph. Tool wrappers / the Red Team agent push
-/// nodes in; the Generate Report action in the chat panel reads them out.
+/// Process-wide evidence graph that the Generate Report action in the chat
+/// panel reads out (via [`evidence_snapshot`]) and gates into the report.
+///
+/// INTENDED: tool wrappers / the Red Team agent populate this via
+/// [`push_evidence`]. ACTUAL: [`push_evidence`] has no callers, so this graph is
+/// never populated in production and the report is built from an empty set. Tool
+/// findings currently land in a separate, unbridged buffer
+/// (`pentest_tools::evidence_producer::PENDING_EVIDENCE`). See pick#172.
 ///
 /// Kept as a flat `Vec` rather than an index because the orchestrator gate
 /// iterates the whole graph anyway, and the UI never looks up nodes by id.
@@ -147,9 +153,12 @@ pub fn evidence_snapshot() -> Vec<EvidenceNode> {
         .clone()
 }
 
-/// Append a node to the evidence graph. Called by tool wrappers after the
-/// Red Team Agent produces a finding and by the Validator Agent when it
-/// adjudicates one.
+/// Append a node to the evidence graph.
+///
+/// INTENDED to be called by tool wrappers after the Red Team Agent produces a
+/// finding and by the Validator Agent when it adjudicates one. It currently has
+/// NO callers, so the evidence graph is never populated in production. Wiring the
+/// tool buffer to this function is tracked in pick#172.
 pub fn push_evidence(node: EvidenceNode) {
     EVIDENCE_GRAPH
         .write()
