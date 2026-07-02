@@ -46,6 +46,13 @@ static TOOL_REGISTRY: LazyLock<SharedToolRegistry> = LazyLock::new(|| Arc::new(R
 ///
 /// Kept as a flat `Vec` rather than an index because the orchestrator gate
 /// iterates the whole graph anyway, and the UI never looks up nodes by id.
+///
+/// LOCK ORDERING: the only place that touches two evidence locks is
+/// [`drain_tool_evidence_into_graph`], and it fully releases the tool-side
+/// `PENDING_EVIDENCE` lock (inside `drain_pending_evidence`) *before* it
+/// acquires this one — the locks are never held simultaneously, so there is no
+/// deadlock even under concurrent tool execution. Any future code that needs
+/// both must keep that order (PENDING_EVIDENCE first, EVIDENCE_GRAPH second).
 static EVIDENCE_GRAPH: LazyLock<RwLock<Vec<EvidenceNode>>> =
     LazyLock::new(|| RwLock::new(Vec::new()));
 
