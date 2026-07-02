@@ -269,6 +269,158 @@ pub fn build_report_agent_seed_message(manifest: &ValidatedFindingsManifest) -> 
     )
 }
 
+/// The payload the Validator Agent expects: every still-`Pending` node in the
+/// graph, wrapped with engagement context.
+///
+/// Shape is pinned by the Validator system prompt's "Input Contract"
+/// (`pending_evidence_manifest`). It reuses [`ManifestFinding`] because that is
+/// already the flattened, `current_severity`-exposed view the prompt documents.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingEvidenceManifest {
+    pub engagement: EngagementInfo,
+    /// The nodes awaiting a verdict. Only `Pending` nodes are included — the
+    /// Validator never re-adjudicates a node it already ruled on.
+    pub nodes: Vec<ManifestFinding>,
+}
+
+/// Build the [`PendingEvidenceManifest`] from the current evidence graph.
+///
+/// Filters to `Pending` nodes only. An empty result is valid and expected when
+/// there is nothing to validate; the Validator prompt handles that case.
+pub fn build_pending_evidence_manifest(
+    nodes: &[EvidenceNode],
+    engagement: EngagementInfo,
+) -> PendingEvidenceManifest {
+    let nodes = nodes
+        .iter()
+        .filter(|n| n.validation_status == ValidationStatus::Pending)
+        .map(ManifestFinding::from_node)
+        .collect();
+    PendingEvidenceManifest { engagement, nodes }
+}
+
+/// Render a pending-evidence manifest as the seed message the UI sends to the
+/// Validator Agent. Symmetric to [`build_report_agent_seed_message`]: the
+/// Validator's system prompt pins the JSON shape, so we hand it over verbatim
+/// inside a fenced block with a short instruction.
+pub fn build_validator_seed_message(manifest: &PendingEvidenceManifest) -> String {
+    // Same infallibility contract as the report seed: every field serializes,
+    // so a failure means a newly added field broke the contract. Fall back to
+    // an empty manifest rather than panicking the connector.
+    let json = serde_json::to_string_pretty(manifest).unwrap_or_else(|e| {
+        tracing::error!(
+            error = %e,
+            "BUG: PendingEvidenceManifest serialization failed — a newly added \
+             field violates the infallibility contract. Falling back to an empty \
+             manifest so the Validator still receives something it can parse."
+        );
+        "{}".to_string()
+    });
+    format!(
+        "The engagement's evidence collection is complete. Below is the \
+         `pending_evidence_manifest`. Adjudicate every node and emit your \
+         verdicts per your system prompt.\n\n```json\n{json}\n```"
+    )
+}
+
+/// A single adjudication decision emitted by the Validator Agent.
+///
+/// Mirrors the `decision` column of the Validator prompt's verdict taxonomy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerdictDecision {
+    /// Evidence sufficient and severity correct — publish at `current_severity`.
+    Confirmed,
+    /// Evidence sufficient but severity wrong — publish at the revised value.
+    Revised,
+    /// Claim not supported by evidence — keep for audit, exclude from report.
+    FalsePositive,
+    /// Useful context but not a finding — report appendix, not the table.
+    InfoOnly,
+}
+
+/// One entry in the Validator Agent's output.
+///
+/// Shape is pinned by the Validator prompt's "Output Format" section. `severity`
+/// is optional because the prompt only requires it for `confirmed` and
+/// `revised`; for `false_positive` / `info_only` it is ignored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Verdict {
+    pub node_id: String,
+    pub decision: VerdictDecision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<Severity>,
+    pub rationale: String,
+    #[serde(default)]
+    pub confidence: f32,
+}
+
+/// The full JSON object the Validator Agent emits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct VerdictEnvelope {
+    verdicts: Vec<Verdict>,
+    // `summary` is advisory (counts the agent computed for its own sanity). We
+    // deliberately do not deserialize it — the counts are re-derived from the
+    // verdicts at writeback time, so trusting the agent's arithmetic would only
+    // add a failure mode.
+}
+
+/// Reasons [`parse_validator_verdicts`] can reject a Validator reply.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum VerdictParseError {
+    /// No fenced ```` ```json ```` block was found in the reply. The Validator
+    /// prompt requires exactly one, so its absence means the agent went
+    /// off-script — fail loudly rather than silently publishing nothing.
+    #[error("no fenced ```json block found in validator reply")]
+    NoJsonBlock,
+    /// A JSON block was found but did not deserialize into the verdict schema.
+    #[error("validator verdict JSON is malformed: {0}")]
+    MalformedJson(String),
+    /// A `revised` verdict omitted the required `severity`. Revising to an
+    /// unknown severity is meaningless, so we reject the whole batch to force a
+    /// regenerate rather than guess.
+    #[error("verdict for node '{0}' is 'revised' but has no severity")]
+    RevisedWithoutSeverity(String),
+}
+
+/// Extract the first fenced ```` ```json ```` block from a string.
+///
+/// The Validator (like the Report Agent) is instructed to emit exactly one
+/// fenced JSON block, optionally surrounded by prose. We take the first block
+/// so leading prose cannot smuggle a second, contradictory block past us.
+fn extract_json_block(reply: &str) -> Option<&str> {
+    let after_fence = reply.find("```json").map(|i| i + "```json".len())?;
+    let rest = &reply[after_fence..];
+    // Skip the newline that conventionally follows the fence marker.
+    let body_start = rest.find('\n').map(|i| i + 1).unwrap_or(0);
+    let body = &rest[body_start..];
+    let end = body.find("```")?;
+    Some(body[..end].trim())
+}
+
+/// Parse a Validator Agent reply into a list of [`Verdict`]s.
+///
+/// Extracts the fenced JSON block, deserializes it, and validates the
+/// per-decision invariants the writeback step relies on. Returns an error
+/// (never a silent empty list) when the reply is unparseable — the caller must
+/// surface that to the operator instead of generating a report from nothing.
+///
+/// An empty `verdicts` array is a *valid* success: it is exactly what the
+/// Validator emits for an empty manifest.
+pub fn parse_validator_verdicts(reply: &str) -> Result<Vec<Verdict>, VerdictParseError> {
+    let json = extract_json_block(reply).ok_or(VerdictParseError::NoJsonBlock)?;
+    let envelope: VerdictEnvelope =
+        serde_json::from_str(json).map_err(|e| VerdictParseError::MalformedJson(e.to_string()))?;
+
+    for v in &envelope.verdicts {
+        if v.decision == VerdictDecision::Revised && v.severity.is_none() {
+            return Err(VerdictParseError::RevisedWithoutSeverity(v.node_id.clone()));
+        }
+    }
+
+    Ok(envelope.verdicts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,5 +660,109 @@ mod tests {
         let json = &msg[start..end];
         let back: ValidatedFindingsManifest = serde_json::from_str(json).unwrap();
         assert_eq!(back, manifest);
+    }
+
+    // --- Validator seed + verdict parsing (pick#174 seams 2 & 3) ---
+
+    #[test]
+    fn pending_manifest_includes_only_pending_nodes() {
+        let nodes = [
+            pending("p1"),
+            confirmed_finding("c1", Severity::High),
+            pending("p2"),
+            info_only("i1"),
+        ];
+        let manifest = build_pending_evidence_manifest(&nodes, engagement());
+        let ids: Vec<&str> = manifest.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, vec!["p1", "p2"]);
+    }
+
+    #[test]
+    fn validator_seed_embeds_pending_manifest_as_fenced_json() {
+        let manifest = build_pending_evidence_manifest(&[pending("p1")], engagement());
+        let msg = build_validator_seed_message(&manifest);
+        assert!(msg.contains("pending_evidence_manifest"));
+        assert!(msg.contains("```json"));
+        assert!(msg.contains("\"p1\""));
+        assert!(msg.trim_end().ends_with("```"));
+    }
+
+    #[test]
+    fn validator_seed_round_trips_through_json() {
+        let manifest =
+            build_pending_evidence_manifest(&[pending("p1"), pending("p2")], engagement());
+        let msg = build_validator_seed_message(&manifest);
+        let start = msg.find("```json\n").unwrap() + "```json\n".len();
+        let end = msg.rfind("\n```").unwrap();
+        let json = &msg[start..end];
+        let back: PendingEvidenceManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(back, manifest);
+    }
+
+    #[test]
+    fn parses_well_formed_verdicts_with_surrounding_prose() {
+        let reply = "Here is my adjudication.\n\n```json\n{\n  \"verdicts\": [\n    \
+             {\"node_id\": \"n1\", \"decision\": \"confirmed\", \"severity\": \"high\", \
+             \"rationale\": \"reproduced\", \"confidence\": 0.9},\n    \
+             {\"node_id\": \"n2\", \"decision\": \"false_positive\", \"rationale\": \
+             \"static 404\", \"confidence\": 0.8}\n  ],\n  \"summary\": {\"reviewed\": 2}\n}\n```\n\
+             Done.";
+        let verdicts = parse_validator_verdicts(reply).expect("well-formed reply should parse");
+        assert_eq!(verdicts.len(), 2);
+        assert_eq!(verdicts[0].node_id, "n1");
+        assert_eq!(verdicts[0].decision, VerdictDecision::Confirmed);
+        assert_eq!(verdicts[0].severity, Some(Severity::High));
+        assert_eq!(verdicts[1].decision, VerdictDecision::FalsePositive);
+        // severity omitted for a false positive is fine.
+        assert_eq!(verdicts[1].severity, None);
+    }
+
+    #[test]
+    fn parses_empty_verdicts_for_empty_manifest() {
+        let reply = "No pending evidence to validate.\n\n```json\n\
+             {\"verdicts\": [], \"summary\": {\"reviewed\": 0}}\n```";
+        let verdicts = parse_validator_verdicts(reply).expect("empty verdicts is valid");
+        assert!(verdicts.is_empty());
+    }
+
+    #[test]
+    fn rejects_reply_with_no_json_block() {
+        let reply = "I could not find any evidence worth adjudicating, sorry.";
+        assert_eq!(
+            parse_validator_verdicts(reply),
+            Err(VerdictParseError::NoJsonBlock)
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_json_block() {
+        let reply = "```json\n{ this is not valid json }\n```";
+        match parse_validator_verdicts(reply) {
+            Err(VerdictParseError::MalformedJson(_)) => {}
+            other => panic!("expected MalformedJson, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_revised_verdict_without_severity() {
+        let reply = "```json\n{\"verdicts\": [{\"node_id\": \"n1\", \
+             \"decision\": \"revised\", \"rationale\": \"sev is wrong\", \
+             \"confidence\": 0.7}]}\n```";
+        assert_eq!(
+            parse_validator_verdicts(reply),
+            Err(VerdictParseError::RevisedWithoutSeverity("n1".to_string()))
+        );
+    }
+
+    #[test]
+    fn takes_only_the_first_json_block() {
+        // A hostile or confused reply could contain two blocks. We take the
+        // first so a trailing block cannot override the leading verdict set.
+        let reply = "```json\n{\"verdicts\": [{\"node_id\": \"n1\", \
+             \"decision\": \"confirmed\", \"severity\": \"low\", \"rationale\": \"ok\", \
+             \"confidence\": 0.9}]}\n```\nand also\n```json\n{\"verdicts\": []}\n```";
+        let verdicts = parse_validator_verdicts(reply).unwrap();
+        assert_eq!(verdicts.len(), 1);
+        assert_eq!(verdicts[0].node_id, "n1");
     }
 }
