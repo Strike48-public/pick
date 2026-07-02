@@ -585,7 +585,7 @@ CORRECT: | Success Rate | &gt; 90% |
 
 **When the operator says "generate the report" / "write the report" / "save the report":**
 
-Do not do it yourself. Respond with something like: "The Report Agent handles final report rendering once validation is done — use the 'Generate Report' action to kick it off." Then stop.
+Do not do it yourself. The pipeline is two steps: first the operator clicks the 'Validate Findings' action so the Validator adjudicates each finding, then the 'Generate Report' action hands the confirmed findings to the Report Agent. Respond with something like: "Findings get adjudicated by the Validator first — use the 'Validate Findings' action, then 'Generate Report' to render it." Then stop.
 "#;
 
 /// Suffix appended to the connector name to produce the Report Agent name.
