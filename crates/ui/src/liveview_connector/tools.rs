@@ -238,6 +238,32 @@ pub(crate) async fn handle_execute_impl(req: proto::ExecuteRequest, params: Exec
         let result = match tools.execute(tool_name, params, &ctx).await {
             Ok(result) => {
                 let duration_ms = start.elapsed().as_millis() as u64;
+
+                // A successful `begin_scan` marks the start of a fresh
+                // engagement. Clear any evidence left over from a previous scan
+                // so it cannot bleed into this report (pick#172). `begin_scan`
+                // itself produces no findings, so nothing is lost by clearing
+                // here rather than draining first.
+                if tool_name == "begin_scan" && result.success {
+                    crate::session::clear_evidence();
+                    tracing::debug!("begin_scan: cleared evidence graph for new engagement");
+                }
+
+                // Bridge tool-produced evidence into the report graph (pick#172).
+                // Tools push findings into the process-global PENDING_EVIDENCE
+                // buffer as a side effect of execution; if we don't drain them
+                // here they never reach `gate_for_report` and the report comes
+                // out empty. This is the single production drain point shared by
+                // both the headless and desktop connectors.
+                let forwarded = crate::session::drain_tool_evidence_into_graph();
+                if forwarded > 0 {
+                    tracing::debug!(
+                        tool = tool_name,
+                        forwarded,
+                        "forwarded tool evidence into report graph"
+                    );
+                }
+
                 emit_event(
                     &event_tx,
                     ConnectorEvent::ToolCompleted {
