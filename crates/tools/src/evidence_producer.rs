@@ -112,6 +112,16 @@ pub fn push_evidence(node: EvidenceNode) -> Result<(), BufferFullError> {
 /// each call will receive a portion of the evidence (non-deterministic split).
 /// The UI should call this from a single thread for predictable behavior.
 ///
+/// # Lock Ordering Safety
+/// **CRITICAL:** This function MUST NOT hold the `PENDING_EVIDENCE` lock after
+/// returning. The UI layer's `drain_tool_evidence_into_graph` depends on this
+/// property to avoid deadlock - it acquires `EVIDENCE_GRAPH` after calling this
+/// function. See `pentest_ui::session::EVIDENCE_GRAPH` documentation for the
+/// complete lock ordering contract (PENDING_EVIDENCE first, EVIDENCE_GRAPH second).
+///
+/// The current implementation correctly releases the lock before returning via
+/// `std::mem::take`, which only holds the write lock for the duration of the swap.
+///
 /// # Returns
 /// All accumulated evidence nodes since the last drain. Empty vector if
 /// no evidence has been produced.

@@ -266,7 +266,8 @@ pub fn apply_validator_verdicts(
             Some(node) => {
                 match verdict.decision {
                     VerdictDecision::Confirmed | VerdictDecision::Revised => {
-                        let severity = verdict.severity.unwrap_or_else(|| node.current_severity());
+                        // Confirmed without explicit severity means "keep current severity"
+                        let severity = verdict.severity.unwrap_or(node.current_severity());
                         node.apply_validator_decision(severity, verdict.rationale.clone());
                     }
                     VerdictDecision::FalsePositive => {

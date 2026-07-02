@@ -303,24 +303,22 @@ pub fn build_pending_evidence_manifest(
 /// Validator Agent. Symmetric to [`build_report_agent_seed_message`]: the
 /// Validator's system prompt pins the JSON shape, so we hand it over verbatim
 /// inside a fenced block with a short instruction.
-pub fn build_validator_seed_message(manifest: &PendingEvidenceManifest) -> String {
-    // Same infallibility contract as the report seed: every field serializes,
-    // so a failure means a newly added field broke the contract. Fall back to
-    // an empty manifest rather than panicking the connector.
-    let json = serde_json::to_string_pretty(manifest).unwrap_or_else(|e| {
-        tracing::error!(
-            error = %e,
-            "BUG: PendingEvidenceManifest serialization failed — a newly added \
-             field violates the infallibility contract. Falling back to an empty \
-             manifest so the Validator still receives something it can parse."
-        );
-        "{}".to_string()
-    });
-    format!(
+///
+/// # Errors
+/// Returns `Err` if serialization fails. This should never happen with the
+/// current `PendingEvidenceManifest` structure (all fields are `Serialize`),
+/// but if a newly added field breaks the contract, we surface the error rather
+/// than silently sending an empty manifest to the Validator.
+pub fn build_validator_seed_message(
+    manifest: &PendingEvidenceManifest,
+) -> Result<String, String> {
+    let json = serde_json::to_string_pretty(manifest)
+        .map_err(|e| format!("Failed to serialize pending evidence manifest: {e}"))?;
+    Ok(format!(
         "The engagement's evidence collection is complete. Below is the \
          `pending_evidence_manifest`. Adjudicate every node and emit your \
          verdicts per your system prompt.\n\n```json\n{json}\n```"
-    )
+    ))
 }
 
 /// A single adjudication decision emitted by the Validator Agent.

@@ -81,11 +81,24 @@ fn apply_validator_reply(
 
     let report = crate::session::apply_validator_verdicts(&verdicts);
 
+    // Surface unmatched verdict IDs - these indicate the Validator hallucinated
+    // or mistyped node IDs that don't exist in the evidence graph.
     if !report.unmatched_verdict_ids.is_empty() {
         tracing::warn!(
             unmatched = report.unmatched_verdict_ids.len(),
             "validator emitted verdicts for node ids not in the graph"
         );
+        error_msg.set(Some(format!(
+            "Warning: Validator issued verdicts for {} non-existent node ID(s). \
+             This indicates the Validator hallucinated IDs. Validated {}/{} findings; \
+             {} still pending. Ask the Validator to re-emit verdicts using only the \
+             node IDs from the manifest, or validate again.",
+            report.unmatched_verdict_ids.len(),
+            report.applied,
+            pending_count,
+            report.still_pending_ids.len()
+        )));
+        return;
     }
 
     if report.is_fully_adjudicated() {
@@ -878,7 +891,16 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             agent_thinking.set(false);
             agent_status_text.set(String::new());
 
-            let seed = pentest_core::orchestrator::build_validator_seed_message(&manifest);
+            let seed = match pentest_core::orchestrator::build_validator_seed_message(&manifest) {
+                Ok(s) => s,
+                Err(e) => {
+                    error_msg.set(Some(format!(
+                        "Cannot validate findings: {e}. This indicates a bug in evidence \
+                         serialization. Please report this error."
+                    )));
+                    return;
+                }
+            };
             let client = make_client();
             is_sending.set(true);
 
@@ -894,7 +916,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     }
                     Err(e) => {
                         error_msg.set(Some(format!(
-                            "Failed to create validation conversation: {e}"
+                            "Failed to create validation conversation with Validator Agent '{}': {}. \
+                             Check that Strike48 backend is accessible.",
+                            validator_agent.name, e
                         )));
                         is_sending.set(false);
                         return;
