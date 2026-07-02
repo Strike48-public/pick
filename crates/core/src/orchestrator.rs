@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn validator_seed_embeds_pending_manifest_as_fenced_json() {
         let manifest = build_pending_evidence_manifest(&[pending("p1")], engagement());
-        let msg = build_validator_seed_message(&manifest);
+        let msg = build_validator_seed_message(&manifest).expect("serialization should succeed");
         assert!(msg.contains("pending_evidence_manifest"));
         assert!(msg.contains("```json"));
         assert!(msg.contains("\"p1\""));
@@ -689,7 +689,7 @@ mod tests {
     fn validator_seed_round_trips_through_json() {
         let manifest =
             build_pending_evidence_manifest(&[pending("p1"), pending("p2")], engagement());
-        let msg = build_validator_seed_message(&manifest);
+        let msg = build_validator_seed_message(&manifest).expect("serialization should succeed");
         let start = msg.find("```json\n").unwrap() + "```json\n".len();
         let end = msg.rfind("\n```").unwrap();
         let json = &msg[start..end];
