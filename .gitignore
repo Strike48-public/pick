@@ -56,3 +56,4 @@ android-jniLibs
 # Mise
 .mise.local.toml
 .direnv/
+__pycache__/
