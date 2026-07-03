@@ -309,9 +309,7 @@ pub fn build_pending_evidence_manifest(
 /// current `PendingEvidenceManifest` structure (all fields are `Serialize`),
 /// but if a newly added field breaks the contract, we surface the error rather
 /// than silently sending an empty manifest to the Validator.
-pub fn build_validator_seed_message(
-    manifest: &PendingEvidenceManifest,
-) -> Result<String, String> {
+pub fn build_validator_seed_message(manifest: &PendingEvidenceManifest) -> Result<String, String> {
     let json = serde_json::to_string_pretty(manifest)
         .map_err(|e| format!("Failed to serialize pending evidence manifest: {e}"))?;
     Ok(format!(
