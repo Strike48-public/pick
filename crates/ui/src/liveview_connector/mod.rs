@@ -289,7 +289,16 @@ impl LiveViewConnector {
         // WorkspaceApp (liveview) can read them when auto-creating the agent persona and executing tools.
         crate::session::set_tenant_id(&config.tenant_id);
         crate::session::set_connector_name(&config.connector_name);
-        crate::session::set_tool_names(tools.names().iter().map(|s| s.to_string()).collect());
+        // Use host-supported names so the agent's auto-approved tool_configs match
+        // the advertised capability set: a Linux-only tool must not be pre-approved
+        // on a Windows host where it is not offered. See #183.
+        crate::session::set_tool_names(
+            tools
+                .supported_names()
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        );
 
         let tools_arc = Arc::new(RwLock::new(tools));
         crate::session::set_tool_registry(tools_arc.clone());

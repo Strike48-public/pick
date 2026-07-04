@@ -1095,6 +1095,12 @@ mod os_capability_tests {
             assert_eq!(os, DesktopOs::MacOS);
             #[cfg(target_os = "windows")]
             assert_eq!(os, DesktopOs::Windows);
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+            assert_eq!(
+                os,
+                DesktopOs::Other,
+                "BSD and other Unix-likes map to Other"
+            );
         }
         #[cfg(any(target_arch = "wasm32", target_os = "android", target_os = "ios"))]
         assert_eq!(DesktopOs::current(), None);

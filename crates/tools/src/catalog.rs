@@ -96,6 +96,11 @@ fn collect_dependencies() -> BTreeMap<String, (ExternalDependency, Vec<String>)>
     let registry = crate::create_tool_registry();
     let mut deps: BTreeMap<String, (ExternalDependency, Vec<String>)> = BTreeMap::new();
 
+    // Intentionally unfiltered (`schemas()`, not `supported_schemas()`): the
+    // catalog enumerates every installable dependency across all desktop OSes,
+    // not just the current host. This is an install/inventory surface, not the
+    // agent-facing capability list — host gating happens where tools are
+    // advertised/executed, not here. See #183.
     for schema in registry.schemas() {
         for dep in &schema.external_dependencies {
             let entry = deps
