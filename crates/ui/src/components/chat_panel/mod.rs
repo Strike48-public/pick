@@ -32,6 +32,88 @@ use polling::{poll_and_update, ChatNoticeKind};
 pub use render::format_relative_time;
 use render::{CHART_PROCESSOR_JS, UTILS_JS};
 
+/// Parse the Validator Agent's latest reply and apply its verdicts to the
+/// evidence graph.
+///
+/// Called after the validation conversation finishes polling. Finds the newest
+/// non-USER message, extracts the fenced verdict JSON, and hands it to
+/// [`crate::session::apply_validator_verdicts`]. The outcome is surfaced through
+/// `error_msg` so the operator never silently proceeds:
+///
+/// * unparseable reply -> error (the Validator went off-script);
+/// * verdicts applied but nodes still pending -> warning that Generate Report
+///   will refuse until they are adjudicated;
+/// * everything adjudicated -> `error_msg` is cleared.
+///
+/// Kept as a free function (rather than a closure) so the glue stays readable
+/// and does not capture the component's signal soup. The behaviour it composes
+/// is covered by the `parse_validator_verdicts` tests in `pentest-core` and the
+/// `apply_validator_verdicts` tests in `crate::session`.
+fn apply_validator_reply(
+    messages: &[ChatMessage],
+    pending_count: usize,
+    error_msg: &mut Signal<Option<String>>,
+) {
+    let Some(reply) = messages
+        .iter()
+        .rev()
+        .find(|m| m.sender_type != "USER" && !m.text.is_empty())
+    else {
+        error_msg.set(Some(
+            "The Validator produced no reply. Try validating again, or check the \
+             conversation for an error."
+                .to_string(),
+        ));
+        return;
+    };
+
+    let verdicts = match pentest_core::orchestrator::parse_validator_verdicts(&reply.text) {
+        Ok(v) => v,
+        Err(e) => {
+            error_msg.set(Some(format!(
+                "Could not read the Validator's verdicts ({e}). The report gate will refuse \
+                 until every finding is adjudicated — ask the Validator to re-emit its JSON \
+                 verdict block, or validate again."
+            )));
+            return;
+        }
+    };
+
+    let report = crate::session::apply_validator_verdicts(&verdicts);
+
+    // Surface unmatched verdict IDs - these indicate the Validator hallucinated
+    // or mistyped node IDs that don't exist in the evidence graph.
+    if !report.unmatched_verdict_ids.is_empty() {
+        tracing::warn!(
+            unmatched = report.unmatched_verdict_ids.len(),
+            "validator emitted verdicts for node ids not in the graph"
+        );
+        error_msg.set(Some(format!(
+            "Warning: Validator issued verdicts for {} non-existent node ID(s). \
+             This indicates the Validator hallucinated IDs. Validated {}/{} findings; \
+             {} still pending. Ask the Validator to re-emit verdicts using only the \
+             node IDs from the manifest, or validate again.",
+            report.unmatched_verdict_ids.len(),
+            report.applied,
+            pending_count,
+            report.still_pending_ids.len()
+        )));
+        return;
+    }
+
+    if report.is_fully_adjudicated() {
+        // All clear — Generate Report will now succeed.
+        error_msg.set(None);
+    } else {
+        let still = report.still_pending_ids.len();
+        error_msg.set(Some(format!(
+            "Validated {} of {} finding(s); {} still pending. Generate Report will refuse \
+             until the Validator adjudicates the rest.",
+            report.applied, pending_count, still
+        )));
+    }
+}
+
 /// Props for the ChatPanel component.
 #[derive(Props, Clone, PartialEq)]
 pub struct ChatPanelProps {
@@ -739,6 +821,157 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         }
     });
 
+    // Handler: validate findings.
+    //
+    // The Validator round-trip that sits between evidence collection and
+    // report generation (pick#174 seams 2 & 3). Without it every node stays
+    // `Pending` and `gate_for_report` refuses, so this must run before
+    // Generate Report on any real engagement.
+    //
+    // 1. Snapshot the graph and build the `pending_evidence_manifest`. If there
+    //    are no pending nodes, tell the operator and bail — nothing to do.
+    // 2. Resolve the Validator sibling (`{connector_name}-validator`) and switch
+    //    to it in a fresh conversation, seeding the pending manifest.
+    // 3. Poll until it finishes, then parse the verdicts out of its reply and
+    //    apply them to the graph. Surface how many were applied / left pending
+    //    so the operator knows whether Generate Report will succeed.
+    let on_validate_findings = EventHandler::new({
+        let make_client = make_client.clone();
+        move |_: ()| {
+            let snapshot = crate::session::evidence_snapshot();
+            let engagement = pentest_core::orchestrator::EngagementInfo::new(
+                crate::session::get_connector_name(),
+                chrono::Utc::now(),
+            );
+            let manifest =
+                pentest_core::orchestrator::build_pending_evidence_manifest(&snapshot, engagement);
+            if manifest.nodes.is_empty() {
+                error_msg.set(Some(
+                    "No pending findings to validate. Run tools to collect evidence first, \
+                     or the Validator has already adjudicated everything."
+                        .to_string(),
+                ));
+                return;
+            }
+            let pending_count = manifest.nodes.len();
+
+            // Resolve the Validator sibling. Same deterministic-name lookup as
+            // the Report handoff below.
+            let connector_name = crate::session::get_connector_name();
+            let validator_name = format!("{}{}", connector_name, VALIDATOR_AGENT_SUFFIX);
+            let validator_agent = agents
+                .peek()
+                .iter()
+                .find(|a| a.name == validator_name)
+                .cloned();
+            let Some(validator_agent) = validator_agent else {
+                error_msg.set(Some(format!(
+                    "Validator Agent '{validator_name}' is not registered. Reload the page \
+                     so the chat panel can create it."
+                )));
+                return;
+            };
+
+            // Save current conversation under the previously selected agent
+            // before switching the panel to the Validator.
+            if let Some(old_agent) = selected_agent.peek().as_ref() {
+                if let Some(cid) = conversation_id.peek().clone() {
+                    agent_conversations
+                        .write()
+                        .insert(old_agent.id.clone(), cid);
+                }
+            }
+
+            selected_agent.set(Some(validator_agent.clone()));
+            conversation_id.set(None);
+            messages.set(Vec::new());
+            show_history.set(false);
+            error_msg.set(None);
+            chat_notice.set(None);
+            agent_thinking.set(false);
+            agent_status_text.set(String::new());
+
+            let seed = match pentest_core::orchestrator::build_validator_seed_message(&manifest) {
+                Ok(s) => s,
+                Err(e) => {
+                    error_msg.set(Some(format!(
+                        "Cannot validate findings: {e}. This indicates a bug in evidence \
+                         serialization. Please report this error."
+                    )));
+                    return;
+                }
+            };
+            let client = make_client();
+            is_sending.set(true);
+
+            spawn(async move {
+                let conv_title = format!("Validation for {}", manifest.engagement.target);
+                let conv_id = match client.create_conversation(Some(&conv_title)).await {
+                    Ok(id) => {
+                        conversation_id.set(Some(id.clone()));
+                        agent_conversations
+                            .write()
+                            .insert(validator_agent.id.clone(), id.clone());
+                        id
+                    }
+                    Err(e) => {
+                        error_msg.set(Some(format!(
+                            "Failed to create validation conversation with Validator Agent '{}': {}. \
+                             Check that Strike48 backend is accessible.",
+                            validator_agent.name, e
+                        )));
+                        is_sending.set(false);
+                        return;
+                    }
+                };
+
+                let user_msg = ChatMessage {
+                    id: format!("local-{}", messages.peek().len()),
+                    sender_type: "USER".to_string(),
+                    sender_name: "Orchestrator".to_string(),
+                    text: seed.clone(),
+                    parts: vec![pentest_core::matrix::MessagePart::Text(seed.clone())],
+                };
+                messages.write().push(user_msg);
+                user_scrolled_up.set(false);
+
+                match client
+                    .send_message(&conv_id, &validator_agent.id, &seed)
+                    .await
+                {
+                    Ok(_) => {
+                        agent_thinking.set(true);
+                        agent_status_text.set("Validating findings...".to_string());
+                        is_sending.set(false);
+                        poll_and_update(
+                            client,
+                            conv_id,
+                            conversation_id,
+                            messages,
+                            agent_thinking,
+                            agent_status_text,
+                            error_msg,
+                            chat_notice,
+                        )
+                        .await;
+
+                        // Polling has ended. Parse the Validator's latest reply
+                        // and apply its verdicts to the evidence graph. The
+                        // verdict block is machine-parseable per the Validator
+                        // system prompt; a reply we cannot parse is surfaced so
+                        // the operator does not silently proceed to an empty or
+                        // stuck report.
+                        apply_validator_reply(&messages.peek(), pending_count, &mut error_msg);
+                    }
+                    Err(e) => {
+                        error_msg.set(Some(format!("Failed to send validation seed: {e}")));
+                        is_sending.set(false);
+                    }
+                }
+            });
+        }
+    });
+
     // Handler: generate final report.
     //
     // 1. Snapshot the evidence graph and ask the orchestrator gate to build
@@ -936,6 +1169,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 on_agent_select,
                 on_new_chat,
                 on_toggle_history,
+                on_validate_findings,
                 on_generate_report,
             };
             // Only write if the data actually changed (avoids unnecessary parent re-renders).
@@ -1074,6 +1308,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     on_agent_select: on_agent_select,
                     on_new_chat: on_new_chat,
                     on_toggle_history: on_toggle_history,
+                    on_validate_findings: on_validate_findings,
                     on_generate_report: on_generate_report,
                     show_history: show_history,
                     is_full: is_full,

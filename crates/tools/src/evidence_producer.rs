@@ -33,11 +33,11 @@ const MAX_EVIDENCE_NODES: usize = 10_000;
 
 /// Global pending evidence buffer.
 ///
-/// Tools push evidence here via [`push_evidence`]. The buffer is intended to be
-/// drained by [`drain_pending_evidence`] and forwarded into the report evidence
-/// graph (`pentest_ui::session`), but that drain-and-forward step is NOT wired in
-/// production today: `drain_pending_evidence` has no non-test callers, so nodes
-/// pushed here do not currently reach the report. See pick#172.
+/// Tools push evidence here via [`push_evidence`]. The connector drains it after
+/// every tool run via [`drain_pending_evidence`] and forwards each node into the
+/// report evidence graph (`pentest_ui::session::drain_tool_evidence_into_graph`),
+/// where the Validator round-trip adjudicates it before the report gate can
+/// publish it. This buffer-to-graph bridge is the fix for pick#172.
 ///
 /// # Thread Safety
 /// Protected by `RwLock` for concurrent access. Multiple tools can
@@ -50,9 +50,8 @@ static PENDING_EVIDENCE: LazyLock<RwLock<Vec<EvidenceNode>>> =
 /// Push an evidence node to the global evidence buffer.
 ///
 /// This function is called by tools after producing findings. The evidence is
-/// stored in a global buffer. NOTE: nothing drains this buffer into the report
-/// graph in production yet (see [`PENDING_EVIDENCE`] and pick#172), so a pushed
-/// node is currently not surfaced in the generated report.
+/// stored in [`PENDING_EVIDENCE`], which the connector drains into the report
+/// graph after each tool run (see that static's docs and pick#172).
 ///
 /// # Capacity
 /// The buffer has a maximum capacity of [`MAX_EVIDENCE_NODES`]. If the
@@ -112,6 +111,16 @@ pub fn push_evidence(node: EvidenceNode) -> Result<(), BufferFullError> {
 /// This function is thread-safe. If called concurrently from multiple threads,
 /// each call will receive a portion of the evidence (non-deterministic split).
 /// The UI should call this from a single thread for predictable behavior.
+///
+/// # Lock Ordering Safety
+/// **CRITICAL:** This function MUST NOT hold the `PENDING_EVIDENCE` lock after
+/// returning. The UI layer's `drain_tool_evidence_into_graph` depends on this
+/// property to avoid deadlock - it acquires `EVIDENCE_GRAPH` after calling this
+/// function. See `pentest_ui::session::EVIDENCE_GRAPH` documentation for the
+/// complete lock ordering contract (PENDING_EVIDENCE first, EVIDENCE_GRAPH second).
+///
+/// The current implementation correctly releases the lock before returning via
+/// `std::mem::take`, which only holds the write lock for the duration of the swap.
 ///
 /// # Returns
 /// All accumulated evidence nodes since the last drain. Empty vector if
@@ -480,13 +489,13 @@ mod tests {
     //
     // Run: cargo test --package pentest-tools --lib evidence_producer::tests -- --test-threads=1
 
-    /// Test that evidence flows through the push → drain cycle.
+    /// Test that evidence survives the push → drain cycle on a single shared
+    /// static (the tools-side buffer). This covers only the `pentest-tools`
+    /// half: that a pushed node is retrievable by a later drain.
     ///
-    /// This test verifies the fix for the dual-static bug where push and drain
-    /// used separate static variables, causing evidence to never reach the UI.
-    ///
-    /// CRITICAL: This is THE test that proves the dual-static bug is fixed.
-    /// If this test passes, evidence flows from tools → UI.
+    /// It does NOT prove the node reaches the report — that end-to-end flow
+    /// (tool -> buffer -> report graph -> validator -> gate) is covered by the
+    /// `evidence_pipeline` integration test in `crates/ui/tests/`. See pick#172.
     #[test]
     fn evidence_flows_through_buffer() {
         // Create test evidence nodes with unique IDs

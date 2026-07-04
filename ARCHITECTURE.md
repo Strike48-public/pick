@@ -169,10 +169,25 @@ pub struct EvidenceNode {
 - Non-blocking push operations
 - Near-full detection (80% threshold)
 
-> Known gap (pick#172): tool findings pushed to this buffer are not yet drained
-> into the report evidence graph in production, and there is no automatic flush to
-> Strike48 (the Matrix client carries no evidence wire types). The buffer-to-report
-> bridge is unbuilt; reports are currently populated only via direct test injection.
+Tool findings flow tool -> `PENDING_EVIDENCE` -> report evidence graph ->
+Validator adjudication -> report gate:
+
+1. Tools push findings into the process-global `PENDING_EVIDENCE` buffer
+   (`pentest_tools::evidence_producer`).
+2. After every tool run the connector drains that buffer into the report
+   evidence graph via `pentest_ui::session::drain_tool_evidence_into_graph`
+   (`begin_scan` clears the graph so scans do not bleed together).
+3. The operator's "Validate Findings" action seeds the Validator Agent with the
+   pending nodes; its verdicts are parsed and applied
+   (`session::apply_validator_verdicts`), transitioning each node to a terminal
+   state.
+4. "Generate Report" calls `gate_for_report`, which refuses while any node is
+   still `Pending` and otherwise hands the confirmed findings to the Report
+   Agent.
+
+Evidence is not synced to Strike48 — the Matrix client carries no evidence wire
+types; the graph is process-local to the connector. This bridge is the fix for
+pick#172 / pick#174.
 
 ---
 

@@ -9,7 +9,7 @@ use pentest_core::matrix::{AgentInfo, ConversationInfo};
 
 use super::constants::SUGGESTED_ACTIONS;
 use super::render::format_relative_time;
-use crate::components::icons::{ChevronDown, FileText, History, Plus};
+use crate::components::icons::{ChevronDown, FileText, History, Plus, Shield};
 
 /// Props for [`ChatHeader`].
 #[derive(Props, Clone, PartialEq)]
@@ -30,6 +30,9 @@ pub struct ChatHeaderProps {
     pub on_new_chat: EventHandler<()>,
     /// Called when the user clicks the history icon to toggle the history dropdown.
     pub on_toggle_history: EventHandler<()>,
+    /// Called when the user clicks "Validate Findings" — hands the pending
+    /// evidence graph to the Validator Agent before report generation.
+    pub on_validate_findings: EventHandler<()>,
     /// Called when the user clicks "Generate Report" — asks the orchestrator
     /// to gate the evidence graph and hand off to the Report Agent.
     pub on_generate_report: EventHandler<()>,
@@ -80,6 +83,18 @@ pub fn ChatHeader(props: ChatHeaderProps) -> Element {
                         }
                     }
                 } else {
+                    // Validate Findings: hands the pending evidence graph to
+                    // the Validator Agent sibling. Run before Generate Report.
+                    button {
+                        class: "chat-header-btn",
+                        title: "Validate Findings",
+                        onclick: {
+                            let vf = props.on_validate_findings;
+                            move |_| vf.call(())
+                        },
+                        Shield { size: 16 }
+                    }
+
                     // Generate Report: hands the validated evidence graph to
                     // the Report Agent sibling.
                     button {
@@ -188,6 +203,7 @@ pub struct ChatHeaderCtx {
     pub on_agent_select: EventHandler<String>,
     pub on_new_chat: EventHandler<()>,
     pub on_toggle_history: EventHandler<()>,
+    pub on_validate_findings: EventHandler<()>,
     pub on_generate_report: EventHandler<()>,
 }
 
@@ -229,6 +245,15 @@ pub fn ChatHeaderActions(ctx: ChatHeaderCtx) -> Element {
                 }
             }
         } else {
+            // Validate Findings: hands the pending evidence graph to the
+            // Validator Agent sibling. Run before Generate Report.
+            button {
+                class: "chat-header-btn",
+                title: "Validate Findings",
+                onclick: move |_| ctx.on_validate_findings.call(()),
+                Shield { size: 16 }
+            }
+
             // Generate Report: hands the validated evidence graph to
             // the Report Agent sibling.
             button {
