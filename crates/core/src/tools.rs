@@ -63,8 +63,10 @@ impl Platform {
 /// tools that shell out to `iw`/`aircrack-ng`). See GitHub issue #183.
 ///
 /// The `Other` variant covers desktop targets that are neither Linux, macOS,
-/// nor Windows (e.g. the BSDs). It is treated as Linux-like for capability
-/// purposes since those tools are POSIX shell based.
+/// nor Windows (e.g. the BSDs). Support is matched exactly: a tool that
+/// declares `supported_os = [DesktopOs::Linux]` is NOT offered on an `Other`
+/// host. Tools that also run on BSD/POSIX targets must list `DesktopOs::Other`
+/// explicitly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DesktopOs {
@@ -774,7 +776,10 @@ impl ToolRegistry {
 
                 tracing::error!("");
                 tracing::error!("Available tools:");
-                let mut names: Vec<&str> = self.names();
+                // Show only host-supported tools, matching what was advertised
+                // to Strike48 — a Linux-only tool must not appear as "available"
+                // on a Windows host. See #183.
+                let mut names: Vec<&str> = self.supported_names();
                 names.sort();
                 for tool_name in names.iter().take(10) {
                     tracing::error!("  - {}", tool_name);
