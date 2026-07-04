@@ -54,6 +54,69 @@ impl Platform {
     }
 }
 
+/// Desktop operating system, used for per-OS capability gating.
+///
+/// `Platform::Desktop` deliberately collapses every desktop OS into one
+/// variant so tools do not have to enumerate three OSes just to say
+/// "runs on the desktop." `DesktopOs` is the orthogonal axis that lets a
+/// tool declare it only works on a subset of desktop OSes (e.g. Linux-only
+/// tools that shell out to `iw`/`aircrack-ng`). See GitHub issue #183.
+///
+/// The `Other` variant covers desktop targets that are neither Linux, macOS,
+/// nor Windows (e.g. the BSDs). It is treated as Linux-like for capability
+/// purposes since those tools are POSIX shell based.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DesktopOs {
+    Linux,
+    MacOS,
+    Windows,
+    Other,
+}
+
+/// Every desktop OS. This is the default `supported_os` for a tool: unless a
+/// tool opts into a narrower set, it is assumed to run on all desktop OSes,
+/// which preserves the historical "everything is `Platform::Desktop`" behavior.
+pub const ALL_DESKTOP_OS: &[DesktopOs] = &[
+    DesktopOs::Linux,
+    DesktopOs::MacOS,
+    DesktopOs::Windows,
+    DesktopOs::Other,
+];
+
+impl DesktopOs {
+    /// The desktop OS this binary was compiled for.
+    ///
+    /// Returns `None` on non-desktop targets (wasm/Android/iOS), where the
+    /// desktop-OS axis is not meaningful and gating is driven by `Platform`.
+    pub fn current() -> Option<Self> {
+        #[cfg(any(target_arch = "wasm32", target_os = "android", target_os = "ios"))]
+        {
+            None
+        }
+
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
+        {
+            #[cfg(target_os = "linux")]
+            {
+                Some(DesktopOs::Linux)
+            }
+            #[cfg(target_os = "macos")]
+            {
+                Some(DesktopOs::MacOS)
+            }
+            #[cfg(target_os = "windows")]
+            {
+                Some(DesktopOs::Windows)
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+            {
+                Some(DesktopOs::Other)
+            }
+        }
+    }
+}
+
 /// Parameter type for tool schemas
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -261,8 +324,19 @@ pub struct ToolSchema {
     pub description: String,
     pub params: Vec<ToolParam>,
     pub supported_platforms: Vec<Platform>,
+    /// Desktop OSes this tool runs on. Only consulted when the current
+    /// platform is `Platform::Desktop`; ignored on Android/iOS/Web where the
+    /// `Platform` axis already gates support. Defaults to every desktop OS so
+    /// existing tools keep advertising everywhere they did before. See #183.
+    #[serde(default = "default_supported_os")]
+    pub supported_os: Vec<DesktopOs>,
     #[serde(default)]
     pub external_dependencies: Vec<ExternalDependency>,
+}
+
+/// Serde default for [`ToolSchema::supported_os`] — every desktop OS.
+fn default_supported_os() -> Vec<DesktopOs> {
+    ALL_DESKTOP_OS.to_vec()
 }
 
 impl ToolSchema {
@@ -273,6 +347,7 @@ impl ToolSchema {
             description: description.into(),
             params: Vec::new(),
             supported_platforms: DEFAULT_TOOL_PLATFORMS.to_vec(),
+            supported_os: ALL_DESKTOP_OS.to_vec(),
             external_dependencies: Vec::new(),
         }
     }
@@ -289,15 +364,32 @@ impl ToolSchema {
         self
     }
 
+    /// Restrict the desktop OSes this tool runs on (e.g. `[DesktopOs::Linux]`
+    /// for tools that shell out to Linux-only binaries). See #183.
+    pub fn os(mut self, os: Vec<DesktopOs>) -> Self {
+        self.supported_os = os;
+        self
+    }
+
     /// Add an external dependency
     pub fn external_dependency(mut self, dep: ExternalDependency) -> Self {
         self.external_dependencies.push(dep);
         self
     }
 
-    /// Check if supported on current platform
+    /// Check if supported on the current platform *and* desktop OS.
+    ///
+    /// On desktop, a tool is supported only if the current `DesktopOs` is in
+    /// its `supported_os` set. On non-desktop platforms the OS axis does not
+    /// apply, so only `supported_platforms` is consulted.
     pub fn is_supported(&self) -> bool {
-        self.supported_platforms.contains(&Platform::current())
+        if !self.supported_platforms.contains(&Platform::current()) {
+            return false;
+        }
+        match DesktopOs::current() {
+            Some(os) => self.supported_os.contains(&os),
+            None => true,
+        }
     }
 
     /// Check if this tool has external dependencies
@@ -558,7 +650,9 @@ pub trait PentestTool: Send + Sync {
 
     /// Get the tool schema
     fn schema(&self) -> ToolSchema {
-        ToolSchema::new(self.name(), self.description()).platforms(self.supported_platforms())
+        ToolSchema::new(self.name(), self.description())
+            .platforms(self.supported_platforms())
+            .os(self.supported_os())
     }
 
     /// Get supported platforms
@@ -566,9 +660,25 @@ pub trait PentestTool: Send + Sync {
         DEFAULT_TOOL_PLATFORMS.to_vec()
     }
 
-    /// Check if supported on current platform
+    /// Get supported desktop OSes.
+    ///
+    /// Defaults to every desktop OS. Tools that only work on a subset (e.g.
+    /// Linux-only tools that require `iw`/`aircrack-ng`) override this to
+    /// return a narrower set so they are not advertised on unsupported hosts.
+    /// See GitHub issue #183.
+    fn supported_os(&self) -> Vec<DesktopOs> {
+        ALL_DESKTOP_OS.to_vec()
+    }
+
+    /// Check if supported on the current platform and desktop OS.
     fn is_supported(&self) -> bool {
-        self.supported_platforms().contains(&Platform::current())
+        if !self.supported_platforms().contains(&Platform::current()) {
+            return false;
+        }
+        match DesktopOs::current() {
+            Some(os) => self.supported_os().contains(&os),
+            None => true,
+        }
     }
 
     /// Execute the tool with the given parameters
@@ -611,9 +721,32 @@ impl ToolRegistry {
         self.tools.values().map(|t| t.schema()).collect()
     }
 
+    /// Get schemas for tools supported on the current host (platform + desktop
+    /// OS). This is what should be advertised to Strike48: a Linux-only tool
+    /// must not appear in the tool list on a Windows host, otherwise the agent
+    /// believes it can call a capability that will only fail (or worse, return
+    /// a plausible empty) at runtime. See GitHub issue #183.
+    pub fn supported_schemas(&self) -> Vec<ToolSchema> {
+        self.tools
+            .values()
+            .filter(|t| t.is_supported())
+            .map(|t| t.schema())
+            .collect()
+    }
+
     /// Get tool names
     pub fn names(&self) -> Vec<&str> {
         self.tools.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Get names of tools supported on the current host, matching
+    /// [`Self::supported_schemas`]. See GitHub issue #183.
+    pub fn supported_names(&self) -> Vec<&str> {
+        self.tools
+            .values()
+            .filter(|t| t.is_supported())
+            .map(|t| t.name())
+            .collect()
     }
 
     /// Execute a tool by name
@@ -902,5 +1035,152 @@ mod transport_tests {
             .expect("effective_command string");
         assert!(!eff.contains("hunter2"), "secret on the wire: {eff}");
         assert!(eff.contains("<REDACTED>"));
+    }
+}
+
+#[cfg(test)]
+mod os_capability_tests {
+    //! Tests for OS-aware capability gating (GitHub issue #183, Child A).
+    //!
+    //! Invariants:
+    //! - The desktop-OS axis is additive: a tool that doesn't opt in defaults
+    //!   to every desktop OS, so Linux behavior is preserved exactly.
+    //! - `supported_os` never crosses the Matrix wire (`to_json_schema` is
+    //!   hand-built and omits it), and old serialized schemas still deserialize.
+    //! - The registry advertises only host-supported tools.
+    use super::*;
+
+    /// A tool that runs everywhere (uses all trait defaults).
+    struct UbiquitousTool;
+    #[async_trait]
+    impl PentestTool for UbiquitousTool {
+        fn name(&self) -> &str {
+            "ubiquitous"
+        }
+        fn description(&self) -> &str {
+            "runs on every desktop OS"
+        }
+        async fn execute(&self, _params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+            Ok(ToolResult::success(Value::Null))
+        }
+    }
+
+    /// A tool that only runs on Linux (e.g. shells out to `iw`/`aircrack-ng`).
+    struct LinuxOnlyTool;
+    #[async_trait]
+    impl PentestTool for LinuxOnlyTool {
+        fn name(&self) -> &str {
+            "linux_only"
+        }
+        fn description(&self) -> &str {
+            "requires Linux-only binaries"
+        }
+        fn supported_os(&self) -> Vec<DesktopOs> {
+            vec![DesktopOs::Linux]
+        }
+        async fn execute(&self, _params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+            Ok(ToolResult::success(Value::Null))
+        }
+    }
+
+    #[test]
+    fn desktop_os_current_matches_compile_target() {
+        // On any desktop build this is Some; only wasm/mobile yield None.
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
+        {
+            let os = DesktopOs::current().expect("desktop build has a DesktopOs");
+            #[cfg(target_os = "linux")]
+            assert_eq!(os, DesktopOs::Linux);
+            #[cfg(target_os = "macos")]
+            assert_eq!(os, DesktopOs::MacOS);
+            #[cfg(target_os = "windows")]
+            assert_eq!(os, DesktopOs::Windows);
+        }
+        #[cfg(any(target_arch = "wasm32", target_os = "android", target_os = "ios"))]
+        assert_eq!(DesktopOs::current(), None);
+    }
+
+    #[test]
+    fn default_supported_os_is_every_desktop_os() {
+        // A tool with no opt-in advertises on all desktop OSes: this is the
+        // backward-compat guarantee (nothing regresses on Linux).
+        let tool = UbiquitousTool;
+        assert_eq!(tool.supported_os(), ALL_DESKTOP_OS.to_vec());
+        assert_eq!(tool.schema().supported_os, ALL_DESKTOP_OS.to_vec());
+        assert!(tool.is_supported(), "ubiquitous tool must run on this host");
+    }
+
+    #[test]
+    fn linux_only_tool_is_supported_only_on_linux() {
+        let tool = LinuxOnlyTool;
+        assert_eq!(tool.supported_os(), vec![DesktopOs::Linux]);
+        let expect_supported = matches!(DesktopOs::current(), Some(DesktopOs::Linux) | None);
+        assert_eq!(tool.is_supported(), expect_supported);
+    }
+
+    #[test]
+    fn schema_is_supported_agrees_with_trait_is_supported() {
+        // The registry filters on trait `is_supported`; the schema carries the
+        // same data. They must agree so the advertised list is coherent.
+        for supported in [
+            tool_supported(&UbiquitousTool),
+            tool_supported(&LinuxOnlyTool),
+        ] {
+            assert_eq!(supported.0, supported.1);
+        }
+    }
+
+    fn tool_supported<T: PentestTool>(tool: &T) -> (bool, bool) {
+        (tool.is_supported(), tool.schema().is_supported())
+    }
+
+    #[test]
+    fn supported_os_is_not_serialized_to_the_wire() {
+        // to_json_schema is what reaches Strike48. It must not carry the OS
+        // axis (the host filter already applied), keeping the wire unchanged.
+        let json = LinuxOnlyTool.schema().to_json_schema();
+        assert!(
+            json.get("supported_os").is_none(),
+            "supported_os leaked onto the wire: {json}"
+        );
+    }
+
+    #[test]
+    fn old_schema_without_supported_os_still_deserializes() {
+        // A ToolSchema serialized before the field existed must round-trip in
+        // and default to every desktop OS.
+        let legacy = serde_json::json!({
+            "name": "legacy_tool",
+            "description": "pre-#183 schema",
+            "params": [],
+            "supported_platforms": ["Desktop"]
+        });
+        let schema: ToolSchema = serde_json::from_value(legacy).expect("deserialize legacy");
+        assert_eq!(schema.supported_os, ALL_DESKTOP_OS.to_vec());
+    }
+
+    #[test]
+    fn registry_advertises_only_host_supported_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(UbiquitousTool);
+        registry.register(LinuxOnlyTool);
+
+        let names = registry.supported_names();
+        assert!(
+            names.contains(&"ubiquitous"),
+            "ubiquitous tool must always be advertised"
+        );
+
+        // On Linux both are advertised; on macOS/Windows the Linux-only tool
+        // is filtered out. Assert the exact host-appropriate behavior.
+        let linux_only_advertised = names.contains(&"linux_only");
+        let expect = matches!(DesktopOs::current(), Some(DesktopOs::Linux) | None);
+        assert_eq!(
+            linux_only_advertised, expect,
+            "linux_only advertised={linux_only_advertised}, expected={expect}"
+        );
+
+        // supported_schemas and supported_names must agree in cardinality.
+        assert_eq!(registry.supported_schemas().len(), names.len());
     }
 }

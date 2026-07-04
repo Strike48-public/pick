@@ -78,7 +78,11 @@ impl PentestTool for AutoPwnCrackTool {
     }
 
     fn supported_platforms(&self) -> Vec<Platform> {
-        vec![Platform::Desktop] // Linux only for now
+        vec![Platform::Desktop]
+    }
+
+    fn supported_os(&self) -> Vec<DesktopOs> {
+        vec![DesktopOs::Linux] // requires hashcat/aircrack toolchain; Linux only for now (#183)
     }
 
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {

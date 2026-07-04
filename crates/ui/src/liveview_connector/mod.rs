@@ -1036,10 +1036,16 @@ impl LiveViewConnector {
 
     /// Build the registration message
     async fn build_registration_message(&self) -> StreamMessage {
-        // Build tool schemas for metadata
+        // Build tool schemas for metadata. Advertise only tools supported on
+        // this host (platform + desktop OS) so a Linux-only tool never appears
+        // in the tool list on Windows. See #183.
         let tools = self.tools.read().await;
-        let schemas = tools.schemas();
-        let tool_names: Vec<String> = tools.names().iter().map(|s| s.to_string()).collect();
+        let schemas = tools.supported_schemas();
+        let tool_names: Vec<String> = tools
+            .supported_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let json_schemas: Vec<serde_json::Value> =
             schemas.iter().map(|s| s.to_json_schema()).collect();
         drop(tools);

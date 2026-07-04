@@ -9,7 +9,8 @@ use async_trait::async_trait;
 use pentest_core::error::{Error, Result};
 use pentest_core::settings::load_settings;
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
+    execute_timed, DesktopOs, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult,
+    ToolSchema,
 };
 use pentest_platform::{get_platform, SystemInfo as _, WifiAttackOps};
 use serde_json::{json, Value};
@@ -119,7 +120,11 @@ impl PentestTool for WifiScanDetailedTool {
     }
 
     fn supported_platforms(&self) -> Vec<Platform> {
-        vec![Platform::Desktop] // Linux only for now (requires aircrack-ng)
+        vec![Platform::Desktop]
+    }
+
+    fn supported_os(&self) -> Vec<DesktopOs> {
+        vec![DesktopOs::Linux] // requires aircrack-ng; Linux only for now (#183)
     }
 
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
