@@ -128,7 +128,14 @@ pub async fn execute_command_in_dir(
     execute_command_direct(cmd, args, timeout_duration, working_dir).await
 }
 
-/// Direct command execution (used as fallback or for internal operations)
+/// Direct command execution (used as fallback or for internal operations).
+///
+/// This runs on the **host**, so the Linux-only `which` binary-probe is
+/// rewritten to the host-appropriate command (`where` on Windows) via
+/// [`crate::common::host_which_command`]. The sandbox path in
+/// [`execute_command_in_dir`] does NOT come through here — it sends the command
+/// into a Linux environment (WSL2/proot/bwrap) where `which` is correct — so the
+/// rewrite is confined to host execution. See GitHub issue #183.
 pub(crate) async fn execute_command_direct(
     cmd: &str,
     args: &[&str],
@@ -137,7 +144,14 @@ pub(crate) async fn execute_command_direct(
 ) -> Result<CommandResult> {
     let start = Instant::now();
 
-    let mut command = Command::new(cmd);
+    // Host-only: `which` does not exist on Windows; use `where` there instead.
+    let host_cmd = if cmd == "which" {
+        crate::common::host_which_command()
+    } else {
+        cmd
+    };
+
+    let mut command = Command::new(host_cmd);
     command
         .args(args)
         .stdout(Stdio::piped())
