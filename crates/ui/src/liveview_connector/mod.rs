@@ -289,7 +289,16 @@ impl LiveViewConnector {
         // WorkspaceApp (liveview) can read them when auto-creating the agent persona and executing tools.
         crate::session::set_tenant_id(&config.tenant_id);
         crate::session::set_connector_name(&config.connector_name);
-        crate::session::set_tool_names(tools.names().iter().map(|s| s.to_string()).collect());
+        // Use host-supported names so the agent's auto-approved tool_configs match
+        // the advertised capability set: a Linux-only tool must not be pre-approved
+        // on a Windows host where it is not offered. See #183.
+        crate::session::set_tool_names(
+            tools
+                .supported_names()
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        );
 
         let tools_arc = Arc::new(RwLock::new(tools));
         crate::session::set_tool_registry(tools_arc.clone());
@@ -1036,10 +1045,16 @@ impl LiveViewConnector {
 
     /// Build the registration message
     async fn build_registration_message(&self) -> StreamMessage {
-        // Build tool schemas for metadata
+        // Build tool schemas for metadata. Advertise only tools supported on
+        // this host (platform + desktop OS) so a Linux-only tool never appears
+        // in the tool list on Windows. See #183.
         let tools = self.tools.read().await;
-        let schemas = tools.schemas();
-        let tool_names: Vec<String> = tools.names().iter().map(|s| s.to_string()).collect();
+        let schemas = tools.supported_schemas();
+        let tool_names: Vec<String> = tools
+            .supported_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let json_schemas: Vec<serde_json::Value> =
             schemas.iter().map(|s| s.to_json_schema()).collect();
         drop(tools);
