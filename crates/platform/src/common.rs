@@ -9,6 +9,25 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
+/// The command that reports whether a binary is on the host's PATH.
+///
+/// Unix (Linux/macOS/BSD) uses `which`; Windows has no `which` but ships
+/// `where.exe`, which is PATHEXT-aware and, like `which`, exits 0 when the
+/// binary is found and non-zero otherwise. Using the wrong one makes every
+/// external tool read as "Missing" on Windows. See GitHub issue #183.
+///
+/// This describes the command for the **host** only. Commands sent into the
+/// sandbox (WSL2 on Windows, proot/bwrap on Linux) always run in a Linux
+/// environment where `which` is correct, so the sandbox path must not use this.
+#[must_use]
+pub const fn host_which_command() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    }
+}
+
 /// Resolve `host:port` to a [`SocketAddr`], trying a direct parse first and
 /// falling back to DNS resolution via [`ToSocketAddrs`].
 fn resolve_addr(addr: &str, port: u16) -> SocketAddr {
@@ -172,4 +191,21 @@ pub fn parse_ip_neigh(output: &str) -> Vec<ArpEntry> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_which_command_matches_target_os() {
+        // The host binary-probe command must be `where` on Windows (no `which`
+        // there) and `which` on every Unix-like target. See #183.
+        let cmd = host_which_command();
+        if cfg!(target_os = "windows") {
+            assert_eq!(cmd, "where");
+        } else {
+            assert_eq!(cmd, "which");
+        }
+    }
 }
