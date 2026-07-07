@@ -12,11 +12,39 @@ use tracing::{info, warn};
 /// GitHub URL for Microsoft's webwright package.
 const WEBWRIGHT_GIT_URL: &str = "https://github.com/microsoft/webwright.git";
 
+/// Embedded sidecar server script written to the rootfs once per install check.
+const SIDECAR_SERVER_PY: &str = include_str!("sidecar_server.py");
+
+/// Write the sidecar server script into the proot rootfs `/tmp` so the sidecar
+/// can find it at a known path. Idempotent; only writes if the content differs.
+fn ensure_sidecar_server_script() {
+    let path = super::constants::sidecar_server_script_path();
+    let needs_write = match std::fs::read(&path) {
+        Ok(existing) => existing != SIDECAR_SERVER_PY.as_bytes(),
+        Err(_) => true,
+    };
+    if needs_write {
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&path, SIDECAR_SERVER_PY) {
+            warn!(
+                "[webwright-install] failed to write sidecar server script: {}",
+                e
+            );
+        }
+    }
+}
+
 /// Check if webwright is importable, install if not.
 ///
 /// In sandbox mode (proot/bwrap): auto-installs from GitHub using pip/uv.
 /// In native mode (DISABLE_SANDBOX=true): returns error with install instructions.
 pub async fn ensure_webwright_installed(platform: &impl CommandExec) -> Result<()> {
+    // Write the sidecar server script up-front (idempotent), regardless of whether
+    // webwright itself needs install. This removes the per-spawn write+race.
+    ensure_sidecar_server_script();
+
     // Check if webwright is already importable
     let check = platform
         .execute_command(

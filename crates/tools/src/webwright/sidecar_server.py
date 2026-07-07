@@ -7,9 +7,10 @@ tasks for faster startup and enables live progress streaming.
 
 Protocol:
   Pick -> Sidecar (stdin):
-    {"type": "start_task", "mode": "explore", "task": "...", "url": "...", "max_steps": 50}
-    {"type": "execute_script", "script": "...", "url": "..."}
+    {"type": "start_task", "mode": "explore", "task": "...", "url": "...", "max_steps": 50, "output_dir": "...", "task_id": "..."}
+    {"type": "execute_script", "script": "...", "url": "...", "output_dir": "...", "task_id": "..."}
     {"type": "cancel"}
+    {"type": "shutdown"}
 
   Sidecar -> Pick (stdout):
     {"type": "step", "n": 1, "action": "navigating to ...", "screenshot": "<base64 or null>"}
@@ -73,9 +74,19 @@ async def run_explore_task(task: str, url: str, max_steps: int, output_dir: str,
 
         emit_step(1, f"starting exploration: {task}")
 
+        # Override OPENAI_API_KEY to include task_id so the LLM proxy can
+        # route each task to its own conversation (format: "token:task_id")
+        env = os.environ.copy()
+        base_key = env.get("OPENAI_API_KEY", "pick-internal")
+        # Strip any existing task_id suffix before appending new one
+        if ":" in base_key and len(base_key.split(":")[-1]) >= 32:
+            base_key = base_key.rsplit(":", 1)[0]
+        env["OPENAI_API_KEY"] = f"{base_key}:{task_id}"
+
         # Run as subprocess (avoids nested event loop issues)
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -219,6 +230,8 @@ async def main():
                     task_id=task_id,
                 )
             elif cmd.get("mode") == "execute":
+                # Backward-compat: older callers routed execute mode through start_task.
+                # Prefer the dedicated execute_script command type going forward.
                 await run_execute_task(
                     script=cmd.get("script", ""),
                     url=cmd.get("url", ""),
@@ -226,6 +239,14 @@ async def main():
                 )
             else:
                 emit_error(f"Unknown mode: {cmd.get('mode')}")
+
+        elif cmd_type == "execute_script":
+            output_dir = cmd.get("output_dir", f"/tmp/webwright/{cmd.get('task_id', 'adhoc')}")
+            await run_execute_task(
+                script=cmd.get("script", ""),
+                url=cmd.get("url", ""),
+                output_dir=output_dir,
+            )
 
         elif cmd_type == "cancel":
             if current_task and not current_task.done():

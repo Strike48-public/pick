@@ -36,14 +36,12 @@ impl WebwrightWorkspace {
         let task_id = Uuid::new_v4().to_string();
 
         // Sandbox dir: accessible inside proot via rootfs /tmp
-        let sandbox_dir = format!("/tmp/webwright/{}", task_id);
+        let sandbox_dir = super::constants::sandbox_task_workspace(&task_id);
 
         // Host dir: where artifacts actually land (rootfs path on host)
-        let rootfs_str = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let rootfs_host_path = format!(
-            "{}/.local/share/pentest-sandbox/blackarch-rootfs/tmp/webwright/{}",
-            rootfs_str, task_id
-        );
+        let rootfs_host_path = super::constants::host_task_workspace(&task_id)
+            .to_string_lossy()
+            .into_owned();
 
         // Also create in connector workspace (for Files panel) — we'll copy after
         let connector_dir = connector_workspace.map(|ws| ws.join("webwright").join(&task_id));
@@ -68,9 +66,11 @@ impl WebwrightWorkspace {
             .map_err(|e| Error::ToolExecution(format!("Failed to serialize config: {}", e)))?;
 
         // Write to the rootfs host path (visible inside proot as sandbox_dir)
-        std::fs::create_dir_all(&self.host_dir)
+        tokio::fs::create_dir_all(&self.host_dir)
+            .await
             .map_err(|e| Error::ToolExecution(format!("Failed to create dir: {}", e)))?;
-        std::fs::write(format!("{}/config.yaml", self.host_dir), yaml.as_bytes())
+        tokio::fs::write(format!("{}/config.yaml", self.host_dir), yaml.as_bytes())
+            .await
             .map_err(|e| Error::ToolExecution(format!("Failed to write config: {}", e)))?;
 
         Ok(())
@@ -78,9 +78,11 @@ impl WebwrightWorkspace {
 
     /// Write a Python script to workspace (host-side rootfs path).
     pub async fn write_script(&self, content: &str) -> Result<()> {
-        std::fs::create_dir_all(&self.host_dir)
+        tokio::fs::create_dir_all(&self.host_dir)
+            .await
             .map_err(|e| Error::ToolExecution(format!("Failed to create dir: {}", e)))?;
-        std::fs::write(format!("{}/script.py", self.host_dir), content.as_bytes())
+        tokio::fs::write(format!("{}/script.py", self.host_dir), content.as_bytes())
+            .await
             .map_err(|e| Error::ToolExecution(format!("Failed to write script: {}", e)))?;
 
         Ok(())
@@ -236,5 +238,48 @@ mod tests {
         assert_eq!(ws.config_path(), "/tmp/webwright/test-123/config.yaml");
         assert_eq!(ws.script_path(), "/tmp/webwright/test-123/script.py");
         assert_eq!(ws.path(), "/tmp/webwright/test-123");
+    }
+
+    #[tokio::test]
+    async fn copy_to_connector_workspace_copies_files() {
+        let tmp = std::env::temp_dir().join(format!("pick-ws-test-{}", Uuid::new_v4()));
+        let connector_dir = tmp.join("connector");
+
+        let ws = WebwrightWorkspace {
+            task_id: "copy-test".to_string(),
+            sandbox_dir: "/tmp/webwright/copy-test".to_string(),
+            host_dir: tmp.join("host").to_string_lossy().to_string(),
+            connector_dir: Some(connector_dir.to_string_lossy().to_string()),
+        };
+
+        // Create host dir with files
+        std::fs::create_dir_all(&ws.host_dir).unwrap();
+        std::fs::write(format!("{}/a.txt", ws.host_dir), b"hello").unwrap();
+        std::fs::create_dir_all(format!("{}/sub", ws.host_dir)).unwrap();
+        std::fs::write(format!("{}/sub/b.txt", ws.host_dir), b"world").unwrap();
+
+        ws.copy_to_connector_workspace();
+
+        assert!(connector_dir.join("a.txt").exists());
+        assert!(connector_dir.join("sub/b.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(connector_dir.join("a.txt")).unwrap(),
+            "hello"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn copy_to_connector_workspace_noop_when_none() {
+        let ws = WebwrightWorkspace {
+            task_id: "noop-test".to_string(),
+            sandbox_dir: "/tmp/webwright/noop-test".to_string(),
+            host_dir: "/tmp/nonexistent-pick-ws-test".to_string(),
+            connector_dir: None,
+        };
+        // Should not panic or error
+        ws.copy_to_connector_workspace();
     }
 }

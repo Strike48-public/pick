@@ -214,6 +214,17 @@ impl PentestTool for NmapTool {
                 builder = builder.flag("-Pn");
             }
 
+            // If we lack raw socket privileges, force --unprivileged so nmap
+            // uses connect() for everything and doesn't error with
+            // "Couldn't open a raw socket or eth handle."
+            // Also force -Pn since ICMP ping requires raw sockets too.
+            if !has_raw_socket_privilege() {
+                builder = builder.flag("--unprivileged");
+                if !no_ping {
+                    builder = builder.flag("-Pn");
+                }
+            }
+
             // NSE scripts - validate before running
             if let Some(scripts) = param_str_opt(&params, "scripts") {
                 if !scripts.is_empty() {
@@ -742,6 +753,42 @@ fn parse_port_count(ports: &str) -> usize {
     }
 
     total.max(1) // At least 1 port
+}
+
+/// Check if the process has raw socket privileges.
+///
+/// - Linux: euid == 0 (or CAP_NET_RAW, but checking euid is sufficient since
+///   proot passes through caps when running as root)
+/// - macOS: euid == 0
+/// - Windows: assume unprivileged (admin detection is complex and nmap on
+///   Windows requires Npcap which has its own privilege model)
+fn has_raw_socket_privilege() -> bool {
+    #[cfg(unix)]
+    {
+        // Read euid from /proc/self/status (Linux) or fall back to id command
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            if let Some(euid) = status
+                .lines()
+                .find(|l| l.starts_with("Uid:"))
+                .and_then(|l| l.split_whitespace().nth(2))
+                .and_then(|v| v.parse::<u32>().ok())
+            {
+                return euid == 0;
+            }
+        }
+        // macOS doesn't have /proc — check via std::process::Command
+        std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim() == "0")
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        false // Windows: assume no raw socket access
+    }
 }
 
 #[cfg(test)]

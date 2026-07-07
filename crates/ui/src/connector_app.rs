@@ -385,7 +385,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
 
         spawn(async move {
             let tools = (cfg.create_tools)();
-            let mut lv_connector = LiveViewConnector::new(new_config, tools);
+            let lv_connector = LiveViewConnector::new(new_config, tools);
 
             // Extract workspace path
             let ws_path = lv_connector
@@ -402,6 +402,10 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                     &ws_path
                 }
             )));
+
+            // Rebind as mut only when shell-ws needs to call start_liveview_server.
+            #[cfg(feature = "shell-ws")]
+            let mut lv_connector = lv_connector;
 
             if !ws_path.is_empty() {
                 workspace_path.set(Some(ws_path.clone()));

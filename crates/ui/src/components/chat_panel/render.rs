@@ -1,8 +1,16 @@
 //! Message rendering: rich parts, tool calls, markdown, and chart post-processing.
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use dioxus::prelude::*;
 use pentest_core::matrix::{ChatMessage, MessagePart, ToolCallInfo, ToolCallStatus};
+use pentest_tools::webwright::{
+    live_peek, live_subscribe, signature_for_call, task_for_request, WebwrightProgress,
+};
 use pulldown_cmark::{html, Options, Parser};
+
+fn base64_encode(bytes: &[u8]) -> String {
+    BASE64.encode(bytes)
+}
 
 // ---------------------------------------------------------------------------
 // Message rendering with rich parts
@@ -79,14 +87,56 @@ pub fn render_message(
     }
 }
 
+fn webwright_display_name(args: &Option<String>) -> String {
+    let Some(args_str) = args else {
+        return "webwright".to_string();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(args_str) else {
+        return "webwright".to_string();
+    };
+    let mode = v.get("mode").and_then(|m| m.as_str()).unwrap_or("explore");
+    let summary = if mode == "execute" {
+        v.get("start_url")
+            .and_then(|u| u.as_str())
+            .unwrap_or("script")
+            .to_string()
+    } else {
+        v.get("task")
+            .and_then(|t| t.as_str())
+            .map(|t| {
+                if t.len() > 60 {
+                    format!("{}...", &t[..57])
+                } else {
+                    t.to_string()
+                }
+            })
+            .or_else(|| {
+                v.get("start_url")
+                    .and_then(|u| u.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default()
+    };
+    if summary.is_empty() {
+        format!("webwright {}", mode)
+    } else {
+        format!("webwright {} \u{2014} {}", mode, summary)
+    }
+}
+
 fn render_tool_call(tc: &ToolCallInfo, expanded_tools: &mut Signal<Vec<String>>) -> Element {
     let is_expanded = expanded_tools.read().contains(&tc.id);
     let tc_id_toggle = tc.id.clone();
-    let name = tc.name.clone();
+    let display_name = if tc.name == "webwright" {
+        webwright_display_name(&tc.arguments)
+    } else {
+        tc.name.clone()
+    };
     let status = tc.status;
     let args = tc.arguments.clone();
     let result = tc.result.clone();
     let error = tc.error.clone();
+    let name = tc.name.clone();
 
     let status_class = match status {
         ToolCallStatus::Success => "tool-status-success",
@@ -100,7 +150,7 @@ fn render_tool_call(tc: &ToolCallInfo, expanded_tools: &mut Signal<Vec<String>>)
     };
 
     rsx! {
-        div { class: "chat-tool-call",
+        div { class: "chat-tool-call", style: "margin-bottom: 8px; border-bottom: 1px solid #21262d; padding-bottom: 8px;",
             div {
                 class: "chat-tool-header",
                 onclick: {
@@ -117,12 +167,30 @@ fn render_tool_call(tc: &ToolCallInfo, expanded_tools: &mut Signal<Vec<String>>)
                 span { class: "chat-tool-icon",
                     if is_expanded { "v " } else { "> " }
                 }
-                span { class: "chat-tool-name", "{name}" }
+                span { class: "chat-tool-name", "{display_name}" }
                 span { class: "chat-tool-status {status_class}", "{status_display}" }
             }
             // Webwright: show live progress while running, screenshots when done
             if name == "webwright" {
-                WebwrightGallery { result: result.clone(), error: error.clone() }
+                // Extract task_id from result (completed) or use tool call ID as fallback.
+                // For running calls we ALSO pass a content signature so the widget can find
+                // its task even when the platform's tool_call_id doesn't match tc.id.
+                {
+                    let task_id = result.as_ref()
+                        .and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok())
+                        .and_then(|v| v.get("task_id").and_then(|t| t.as_str()).map(|s| s.to_string()))
+                        .unwrap_or_else(|| tc.id.clone());
+                    let signature = signature_for_call(
+                        &tc.name,
+                        tc.arguments.as_deref().unwrap_or(""),
+                    );
+                    rsx! { WebwrightGallery {
+                        task_id: task_id,
+                        signature: signature,
+                        result: result.clone(),
+                        error: error.clone(),
+                    } }
+                }
             }
             if is_expanded {
                 div { class: "chat-tool-details",
@@ -212,33 +280,68 @@ pub fn format_relative_time(iso: &str) -> String {
 /// Webwright widget component — handles both live progress and completed gallery.
 /// Uses Dioxus signals for the lightbox modal instead of fragile inline scripts.
 #[component]
-pub fn WebwrightGallery(result: Option<String>, error: Option<String>) -> Element {
+pub fn WebwrightGallery(
+    task_id: String,
+    /// Content signature for fallback lookup when the tool_call_id doesn't resolve
+    /// (e.g. platform ID namespace mismatch). Empty string means no signature.
+    signature: String,
+    result: Option<String>,
+    error: Option<String>,
+) -> Element {
     // Modal state: (all_images as data URIs, current index)
     let mut modal_open = use_signal(|| Option::<(Vec<String>, usize)>::None);
-    let mut progress_signal =
-        use_signal(pentest_tools::webwright::live_state::WebwrightProgress::default);
+    #[allow(clippy::redundant_closure)]
+    let mut progress_signal = use_signal(WebwrightProgress::default);
 
     let is_live = result.is_none() && error.is_none();
 
-    // Subscribe to live progress updates
-    use_future(move || async move {
-        loop {
-            let tasks = pentest_tools::webwright::live_state::running_tasks();
-            if let Some(task_id) = tasks.first() {
-                let mut rx = pentest_tools::webwright::live_state::subscribe(task_id);
-                loop {
-                    if rx.changed().await.is_err() {
-                        break;
+    // Subscribe to live progress for THIS task.
+    // For completed calls, task_id comes from the result JSON.
+    // For in-progress calls we resolve via (in order):
+    //   1. task_for_request(tc.id)             — works when platform IDs align
+    //   2. task_for_request(signature)         — content-hash fallback
+    //   3. peek(tc.id)                         — handles case where tc.id IS the task_id
+    let subscribe_task_id = task_id.clone();
+    let subscribe_signature = signature.clone();
+    use_future(move || {
+        let tid = subscribe_task_id.clone();
+        let sig = subscribe_signature.clone();
+        async move {
+            loop {
+                let real_tid = task_for_request(&tid)
+                    .or_else(|| {
+                        if sig.is_empty() {
+                            None
+                        } else {
+                            task_for_request(&sig)
+                        }
+                    })
+                    .or_else(|| {
+                        let p = live_peek(&tid);
+                        if p.running || p.step > 0 {
+                            Some(tid.clone())
+                        } else {
+                            None
+                        }
+                    });
+
+                if let Some(real_tid) = real_tid {
+                    let mut rx = live_subscribe(&real_tid);
+                    loop {
+                        if rx.changed().await.is_err() {
+                            break;
+                        }
+                        let p = rx.borrow().clone();
+                        let still_running = p.running;
+                        progress_signal.set(p);
+                        if !still_running {
+                            break;
+                        }
                     }
-                    let p = rx.borrow().clone();
-                    let still_running = p.running;
-                    progress_signal.set(p);
-                    if !still_running {
-                        break;
-                    }
+                    break;
                 }
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
     });
 
@@ -270,7 +373,7 @@ pub fn WebwrightGallery(result: Option<String>, error: Option<String>) -> Elemen
 
 /// Render the live progress panel (log + screenshots).
 fn render_live_widget(
-    progress: &pentest_tools::webwright::live_state::WebwrightProgress,
+    progress: &WebwrightProgress,
     modal_open: &mut Signal<Option<(Vec<String>, usize)>>,
 ) -> Element {
     if !progress.running {
@@ -280,12 +383,17 @@ fn render_live_widget(
     let step_text = format!("Step {} \u{2014} {}", progress.step, progress.action);
     let has_screenshots = !progress.screenshots.is_empty() || progress.screenshot.is_some();
 
-    // Collect all live screenshot URIs for the modal (newest first, matching grid display order)
+    // Collect all live screenshot URIs for the modal (newest first, matching grid display order).
+    // Screenshots are stored as file paths on disk; read and base64-encode for display.
     let all_uris: Vec<String> = progress
         .screenshots
         .iter()
         .rev()
-        .map(|b64| format!("data:image/png;base64,{}", b64))
+        .filter_map(|path| {
+            std::fs::read(path)
+                .ok()
+                .map(|bytes| format!("data:image/png;base64,{}", base64_encode(&bytes)))
+        })
         .collect();
 
     rsx! {
@@ -349,11 +457,11 @@ fn render_live_widget(
                     div {
                         style: "flex-shrink: 0; display: flex; flex-direction: row; gap: 6px; max-width: 420px;",
                         // Primary (most recent) screenshot — left side, scrollable
-                        if let Some(ref screenshot) = progress.screenshot {
+                        if !all_uris.is_empty() {
                             {
-                                let uri = format!("data:image/png;base64,{}", screenshot);
                                 let all = all_uris.clone();
-                                let idx = 0_usize; // newest is first in reversed list
+                                let uri = all[0].clone();
+                                let idx = 0_usize;
                                 let mut modal = *modal_open;
                                 rsx! {
                                     div {
@@ -369,14 +477,14 @@ fn render_live_widget(
                             }
                         }
                         // Thumbnail grid — right of primary, wraps in 3 columns
-                        if progress.screenshots.len() > 1 {
+                        if all_uris.len() > 1 {
                             div {
                                 style: "flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; align-content: start; max-height: 240px; overflow-y: auto;",
-                                for (i, shot) in progress.screenshots.iter().rev().skip(1).take(12).enumerate() {
+                                for (i, uri) in all_uris.iter().skip(1).take(12).enumerate() {
                                     {
-                                        let uri = format!("data:image/png;base64,{}", shot);
                                         let all = all_uris.clone();
-                                        let idx = i + 1; // grid starts at index 1 (after primary)
+                                        let uri = uri.clone();
+                                        let idx = i + 1;
                                         let mut modal = *modal_open;
                                         let key = format!("thumb-{}", idx);
                                         rsx! {
@@ -437,7 +545,7 @@ fn render_completed_gallery(
                                 img {
                                     src: "{duri}",
                                     alt: "{fname}",
-                                    style: "width: 100%; height: 96px; object-fit: cover; display: block;",
+                                    style: "width: 100%; height: 96px; object-fit: cover; object-position: top; display: block;",
                                 }
                                 div {
                                     style: "padding: 4px 6px; font-size: 9px; color: #8b949e; font-family: 'JetBrains Mono', monospace; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;",

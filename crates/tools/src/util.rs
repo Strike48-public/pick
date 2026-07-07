@@ -24,11 +24,15 @@ pub fn param_str_opt(params: &Value, key: &str) -> Option<String> {
 }
 
 /// Extract a `u64` parameter with a default value.
-/// Accepts both integer and float JSON values (e.g. `300` or `300.0`).
+/// Accepts integer, float, or string JSON values (e.g. `300`, `300.0`, `"300"`).
 pub fn param_u64(params: &Value, key: &str, default: u64) -> u64 {
     params
         .get(key)
-        .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
+        .and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_f64().map(|f| f as u64))
+                .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+        })
         .unwrap_or(default)
 }
 

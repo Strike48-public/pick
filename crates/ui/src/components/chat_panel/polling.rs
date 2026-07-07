@@ -6,7 +6,7 @@ use pentest_core::matrix::{
 };
 use std::sync::Arc;
 
-use super::constants::{MAX_POLL_ATTEMPTS, POLL_INTERVAL_MS};
+use super::constants::POLL_INTERVAL_MS;
 
 /// Severity for an inline chat notice. Drives styling, not behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,7 +105,7 @@ pub async fn poll_and_update(
     // generic message that points the operator at the most likely causes.
     let mut saw_error = false;
 
-    for _attempt in 0..MAX_POLL_ATTEMPTS {
+    for _attempt in 0_u32.. {
         // Exit immediately if user switched away from this conversation
         if !is_active(&active_conversation_id, &conv_id) {
             tracing::info!(

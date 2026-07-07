@@ -38,14 +38,15 @@ impl WebwrightConfig {
 
 #[cfg(test)]
 mod tests {
+    use super::super::constants::DEFAULT_LLM_PROXY_PORT;
     use super::*;
 
     #[test]
     fn config_serializes_to_yaml() {
-        let config = WebwrightConfig::new(9100, "strike48-default");
+        let config = WebwrightConfig::new(DEFAULT_LLM_PROXY_PORT, "strike48-default");
         let yaml = config.to_yaml().unwrap();
         assert!(yaml.contains("provider: openai"));
-        assert!(yaml.contains("http://127.0.0.1:9100/v1"));
+        assert!(yaml.contains(&format!("http://127.0.0.1:{}/v1", DEFAULT_LLM_PROXY_PORT)));
         assert!(yaml.contains("model: strike48-default"));
     }
 }

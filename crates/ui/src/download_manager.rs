@@ -17,7 +17,6 @@ pub fn get_download_progress() -> Option<f64> {
     global_progress().lock().ok().and_then(|g| *g)
 }
 
-#[cfg(feature = "shell-ws")]
 pub(crate) fn set_global_progress(p: Option<f64>) {
     if let Ok(mut g) = global_progress().lock() {
         *g = p;

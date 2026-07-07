@@ -4,20 +4,37 @@
 //! Completions format. Translates requests into conversation messages via
 //! the Matrix client.
 
-use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    routing::post,
+    Json, Router,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap as StdHashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use pentest_core::matrix::{ChatClient, MatrixChatClient};
 
+/// Maximum number of per-task conversations to retain. When exceeded, the oldest
+/// entries are evicted (LRU-ish: we just drain excess since insertion order is
+/// not tracked in HashMap — acceptable since eviction is rare and only prevents
+/// unbounded growth).
+const MAX_CONVERSATIONS: usize = 100;
+
 /// Shared state for the LLM proxy.
 #[derive(Clone)]
 pub struct LlmProxyState {
     pub matrix_client: Arc<RwLock<Option<MatrixChatClient>>>,
-    pub conversation_id: Arc<RwLock<Option<String>>>,
+    /// Per-task conversations: task_id → conversation_id
+    pub conversations: Arc<RwLock<StdHashMap<String, String>>>,
+    /// Shared agent ID (one webwright agent persona for all tasks)
     pub agent_id: Arc<RwLock<Option<String>>>,
+    /// Held during agent upsert so only one concurrent request creates the agent.
+    /// Subsequent concurrent requests wait, then re-read `agent_id` from the cache.
+    pub agent_upsert_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// OpenAI Responses API request (what webwright sends).
@@ -107,6 +124,7 @@ fn extract_prompt_from_input(input: &Value) -> String {
 /// forward to Strike48 via conversation, and return a Responses-format reply.
 async fn handle_llm_request(
     State(state): State<LlmProxyState>,
+    headers: HeaderMap,
     Json(request): Json<ResponsesApiRequest>,
 ) -> Result<Json<ResponsesApiResponse>, StatusCode> {
     // Extract prompt from input
@@ -123,53 +141,106 @@ async fn handle_llm_request(
         prompt.len()
     );
 
-    // Get Matrix client (try shared state first, fall back to session token)
-    let client_guard = state.matrix_client.read().await;
-    if client_guard.is_none() {
-        drop(client_guard);
-        // Try initializing from session token (set when iframe loads)
-        let token = crate::session::get_auth_token();
-        if !token.is_empty() {
-            let api_url = std::env::var("MATRIX_API_URL").unwrap_or_default();
-            if !api_url.is_empty() {
-                let mut client = MatrixChatClient::new(&api_url);
-                client.set_auth_token(&token);
-                let mut guard = state.matrix_client.write().await;
-                *guard = Some(client);
-                tracing::info!("LLM proxy: initialized matrix client from session token");
+    // Check for Authorization header — if caller provides a real token (not
+    // the dummy "pick-internal"), use it directly as the Matrix session token.
+    // Format can be "Bearer <token>" or "Bearer <token>:<task_id>" to scope conversations.
+    let raw_bearer = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|t| *t != "pick-internal" && !t.is_empty())
+        .map(|t| t.to_string());
+
+    // Parse optional task_id from bearer (format: "token:task_id")
+    let (bearer_token, bearer_task_id) = match raw_bearer {
+        Some(ref val) => {
+            if let Some((token, tid)) = val.rsplit_once(':') {
+                // Only treat as task_id if the last segment looks like a UUID
+                if tid.len() >= 32 && tid.contains('-') {
+                    // Filter out "pick-internal" after splitting
+                    let tok = if token == "pick-internal" {
+                        None
+                    } else {
+                        Some(token.to_string())
+                    };
+                    (tok, Some(tid.to_string()))
+                } else {
+                    (Some(val.clone()), None)
+                }
+            } else {
+                (Some(val.clone()), None)
             }
         }
-    } else {
-        drop(client_guard);
-    }
+        None => (None, None),
+    };
 
-    let client_guard = state.matrix_client.read().await;
-    let client = match client_guard.as_ref() {
-        Some(c) => c,
+    // Resolve the auth token for this request.
+    // Priority: 1) Bearer token from request (each sidecar sends the real token)
+    //           2) Global session token (interactive use via iframe)
+    let effective_token = bearer_token.or_else(|| {
+        let t = crate::session::get_auth_token();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    });
+
+    let effective_token = match effective_token {
+        Some(t) => t,
         None => {
-            tracing::error!("LLM proxy: Matrix client not available (no session token)");
+            tracing::error!(
+                "LLM proxy: no auth token available (no bearer header, no session token)"
+            );
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
     };
 
-    // Get or create conversation (auto-create on first use)
-    let conv_id = {
-        let conv_guard = state.conversation_id.read().await;
-        conv_guard.clone()
+    let api_url = std::env::var("MATRIX_API_URL").unwrap_or_default();
+    if api_url.is_empty() {
+        tracing::error!("LLM proxy: MATRIX_API_URL not set");
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    let mut client = MatrixChatClient::new(&api_url);
+    client.set_auth_token(&effective_token);
+
+    // Each task gets its own conversation to avoid interleaving.
+    // Task ID comes from: bearer token suffix, X-Task-Id header, or "default".
+    let task_id = bearer_task_id
+        .or_else(|| {
+            headers
+                .get("x-task-id")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "default".to_string());
+
+    // Look up or create a conversation for this task
+    let conversation_id = {
+        let convs = state.conversations.read().await;
+        convs.get(&task_id).cloned()
     };
 
-    let conversation_id = match conv_id {
+    let conversation_id = match conversation_id {
         Some(id) => id,
         None => {
-            // Auto-create a conversation for webwright's LLM calls
-            tracing::info!("LLM proxy: creating conversation for webwright");
+            tracing::info!("LLM proxy: creating conversation for task {}", task_id);
             match client
                 .create_conversation(Some("webwright-browser-agent"))
                 .await
             {
                 Ok(id) => {
-                    let mut conv_guard = state.conversation_id.write().await;
-                    *conv_guard = Some(id.clone());
+                    let mut convs = state.conversations.write().await;
+                    convs.insert(task_id.clone(), id.clone());
+                    // Evict oldest entries if map grows too large
+                    if convs.len() > MAX_CONVERSATIONS {
+                        let excess = convs.len() - MAX_CONVERSATIONS;
+                        let keys: Vec<_> = convs.keys().take(excess).cloned().collect();
+                        for k in keys {
+                            convs.remove(&k);
+                        }
+                    }
                     id
                 }
                 Err(e) => {
@@ -180,24 +251,37 @@ async fn handle_llm_request(
         }
     };
 
-    // Get or upsert the webwright browser exploration agent
+    // Get or upsert the webwright browser exploration agent.
+    // Single-flight: hold agent_upsert_lock so concurrent requests don't both call
+    // create_agent. Once the first request populates agent_id, others read the cache.
     let agent_id = {
-        let agent_guard = state.agent_id.read().await;
-        agent_guard.clone()
-    };
-    let agent_id = match agent_id {
-        Some(id) => id,
-        None => match upsert_webwright_agent(client).await {
-            Ok(id) => {
-                let mut guard = state.agent_id.write().await;
-                *guard = Some(id.clone());
-                id
+        let cached = state.agent_id.read().await.clone();
+        match cached {
+            Some(id) => id,
+            None => {
+                let _upsert_guard = state.agent_upsert_lock.lock().await;
+                // Re-check under lock — another request may have populated the cache.
+                let cached = state.agent_id.read().await.clone();
+                if let Some(id) = cached {
+                    id
+                } else {
+                    match upsert_webwright_agent(&client).await {
+                        Ok(id) => {
+                            *state.agent_id.write().await = Some(id.clone());
+                            id
+                        }
+                        Err(e) => {
+                            // Fail fast: sending to the conversation with an empty
+                            // agent_id would make a doomed downstream call. Don't
+                            // cache the failure (agent_id stays None) so the next
+                            // request retries the upsert.
+                            tracing::error!("LLM proxy: failed to upsert webwright agent: {}", e);
+                            return Err(StatusCode::SERVICE_UNAVAILABLE);
+                        }
+                    }
+                }
             }
-            Err(e) => {
-                tracing::error!("LLM proxy: failed to upsert webwright agent: {}", e);
-                String::new()
-            }
-        },
+        }
     };
 
     // Send to Strike48 and get response
