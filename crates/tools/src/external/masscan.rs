@@ -74,7 +74,7 @@ impl PentestTool for MasscanTool {
             .param(ToolParam::optional(
                 "exclude",
                 ParamType::Array,
-                "Hosts/CIDRs to exclude from the scan (maps to masscan --exclude). Use this to scan a range while skipping specific hosts, e.g. target='10.0.0.0/8' exclude=['10.0.0.1']. Out-of-scope hosts are also injected here automatically by the platform.",
+                "Hosts/CIDRs to exclude from the scan (maps to masscan --exclude). Provide a JSON array of individual IP or CIDR strings — one entry per host/range, e.g. [\"10.0.0.1\"]. Do NOT wrap the list in a single string or inline brackets into a value. Use this to scan a range while skipping specific hosts (e.g. target \"10.0.0.0/8\"). Out-of-scope hosts are also injected here automatically by the platform.",
                 json!([]),
             ))
             .platforms(vec![Platform::Desktop, Platform::Tui])

@@ -419,6 +419,16 @@ impl ToolSchema {
                 "description": param.description
             });
 
+            // A JSON-schema `array` without `items` is under-specified: the LLM
+            // doesn't know the element type and may emit a bracketed literal that
+            // gets stringified into a CLI flag (e.g. `--exclude=[10.0.0.1,...]`),
+            // which the tool rejects. Every array param in this codebase is a
+            // list of strings (hosts, args, commands), so declare `items` as
+            // string to give the model a well-formed schema.
+            if matches!(param.param_type, ParamType::Array) {
+                prop["items"] = serde_json::json!({ "type": "string" });
+            }
+
             if let Some(default) = &param.default {
                 prop["default"] = default.clone();
             }
@@ -958,6 +968,37 @@ mod external_dependency_tests {
         assert_eq!(dep["install_method"]["id"], "zap");
         assert_eq!(dep["category"], "web");
         assert_eq!(dep["recommended"], true);
+    }
+
+    #[test]
+    fn array_params_declare_string_items_in_json_schema() {
+        // An array param must serialize with `items: {type: string}` so the LLM
+        // emits a well-formed array instead of a bracketed literal that gets
+        // stringified into a CLI flag (the `--exclude=[...]` failure). Non-array
+        // params must NOT carry `items`.
+        let schema = ToolSchema::new("scan", "test")
+            .param(ToolParam::optional(
+                "exclude",
+                ParamType::Array,
+                "hosts to exclude",
+                serde_json::json!([]),
+            ))
+            .param(ToolParam::required(
+                "target",
+                ParamType::String,
+                "the target",
+            ));
+
+        let json = schema.to_json_schema();
+        let props = &json["parameters"]["properties"];
+
+        assert_eq!(props["exclude"]["type"], "array");
+        assert_eq!(props["exclude"]["items"]["type"], "string");
+        assert_eq!(props["target"]["type"], "string");
+        assert!(
+            props["target"].get("items").is_none(),
+            "non-array param must not declare items"
+        );
     }
 }
 
