@@ -428,11 +428,31 @@ pub async fn get_wifi_networks(_interface: Option<String>) -> Result<Vec<WifiNet
 
     #[cfg(not(feature = "wifi_scan"))]
     {
-        let _ = interface; // Suppress unused warning
+        let _ = _interface; // Suppress unused warning (param is `_interface`)
         Err(Error::PlatformNotSupported(
             "WiFi scanning requires the 'wifi_scan' feature".into(),
         ))
     }
+}
+
+/// Whether a network-interface name looks like a WiFi adapter.
+///
+/// Matches Linux (`wlan0`, `wlp2s0`, monitor-mode `wlan0mon`), macOS (`en0`),
+/// and Windows (`Wi-Fi`, `Wireless Network Connection`) naming. All matching is
+/// done case-insensitively: Windows names the primary adapter "Wi-Fi" (capital
+/// W), which the previous case-sensitive `contains("wi-fi")` missed, causing
+/// `check_wifi_connection_status` to report 0 adapters / `safe_to_scan = true`
+/// on Windows even while connected over WiFi. See GitHub issue #185.
+fn is_wifi_name(name: &str) -> bool {
+    let n = name.to_lowercase();
+    n.starts_with("wlan")
+        || n.starts_with("wlp")
+        || n.starts_with("wl")
+        || n.starts_with("en0") // macOS WiFi (usually)
+        || n.contains("wi-fi") // Windows "Wi-Fi"
+        || n.contains("wireless") // Windows "Wireless Network Connection"
+        || n.contains("wifi")
+        || n.ends_with("mon") // monitor-mode interfaces (e.g. wlan0mon)
 }
 
 /// Check WiFi connection status for scan safety assessment
@@ -444,19 +464,6 @@ pub async fn check_wifi_connection_status(
     selected_adapter: Option<String>,
 ) -> Result<WifiConnectionStatus> {
     let interfaces = get_network_interfaces().await?;
-
-    // WiFi interface name patterns (Linux, macOS, Windows)
-    // Also recognises monitor-mode variants like wlan0mon, wlp2s0mon
-    let is_wifi_name = |name: &str| {
-        name.starts_with("wlan")
-            || name.starts_with("wlp")
-            || name.starts_with("wl")
-            || name.starts_with("en0") // macOS WiFi (usually)
-            || name.contains("wi-fi")
-            || name.contains("wireless")
-            || name.to_lowercase().contains("wifi")
-            || name.ends_with("mon") // monitor-mode interfaces (e.g. wlan0mon)
-    };
 
     // Find active WiFi interfaces (up + has IP)
     let active_wifi: Vec<_> = interfaces
@@ -497,4 +504,38 @@ pub async fn check_wifi_connection_status(
         safe_to_scan,
         all_wifi_interfaces: all_wifi,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_wifi_name_recognizes_windows_adapter_names() {
+        // The regression this guards (GitHub #185): Windows names its primary
+        // adapter "Wi-Fi" (capital W), which the old case-sensitive
+        // `contains("wi-fi")` missed — making check_wifi_connection_status
+        // report 0 adapters and safe_to_scan=true while actually on WiFi.
+        assert!(is_wifi_name("Wi-Fi"));
+        assert!(is_wifi_name("Wi-Fi 2"));
+        assert!(is_wifi_name("Wireless Network Connection"));
+        assert!(is_wifi_name("WiFi"));
+    }
+
+    #[test]
+    fn is_wifi_name_recognizes_linux_and_macos_names() {
+        assert!(is_wifi_name("wlan0"));
+        assert!(is_wifi_name("wlp2s0"));
+        assert!(is_wifi_name("wlan0mon")); // monitor mode
+        assert!(is_wifi_name("en0")); // macOS
+    }
+
+    #[test]
+    fn is_wifi_name_rejects_non_wifi_names() {
+        assert!(!is_wifi_name("eth0"));
+        assert!(!is_wifi_name("Ethernet"));
+        assert!(!is_wifi_name("lo"));
+        assert!(!is_wifi_name("docker0"));
+        assert!(!is_wifi_name("en1")); // macOS non-WiFi (only en0 heuristically WiFi)
+    }
 }

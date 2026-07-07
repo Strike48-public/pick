@@ -227,15 +227,17 @@ impl LateralMovementTool {
                     access_level,
                 })
             }
-            Err(_) => Ok(LateralMovementResult {
-                technique: "Pass-the-Hash".to_string(),
-                source_host: "localhost".to_string(),
-                target_host: target.to_string(),
-                success: false,
-                method_details: "pth-winexe not available (install passing-the-hash toolkit)"
-                    .to_string(),
-                access_level: None,
-            }),
+            // The binary could not be spawned at all (not installed / not on
+            // PATH). This is NOT an authentication failure — reporting it as
+            // `success: false` would be a silent success that the agent cannot
+            // distinguish from "the hash was rejected." Fail loudly with a
+            // typed error instead. `pth-winexe` ships in the Linux
+            // passing-the-hash toolkit and has no Windows/macOS equivalent here.
+            // See GitHub issue #183.
+            Err(e) => Err(Error::PlatformNotSupported(format!(
+                "Pass-the-Hash requires the `pth-winexe` binary from the Linux passing-the-hash \
+                 toolkit, which could not be executed ({e}). Install it on a Linux host to use this technique."
+            ))),
         }
     }
 
@@ -409,14 +411,18 @@ impl PentestTool for LateralMovementTool {
                     })?;
 
                     for target in &targets {
-                        if let Ok(result) = Self::try_pass_the_hash(target, username, hash).await {
-                            if result.success {
-                                tracing::info!("✅ {} - SUCCESS via Pass-the-Hash", target);
-                            } else {
-                                tracing::info!("❌ {} - FAILED", target);
-                            }
-                            results.push(result);
+                        // Propagate a missing-binary/unsupported error loudly with `?`
+                        // (execute_timed turns it into a failed ToolResult) instead
+                        // of swallowing it and silently producing zero results. A
+                        // genuine auth failure still comes back as Ok(success:false).
+                        // See #183.
+                        let result = Self::try_pass_the_hash(target, username, hash).await?;
+                        if result.success {
+                            tracing::info!("✅ {} - SUCCESS via Pass-the-Hash", target);
+                        } else {
+                            tracing::info!("❌ {} - FAILED", target);
                         }
+                        results.push(result);
                         tokio::time::sleep(Duration::from_millis(500)).await;
                     }
                 }

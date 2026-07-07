@@ -78,7 +78,11 @@ impl PentestTool for AutoPwnCrackTool {
     }
 
     fn supported_platforms(&self) -> Vec<Platform> {
-        vec![Platform::Desktop] // Linux only for now
+        vec![Platform::Desktop]
+    }
+
+    fn supported_os(&self) -> Vec<DesktopOs> {
+        vec![DesktopOs::Linux] // requires hashcat/aircrack toolchain; Linux only for now (#183)
     }
 
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
@@ -489,8 +493,14 @@ async fn crack_wpa_mask(
     tracing::info!("  Mask: {}", mask);
     tracing::info!("");
 
-    // Check if hashcat is available
-    let hashcat_check = Command::new("which").arg("hashcat").output().await.ok();
+    // Check if hashcat is available. This probes the host directly (it bypasses
+    // the sandbox CommandExec path), so use the host-appropriate probe command
+    // (`where` on Windows, `which` elsewhere). See #183.
+    let hashcat_check = Command::new(pentest_platform::common::host_which_command())
+        .arg("hashcat")
+        .output()
+        .await
+        .ok();
 
     if hashcat_check.is_none() || !hashcat_check.unwrap().status.success() {
         tracing::error!("✗ Hashcat not found");

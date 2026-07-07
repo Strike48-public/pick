@@ -90,7 +90,7 @@ pub struct PentestConnector {
 /// knows each tool's input format.
 fn build_task_types(tools: &ToolRegistry) -> Vec<TaskTypeSchema> {
     tools
-        .schemas()
+        .supported_schemas()
         .iter()
         .map(|s| {
             let json_schema = s.to_json_schema();
@@ -113,8 +113,14 @@ fn build_task_types(tools: &ToolRegistry) -> Vec<TaskTypeSchema> {
 
 /// Build the connector metadata map with tool info and the app manifest.
 fn build_metadata(tools: &ToolRegistry) -> HashMap<String, String> {
-    let schemas: Vec<ToolSchema> = tools.schemas();
-    let tool_names: Vec<String> = tools.names().iter().map(|s| s.to_string()).collect();
+    // Advertise only tools supported on this host (platform + desktop OS) so a
+    // Linux-only tool never appears in the tool list on Windows. See #183.
+    let schemas: Vec<ToolSchema> = tools.supported_schemas();
+    let tool_names: Vec<String> = tools
+        .supported_names()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let json_schemas: Vec<Value> = schemas.iter().map(|s| s.to_json_schema()).collect();
 
     let mut metadata = HashMap::new();
@@ -123,7 +129,7 @@ fn build_metadata(tools: &ToolRegistry) -> HashMap<String, String> {
         serde_json::to_string(&json_schemas).unwrap_or_default(),
     );
     metadata.insert("tool_names".to_string(), tool_names.join(","));
-    metadata.insert("tool_count".to_string(), tools.tools().len().to_string());
+    metadata.insert("tool_count".to_string(), schemas.len().to_string());
 
     // Register app manifest for the file browser
     let manifest = crate::file_browser::file_browser_manifest();

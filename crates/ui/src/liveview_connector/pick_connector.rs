@@ -137,8 +137,14 @@ impl BaseConnector for PickConnector {
         metadata.insert("app_manifest".to_string(), manifest_json);
         metadata.insert("timeout_ms".to_string(), "300000".to_string());
 
+        // Advertise only tools supported on this host (platform + desktop OS)
+        // so a Linux-only tool never appears in the tool list on Windows. See #183.
         if let Ok(tools) = self.tools.try_read() {
-            let tool_names: Vec<String> = tools.names().iter().map(|s| s.to_string()).collect();
+            let tool_names: Vec<String> = tools
+                .supported_names()
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
             metadata.insert("tool_names".to_string(), tool_names.join(","));
         }
 
@@ -152,8 +158,9 @@ impl BaseConnector for PickConnector {
         let Ok(tools) = self.tools.try_read() else {
             return Vec::new();
         };
+        // Advertise only tools supported on this host (platform + desktop OS). See #183.
         tools
-            .schemas()
+            .supported_schemas()
             .iter()
             .map(|schema| {
                 let json_schema = schema.to_json_schema();
@@ -299,6 +306,31 @@ impl BaseConnector for PickConnector {
                         pentest_core::tools::ToolResult::error(e.to_string())
                     }
                 };
+
+                // A successful `begin_scan` marks the start of a fresh
+                // engagement. Clear any evidence left over from a previous scan
+                // so it cannot bleed into this report (pick#172). `begin_scan`
+                // itself produces no findings, so nothing is lost by clearing
+                // here rather than draining first.
+                if tool_name == "begin_scan" && result.success {
+                    crate::session::clear_evidence();
+                    tracing::debug!("begin_scan: cleared evidence graph for new engagement");
+                }
+
+                // Bridge tool-produced evidence into the report graph (pick#172).
+                // Tools push findings into the process-global PENDING_EVIDENCE
+                // buffer as a side effect of execution; if we don't drain them
+                // here they never reach `gate_for_report` and the report comes
+                // out empty. This is the single production drain point shared by
+                // both the headless and desktop connectors.
+                let forwarded = crate::session::drain_tool_evidence_into_graph();
+                if forwarded > 0 {
+                    tracing::debug!(
+                        tool = tool_name.as_str(),
+                        forwarded,
+                        "forwarded tool evidence into report graph"
+                    );
+                }
 
                 // Upload artifacts (webwright) if applicable
                 let upload_status = if result.success && tool_name == "webwright" {

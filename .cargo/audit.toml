@@ -1,0 +1,29 @@
+# cargo-audit configuration
+#
+# Ignored advisories are transitive dependencies we cannot currently patch
+# because the vulnerable crate version is pinned by an upstream dependency's
+# own version requirement (no compatible patched release is reachable).
+#
+# Each entry MUST document:
+#   - what pulls the vulnerable crate in
+#   - why we cannot upgrade yet
+#   - the condition under which the ignore should be removed
+#
+# Review this list whenever dependencies change. Remove entries as soon as an
+# upstream release makes the patched version reachable.
+
+[advisories]
+ignore = [
+    # quick-xml <0.41.0 — memory-exhaustion / quadratic-runtime DoS in NsReader.
+    # Pulled transitively (and only in XML parse paths we do not drive with
+    # untrusted network input) via:
+    #   - screenshots 0.8.10 -> wayland-scanner/xcb/display-info (quick-xml 0.28/0.30)
+    #   - syntect 5.3.0 -> plist (quick-xml 0.38)
+    #   - winit 0.30 -> wayland-scanner 0.31 (quick-xml 0.39)
+    # All four callers pin quick-xml to caret ranges (^0.28, ^0.30, ^0.38,
+    # ^0.39) that cannot resolve to the patched >=0.41.0. Remove these once
+    # screenshots, syntect, and winit/wayland-scanner ship releases that bump
+    # quick-xml past 0.41.0.
+    "RUSTSEC-2026-0194", # quadratic runtime checking start tags for duplicate attrs
+    "RUSTSEC-2026-0195", # unbounded namespace-declaration allocation
+]

@@ -42,8 +42,10 @@ pub mod prelude {
         EvidenceFile, Finding, SessionExport, SessionMetadata, Severity, ToolExecution,
     };
     pub use crate::orchestrator::{
-        build_report_agent_seed_message, gate_for_report, EngagementInfo, GateError,
-        ManifestCounts, ManifestFinding, SeverityCounts, ValidatedFindingsManifest,
+        build_pending_evidence_manifest, build_report_agent_seed_message,
+        build_validator_seed_message, gate_for_report, parse_validator_verdicts, EngagementInfo,
+        GateError, ManifestCounts, ManifestFinding, PendingEvidenceManifest, SeverityCounts,
+        ValidatedFindingsManifest, Verdict, VerdictDecision, VerdictParseError,
     };
     pub use crate::provenance::{redact, ProbeCommand, Provenance, RAW_RESPONSE_MAX_BYTES};
     pub use crate::seed::{
