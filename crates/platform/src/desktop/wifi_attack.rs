@@ -1,14 +1,27 @@
 //! WiFi attack operations for desktop Linux (aircrack-ng suite)
+//!
+//! These operations drive the Linux-only `iw` / `airmon-ng` / aircrack-ng
+//! suite and require raw-radio access (monitor mode, packet injection). They
+//! are not available on macOS or Windows — and, unlike offline `.cap`
+//! cracking, they cannot be routed through the WSL2 sandbox because WSL has no
+//! USB WiFi radio passthrough. On non-Linux targets every method fails loudly
+//! with [`Error::PlatformNotSupported`] rather than a generic "is it
+//! installed?" error or a silent no-op. See GitHub issue #183.
 
 use crate::traits::*;
 use async_trait::async_trait;
 use pentest_core::error::{Error, Result};
-use std::process::Stdio;
-use std::time::Duration;
-use tokio::process::Command;
 
 use super::DesktopPlatform;
 
+#[cfg(target_os = "linux")]
+use std::process::Stdio;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
+#[cfg(target_os = "linux")]
+use tokio::process::Command;
+
+#[cfg(target_os = "linux")]
 #[async_trait]
 impl WifiAttackOps for DesktopPlatform {
     async fn enable_monitor_mode(
@@ -555,5 +568,126 @@ impl WifiAttackOps for DesktopPlatform {
 
         tracing::warn!("✗ WEP key not found yet");
         Ok(None)
+    }
+}
+
+/// Non-Linux desktop (macOS, Windows): WiFi monitor-mode / injection / aircrack
+/// operations are unavailable. They need raw-radio access that neither macOS
+/// nor Windows exposes to these Linux tools, and they cannot be routed through
+/// the WSL2 sandbox (no USB radio passthrough). Every method fails loudly with
+/// [`Error::PlatformNotSupported`] so the agent never mistakes an unsupported
+/// host for a real negative result. See GitHub issue #183.
+#[cfg(not(target_os = "linux"))]
+#[async_trait]
+impl WifiAttackOps for DesktopPlatform {
+    async fn enable_monitor_mode(
+        &self,
+        _interface: &str,
+        _allow_kill_network_manager: bool,
+    ) -> Result<(String, bool)> {
+        Err(unsupported())
+    }
+
+    async fn disable_monitor_mode(
+        &self,
+        _interface: &str,
+        _restart_network_manager: bool,
+    ) -> Result<()> {
+        Err(unsupported())
+    }
+
+    async fn clone_mac(&self, _interface: &str, _target_mac: &str) -> Result<()> {
+        Err(unsupported())
+    }
+
+    async fn test_injection(&self, _interface: &str) -> Result<InjectionCapability> {
+        Err(unsupported())
+    }
+
+    async fn start_capture(
+        &self,
+        _interface: &str,
+        _bssid: &str,
+        _channel: u8,
+        _output_file: &str,
+    ) -> Result<WifiCaptureHandle> {
+        Err(unsupported())
+    }
+
+    async fn stop_capture(&self, _handle: WifiCaptureHandle) -> Result<()> {
+        Err(unsupported())
+    }
+
+    async fn get_capture_stats(&self, _handle: &WifiCaptureHandle) -> Result<WifiCaptureStats> {
+        Err(unsupported())
+    }
+
+    async fn fake_auth(&self, _interface: &str, _bssid: &str) -> Result<()> {
+        Err(unsupported())
+    }
+
+    async fn start_arp_replay(&self, _interface: &str, _bssid: &str) -> Result<ArpReplayHandle> {
+        Err(unsupported())
+    }
+
+    async fn stop_arp_replay(&self, _handle: ArpReplayHandle) -> Result<()> {
+        Err(unsupported())
+    }
+
+    async fn deauth_attack(
+        &self,
+        _interface: &str,
+        _bssid: &str,
+        _client: Option<&str>,
+        _count: u8,
+    ) -> Result<()> {
+        Err(unsupported())
+    }
+
+    async fn verify_handshake(&self, _capture_file: &str, _bssid: &str) -> Result<bool> {
+        Err(unsupported())
+    }
+
+    async fn crack_wep(&self, _capture_file: &str, _bssid: &str) -> Result<Option<String>> {
+        Err(unsupported())
+    }
+}
+
+/// The single "WiFi attacks need Linux" error, shared by every stub method.
+#[cfg(not(target_os = "linux"))]
+fn unsupported() -> Error {
+    Error::PlatformNotSupported(
+        "WiFi monitor-mode and aircrack-ng operations require Linux with raw-radio access; \
+         they are not available on this platform and cannot run under WSL (no USB radio passthrough)"
+            .into(),
+    )
+}
+
+// These tests run on the non-Linux path (macOS/Windows CI), where the stub
+// impl is compiled. They assert the honest failure contract for #183: a
+// WiFi-attack op on an unsupported host returns a typed PlatformNotSupported
+// error, not a generic exec error or a silent success.
+#[cfg(all(test, not(target_os = "linux")))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn enable_monitor_mode_is_unsupported_off_linux() {
+        let platform = DesktopPlatform::new();
+        let err = platform
+            .enable_monitor_mode("wlan0", false)
+            .await
+            .expect_err("monitor mode must be unsupported off Linux");
+        assert!(matches!(err, Error::PlatformNotSupported(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn crack_wep_is_unsupported_off_linux() {
+        let platform = DesktopPlatform::new();
+        let err = platform
+            .crack_wep("/tmp/cap", "aa:bb:cc:dd:ee:ff")
+            .await
+            .expect_err("crack_wep must be unsupported off Linux");
+        assert!(matches!(err, Error::PlatformNotSupported(_)), "got {err:?}");
     }
 }
