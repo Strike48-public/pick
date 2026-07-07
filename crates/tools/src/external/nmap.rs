@@ -101,7 +101,7 @@ impl PentestTool for NmapTool {
             .param(ToolParam::optional(
                 "exclude",
                 ParamType::Array,
-                "Hosts/CIDRs to exclude from the scan (maps to nmap --exclude). Use this to scan a range while skipping specific hosts, e.g. target='10.0.0.0/24' exclude=['10.0.0.1','10.0.0.2']. Out-of-scope hosts are also injected here automatically by the platform.",
+                "Hosts/CIDRs to exclude from the scan (maps to nmap --exclude). Provide a JSON array of individual IP or CIDR strings — one entry per host/range, e.g. [\"10.0.0.1\", \"10.0.0.2\"]. Do NOT wrap the list in a single string or inline brackets into a value. Use this to scan a range while skipping specific hosts (e.g. target \"10.0.0.0/24\"). Out-of-scope hosts are also injected here automatically by the platform.",
                 json!([]),
             ))
             .param(ToolParam::optional(
