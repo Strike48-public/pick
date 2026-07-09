@@ -163,15 +163,28 @@ impl BaseConnector for PickConnector {
             .supported_schemas()
             .iter()
             .map(|schema| {
+                // `to_json_schema()` returns the full tool wrapper
+                // `{name, description, parameters: {type, properties, required}, ...}`.
+                // `TaskTypeSchema.input_schema_json` must carry ONLY the JSON schema
+                // (the `parameters` sub-object): the SDK's `build_registration_metadata`
+                // wraps `input_schema_json` under a `"parameters"` key itself, so passing
+                // the full wrapper here produces a double-nested schema whose ROOT has no
+                // `type`, which AWS Bedrock rejects
+                // (`toolConfig.tools.N.toolSpec.inputSchema.json.type must be object`).
+                // Unwrap `.parameters` to match `PentestConnector::build_task_types`.
                 let json_schema = schema.to_json_schema();
+                let input_schema = json_schema
+                    .get("parameters")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}}));
                 TaskTypeSchema {
                     task_type_id: schema.name.clone(),
                     name: schema.name.clone(),
                     description: schema.description.clone(),
                     category: String::new(),
                     icon: String::new(),
-                    input_schema_json: serde_json::to_string(&json_schema)
-                        .unwrap_or_else(|_| "{}".to_string()),
+                    input_schema_json: serde_json::to_string(&input_schema)
+                        .unwrap_or_else(|_| r#"{"type":"object","properties":{}}"#.to_string()),
                     output_schema_json: "{}".to_string(),
                 }
             })
@@ -599,5 +612,73 @@ impl BaseConnector for PickConnector {
     fn handle_ws_close(&self, req: WsCloseRequest) {
         tracing::info!("Closing WebSocket: {}", req.connection_id);
         self.ws_connections.remove(&req.connection_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pentest_core::aggression::AggressionLevel;
+
+    // Build a PickConnector backed by the real tool registry so `capabilities()`
+    // exercises the exact production schema-emission path.
+    fn test_connector() -> PickConnector {
+        let (event_tx, _event_rx) = broadcast::channel(16);
+        PickConnector {
+            tools: Arc::new(RwLock::new(pentest_tools::create_tool_registry())),
+            workspace_path: None,
+            event_tx,
+            ws_connections: Arc::new(DashMap::new()),
+            matrix_client: Arc::new(RwLock::new(None)),
+            connector_name: "pentest-connector".to_string(),
+            instance_id: "test".to_string(),
+            aggression_level: Arc::new(RwLock::new(AggressionLevel::default())),
+            ipc_addr: Arc::new(RwLock::new(None)),
+            runner: Arc::new(RwLock::new(None)),
+            matrix_api_url: String::new(),
+        }
+    }
+
+    /// Regression guard: every `capabilities()` entry's `input_schema_json` must be
+    /// the JSON schema itself — a ROOT object with `type: "object"` — NOT the full
+    /// `to_json_schema()` wrapper (`{name, description, parameters, ...}`).
+    ///
+    /// The SDK's `build_registration_metadata` wraps `input_schema_json` under a
+    /// `"parameters"` key, so emitting the full wrapper here produces a double-nested
+    /// schema whose root lacks `type`, which AWS Bedrock rejects
+    /// (`toolConfig.tools.N.toolSpec.inputSchema.json.type must be object`).
+    #[test]
+    fn capabilities_input_schema_is_root_object_not_wrapper() {
+        let connector = test_connector();
+        let caps = connector.capabilities();
+        assert!(
+            !caps.is_empty(),
+            "expected the real registry to expose tools"
+        );
+
+        for cap in &caps {
+            let parsed: Value = serde_json::from_str(&cap.input_schema_json)
+                .unwrap_or_else(|e| panic!("{}: input_schema_json not valid JSON: {e}", cap.name));
+
+            // Root must declare an object schema.
+            assert_eq!(
+                parsed["type"], "object",
+                "{}: input_schema_json root must have type=object, got: {}",
+                cap.name, cap.input_schema_json
+            );
+
+            // Must NOT be the tool wrapper: a wrapper has a nested `parameters`
+            // object and carries the tool `name`/`description` at its root.
+            assert!(
+                !parsed["parameters"].is_object(),
+                "{}: input_schema_json is double-wrapped (nested `parameters` present)",
+                cap.name
+            );
+            assert!(
+                parsed.get("name").is_none(),
+                "{}: input_schema_json leaked the tool wrapper (root `name` present)",
+                cap.name
+            );
+        }
     }
 }
