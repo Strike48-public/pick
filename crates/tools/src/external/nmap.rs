@@ -209,20 +209,20 @@ impl PentestTool for NmapTool {
             // Timing template
             builder = builder.arg("-T", &timing.to_string());
 
-            // Host discovery
-            if no_ping {
-                builder = builder.flag("-Pn");
-            }
-
             // If we lack raw socket privileges, force --unprivileged so nmap
             // uses connect() for everything and doesn't error with
             // "Couldn't open a raw socket or eth handle."
-            // Also force -Pn since ICMP ping requires raw sockets too.
-            if !has_raw_socket_privilege() {
+            let unprivileged = !has_raw_socket_privilege();
+            if unprivileged {
                 builder = builder.flag("--unprivileged");
-                if !no_ping {
-                    builder = builder.flag("-Pn");
-                }
+            }
+
+            // Host discovery: add -Pn (skip discovery, treat all hosts as online)
+            // when explicitly requested, or when we must because privileged ICMP
+            // isn't available — but NEVER for a "ping" (host-discovery) scan.
+            // See should_force_pn/3 for the reasoning behind the #219 fix.
+            if should_force_pn(no_ping, unprivileged, &scan_type) {
+                builder = builder.flag("-Pn");
             }
 
             // NSE scripts - validate before running
@@ -791,6 +791,28 @@ fn has_raw_socket_privilege() -> bool {
     }
 }
 
+/// Decide whether to pass nmap `-Pn` (skip host discovery, treat every address
+/// in the target as online).
+///
+/// `-Pn` is correct when the caller explicitly asks to skip discovery
+/// (`no_ping`), and is otherwise needed when we run unprivileged because
+/// privileged ICMP-echo host discovery requires a raw socket.
+///
+/// BUT it must NEVER be added for a `"ping"` (host-discovery) scan: that scan
+/// sets `-sn`, and `-sn -Pn` together mean "discover hosts" AND "skip discovery,
+/// assume all up", so nmap reports the ENTIRE target range as live
+/// (`state=up reason=user-set`) instead of the hosts that actually respond
+/// (issue #219). Unprivileged `-sn` still performs real, TCP-based host
+/// discovery, so dropping the forced `-Pn` here restores correct results.
+fn should_force_pn(no_ping: bool, unprivileged: bool, scan_type: &str) -> bool {
+    if scan_type == "ping" {
+        // A discovery scan must actually probe — never skip discovery.
+        false
+    } else {
+        no_ping || unprivileged
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1218,5 +1240,107 @@ mod tests {
         let out = normalize_legacy_nmap_params(p.clone());
         assert_eq!(out, p);
         assert!(out.get("target").is_none());
+    }
+
+    // ========================================
+    // Tests for should_force_pn() — issue #219
+    // A "ping" (host-discovery) scan must never get -Pn, or nmap marks the
+    // entire target range as up (reason=user-set) instead of probing.
+    // ========================================
+
+    #[test]
+    fn ping_scan_never_forces_pn_even_when_unprivileged() {
+        // The #219 regression: unprivileged + ping scan used to add -Pn.
+        assert!(!should_force_pn(false, true, "ping"));
+        // ...and even if the caller (nonsensically) also set no_ping, discovery wins.
+        assert!(!should_force_pn(true, true, "ping"));
+        assert!(!should_force_pn(false, false, "ping"));
+    }
+
+    #[test]
+    fn non_ping_scan_forces_pn_when_unprivileged() {
+        // Privileged ICMP echo needs a raw socket; unprivileged connect scans
+        // still want -Pn so nmap doesn't fail trying to ping first.
+        assert!(should_force_pn(false, true, "connect"));
+        assert!(should_force_pn(false, true, "syn"));
+        assert!(should_force_pn(false, true, "udp"));
+    }
+
+    #[test]
+    fn non_ping_scan_honors_explicit_no_ping() {
+        // Explicit no_ping adds -Pn regardless of privilege.
+        assert!(should_force_pn(true, false, "connect"));
+        assert!(should_force_pn(true, true, "connect"));
+    }
+
+    #[test]
+    fn privileged_non_ping_without_no_ping_does_not_force_pn() {
+        // Root + normal scan + no explicit no_ping: let nmap do its default
+        // (privileged) host discovery — no -Pn.
+        assert!(!should_force_pn(false, false, "connect"));
+        assert!(!should_force_pn(false, false, "syn"));
+    }
+
+    // Command-line composition tests. `should_force_pn` is a predicate; the #219
+    // bug actually lived in argv ASSEMBLY (`-sn` and `-Pn` both emitted). This
+    // helper replicates the exact scan-type + `--unprivileged` + `-Pn`
+    // composition `execute()` performs (mirroring the `build_exclude_args`
+    // pattern above), so a regression in the wiring is caught without standing
+    // up a mock platform.
+    fn build_discovery_args(scan_type: &str, no_ping: bool, unprivileged: bool) -> Vec<String> {
+        let mut builder = CommandBuilder::new();
+        match scan_type {
+            "syn" => builder = builder.flag("-sS"),
+            "connect" => builder = builder.flag("-sT"),
+            "udp" => builder = builder.flag("-sU"),
+            "ping" => builder = builder.flag("-sn"),
+            _ => {}
+        }
+        if unprivileged {
+            builder = builder.flag("--unprivileged");
+        }
+        if should_force_pn(no_ping, unprivileged, scan_type) {
+            builder = builder.flag("-Pn");
+        }
+        builder.positional("10.0.0.0/24").build()
+    }
+
+    #[test]
+    fn ping_scan_emits_sn_and_never_pn() {
+        // The #219 regression, at the argv layer: a ping scan must carry -sn and
+        // must NEVER carry -Pn (which would make nmap report the whole range up),
+        // across every privilege / no_ping combination.
+        for unpriv in [false, true] {
+            for no_ping in [false, true] {
+                let args = build_discovery_args("ping", no_ping, unpriv);
+                assert!(
+                    args.iter().any(|a| a == "-sn"),
+                    "ping scan must emit -sn (unpriv={unpriv}, no_ping={no_ping})"
+                );
+                assert!(
+                    !args.iter().any(|a| a == "-Pn"),
+                    "ping scan must NEVER emit -Pn — issue #219 (unpriv={unpriv}, no_ping={no_ping})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unprivileged_ping_scan_still_emits_unprivileged() {
+        // The raw-socket guard must survive: an unprivileged ping scan keeps
+        // --unprivileged (so its TCP-based discovery runs) while dropping -Pn.
+        let args = build_discovery_args("ping", false, true);
+        assert!(args.iter().any(|a| a == "--unprivileged"));
+        assert!(args.iter().any(|a| a == "-sn"));
+        assert!(!args.iter().any(|a| a == "-Pn"));
+    }
+
+    #[test]
+    fn unprivileged_connect_scan_emits_pn() {
+        // Positive control: a non-discovery scan when unprivileged DOES get -Pn,
+        // so the negative assertions above can't pass by never emitting -Pn.
+        let args = build_discovery_args("connect", false, true);
+        assert!(args.iter().any(|a| a == "-sT"));
+        assert!(args.iter().any(|a| a == "-Pn"));
     }
 }
