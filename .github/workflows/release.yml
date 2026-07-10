@@ -64,7 +64,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install protoc
-        run: choco install protoc -y
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build
         run: cargo build --locked --package pentest-desktop --release
@@ -347,7 +350,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install protoc
-        run: choco install protoc -y
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build
         run: cargo build --locked --package pentest-headless --release
