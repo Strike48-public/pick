@@ -188,9 +188,16 @@ impl PtyShell {
                 let proot_path = ProotExecutor::get_proot_path(config)
                     .await
                     .map_err(|e| Error::ToolExecution(format!("Proot binary not found: {e}")))?;
+                #[cfg(unix)]
                 let is_executable = std::fs::metadata(&proot_path)
                     .map(|m| m.permissions().mode() & 0o111 != 0)
                     .unwrap_or(false);
+                // Windows: SandboxBackend::Proot is not a runtime target here (no proot
+                // binary is shipped), but this branch must still compile. Fall back to a
+                // plain existence probe rather than re-implementing an executable check
+                // via Windows-specific APIs.
+                #[cfg(not(unix))]
+                let is_executable = proot_path.exists();
                 tracing::info!(
                     "[PtyShell] proot binary: path={} exists={} executable={}",
                     proot_path.display(),
