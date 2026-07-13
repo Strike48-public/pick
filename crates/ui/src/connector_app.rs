@@ -362,6 +362,27 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         // for every env, so a token minted for env A is rejected by env B.
         new_config.instance_id =
             ConnectorConfig::env_scoped_instance_id(&device_id, &new_config.host);
+
+        // Studio addresses App-behavior connectors by tenant UUID, so when
+        // the operator typed the slug we need to substitute the canonical
+        // UUID before registering. The SDK writes it to
+        // `~/.strike48/credentials/<connector>_<instance>.json` on first
+        // successful OTT; if that file exists, honor its `tenant_id`
+        // regardless of what's in the form. StrikeHub's launcher does the
+        // equivalent server-side (`strikehub/crates/sh-core/src/auth.rs::
+        // fetch_tenant_id`). See pick#223.
+        if let Some(canonical) = ConnectorConfig::read_credentials_tenant_id(
+            &new_config.connector_name,
+            &new_config.instance_id,
+        ) {
+            if canonical != new_config.tenant_id {
+                terminal_lines.write().push(TerminalLine::info(format!(
+                    "Using tenant UUID {} from saved credentials (form value: {})",
+                    canonical, new_config.tenant_id,
+                )));
+                new_config.tenant_id = canonical;
+            }
+        }
         config.set(new_config.clone());
         status.set(ConnectorStatus::Connecting);
         connecting_step.set(Some(ConnectingStep::Connecting));
@@ -382,6 +403,13 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         let mut terminal_lines = terminal_lines;
         let connecting_step = connecting_step;
         let mut workspace_path = workspace_path;
+
+        // Clone identity fields before we consume `new_config` in the
+        // spawned connector task — we still need them for the first-run
+        // OTT self-heal poll below.
+        let connector_name_for_poll = new_config.connector_name.clone();
+        let instance_id_for_poll = new_config.instance_id.clone();
+        let initial_tenant_for_poll = new_config.tenant_id.clone();
 
         spawn(async move {
             let tools = (cfg.create_tools)();
@@ -425,6 +453,53 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             let event_rx = lv_connector.event_rx();
             let lv_connector = Arc::new(RwLock::new(lv_connector));
             connector.set(Some(lv_connector.clone()));
+
+            // First-run OTT self-heal: the SDK writes the canonical tenant
+            // UUID to disk once OTT approval completes, but Pick's config
+            // still carries whatever the operator typed. Poll for a bounded
+            // window so that (a) the current session picks up the UUID for
+            // any subsequent connect and (b) settings persist the UUID for
+            // the next launch, keeping the slug detour to at most one
+            // reconnect. See pick#223.
+            {
+                let connector_name = connector_name_for_poll;
+                let instance_id = instance_id_for_poll;
+                let initial_tenant = initial_tenant_for_poll;
+                spawn(async move {
+                    for _ in 0..60 {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        let Some(canonical) = ConnectorConfig::read_credentials_tenant_id(
+                            &connector_name,
+                            &instance_id,
+                        ) else {
+                            continue;
+                        };
+                        if canonical == initial_tenant {
+                            return;
+                        }
+                        let mut s = settings.peek().clone();
+                        let updated = match s.last_config.clone() {
+                            Some(mut c) => {
+                                if c.tenant_id == canonical {
+                                    return;
+                                }
+                                c.tenant_id = canonical.clone();
+                                Some(c)
+                            }
+                            None => None,
+                        };
+                        if let Some(c) = updated {
+                            s.last_config = Some(c);
+                            let _ = save_settings(&s);
+                            terminal_lines.write().push(TerminalLine::info(format!(
+                                "Saved canonical tenant UUID {} for next launch.",
+                                canonical
+                            )));
+                        }
+                        return;
+                    }
+                });
+            }
 
             // Spawn event handler
             spawn(run_event_loop(

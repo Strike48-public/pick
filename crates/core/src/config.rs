@@ -351,6 +351,45 @@ impl ConnectorConfig {
         }
     }
 
+    /// Read the tenant UUID the SDK stored during OTT approval, if any.
+    ///
+    /// Studio addresses App-behavior connectors by tenant UUID
+    /// (`/#/apps/matrix%3A<uuid>%3A<connector>%3A...`). The connector's
+    /// initial pending-approval registration can carry either a tenant
+    /// slug or a UUID — the server accepts both — but Studio only routes
+    /// app-viewer traffic to the identity that matches its URL. When the
+    /// operator types the slug, the server-issued JWT is minted against
+    /// the canonical UUID and the SDK writes it to
+    /// `~/.strike48/credentials/<connector>_<instance_id>.json`. Reading
+    /// that file at connect time lets us reuse the UUID for subsequent
+    /// registrations so the slug→UUID gap is invisible to the operator
+    /// (pick#223).
+    ///
+    /// StrikeHub does the equivalent server-side: it pre-resolves the
+    /// user's tenant via a `userDetails { domain.id }` GraphQL query
+    /// (`strikehub/crates/sh-core/src/auth.rs::fetch_tenant_id`) and
+    /// injects the UUID into every spawned connector's env. Standalone
+    /// Pick has no authenticated context up front, so we rely on the
+    /// post-OTT credentials file instead.
+    ///
+    /// Returns `None` when the file is missing, unreadable, or the
+    /// `tenant_id` field is absent — callers should fall back to the
+    /// user-supplied tenant string.
+    pub fn read_credentials_tenant_id(connector_name: &str, instance_id: &str) -> Option<String> {
+        let home = std::env::var("HOME").ok()?;
+        let path = std::path::PathBuf::from(home)
+            .join(".strike48")
+            .join("credentials")
+            .join(format!("{connector_name}_{instance_id}.json"));
+        let content = std::fs::read_to_string(&path).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&content).ok()?;
+        value
+            .get("tenant_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
     /// Split a Strike48-style URL (accepts anything [`normalize_host`] produces
     /// plus bare hosts) into `(hostname, port)`.
     ///
@@ -854,6 +893,44 @@ mod tests {
         let second = ConnectorConfig::normalize_host(&first.value).unwrap();
         assert_eq!(first.value, second.value);
         assert!(!second.was_inferred(), "second pass should not re-infer");
+    }
+
+    #[test]
+    fn read_credentials_tenant_id_extracts_uuid() {
+        // Isolate HOME so the test doesn't touch the real credentials dir.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let creds_dir = tmp.path().join(".strike48").join("credentials");
+        std::fs::create_dir_all(&creds_dir).expect("mkdir creds");
+        let file = creds_dir.join("pentest-connector_dev-abc.json");
+        std::fs::write(
+            &file,
+            r#"{"client_id":"matrix:connector:local:019f4d37-0212-72cb-945a-f8d01726ebf5:pentest-connector:dev-abc","keycloak_url":"https://auth.example","tenant_id":"019f4d37-0212-72cb-945a-f8d01726ebf5"}"#,
+        )
+        .expect("write creds");
+
+        // SAFETY: single-threaded config tests, no other thread reads HOME here.
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+        let got = ConnectorConfig::read_credentials_tenant_id("pentest-connector", "dev-abc");
+        // Restore before assertions so a failing test doesn't leak env state.
+        match prev {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(got.as_deref(), Some("019f4d37-0212-72cb-945a-f8d01726ebf5"));
+    }
+
+    #[test]
+    fn read_credentials_tenant_id_returns_none_when_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+        let got = ConnectorConfig::read_credentials_tenant_id("pentest-connector", "never-ott");
+        match prev {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert!(got.is_none());
     }
 
     #[test]
