@@ -172,6 +172,31 @@ just run-headless-dev        # Has sudo built-in
 ./run-pentest.sh headless   # Has sudo built-in
 ```
 
+### "Failed to read private key: Permission denied (os error 13)"
+
+**Cause**: The connector was previously launched with `sudo`, which wrote the
+SDK private key into `~/.strike48/keys/` owned by `root` (mode `0600`). A later
+launch as your normal user can no longer read that key, so OTT registration
+fails 3 times and the agent stays in `WaitingForApproval`.
+
+**Immediate fix**:
+```bash
+# Restore ownership of the whole key/credential store to your user
+sudo scripts/restore-key-ownership.sh
+```
+
+**Prevention** (both are already wired in):
+
+1. The sudo launch paths (`run-pentest.sh`, `just run-headless-sudo`,
+   `run-headless-dev`, `run-desktop-sudo`, `run-desktop-release-sudo`) restore
+   ownership to `$SUDO_USER` on exit via `scripts/restore-key-ownership.sh`.
+2. Grant raw-socket capabilities so most scans need no sudo at all:
+   ```bash
+   sudo setcap 'cap_net_raw,cap_net_admin+eip' target/debug/pentest-agent
+   ```
+   Re-apply after each rebuild (the binary is replaced). Note: monitor-mode
+   WiFi tools (airmon-ng etc.) still self-escalate.
+
 ### "Connection refused" or "Failed to connect"
 
 **Cause**: Incorrect Strike48 host or network issues
