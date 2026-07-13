@@ -819,16 +819,16 @@ impl LiveViewConnector {
 async fn probe_host_reachable(host: &str) -> Result<(), String> {
     const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 
-    let (hostname, port) = parse_host_port(host)?;
+    let (hostname, port) = ConnectorConfig::split_authority(host)?;
 
-    // For plain `ws://` / `http://` (unusual for Strike48 but supported for
-    // local dev), skip the TLS handshake and just probe TCP.
-    let use_tls = matches!(
-        host.trim().to_lowercase().as_str(),
-        s if s.starts_with("wss://") || s.starts_with("https://") || s.starts_with("grpcs://")
-    ) || !(host.trim().to_lowercase().starts_with("ws://")
-        || host.trim().to_lowercase().starts_with("http://")
-        || host.trim().to_lowercase().starts_with("grpc://"));
+    // Plain (non-TLS) schemes skip the TLS handshake and settle for TCP-only.
+    // Anything else — including the bare-host case, which `normalize_host`
+    // treats as `wss://` — probes TLS. Trim + lowercase once so we're not
+    // doing four allocations per probe.
+    let scheme_prefix = host.trim().to_lowercase();
+    let use_tls = !(scheme_prefix.starts_with("ws://")
+        || scheme_prefix.starts_with("http://")
+        || scheme_prefix.starts_with("grpc://"));
 
     let target = format!("{}:{}", hostname, port);
 
@@ -860,6 +860,11 @@ async fn probe_host_reachable(host: &str) -> Result<(), String> {
     // TLS handshake: proves that a real TLS endpoint is answering under the
     // hostname the operator typed. Uses reqwest, which is already a
     // workspace dep and configured with rustls + native roots.
+    //
+    // `MATRIX_TLS_INSECURE` matches the existing convention in
+    // `token_refresh::build_client` and `pentest_core::matrix::client`
+    // (self-signed dev clusters). This probe-only relaxation does not touch
+    // the SDK's own TLS trust — it only affects our reachability HEAD.
     let probe_url = format!("https://{}/", target);
     let client = reqwest::Client::builder()
         .timeout(CONNECT_TIMEOUT)
@@ -887,104 +892,5 @@ async fn probe_host_reachable(host: &str) -> Result<(), String> {
             // prove the endpoint answered — accept and let the SDK continue.
             Ok(())
         }
-    }
-}
-
-/// Parse a Strike48-style URL into `(hostname, port)`.
-///
-/// Accepts the same shapes `ConnectorConfig::normalize_host` produces. Assumes
-/// the caller has already run normalize_host, so scheme + port are present.
-fn parse_host_port(url: &str) -> Result<(String, u16), String> {
-    let trimmed = url.trim();
-    if trimmed.is_empty() {
-        return Err("Strike48 host is empty".to_string());
-    }
-
-    let after_scheme = trimmed
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or(trimmed);
-
-    let authority = after_scheme.split('/').next().unwrap_or(after_scheme);
-
-    // Drop trailing slash if present.
-    let authority = authority.trim_end_matches('/');
-
-    // IPv6 literal `[::1]:443`
-    if let Some(closing) = authority
-        .strip_prefix('[')
-        .and_then(|rest| rest.find(']').map(|end| (&rest[..end], &rest[end + 1..])))
-    {
-        let host = closing.0.to_string();
-        let port = closing
-            .1
-            .strip_prefix(':')
-            .and_then(|p| p.parse::<u16>().ok())
-            .unwrap_or(443);
-        return Ok((host, port));
-    }
-
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) if !h.is_empty() => {
-            let port = p
-                .parse::<u16>()
-                .map_err(|_| format!("Invalid port in URL: {}", url))?;
-            (h.to_string(), port)
-        }
-        _ => (authority.to_string(), 443),
-    };
-
-    if host.is_empty() {
-        return Err(format!("Missing hostname in URL: {}", url));
-    }
-
-    Ok((host, port))
-}
-
-#[cfg(test)]
-mod host_probe_tests {
-    use super::parse_host_port;
-
-    #[test]
-    fn parses_wss_with_port() {
-        assert_eq!(
-            parse_host_port("wss://studio.example.com:443").unwrap(),
-            ("studio.example.com".to_string(), 443)
-        );
-    }
-
-    #[test]
-    fn parses_bare_host() {
-        assert_eq!(
-            parse_host_port("studio.example.com").unwrap(),
-            ("studio.example.com".to_string(), 443)
-        );
-    }
-
-    #[test]
-    fn parses_ipv6_bracketed() {
-        assert_eq!(
-            parse_host_port("wss://[::1]:8443").unwrap(),
-            ("::1".to_string(), 8443)
-        );
-    }
-
-    #[test]
-    fn parses_custom_port() {
-        assert_eq!(
-            parse_host_port("grpc://localhost:50061").unwrap(),
-            ("localhost".to_string(), 50061)
-        );
-    }
-
-    #[test]
-    fn rejects_empty() {
-        assert!(parse_host_port("").is_err());
-        assert!(parse_host_port("   ").is_err());
-    }
-
-    #[test]
-    fn rejects_invalid_port() {
-        assert!(parse_host_port("wss://x.example.com:notaport").is_err());
     }
 }

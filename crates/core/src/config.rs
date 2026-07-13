@@ -351,6 +351,63 @@ impl ConnectorConfig {
         }
     }
 
+    /// Split a Strike48-style URL (accepts anything [`normalize_host`] produces
+    /// plus bare hosts) into `(hostname, port)`.
+    ///
+    /// Callers that only need to open a TCP/TLS socket — e.g. the pre-connect
+    /// probe in `pentest-ui` — should use this rather than re-parsing by hand,
+    /// so the two ends of the connect pipeline agree on port defaulting, IPv6
+    /// bracket handling, and trailing-slash trimming. Returns `Err` on empty
+    /// input or a non-numeric port.
+    ///
+    /// When no port is present the default is `443`, matching
+    /// [`normalize_host`]'s Cloudflare-fronted-WebSocket default.
+    pub fn split_authority(url: &str) -> Result<(String, u16), String> {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            return Err("Strike48 host is empty".to_string());
+        }
+
+        let after_scheme = trimmed
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(trimmed);
+
+        let authority = after_scheme
+            .split('/')
+            .next()
+            .unwrap_or(after_scheme)
+            .trim_end_matches('/');
+
+        // IPv6 literal `[::1]:443`
+        if let Some((host, tail)) = authority
+            .strip_prefix('[')
+            .and_then(|rest| rest.find(']').map(|end| (&rest[..end], &rest[end + 1..])))
+        {
+            let port = tail
+                .strip_prefix(':')
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(443);
+            return Ok((host.to_string(), port));
+        }
+
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((h, p)) if !h.is_empty() => {
+                let port = p
+                    .parse::<u16>()
+                    .map_err(|_| format!("Invalid port in URL: {}", url))?;
+                (h.to_string(), port)
+            }
+            _ => (authority.to_string(), 443),
+        };
+
+        if host.is_empty() {
+            return Err(format!("Missing hostname in URL: {}", url));
+        }
+
+        Ok((host, port))
+    }
+
     /// Reduce a host URL to a short, stable identifier slug: scheme and port are
     /// stripped and any run of non-alphanumeric characters collapses to a single
     /// `-` (e.g. `wss://studio.example.com:443` -> `studio-example-com`).
@@ -797,6 +854,49 @@ mod tests {
         let second = ConnectorConfig::normalize_host(&first.value).unwrap();
         assert_eq!(first.value, second.value);
         assert!(!second.was_inferred(), "second pass should not re-infer");
+    }
+
+    #[test]
+    fn split_authority_parses_wss_with_port() {
+        assert_eq!(
+            ConnectorConfig::split_authority("wss://studio.example.com:443").unwrap(),
+            ("studio.example.com".to_string(), 443)
+        );
+    }
+
+    #[test]
+    fn split_authority_defaults_bare_host_to_443() {
+        assert_eq!(
+            ConnectorConfig::split_authority("studio.example.com").unwrap(),
+            ("studio.example.com".to_string(), 443)
+        );
+    }
+
+    #[test]
+    fn split_authority_parses_ipv6_bracketed() {
+        assert_eq!(
+            ConnectorConfig::split_authority("wss://[::1]:8443").unwrap(),
+            ("::1".to_string(), 8443)
+        );
+    }
+
+    #[test]
+    fn split_authority_preserves_custom_port() {
+        assert_eq!(
+            ConnectorConfig::split_authority("grpc://localhost:50061").unwrap(),
+            ("localhost".to_string(), 50061)
+        );
+    }
+
+    #[test]
+    fn split_authority_rejects_empty() {
+        assert!(ConnectorConfig::split_authority("").is_err());
+        assert!(ConnectorConfig::split_authority("   ").is_err());
+    }
+
+    #[test]
+    fn split_authority_rejects_invalid_port() {
+        assert!(ConnectorConfig::split_authority("wss://x.example.com:notaport").is_err());
     }
 
     #[test]
