@@ -292,6 +292,16 @@ impl ConnectorConfig {
                 }
             };
 
+        // Trim any path/query suffix and trailing slash so a pasted browser
+        // URL (`https://strike48.example.com/`) doesn't leave the bare form
+        // ending in `/`, which would produce `strike48.example.com/:443` when
+        // we append the inferred port (pick#223).
+        let bare_str = bare_str
+            .split(|c| c == '/' || c == '?' || c == '#')
+            .next()
+            .unwrap_or(&bare_str)
+            .to_string();
+
         if bare_str.is_empty() {
             return Err(format!(
                 "Invalid host: missing hostname after scheme. Try {}strike48.example.com",
@@ -737,6 +747,29 @@ mod tests {
         let n = ConnectorConfig::normalize_host("localhost:50061").unwrap();
         assert_eq!(n.value, "localhost:50061");
         assert!(!n.was_inferred());
+    }
+
+    #[test]
+    fn strips_trailing_slash_before_inferring_port() {
+        // Pasting a browser URL with a trailing `/` used to produce
+        // `wss://host/:443` because the slash was baked into the bare form
+        // before we appended the default port (pick#223).
+        let n = ConnectorConfig::normalize_host("https://non-prod.strike48.test/").unwrap();
+        assert_eq!(n.value, "https://non-prod.strike48.test:443");
+        assert_eq!(n.inferred_port, Some(443));
+    }
+
+    #[test]
+    fn strips_path_after_authority() {
+        let n = ConnectorConfig::normalize_host("wss://strike48.example.com/socket/foo").unwrap();
+        assert_eq!(n.value, "wss://strike48.example.com:443");
+    }
+
+    #[test]
+    fn strips_query_and_fragment() {
+        let n =
+            ConnectorConfig::normalize_host("https://strike48.example.com/?x=1#frag").unwrap();
+        assert_eq!(n.value, "https://strike48.example.com:443");
     }
 
     #[test]

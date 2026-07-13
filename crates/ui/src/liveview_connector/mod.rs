@@ -682,6 +682,19 @@ impl LiveViewConnector {
             self.config.auth_token.is_empty(),
         );
 
+        // Pre-connect reachability probe: fast-fail on obviously bad URLs
+        // (DNS miss, TLS refused, connect timeout) before the SDK spins up a
+        // full runner + auto-reconnect loop. Without this, a typo like
+        // `https://discoball.strike48.engineering/` leaves the UI stuck on
+        // the connecting spinner with no feedback (pick#223). Returning Err
+        // here lets the caller populate its `connect_error` banner; we skip
+        // emitting a `Disconnected` status event so we don't race the
+        // caller's `Error(_)` set that steers the UI back to the form.
+        if let Err(e) = probe_host_reachable(&self.config.host).await {
+            self.send_event(ConnectorEvent::Log(TerminalLine::error(e.clone())));
+            return Err(e);
+        }
+
         // Build the SDK config from our pentest_core config
         let mut sdk_config = self.config.to_sdk_config();
 
@@ -791,5 +804,189 @@ impl LiveViewConnector {
         if self.workspace_path.is_some() {
             workspace::cleanup_workspace(&self.config.instance_id);
         }
+    }
+}
+
+/// Fast reachability check against the configured Strike48 host.
+///
+/// Runs a bounded TCP+TLS handshake so a typo like
+/// `wss://discoball.strike48.engineering:443` fails immediately with a clear
+/// message instead of leaving the UI stuck on the connecting spinner while
+/// the SDK retries (pick#223). We deliberately do *not* attempt HTTP-level
+/// probing here: the WebSocket path (`/socket/connector/websocket`) is what
+/// the SDK will exercise, and any hard reachability failure surfaces during
+/// the TLS handshake anyway.
+async fn probe_host_reachable(host: &str) -> Result<(), String> {
+    const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
+
+    let (hostname, port) = parse_host_port(host)?;
+
+    // For plain `ws://` / `http://` (unusual for Strike48 but supported for
+    // local dev), skip the TLS handshake and just probe TCP.
+    let use_tls = matches!(
+        host.trim().to_lowercase().as_str(),
+        s if s.starts_with("wss://") || s.starts_with("https://") || s.starts_with("grpcs://")
+    ) || !(host.trim().to_lowercase().starts_with("ws://")
+        || host.trim().to_lowercase().starts_with("http://")
+        || host.trim().to_lowercase().starts_with("grpc://"));
+
+    let target = format!("{}:{}", hostname, port);
+
+    let connect_result = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        tokio::net::TcpStream::connect(&target),
+    )
+    .await;
+
+    let stream = match connect_result {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            return Err(format!(
+                "Cannot reach {}: {}. Check the URL and your network connection.",
+                target, e
+            ));
+        }
+        Err(_) => {
+            return Err(format!(
+                "Timed out connecting to {} after {}s. Verify the URL is reachable.",
+                target,
+                CONNECT_TIMEOUT.as_secs()
+            ));
+        }
+    };
+
+    if !use_tls {
+        drop(stream);
+        return Ok(());
+    }
+
+    // TLS handshake: proves that a real TLS endpoint is answering under the
+    // hostname the operator typed. Uses reqwest, which is already a
+    // workspace dep and configured with rustls + native roots.
+    let probe_url = format!("https://{}/", target);
+    let client = reqwest::Client::builder()
+        .timeout(CONNECT_TIMEOUT)
+        .danger_accept_invalid_certs(
+            std::env::var("MATRIX_TLS_INSECURE")
+                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+                .unwrap_or(false),
+        )
+        .build()
+        .map_err(|e| format!("Failed to build TLS probe client: {}", e))?;
+
+    drop(stream);
+    match client.head(&probe_url).send().await {
+        Ok(_) => Ok(()),
+        Err(e) if e.is_status() => {
+            // Any HTTP status is fine — proves the endpoint spoke TLS + HTTP.
+            Ok(())
+        }
+        Err(e) if e.is_connect() || e.is_timeout() => Err(format!(
+            "TLS handshake to {} failed: {}. Verify the URL and TLS trust chain.",
+            target, e
+        )),
+        Err(_) => {
+            // Non-connect errors (redirect loop, body-decode, etc.) still
+            // prove the endpoint answered — accept and let the SDK continue.
+            Ok(())
+        }
+    }
+}
+
+/// Parse a Strike48-style URL into `(hostname, port)`.
+///
+/// Accepts the same shapes `ConnectorConfig::normalize_host` produces. Assumes
+/// the caller has already run normalize_host, so scheme + port are present.
+fn parse_host_port(url: &str) -> Result<(String, u16), String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("Strike48 host is empty".to_string());
+    }
+
+    let after_scheme = trimmed
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
+
+    let authority = after_scheme.split('/').next().unwrap_or(after_scheme);
+
+    // Drop trailing slash if present.
+    let authority = authority.trim_end_matches('/');
+
+    // IPv6 literal `[::1]:443`
+    if let Some(closing) = authority.strip_prefix('[').and_then(|rest| {
+        rest.find(']').map(|end| (&rest[..end], &rest[end + 1..]))
+    }) {
+        let host = closing.0.to_string();
+        let port = closing
+            .1
+            .strip_prefix(':')
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(443);
+        return Ok((host, port));
+    }
+
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) if !h.is_empty() => {
+            let port = p
+                .parse::<u16>()
+                .map_err(|_| format!("Invalid port in URL: {}", url))?;
+            (h.to_string(), port)
+        }
+        _ => (authority.to_string(), 443),
+    };
+
+    if host.is_empty() {
+        return Err(format!("Missing hostname in URL: {}", url));
+    }
+
+    Ok((host, port))
+}
+
+#[cfg(test)]
+mod host_probe_tests {
+    use super::parse_host_port;
+
+    #[test]
+    fn parses_wss_with_port() {
+        assert_eq!(
+            parse_host_port("wss://studio.example.com:443").unwrap(),
+            ("studio.example.com".to_string(), 443)
+        );
+    }
+
+    #[test]
+    fn parses_bare_host() {
+        assert_eq!(
+            parse_host_port("studio.example.com").unwrap(),
+            ("studio.example.com".to_string(), 443)
+        );
+    }
+
+    #[test]
+    fn parses_ipv6_bracketed() {
+        assert_eq!(
+            parse_host_port("wss://[::1]:8443").unwrap(),
+            ("::1".to_string(), 8443)
+        );
+    }
+
+    #[test]
+    fn parses_custom_port() {
+        assert_eq!(
+            parse_host_port("grpc://localhost:50061").unwrap(),
+            ("localhost".to_string(), 50061)
+        );
+    }
+
+    #[test]
+    fn rejects_empty() {
+        assert!(parse_host_port("").is_err());
+        assert!(parse_host_port("   ").is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_port() {
+        assert!(parse_host_port("wss://x.example.com:notaport").is_err());
     }
 }
