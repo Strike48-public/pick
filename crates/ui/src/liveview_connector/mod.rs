@@ -832,11 +832,8 @@ async fn probe_host_reachable(host: &str) -> Result<(), String> {
 
     let target = format!("{}:{}", hostname, port);
 
-    let connect_result = tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        tokio::net::TcpStream::connect(&target),
-    )
-    .await;
+    let connect_result =
+        tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(&target)).await;
 
     let stream = match connect_result {
         Ok(Ok(s)) => s,
@@ -914,9 +911,10 @@ fn parse_host_port(url: &str) -> Result<(String, u16), String> {
     let authority = authority.trim_end_matches('/');
 
     // IPv6 literal `[::1]:443`
-    if let Some(closing) = authority.strip_prefix('[').and_then(|rest| {
-        rest.find(']').map(|end| (&rest[..end], &rest[end + 1..]))
-    }) {
+    if let Some(closing) = authority
+        .strip_prefix('[')
+        .and_then(|rest| rest.find(']').map(|end| (&rest[..end], &rest[end + 1..])))
+    {
         let host = closing.0.to_string();
         let port = closing
             .1

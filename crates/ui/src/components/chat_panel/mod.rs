@@ -335,7 +335,10 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
 
         spawn(async move {
             if let Some(token) = try_env_matrix_token() {
-                tracing::info!("[chat] Using MATRIX_AUTH_TOKEN from env (len={})", token.len());
+                tracing::info!(
+                    "[chat] Using MATRIX_AUTH_TOKEN from env (len={})",
+                    token.len()
+                );
                 crate::liveview_server::set_matrix_credentials(&api_url_clone, &token);
                 crate::session::set_auth_token(&token);
                 crate::liveview_server::push_terminal_line(TerminalLine::success(
@@ -347,10 +350,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             if programmatic_auth_env_present() {
                 match pentest_core::matrix::fetch_matrix_token_from(&api_url_clone).await {
                     Ok(token) => {
-                        tracing::info!(
-                            "[chat] Programmatic auth succeeded (len={})",
-                            token.len()
-                        );
+                        tracing::info!("[chat] Programmatic auth succeeded (len={})", token.len());
                         crate::liveview_server::set_matrix_credentials(&api_url_clone, &token);
                         crate::session::set_auth_token(&token);
                         crate::liveview_server::push_terminal_line(TerminalLine::success(

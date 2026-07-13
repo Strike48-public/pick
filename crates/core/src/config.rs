@@ -297,7 +297,7 @@ impl ConnectorConfig {
         // ending in `/`, which would produce `strike48.example.com/:443` when
         // we append the inferred port (pick#223).
         let bare_str = bare_str
-            .split(|c| c == '/' || c == '?' || c == '#')
+            .split(['/', '?', '#'])
             .next()
             .unwrap_or(&bare_str)
             .to_string();
@@ -767,8 +767,7 @@ mod tests {
 
     #[test]
     fn strips_query_and_fragment() {
-        let n =
-            ConnectorConfig::normalize_host("https://strike48.example.com/?x=1#frag").unwrap();
+        let n = ConnectorConfig::normalize_host("https://strike48.example.com/?x=1#frag").unwrap();
         assert_eq!(n.value, "https://strike48.example.com:443");
     }
 
