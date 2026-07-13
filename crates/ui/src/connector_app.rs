@@ -365,12 +365,29 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
 
         // Studio addresses App-behavior connectors by tenant UUID, so when
         // the operator typed the slug we need to substitute the canonical
-        // UUID before registering. The SDK writes it to
-        // `~/.strike48/credentials/<connector>_<instance>.json` on first
-        // successful OTT; if that file exists, honor its `tenant_id`
-        // regardless of what's in the form. StrikeHub's launcher does the
-        // equivalent server-side (`strikehub/crates/sh-core/src/auth.rs::
-        // fetch_tenant_id`). See pick#223.
+        // UUID before registering. Two sources, tried in order:
+        //
+        // 1. A UUID env var (`MATRIX_TENANT_ID`, `STRIKE48_TENANT`, or
+        //    `TENANT_ID` — whichever carries a UUID). This is the common
+        //    case: the operator sets `STRIKE48_TENANT=slug` and pins the
+        //    UUID as `MATRIX_TENANT_ID`, then still types the slug in the
+        //    form out of habit.
+        // 2. The SDK's post-OTT credentials file at
+        //    `~/.strike48/credentials/<connector>_<instance>.json`, which
+        //    carries the canonical `tenant_id` the server minted.
+        //
+        // StrikeHub's launcher does the equivalent server-side via
+        // `fetch_tenant_id` (`strikehub/crates/sh-core/src/auth.rs`). See
+        // pick#223.
+        if !ConnectorConfig::is_uuid_like(&new_config.tenant_id) {
+            if let Some(env_uuid) = ConnectorConfig::tenant_uuid_from_env() {
+                terminal_lines.write().push(TerminalLine::info(format!(
+                    "Promoting tenant UUID {} from env (form value: {})",
+                    env_uuid, new_config.tenant_id,
+                )));
+                new_config.tenant_id = env_uuid;
+            }
+        }
         if let Some(canonical) = ConnectorConfig::read_credentials_tenant_id(
             &new_config.connector_name,
             &new_config.instance_id,
