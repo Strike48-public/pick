@@ -292,6 +292,16 @@ impl ConnectorConfig {
                 }
             };
 
+        // Trim any path/query suffix and trailing slash so a pasted browser
+        // URL (`https://strike48.example.com/`) doesn't leave the bare form
+        // ending in `/`, which would produce `strike48.example.com/:443` when
+        // we append the inferred port (pick#223).
+        let bare_str = bare_str
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or(&bare_str)
+            .to_string();
+
         if bare_str.is_empty() {
             return Err(format!(
                 "Invalid host: missing hostname after scheme. Try {}strike48.example.com",
@@ -339,6 +349,140 @@ impl ConnectorConfig {
         } else {
             format!("{device_id}-{slug}")
         }
+    }
+
+    /// The env vars operators use to pin a tenant identity, in preference
+    /// order. `MATRIX_TENANT_ID` comes first because operators typically
+    /// use it to carry an explicit UUID (aligning with StrikeHub's own
+    /// convention). `STRIKE48_TENANT` and its `TENANT_ID` alias are legacy
+    /// slug carriers; they still work but Studio's app-viewer routes by
+    /// UUID, so we prefer any UUID-shaped value we can find (pick#223).
+    pub const TENANT_ENV_VARS: &'static [&'static str] =
+        &["MATRIX_TENANT_ID", "STRIKE48_TENANT", "TENANT_ID"];
+
+    /// Does `s` parse as a canonical UUID?
+    ///
+    /// Used to distinguish tenant UUIDs from slugs when picking between
+    /// multiple env-var carriers or between a form value and an env
+    /// override. Trims whitespace so pasted values with newlines still
+    /// match.
+    pub fn is_uuid_like(s: &str) -> bool {
+        Uuid::parse_str(s.trim()).is_ok()
+    }
+
+    /// Return a tenant UUID from the first `TENANT_ENV_VARS` entry that
+    /// carries one, if any.
+    ///
+    /// Callers use this to promote a UUID over a slug the operator typed
+    /// in the ConfigForm — the slug is a valid registration identity but
+    /// Studio addresses the App-behavior connector by UUID, so an
+    /// explicit env-var UUID wins (see [`is_uuid_like`]).
+    pub fn tenant_uuid_from_env() -> Option<String> {
+        for var in Self::TENANT_ENV_VARS {
+            if let Ok(v) = std::env::var(var) {
+                let trimmed = v.trim();
+                if !trimmed.is_empty() && Self::is_uuid_like(trimmed) {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Read the tenant UUID the SDK stored during OTT approval, if any.
+    ///
+    /// Studio addresses App-behavior connectors by tenant UUID
+    /// (`/#/apps/matrix%3A<uuid>%3A<connector>%3A...`). The connector's
+    /// initial pending-approval registration can carry either a tenant
+    /// slug or a UUID — the server accepts both — but Studio only routes
+    /// app-viewer traffic to the identity that matches its URL. When the
+    /// operator types the slug, the server-issued JWT is minted against
+    /// the canonical UUID and the SDK writes it to
+    /// `~/.strike48/credentials/<connector>_<instance_id>.json`. Reading
+    /// that file at connect time lets us reuse the UUID for subsequent
+    /// registrations so the slug→UUID gap is invisible to the operator
+    /// (pick#223).
+    ///
+    /// StrikeHub does the equivalent server-side: it pre-resolves the
+    /// user's tenant via a `userDetails { domain.id }` GraphQL query
+    /// (`strikehub/crates/sh-core/src/auth.rs::fetch_tenant_id`) and
+    /// injects the UUID into every spawned connector's env. Standalone
+    /// Pick has no authenticated context up front, so we rely on the
+    /// post-OTT credentials file instead.
+    ///
+    /// Returns `None` when the file is missing, unreadable, or the
+    /// `tenant_id` field is absent — callers should fall back to the
+    /// user-supplied tenant string.
+    pub fn read_credentials_tenant_id(connector_name: &str, instance_id: &str) -> Option<String> {
+        let home = std::env::var("HOME").ok()?;
+        let path = std::path::PathBuf::from(home)
+            .join(".strike48")
+            .join("credentials")
+            .join(format!("{connector_name}_{instance_id}.json"));
+        let content = std::fs::read_to_string(&path).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&content).ok()?;
+        value
+            .get("tenant_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Split a Strike48-style URL (accepts anything [`normalize_host`] produces
+    /// plus bare hosts) into `(hostname, port)`.
+    ///
+    /// Callers that only need to open a TCP/TLS socket — e.g. the pre-connect
+    /// probe in `pentest-ui` — should use this rather than re-parsing by hand,
+    /// so the two ends of the connect pipeline agree on port defaulting, IPv6
+    /// bracket handling, and trailing-slash trimming. Returns `Err` on empty
+    /// input or a non-numeric port.
+    ///
+    /// When no port is present the default is `443`, matching
+    /// [`normalize_host`]'s Cloudflare-fronted-WebSocket default.
+    pub fn split_authority(url: &str) -> Result<(String, u16), String> {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            return Err("Strike48 host is empty".to_string());
+        }
+
+        let after_scheme = trimmed
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(trimmed);
+
+        let authority = after_scheme
+            .split('/')
+            .next()
+            .unwrap_or(after_scheme)
+            .trim_end_matches('/');
+
+        // IPv6 literal `[::1]:443`
+        if let Some((host, tail)) = authority
+            .strip_prefix('[')
+            .and_then(|rest| rest.find(']').map(|end| (&rest[..end], &rest[end + 1..])))
+        {
+            let port = tail
+                .strip_prefix(':')
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(443);
+            return Ok((host.to_string(), port));
+        }
+
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((h, p)) if !h.is_empty() => {
+                let port = p
+                    .parse::<u16>()
+                    .map_err(|_| format!("Invalid port in URL: {}", url))?;
+                (h.to_string(), port)
+            }
+            _ => (authority.to_string(), 443),
+        };
+
+        if host.is_empty() {
+            return Err(format!("Missing hostname in URL: {}", url));
+        }
+
+        Ok((host, port))
     }
 
     /// Reduce a host URL to a short, stable identifier slug: scheme and port are
@@ -518,8 +662,29 @@ pub fn load_connector_config(args: &[String]) -> ConfigLoadResult {
     if let Ok(token) = std::env::var("STRIKE48_TOKEN") {
         config.auth_token = token;
     }
-    if let Ok(tenant) = std::env::var("STRIKE48_TENANT").or_else(|_| std::env::var("TENANT_ID")) {
-        config.tenant_id = tenant;
+    // Tenant resolution: prefer any UUID-shaped value over a slug across
+    // the supported carriers (MATRIX_TENANT_ID, STRIKE48_TENANT, TENANT_ID),
+    // then fall back to the first non-empty slug. Studio addresses
+    // App-behavior connectors by tenant UUID, so a UUID env var wins even
+    // if a slug is present (pick#223).
+    let mut env_slug_fallback: Option<String> = None;
+    for var in ConnectorConfig::TENANT_ENV_VARS {
+        let Ok(v) = std::env::var(var) else { continue };
+        let trimmed = v.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if ConnectorConfig::is_uuid_like(trimmed) {
+            config.tenant_id = trimmed.to_string();
+            env_slug_fallback = None;
+            break;
+        }
+        if env_slug_fallback.is_none() {
+            env_slug_fallback = Some(trimmed.to_string());
+        }
+    }
+    if let Some(slug) = env_slug_fallback {
+        config.tenant_id = slug;
     }
     if let Ok(id) = std::env::var("STRIKE48_INSTANCE_ID").or_else(|_| std::env::var("INSTANCE_ID"))
     {
@@ -740,6 +905,28 @@ mod tests {
     }
 
     #[test]
+    fn strips_trailing_slash_before_inferring_port() {
+        // Pasting a browser URL with a trailing `/` used to produce
+        // `wss://host/:443` because the slash was baked into the bare form
+        // before we appended the default port (pick#223).
+        let n = ConnectorConfig::normalize_host("https://non-prod.strike48.test/").unwrap();
+        assert_eq!(n.value, "https://non-prod.strike48.test:443");
+        assert_eq!(n.inferred_port, Some(443));
+    }
+
+    #[test]
+    fn strips_path_after_authority() {
+        let n = ConnectorConfig::normalize_host("wss://strike48.example.com/socket/foo").unwrap();
+        assert_eq!(n.value, "wss://strike48.example.com:443");
+    }
+
+    #[test]
+    fn strips_query_and_fragment() {
+        let n = ConnectorConfig::normalize_host("https://strike48.example.com/?x=1#frag").unwrap();
+        assert_eq!(n.value, "https://strike48.example.com:443");
+    }
+
+    #[test]
     fn trims_surrounding_whitespace() {
         let n = ConnectorConfig::normalize_host("  wss://x.example.com:443  ").unwrap();
         assert_eq!(n.value, "wss://x.example.com:443");
@@ -765,6 +952,164 @@ mod tests {
         let second = ConnectorConfig::normalize_host(&first.value).unwrap();
         assert_eq!(first.value, second.value);
         assert!(!second.was_inferred(), "second pass should not re-infer");
+    }
+
+    #[test]
+    fn is_uuid_like_accepts_canonical_and_rejects_slug() {
+        assert!(ConnectorConfig::is_uuid_like(
+            "019f4d37-0212-72cb-945a-f8d01726ebf5"
+        ));
+        assert!(ConnectorConfig::is_uuid_like(
+            "  019f4d37-0212-72cb-945a-f8d01726ebf5\n"
+        ));
+        assert!(!ConnectorConfig::is_uuid_like("non-prod"));
+        assert!(!ConnectorConfig::is_uuid_like(""));
+        assert!(!ConnectorConfig::is_uuid_like("019f4d37-0212"));
+    }
+
+    #[test]
+    fn tenant_uuid_from_env_prefers_matrix_tenant_id() {
+        // Serialise all tenant-env manipulation on a single lock so parallel
+        // tests can't leak into each other's env-var view.
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let previous: Vec<(&str, Option<String>)> = ConnectorConfig::TENANT_ENV_VARS
+            .iter()
+            .map(|k| (*k, std::env::var(k).ok()))
+            .collect();
+        // SAFETY: `LOCK` above serialises access to these env vars across
+        // config tests; other threads in this binary do not read them.
+        unsafe {
+            for k in ConnectorConfig::TENANT_ENV_VARS {
+                std::env::remove_var(k);
+            }
+            std::env::set_var("STRIKE48_TENANT", "non-prod");
+            std::env::set_var("MATRIX_TENANT_ID", "019f4d37-0212-72cb-945a-f8d01726ebf5");
+        }
+
+        let got = ConnectorConfig::tenant_uuid_from_env();
+
+        // Restore before asserting so failure doesn't leak state.
+        unsafe {
+            for (k, v) in previous {
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+        assert_eq!(got.as_deref(), Some("019f4d37-0212-72cb-945a-f8d01726ebf5"));
+    }
+
+    #[test]
+    fn tenant_uuid_from_env_returns_none_when_only_slugs_present() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let previous: Vec<(&str, Option<String>)> = ConnectorConfig::TENANT_ENV_VARS
+            .iter()
+            .map(|k| (*k, std::env::var(k).ok()))
+            .collect();
+        unsafe {
+            for k in ConnectorConfig::TENANT_ENV_VARS {
+                std::env::remove_var(k);
+            }
+            std::env::set_var("STRIKE48_TENANT", "non-prod");
+        }
+
+        let got = ConnectorConfig::tenant_uuid_from_env();
+
+        unsafe {
+            for (k, v) in previous {
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn read_credentials_tenant_id_extracts_uuid() {
+        // Isolate HOME so the test doesn't touch the real credentials dir.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let creds_dir = tmp.path().join(".strike48").join("credentials");
+        std::fs::create_dir_all(&creds_dir).expect("mkdir creds");
+        let file = creds_dir.join("pentest-connector_dev-abc.json");
+        std::fs::write(
+            &file,
+            r#"{"client_id":"matrix:connector:local:019f4d37-0212-72cb-945a-f8d01726ebf5:pentest-connector:dev-abc","keycloak_url":"https://auth.example","tenant_id":"019f4d37-0212-72cb-945a-f8d01726ebf5"}"#,
+        )
+        .expect("write creds");
+
+        // SAFETY: single-threaded config tests, no other thread reads HOME here.
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+        let got = ConnectorConfig::read_credentials_tenant_id("pentest-connector", "dev-abc");
+        // Restore before assertions so a failing test doesn't leak env state.
+        match prev {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(got.as_deref(), Some("019f4d37-0212-72cb-945a-f8d01726ebf5"));
+    }
+
+    #[test]
+    fn read_credentials_tenant_id_returns_none_when_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+        let got = ConnectorConfig::read_credentials_tenant_id("pentest-connector", "never-ott");
+        match prev {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn split_authority_parses_wss_with_port() {
+        assert_eq!(
+            ConnectorConfig::split_authority("wss://studio.example.com:443").unwrap(),
+            ("studio.example.com".to_string(), 443)
+        );
+    }
+
+    #[test]
+    fn split_authority_defaults_bare_host_to_443() {
+        assert_eq!(
+            ConnectorConfig::split_authority("studio.example.com").unwrap(),
+            ("studio.example.com".to_string(), 443)
+        );
+    }
+
+    #[test]
+    fn split_authority_parses_ipv6_bracketed() {
+        assert_eq!(
+            ConnectorConfig::split_authority("wss://[::1]:8443").unwrap(),
+            ("::1".to_string(), 8443)
+        );
+    }
+
+    #[test]
+    fn split_authority_preserves_custom_port() {
+        assert_eq!(
+            ConnectorConfig::split_authority("grpc://localhost:50061").unwrap(),
+            ("localhost".to_string(), 50061)
+        );
+    }
+
+    #[test]
+    fn split_authority_rejects_empty() {
+        assert!(ConnectorConfig::split_authority("").is_err());
+        assert!(ConnectorConfig::split_authority("   ").is_err());
+    }
+
+    #[test]
+    fn split_authority_rejects_invalid_port() {
+        assert!(ConnectorConfig::split_authority("wss://x.example.com:notaport").is_err());
     }
 
     #[test]

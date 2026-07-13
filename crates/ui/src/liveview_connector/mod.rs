@@ -682,6 +682,19 @@ impl LiveViewConnector {
             self.config.auth_token.is_empty(),
         );
 
+        // Pre-connect reachability probe: fast-fail on obviously bad URLs
+        // (DNS miss, TLS refused, connect timeout) before the SDK spins up a
+        // full runner + auto-reconnect loop. Without this, a typo like
+        // `https://discoball.strike48.engineering/` leaves the UI stuck on
+        // the connecting spinner with no feedback (pick#223). Returning Err
+        // here lets the caller populate its `connect_error` banner; we skip
+        // emitting a `Disconnected` status event so we don't race the
+        // caller's `Error(_)` set that steers the UI back to the form.
+        if let Err(e) = probe_host_reachable(&self.config.host).await {
+            self.send_event(ConnectorEvent::Log(TerminalLine::error(e.clone())));
+            return Err(e);
+        }
+
         // Build the SDK config from our pentest_core config
         let mut sdk_config = self.config.to_sdk_config();
 
@@ -791,5 +804,32 @@ impl LiveViewConnector {
         if self.workspace_path.is_some() {
             workspace::cleanup_workspace(&self.config.instance_id);
         }
+    }
+}
+
+/// Fast reachability check against the configured Strike48 host.
+///
+/// Bounded TCP connect so a typo like `wss://discoball.strike48.engineering`
+/// fails immediately with a clear message instead of leaving the UI stuck on
+/// the connecting spinner while the SDK retries (pick#223). TLS-level
+/// failures still surface through the SDK's own WebSocket handshake, so we
+/// deliberately don't re-probe TLS here — one round-trip, one error path.
+async fn probe_host_reachable(host: &str) -> Result<(), String> {
+    const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
+
+    let (hostname, port) = ConnectorConfig::split_authority(host)?;
+    let target = format!("{}:{}", hostname, port);
+
+    match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(&target)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(format!(
+            "Cannot reach {}: {}. Check the URL and your network connection.",
+            target, e
+        )),
+        Err(_) => Err(format!(
+            "Timed out connecting to {} after {}s. Verify the URL is reachable.",
+            target,
+            CONNECT_TIMEOUT.as_secs()
+        )),
     }
 }
