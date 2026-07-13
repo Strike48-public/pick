@@ -147,6 +147,13 @@
             var text = el.value;
             if (!text || !text.trim()) return;
             if (typeof window.__chatSendDispatch === 'function') {
+                // Reset value + height synchronously so a multi-line send
+                // doesn't leave the textarea expanded. Programmatic value
+                // writes don't fire an `input` event, so the delegated
+                // auto-resize listener below can't do this for us. Mirrors
+                // the native path's inline clear in input.rs.
+                el.value = '';
+                el.style.height = '40px';
                 window.__chatSendDispatch(text);
             }
         }
