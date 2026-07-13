@@ -49,29 +49,6 @@ use render::{CHART_PROCESSOR_JS, UTILS_JS};
 /// and does not capture the component's signal soup. The behaviour it composes
 /// is covered by the `parse_validator_verdicts` tests in `pentest-core` and the
 /// `apply_validator_verdicts` tests in `crate::session`.
-/// Return a Matrix session token supplied via `MATRIX_AUTH_TOKEN`, if any.
-///
-/// Standalone Pick has no way to launch the browser-OAuth flow when ports
-/// 4000/5173 are taken (Matrix's CORS whitelist), so we honor an explicit
-/// `MATRIX_AUTH_TOKEN` env var as a paste-in escape hatch (pick#223).
-fn try_env_matrix_token() -> Option<String> {
-    std::env::var("MATRIX_AUTH_TOKEN")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// Whether `KEYCLOAK_USERNAME` and `KEYCLOAK_PASSWORD` are both non-empty in
-/// the environment, i.e. the headless OAuth flow is available.
-fn programmatic_auth_env_present() -> bool {
-    let has = |name: &str| {
-        std::env::var(name)
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-    };
-    has("KEYCLOAK_USERNAME") && has("KEYCLOAK_PASSWORD")
-}
-
 fn apply_validator_reply(
     messages: &[ChatMessage],
     pending_count: usize,
@@ -301,73 +278,27 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     }
 
     // -----------------------------------------------------------------------
-    // Lazy Matrix-session-token acquisition on first Chat visit.
-    //
-    // Standalone Pick has no session token by default (unlike the StrikeHub
-    // launch, which injects one via MATRIX_AUTH_TOKEN). We try, in order:
-    //
-    // 1. MATRIX_AUTH_TOKEN env var — operator can paste a token they got
-    //    from Studio and skip the whole dance.
-    // 2. Programmatic OAuth via KEYCLOAK_USERNAME/KEYCLOAK_PASSWORD — the
-    //    headless flow, doesn't need any local port to be free.
-    // 3. Browser OAuth — only if 1+2 didn't work, since it hard-requires
-    //    port 4000 or 5173 (Matrix CORS whitelist) and fails cleanly
-    //    otherwise. See pick#223.
-    //
-    // On success the token lands in the session store; failures surface as
-    // terminal-log errors with actionable guidance.
+    // Lazy browser-OAuth: trigger on first Chat panel visit when token is missing
     // -----------------------------------------------------------------------
 
-    let mut token_fetch_attempted = use_signal(|| false);
+    // Track whether we've attempted browser auth
+    let mut browser_auth_attempted = use_signal(|| false);
 
+    // If Chat panel is visible, we don't have a token, and we haven't tried browser auth yet
     if props.visible
         && effective_token.is_empty()
         && !api_url.is_empty()
-        && !token_fetch_attempted()
+        && !browser_auth_attempted()
         && !agents_loaded()
     {
-        token_fetch_attempted.set(true);
+        browser_auth_attempted.set(true);
         let api_url_clone = api_url.clone();
 
         crate::liveview_server::push_terminal_line(TerminalLine::info(
-            "[chat] No auth token — acquiring Matrix session token...",
+            "[chat] No auth token — opening browser for authentication...",
         ));
 
         spawn(async move {
-            if let Some(token) = try_env_matrix_token() {
-                tracing::info!(
-                    "[chat] Using MATRIX_AUTH_TOKEN from env (len={})",
-                    token.len()
-                );
-                crate::liveview_server::set_matrix_credentials(&api_url_clone, &token);
-                crate::session::set_auth_token(&token);
-                crate::liveview_server::push_terminal_line(TerminalLine::success(
-                    "[chat] Authenticated via MATRIX_AUTH_TOKEN env var",
-                ));
-                return;
-            }
-
-            if programmatic_auth_env_present() {
-                match pentest_core::matrix::fetch_matrix_token_from(&api_url_clone).await {
-                    Ok(token) => {
-                        tracing::info!("[chat] Programmatic auth succeeded (len={})", token.len());
-                        crate::liveview_server::set_matrix_credentials(&api_url_clone, &token);
-                        crate::session::set_auth_token(&token);
-                        crate::liveview_server::push_terminal_line(TerminalLine::success(
-                            "[chat] Authenticated via KEYCLOAK_USERNAME/PASSWORD",
-                        ));
-                        return;
-                    }
-                    Err(e) => {
-                        tracing::warn!("[chat] Programmatic auth failed: {}", e);
-                        crate::liveview_server::push_terminal_line(TerminalLine::info(format!(
-                            "[chat] Programmatic auth failed ({}); falling back to browser…",
-                            e
-                        )));
-                    }
-                }
-            }
-
             match pentest_core::matrix::fetch_matrix_token_browser(&api_url_clone).await {
                 Ok(token) => {
                     tracing::info!(
@@ -383,10 +314,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 Err(e) => {
                     tracing::warn!("[chat] Browser auth failed: {}", e);
                     crate::liveview_server::push_terminal_line(TerminalLine::error(format!(
-                        "[chat] Authentication failed: {}. \
-                         Alternatives: set MATRIX_AUTH_TOKEN env var to a session token \
-                         from Studio, or set KEYCLOAK_USERNAME and KEYCLOAK_PASSWORD for \
-                         headless auth.",
+                        "[chat] Authentication failed: {}",
                         e
                     )));
                 }

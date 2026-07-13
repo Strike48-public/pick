@@ -809,88 +809,27 @@ impl LiveViewConnector {
 
 /// Fast reachability check against the configured Strike48 host.
 ///
-/// Runs a bounded TCP+TLS handshake so a typo like
-/// `wss://discoball.strike48.engineering:443` fails immediately with a clear
-/// message instead of leaving the UI stuck on the connecting spinner while
-/// the SDK retries (pick#223). We deliberately do *not* attempt HTTP-level
-/// probing here: the WebSocket path (`/socket/connector/websocket`) is what
-/// the SDK will exercise, and any hard reachability failure surfaces during
-/// the TLS handshake anyway.
+/// Bounded TCP connect so a typo like `wss://discoball.strike48.engineering`
+/// fails immediately with a clear message instead of leaving the UI stuck on
+/// the connecting spinner while the SDK retries (pick#223). TLS-level
+/// failures still surface through the SDK's own WebSocket handshake, so we
+/// deliberately don't re-probe TLS here — one round-trip, one error path.
 async fn probe_host_reachable(host: &str) -> Result<(), String> {
     const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 
     let (hostname, port) = ConnectorConfig::split_authority(host)?;
-
-    // Plain (non-TLS) schemes skip the TLS handshake and settle for TCP-only.
-    // Anything else — including the bare-host case, which `normalize_host`
-    // treats as `wss://` — probes TLS. Trim + lowercase once so we're not
-    // doing four allocations per probe.
-    let scheme_prefix = host.trim().to_lowercase();
-    let use_tls = !(scheme_prefix.starts_with("ws://")
-        || scheme_prefix.starts_with("http://")
-        || scheme_prefix.starts_with("grpc://"));
-
     let target = format!("{}:{}", hostname, port);
 
-    let connect_result =
-        tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(&target)).await;
-
-    let stream = match connect_result {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            return Err(format!(
-                "Cannot reach {}: {}. Check the URL and your network connection.",
-                target, e
-            ));
-        }
-        Err(_) => {
-            return Err(format!(
-                "Timed out connecting to {} after {}s. Verify the URL is reachable.",
-                target,
-                CONNECT_TIMEOUT.as_secs()
-            ));
-        }
-    };
-
-    if !use_tls {
-        drop(stream);
-        return Ok(());
-    }
-
-    // TLS handshake: proves that a real TLS endpoint is answering under the
-    // hostname the operator typed. Uses reqwest, which is already a
-    // workspace dep and configured with rustls + native roots.
-    //
-    // `MATRIX_TLS_INSECURE` matches the existing convention in
-    // `token_refresh::build_client` and `pentest_core::matrix::client`
-    // (self-signed dev clusters). This probe-only relaxation does not touch
-    // the SDK's own TLS trust — it only affects our reachability HEAD.
-    let probe_url = format!("https://{}/", target);
-    let client = reqwest::Client::builder()
-        .timeout(CONNECT_TIMEOUT)
-        .danger_accept_invalid_certs(
-            std::env::var("MATRIX_TLS_INSECURE")
-                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
-                .unwrap_or(false),
-        )
-        .build()
-        .map_err(|e| format!("Failed to build TLS probe client: {}", e))?;
-
-    drop(stream);
-    match client.head(&probe_url).send().await {
-        Ok(_) => Ok(()),
-        Err(e) if e.is_status() => {
-            // Any HTTP status is fine — proves the endpoint spoke TLS + HTTP.
-            Ok(())
-        }
-        Err(e) if e.is_connect() || e.is_timeout() => Err(format!(
-            "TLS handshake to {} failed: {}. Verify the URL and TLS trust chain.",
+    match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(&target)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(format!(
+            "Cannot reach {}: {}. Check the URL and your network connection.",
             target, e
         )),
-        Err(_) => {
-            // Non-connect errors (redirect loop, body-decode, etc.) still
-            // prove the endpoint answered — accept and let the SDK continue.
-            Ok(())
-        }
+        Err(_) => Err(format!(
+            "Timed out connecting to {} after {}s. Verify the URL is reachable.",
+            target,
+            CONNECT_TIMEOUT.as_secs()
+        )),
     }
 }
