@@ -117,6 +117,74 @@
     };
 
     /**
+     * Install document-level delegated listeners for the chat textarea:
+     *  - `input` events auto-resize the textarea between 40px and 200px,
+     *  - `keydown` Enter (no Shift) dispatches a send,
+     *  - `click` on a `.chat-send-btn` dispatches a send.
+     *
+     * `sendCallback` is invoked with the textarea text on each send trigger.
+     * Rust wires it to `dioxus.send` so submissions return over the
+     * document::eval reverse channel — this bypasses dioxus-liveview 0.7.x's
+     * `convert_form_data`, whose `.unwrap()` on a `None` downcast aborts the
+     * process on the first keystroke on macOS standalone (#224). The callback
+     * is overwritten on every call so a re-mounted ChatInput points the
+     * listeners at the new eval's `dioxus.send`.
+     *
+     * Only installed on macOS/Linux at the Rust layer — Windows keeps native
+     * events because the reverse channel does not deliver in the
+     * WebView2 + LiveView + iframe combination StrikeHub uses (#189, #191).
+     *
+     * Idempotent for the listener install; the callback rebind is intentional.
+     */
+    window.installChatSendBridge = function(sendCallback) {
+        window.__chatSendDispatch = sendCallback;
+        if (window.__chatSendBridgeInstalled) return;
+        window.__chatSendBridgeInstalled = true;
+
+        function fireSend() {
+            var el = document.querySelector('.chat-textarea');
+            if (!el || el.disabled) return;
+            var text = el.value;
+            if (!text || !text.trim()) return;
+            if (typeof window.__chatSendDispatch === 'function') {
+                // Reset value + height synchronously so a multi-line send
+                // doesn't leave the textarea expanded. Programmatic value
+                // writes don't fire an `input` event, so the delegated
+                // auto-resize listener below can't do this for us. Mirrors
+                // the native path's inline clear in input.rs.
+                el.value = '';
+                el.style.height = '40px';
+                window.__chatSendDispatch(text);
+            }
+        }
+
+        document.addEventListener('input', function(e) {
+            var t = e.target;
+            if (t && t.classList && t.classList.contains('chat-textarea')) {
+                t.style.height = 'auto';
+                t.style.height = Math.min(Math.max(t.scrollHeight, 40), 200) + 'px';
+            }
+        });
+
+        document.addEventListener('keydown', function(e) {
+            var t = e.target;
+            if (t && t.classList && t.classList.contains('chat-textarea')
+                && e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                fireSend();
+            }
+        });
+
+        document.addEventListener('click', function(e) {
+            var t = e.target;
+            if (t && t.classList && t.classList.contains('chat-send-btn')) {
+                e.preventDefault();
+                fireSend();
+            }
+        });
+    };
+
+    /**
      * Trigger chart post-processing (mermaid + echarts) on the next animation frame.
      * Calls window.__processChatCharts if it has been defined by chart_processor.js.
      */
