@@ -92,10 +92,21 @@ pub fn validate_url(
         ));
     }
 
-    if is_private_ip(&host) {
-        return Err(Error::PermissionDenied(
-            "Private IP addresses are not allowed in production mode".to_string(),
-        ));
+    match classify_host(&host) {
+        HostClass::Public => {}
+        HostClass::Private => {
+            return Err(Error::PermissionDenied(
+                "Private IP addresses are not allowed in production mode".to_string(),
+            ));
+        }
+        HostClass::Unresolvable(reason) => {
+            // Fail closed, but say WHY: previously any DNS failure was reported
+            // as "Private IP addresses are not allowed", which is misleading (a
+            // resolver hiccup is not a private address). Distinguish the two.
+            return Err(Error::PermissionDenied(format!(
+                "Could not resolve hostname '{host}' ({reason}); blocked for safety in production mode"
+            )));
+        }
     }
 
     Ok(url.to_string())
@@ -116,23 +127,40 @@ fn extract_host(url: &str) -> Result<String> {
         }
     }
 
-    // Extract host (handle IPv6 bracket notation: [::1]:443 or [2001:db8::1])
-    let host = if remaining.starts_with('[') {
-        // IPv6 bracket notation - find closing bracket
-        if let Some(bracket_end) = remaining.find(']') {
+    // Strip everything from the first path / query / fragment delimiter onward,
+    // leaving just the authority (host[:port] or [ipv6][:port]). Without this,
+    // a URL with a path but no port (e.g. https://gitlab.com/a/b.csv) fed the
+    // whole "gitlab.com/a/b.csv" to DNS resolution, which failed and was then
+    // mislabelled as a private-IP block — breaking resource seeding.
+    //
+    // IPv6 bracket notation is handled first so the ':' inside "[2001:db8::1]"
+    // is not mistaken for a port separator.
+    let authority = if remaining.starts_with('[') {
+        remaining
+    } else {
+        remaining
+            .find(['/', '?', '#'])
+            .map_or(remaining, |i| &remaining[..i])
+    };
+
+    // Extract host (handle IPv6 bracket notation: [::1]:443 or [2001:db8::1]/path)
+    let host = if authority.starts_with('[') {
+        // IPv6 bracket notation - find closing bracket (anything after it, such
+        // as :port or /path, is discarded).
+        if let Some(bracket_end) = authority.find(']') {
             // Return just the host inside brackets (without the brackets)
-            &remaining[1..bracket_end]
+            &authority[1..bracket_end]
         } else {
             return Err(Error::InvalidParams(
                 "IPv6 bracket notation incomplete - missing closing bracket".to_string(),
             ));
         }
-    } else if let Some(colon_pos) = remaining.find(':') {
+    } else if let Some(colon_pos) = authority.find(':') {
         // IPv4 or hostname with port
-        &remaining[..colon_pos]
+        &authority[..colon_pos]
     } else {
         // No port specified
-        remaining
+        authority
     };
 
     if host.is_empty() {
@@ -170,29 +198,42 @@ fn is_localhost_ipv6(ip: Ipv6Addr) -> bool {
     ip == Ipv6Addr::LOCALHOST
 }
 
-/// Check if a host resolves to a private IP address
+/// SSRF classification of a host: safe to reach, a private/internal target, or
+/// unresolvable (which we still block, but for a distinct, honest reason).
+#[derive(Debug)]
+enum HostClass {
+    Public,
+    Private,
+    Unresolvable(String),
+}
+
+/// Classify a host for SSRF purposes.
 ///
-/// This function performs DNS resolution to prevent DNS rebinding attacks.
-/// If the host is a hostname (not an IP), it resolves all A/AAAA records
-/// and checks if ANY of them point to private IP ranges.
-fn is_private_ip(host: &str) -> bool {
+/// Performs DNS resolution to prevent DNS rebinding attacks. If the host is a
+/// hostname (not an IP), it resolves all A/AAAA records and treats the host as
+/// private if ANY resolved IP is in a private range. A resolution *failure* is
+/// reported as [`HostClass::Unresolvable`] (still blocked upstream, fail-closed)
+/// rather than being conflated with an actual private address.
+fn classify_host(host: &str) -> HostClass {
     // Try to parse as IP address
     if let Ok(ip) = host.parse::<IpAddr>() {
-        return match ip {
+        let private = match ip {
             IpAddr::V4(ipv4) => is_private_ipv4(ipv4),
             IpAddr::V6(ipv6) => is_private_ipv6(ipv6),
         };
+        return if private {
+            HostClass::Private
+        } else {
+            HostClass::Public
+        };
     }
 
-    // For hostnames, perform DNS resolution to prevent DNS rebinding attacks
-    // DNS rebinding attack: attacker registers domain pointing to public IP during
-    // validation, then switches DNS to private IP after validation passes.
-    //
-    // Defense: Resolve hostname and check ALL resolved IPs against private ranges.
-    // If ANY resolved IP is private, reject the hostname.
+    // For hostnames, perform DNS resolution to prevent DNS rebinding attacks:
+    // an attacker points a domain at a public IP during validation, then swaps
+    // DNS to a private IP afterward. Defense: resolve now and reject if ANY
+    // resolved IP is private.
     match resolve_hostname_to_ips(host) {
         Ok(ips) => {
-            // Check if ANY resolved IP is private
             for ip in ips {
                 let is_private = match ip {
                     IpAddr::V4(ipv4) => is_private_ipv4(ipv4),
@@ -204,22 +245,31 @@ fn is_private_ip(host: &str) -> bool {
                         host,
                         ip
                     );
-                    return true;
+                    return HostClass::Private;
                 }
             }
-            // All resolved IPs are public
-            false
+            HostClass::Public
         }
         Err(e) => {
-            // DNS resolution failed - treat as private for safety
             tracing::warn!(
                 "Failed to resolve hostname {}: {}, blocking for safety",
                 host,
                 e
             );
-            true
+            HostClass::Unresolvable(e.to_string())
         }
     }
+}
+
+/// Check if a host resolves to a private IP address.
+///
+/// Thin wrapper over [`classify_host`] that preserves the original boolean
+/// contract (unresolvable is treated as private, i.e. blocked). Retained for
+/// the test suite; production code uses [`classify_host`] so a resolution
+/// failure can be reported accurately rather than as "private IP".
+#[cfg(test)]
+fn is_private_ip(host: &str) -> bool {
+    !matches!(classify_host(host), HostClass::Public)
 }
 
 /// Resolve a hostname to all its IP addresses (A and AAAA records)
@@ -448,6 +498,66 @@ mod tests {
         assert_eq!(extract_host("grpc://localhost:50061").unwrap(), "localhost");
         assert_eq!(extract_host("example.com:443").unwrap(), "example.com");
         assert_eq!(extract_host("192.168.1.1:8080").unwrap(), "192.168.1.1");
+    }
+
+    #[test]
+    fn test_extract_host_strips_path() {
+        // Regression: a URL with a path but NO port must return only the host,
+        // not "host/path/...". Previously the no-port branch returned the whole
+        // remainder, so the SSRF validator tried to DNS-resolve
+        // "gitlab.com/exploit-database/.../files.csv" as a hostname, failed, and
+        // mislabelled it "Private IP addresses are not allowed" — breaking Seed.
+        assert_eq!(
+            extract_host(
+                "https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv"
+            )
+            .unwrap(),
+            "gitlab.com"
+        );
+        assert_eq!(
+            extract_host("https://raw.githubusercontent.com/danielmiessler/SecLists/master/x.txt")
+                .unwrap(),
+            "raw.githubusercontent.com"
+        );
+        // Host + port + path together.
+        assert_eq!(
+            extract_host("https://example.com:8443/some/path").unwrap(),
+            "example.com"
+        );
+        // Trailing slash, no path segments.
+        assert_eq!(extract_host("https://example.com/").unwrap(), "example.com");
+        // Query string with no path.
+        assert_eq!(
+            extract_host("https://example.com?foo=bar").unwrap(),
+            "example.com"
+        );
+        // IPv6 with path.
+        assert_eq!(
+            extract_host("https://[2001:db8::1]/path").unwrap(),
+            "2001:db8::1"
+        );
+        assert_eq!(
+            extract_host("https://[2001:db8::1]:8080/path").unwrap(),
+            "2001:db8::1"
+        );
+    }
+
+    #[test]
+    fn test_pathful_public_url_not_blocked_as_private() {
+        // The end-to-end symptom: a public HTTPS URL with a path should pass
+        // Production validation (subject to DNS). Skip if offline.
+        match resolve_hostname_to_ips("raw.githubusercontent.com") {
+            Ok(_) => assert!(
+                validate_url(
+                    "https://raw.githubusercontent.com/danielmiessler/SecLists/master/x.txt",
+                    ValidationMode::Production,
+                    None,
+                )
+                .is_ok(),
+                "public pathful URL must not be blocked as private"
+            ),
+            Err(_) => println!("Skipping - no internet connectivity"),
+        }
     }
 
     #[test]
