@@ -24,6 +24,8 @@ run-desktop:
 
 # Run desktop app with sudo (for WiFi hardware access)
 run-desktop-sudo:
+    #!/usr/bin/env bash
+    trap 'sudo scripts/restore-key-ownership.sh "${SUDO_USER:-$USER}" || true' EXIT
     sudo -E cargo run --package pentest-desktop
 
 # Run desktop app (release)
@@ -32,6 +34,8 @@ run-desktop-release:
 
 # Run desktop app (release) with sudo
 run-desktop-release-sudo:
+    #!/usr/bin/env bash
+    trap 'sudo scripts/restore-key-ownership.sh "${SUDO_USER:-$USER}" || true' EXIT
     sudo -E cargo run --package pentest-desktop --release
 
 # ============ Headless Agent ============
@@ -82,11 +86,18 @@ run-headless-release *ARGS:
 
 # Run headless agent with sudo (for WiFi hardware access)
 run-headless-sudo *ARGS:
+    #!/usr/bin/env bash
+    # Restore ~/.strike48 ownership on exit so a later non-sudo launch can still
+    # read the SDK key (see scripts/restore-key-ownership.sh).
+    trap 'sudo scripts/restore-key-ownership.sh "${SUDO_USER:-$USER}" || true' EXIT
     sudo -E cargo run --package pentest-headless -- {{ARGS}}
 
 # Run headless agent with default env vars (sudo for raw socket access)
 run-headless-dev *ARGS:
     #!/usr/bin/env bash
+    # Restore ~/.strike48 ownership on exit so a later non-sudo launch can still
+    # read the SDK key (see scripts/restore-key-ownership.sh).
+    trap 'sudo scripts/restore-key-ownership.sh "${SUDO_USER:-$USER}" || true' EXIT
     sudo -E HOME="$HOME" PATH="$PATH" \
         CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
         RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
