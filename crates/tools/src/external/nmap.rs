@@ -30,7 +30,10 @@ impl PentestTool for NmapTool {
     }
 
     fn description(&self) -> &str {
-        "Industry-standard network scanner for host discovery, port scanning, version detection, and OS fingerprinting. STRATEGY: Start with top1000 ports (fast), then target full scans on interesting hosts only. Full port scans (-p-) across many hosts are very slow (15-30+ minutes)."
+        "Industry-standard network scanner for host discovery, port scanning, version detection, and OS fingerprinting. \
+         STRATEGY: Start with top1000 ports (fast), then target full scans on interesting hosts only. Full port scans (-p-) across many hosts are very slow (15-30+ minutes). \
+         ARGUMENTS: Use the STRUCTURED parameters below (target, scan_type, ports, timing, service_detection, os_detection, aggressive, no_ping) — do NOT pass raw nmap CLI flags. \
+         There is no 'flags', 'args', or 'command' parameter: put the scan target in 'target' and express options via the typed params (e.g. host discovery = scan_type:'ping'; -T4 = timing:4; -sV = service_detection:true; -Pn = no_ping:true). Unrecognized raw flags are dropped."
     }
 
     fn schema(&self) -> ToolSchema {
@@ -119,9 +122,10 @@ impl PentestTool for NmapTool {
 
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
         // Tolerate the `execute_command`-style `{args: [...]}` / `{command: "..."}`
-        // shape some callers emit instead of the structured schema. Recovers the
-        // `target` (re-validated below) and maps known flags onto structured
-        // params; unrecognized flags are dropped, never shelled out.
+        // and `{flags: "-sn -T4 ...", target: "..."}` shapes some callers emit
+        // instead of the structured schema. Recovers the `target` (re-validated
+        // below) and maps known flags onto structured params; unrecognized flags
+        // are dropped, never shelled out.
         let params = normalize_legacy_nmap_params(params);
 
         execute_timed_with_provenance(|| async move {
@@ -492,7 +496,16 @@ async fn validate_nse_scripts<P: CommandExec>(
 /// target can be recovered, the original params are returned so the normal
 /// "target parameter is required" error still fires.
 fn normalize_legacy_nmap_params(params: Value) -> Value {
-    // Already in the structured shape — nothing to do.
+    // A `flags` string (e.g. {"flags": "-sn -T4 ...", "target": "..."}) is a
+    // shape the LLM emits by analogy to a raw CLI, but there is no `flags`
+    // schema param. Fold its recognized flags into structured params FIRST —
+    // this must run even when `target` is already present (otherwise the
+    // target-present short-circuit below would silently drop the flags, which
+    // is exactly the bug where -sn/-T4 never took effect). Same allowlist +
+    // drop-unknown safety as the `args`/`command` path.
+    let params = fold_flags_string(params);
+
+    // Already in the structured shape — nothing more to do.
     if params
         .get("target")
         .and_then(|v| v.as_str())
@@ -533,9 +546,81 @@ fn normalize_legacy_nmap_params(params: Value) -> Value {
 
     // Start from any structured params the caller DID provide so we don't clobber them.
     let mut out = params.as_object().cloned().unwrap_or_default();
-    let mut target: Option<String> = None;
-    let mut ports: Option<String> = None;
 
+    // Map recognized flags onto `out`, recover ports, and return any target the
+    // tokens contained (shared with the `flags`-string path).
+    let target = apply_flag_tokens(&mut out, &tokens);
+
+    match target {
+        Some(t) => {
+            out.insert("target".into(), json!(t));
+            Value::Object(out)
+        }
+        // Couldn't recover a target — return original so the standard
+        // "target parameter is required" error fires unchanged.
+        None => params,
+    }
+}
+
+/// Fold a `flags` STRING param into structured scan params.
+///
+/// Callers (the LLM generalizing from a raw CLI) sometimes pass
+/// `{"flags": "-sn -T4 ...", "target": "..."}`. There is no `flags` schema
+/// param, so without this the flags are silently ignored (and previously, when
+/// `target` was present, dropped entirely by the early return). This tokenizes
+/// `flags` (whitespace-split), maps the recognized allowlist onto structured
+/// params via the shared [`apply_flag_tokens`], recovers a target from the
+/// flags string if the caller didn't provide one, and removes the raw `flags`
+/// key so it is never passed through or shelled out. Unrecognized flags are
+/// dropped, exactly like the `args`/`command` path.
+///
+/// Non-string or absent `flags` is a no-op.
+fn fold_flags_string(params: Value) -> Value {
+    let Some(flags) = params.get("flags").and_then(|v| v.as_str()) else {
+        return params;
+    };
+
+    let tokens: Vec<String> = flags.split_whitespace().map(|t| t.to_string()).collect();
+    if tokens.is_empty() {
+        // Still strip the (empty/whitespace) flags key.
+        let mut out = params.as_object().cloned().unwrap_or_default();
+        out.remove("flags");
+        return Value::Object(out);
+    }
+
+    let mut out = params.as_object().cloned().unwrap_or_default();
+    out.remove("flags");
+
+    let recovered = apply_flag_tokens(&mut out, &tokens);
+
+    // Only adopt a target from the flags string if the caller didn't set one.
+    let has_target = out
+        .get("target")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
+    if !has_target {
+        if let Some(t) = recovered {
+            out.insert("target".into(), json!(t));
+        }
+    }
+
+    Value::Object(out)
+}
+
+/// Map a small allowlist of nmap flag tokens onto structured params in `out`,
+/// returning the first token that validates as a scan target (if any).
+///
+/// Shared by both legacy shapes (`args`/`command`) and the `flags` string.
+/// Recognized: `-sn`/`-sS`/`-sT`/`-sU` (scan_type), `-Pn` (no_ping), `-sV`
+/// (service_detection), `-O` (os_detection), `-A` (aggressive), `-T<n>`
+/// (timing), `-p <spec>` / `-p<spec>` (ports). Every other flag is dropped and
+/// never shelled out. A bare integer is never treated as a target (it's almost
+/// always a dropped flag's value, e.g. `--min-rate 1000`).
+fn apply_flag_tokens(
+    out: &mut serde_json::Map<String, Value>,
+    tokens: &[String],
+) -> Option<String> {
+    let mut target: Option<String> = None;
     let mut i = 0;
     while i < tokens.len() {
         let tok = tokens[i].as_str();
@@ -567,7 +652,7 @@ fn normalize_legacy_nmap_params(params: Value) -> Value {
             "-p" => {
                 // Next token is the port spec.
                 if i + 1 < tokens.len() {
-                    ports = Some(tokens[i + 1].clone());
+                    out.insert("ports".into(), json!(tokens[i + 1]));
                     i += 1;
                 }
             }
@@ -578,14 +663,14 @@ fn normalize_legacy_nmap_params(params: Value) -> Value {
             }
             _ if tok.starts_with("-p") && tok.len() > 2 => {
                 // -p80, -p1-1000 (port spec attached to the flag)
-                ports = Some(tok[2..].to_string());
+                out.insert("ports".into(), json!(tok[2..].to_string()));
             }
             _ if tok.starts_with('-') => {
                 // Unrecognized flag (e.g. --min-rate, -PE, -PP, -PM): drop it.
-                // If it's a flag that takes a separate value we can't recognize,
-                // its value falls through as a non-flag token below; the target
-                // heuristic only accepts a value that validates as a target, so
-                // a stray numeric like "1000" won't be mistaken for the target.
+                // If it takes a separate value we can't recognize, its value
+                // falls through as a non-flag token below; the target heuristic
+                // only accepts a value that validates as a target, so a stray
+                // numeric like "1000" won't be mistaken for the target.
             }
             _ => {
                 // Non-flag token: candidate target. Take the first one that
@@ -594,9 +679,8 @@ fn normalize_legacy_nmap_params(params: Value) -> Value {
                 // Reject bare integers: `validate_target` accepts "1000" as a
                 // hostname, but a pure number is never a real scan target — it's
                 // almost always a value belonging to a preceding flag we dropped
-                // (e.g. `--min-rate 1000`, `--max-retries 2`). Excluding them
-                // prevents a dropped flag's value from being mistaken for the
-                // target. Real targets are IPs, CIDRs, or dotted/named hosts.
+                // (e.g. `--min-rate 1000`, `--max-retries 2`). Real targets are
+                // IPs, CIDRs, or dotted/named hosts.
                 let is_bare_integer = !tok.is_empty() && tok.bytes().all(|b| b.is_ascii_digit());
                 if target.is_none() && !is_bare_integer && validate_target(tok).is_ok() {
                     target = Some(tok.to_string());
@@ -605,19 +689,7 @@ fn normalize_legacy_nmap_params(params: Value) -> Value {
         }
         i += 1;
     }
-
-    match target {
-        Some(t) => {
-            out.insert("target".into(), json!(t));
-            if let Some(p) = ports {
-                out.insert("ports".into(), json!(p));
-            }
-            Value::Object(out)
-        }
-        // Couldn't recover a target — return original so the standard
-        // "target parameter is required" error fires unchanged.
-        None => params,
-    }
+    target
 }
 
 /// Calculate smart timeout based on scan parameters
@@ -1158,6 +1230,85 @@ mod tests {
     fn structured_params_pass_through_unchanged() {
         let p = json!({"target": "10.0.8.0/22", "scan_type": "ping"});
         assert_eq!(normalize_legacy_nmap_params(p.clone()), p);
+    }
+
+    #[test]
+    fn flags_string_with_target_maps_recognized_flags() {
+        // The exact field payload: the LLM sent a `flags` STRING alongside a
+        // valid `target`. There is no `flags` schema param, and because target
+        // was present the normalizer used to early-return and drop `flags`
+        // entirely — so -sn/-T4 never became scan_type/timing. Now the
+        // recognized flags fold into structured params and target is kept.
+        let p = json!({
+            "flags": "-sn -T4 -PS22,80,443,445,3389 -PA80,443 -PE -PP",
+            "target": "10.0.8.0/22"
+        });
+        let out = normalize_legacy_nmap_params(p);
+        assert_eq!(out["target"], json!("10.0.8.0/22"));
+        assert_eq!(out["scan_type"], json!("ping")); // -sn
+        assert_eq!(out["timing"], json!(4)); // -T4
+                                             // Unrecognized discovery flags (-PS/-PA/-PE/-PP) are dropped, never shelled.
+        assert!(
+            out.get("flags").is_none(),
+            "raw flags string must be consumed, not passed through"
+        );
+    }
+
+    #[test]
+    fn flags_string_without_target_still_recovers_target_from_flags() {
+        // `flags` may itself contain the target token (no separate target key).
+        let p = json!({"flags": "-sS -p 80,443 192.168.1.1"});
+        let out = normalize_legacy_nmap_params(p);
+        assert_eq!(out["target"], json!("192.168.1.1"));
+        assert_eq!(out["scan_type"], json!("syn"));
+        assert_eq!(out["ports"], json!("80,443"));
+        assert!(out.get("flags").is_none());
+    }
+
+    #[test]
+    fn flags_does_not_clobber_explicit_structured_params() {
+        // If the caller ALSO set a structured param, flags-derived values fill
+        // gaps but an explicit conflicting flag still maps (last-writer = flags,
+        // matching how a real nmap invocation's later flag would win). Here the
+        // caller set service_detection=false and flags add -sV; the flag maps it
+        // true. Target from the structured field is preserved.
+        let p = json!({
+            "target": "10.0.0.5",
+            "service_detection": false,
+            "flags": "-sV -T2"
+        });
+        let out = normalize_legacy_nmap_params(p);
+        assert_eq!(out["target"], json!("10.0.0.5"));
+        assert_eq!(out["service_detection"], json!(true)); // -sV
+        assert_eq!(out["timing"], json!(2)); // -T2
+    }
+
+    #[test]
+    fn flags_injection_payload_never_becomes_target() {
+        // Splitting a flags string on whitespace means a "10.0.0.1; rm -rf /"
+        // payload becomes separate tokens. The dangerous token "10.0.0.1;"
+        // (semicolon) must NOT validate as a target, so the recovered target is
+        // never the injection string. Whatever IS recovered still goes through
+        // validate_target and is passed as a STRUCTURED positional arg (never
+        // shell-interpolated), so this is safe — same contract as the args path.
+        let out = normalize_legacy_nmap_params(json!({"flags": "-sn 10.0.0.1; rm -rf /"}));
+        let recovered = out.get("target").and_then(|v| v.as_str());
+        assert_ne!(recovered, Some("10.0.0.1; rm -rf /"));
+        assert_ne!(recovered, Some("10.0.0.1;"));
+        // And the raw flags string is always consumed, never passed through.
+        assert!(out.get("flags").is_none());
+    }
+
+    #[test]
+    fn flags_semicolon_target_token_is_rejected() {
+        // The clean case: a target carrying a shell metacharacter must be
+        // rejected by validate_target, leaving no target (schema error fires).
+        let out = normalize_legacy_nmap_params(json!({"flags": "-sn 10.0.0.1;rm"}));
+        assert!(
+            out.get("target").is_none(),
+            "a token with ';' must not validate as a target, got: {:?}",
+            out.get("target")
+        );
     }
 
     #[test]
