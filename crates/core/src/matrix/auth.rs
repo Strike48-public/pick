@@ -882,8 +882,8 @@ mod browser_token_tests {
 
     #[tokio::test]
     async fn token_wins_over_diagnostic_when_both_present() {
-        // Strategy 3 relay actually worked: the diag beacon fired, but the
-        // token still landed within the grace window. Token must win.
+        // Both ready in the same poll: the `biased` outer select resolves via
+        // the token arm before the diag arm runs. Token must win.
         let (tx, rx) = oneshot::channel();
         let (diag_tx, diag_rx) = oneshot::channel();
         diag_tx.send("strategy2_failed".to_string()).unwrap();
@@ -893,10 +893,35 @@ mod browser_token_tests {
         assert_eq!(result.unwrap(), "jwt-relayed");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
+    async fn token_arrives_within_grace_after_diag_fires() {
+        // Strategy 3 legitimately worked but slowly: the diag beacon fired
+        // first (strategies 1-2 failed), then the redirect round-trip delivered
+        // the token partway through the grace window. This exercises the
+        // `Ok(res)` arm of the nested grace-window timeout - the branch a
+        // too-short grace would regress into a spurious login failure.
+        let (tx, rx) = oneshot::channel();
+        let (diag_tx, diag_rx) = oneshot::channel();
+        diag_tx.send("strategy2_failed".to_string()).unwrap();
+
+        // Deliver the token after the diag arm has entered its grace wait, but
+        // well within GRACE. `start_paused` makes the sleep advance virtual
+        // time deterministically.
+        tokio::spawn(async move {
+            tokio::time::sleep(GRACE / 3).await;
+            tx.send("jwt-delayed-relay".to_string()).unwrap();
+        });
+
+        let result = await_browser_token(rx, diag_rx, GRACE, OVERALL).await;
+        assert_eq!(result.unwrap(), "jwt-delayed-relay");
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn fails_fast_with_contract_message_when_redirect_lands_on_json() {
         // The #194 case: /diag fires, no token ever arrives. We must fail with
-        // the server-contract diagnostic well before the OVERALL ceiling.
+        // the server-contract diagnostic bounded by the grace window, not the
+        // 120s ceiling. `start_paused` makes the timing deterministic (no
+        // wall-clock dependence, so no CI flakiness).
         let (_tx, rx) = oneshot::channel();
         let (diag_tx, diag_rx) = oneshot::channel();
         diag_tx
@@ -912,22 +937,59 @@ mod browser_token_tests {
             err.contains("issue #194") && err.contains("redirect"),
             "expected contract-gap diagnostic, got: {err}"
         );
-        // Fast-fail: bounded by the grace window, not the 120s ceiling.
+        // Fast-fail: bounded by the grace window, nowhere near the 120s ceiling.
         assert!(
-            elapsed < OVERALL,
-            "should fail via grace window ({GRACE:?}), took {elapsed:?}"
+            elapsed >= GRACE && elapsed < OVERALL,
+            "should fail via the {GRACE:?} grace window, took {elapsed:?}"
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn overall_timeout_when_nothing_arrives() {
         // Neither a token nor a diagnostic beacon: fall through to the ceiling.
         let (_tx, rx) = oneshot::channel();
         let (_diag_tx, diag_rx) = oneshot::channel();
 
-        let short_overall = Duration::from_millis(150);
-        let result = await_browser_token(rx, diag_rx, GRACE, short_overall).await;
+        let result = await_browser_token(rx, diag_rx, GRACE, OVERALL).await;
         let err = result.unwrap_err().to_string();
         assert!(err.contains("timed out"), "expected timeout, got: {err}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn errors_when_token_sender_dropped_before_diag() {
+        // The token sender is dropped without sending and no diag fires: the
+        // outer token arm sees the channel close and maps to channel-closed.
+        let (tx, rx) = oneshot::channel::<String>();
+        let (_diag_tx, diag_rx) = oneshot::channel();
+        drop(tx);
+
+        let result = await_browser_token(rx, diag_rx, GRACE, OVERALL).await;
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("channel closed"),
+            "expected channel-closed error, got: {err}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn errors_when_token_sender_dropped_during_grace() {
+        // Diag fires, then the token sender is dropped during the grace window:
+        // the nested grace wait sees the channel close and maps to
+        // channel-closed (line 803), not the #194 contract-gap message.
+        let (tx, rx) = oneshot::channel::<String>();
+        let (diag_tx, diag_rx) = oneshot::channel();
+        diag_tx.send("strategy2_failed".to_string()).unwrap();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(GRACE / 3).await;
+            drop(tx);
+        });
+
+        let result = await_browser_token(rx, diag_rx, GRACE, OVERALL).await;
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("channel closed"),
+            "expected channel-closed error, got: {err}"
+        );
     }
 }

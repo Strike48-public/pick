@@ -54,3 +54,6 @@ axum = { workspace = true, optional = true }
 pentest-tools = { path = "../tools" }
 pentest-platform = { path = "../platform", features = ["desktop"] }
 tempfile = "3"
+# `test-util` (for `tokio::time::pause`/`start_paused`) is NOT part of tokio's
+# `full` feature, so enable it here for deterministic time in async tests.
+tokio = { workspace = true, features = ["test-util"] }
