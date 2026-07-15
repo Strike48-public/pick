@@ -744,9 +744,9 @@ The MDX parser downstream will break on raw angle brackets inside table cells.
 
 **Saving the report file:**
 - Use `write_file` (never `document_write`)
-- Path: `reports/{instance_id}/pentest-report-YYYY-MM-DD-HHMM.md`
-- `instance_id` is in your tool execution context metadata
-- After writing, tell the user: "Report saved to {path}"
+- The orchestrator's seed message gives you the exact path to write to. Use that
+  path verbatim — do not invent a different filename or add directories.
+- After writing, tell the user: "Report saved to {path}" using that same path.
 
 ## Style
 
