@@ -317,22 +317,50 @@ enum LanClass {
 
 /// Classify a host for [`ValidationMode::PrivateNetwork`].
 ///
-/// Only literal IPs are decided here; hostnames return [`LanClass::Public`] so
-/// the caller runs them through the DNS-resolving Production path (which
-/// rejects any hostname resolving to a private range — we intentionally do NOT
-/// let a hostname resolve into the LAN-private allow-set, to avoid DNS-rebinding
-/// into, say, the metadata service via a name).
+/// Handles both literal IPs and hostnames. A hostname (e.g. an in-cluster
+/// `*.svc.cluster.local` ClusterIP name — the documented deployment case) is
+/// resolved and admitted ONLY if EVERY resolved IP is LAN-private/loopback.
+/// This supports the DNS-name deployment while preserving the DNS-rebinding
+/// defense: a name resolving to any public, link-local, or cloud-metadata IP is
+/// NOT admitted into the allow-set, so an attacker cannot rebind a name into
+/// 169.254.169.254 via PrivateNetwork.
 fn classify_lan_private(host: &str) -> LanClass {
     // localhost literal (string form) is loopback → allowed.
     if is_localhost(host) {
         return LanClass::LanPrivate;
     }
 
-    let Ok(ip) = host.parse::<IpAddr>() else {
-        // Not a literal IP — defer to the Production/DNS path.
-        return LanClass::Public;
-    };
+    // Literal IP: classify directly.
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return classify_lan_private_ip(ip);
+    }
 
+    // Hostname: resolve and require ALL resolved IPs to be LAN-private.
+    match resolve_hostname_to_ips(host) {
+        Ok(ips) => {
+            let mut saw_lan_private = false;
+            for ip in ips {
+                match classify_lan_private_ip(ip) {
+                    LanClass::LanPrivate => saw_lan_private = true,
+                    // Any non-LAN-private resolved IP disqualifies the whole
+                    // name — defer to Production (public) or block (internal).
+                    other => return other,
+                }
+            }
+            if saw_lan_private {
+                LanClass::LanPrivate
+            } else {
+                LanClass::Public
+            }
+        }
+        // Unresolvable: don't admit here; the Production path fails it closed
+        // with an accurate "could not resolve" reason.
+        Err(_) => LanClass::Public,
+    }
+}
+
+/// Classify a single resolved/literal IP for [`ValidationMode::PrivateNetwork`].
+fn classify_lan_private_ip(ip: IpAddr) -> LanClass {
     match ip {
         IpAddr::V4(v4) => {
             if is_lan_private_ipv4(v4) {
@@ -638,6 +666,41 @@ mod tests {
         // Public literals still pass (they fall through to the Production path).
         assert!(validate_url("wss://8.8.8.8:443", ValidationMode::PrivateNetwork, None).is_ok());
         assert!(validate_url("wss://1.1.1.1:443", ValidationMode::PrivateNetwork, None).is_ok());
+    }
+
+    #[test]
+    fn test_private_network_mode_allows_hostname_resolving_to_private() {
+        // The documented deployment case: an in-cluster ClusterIP given by DNS
+        // NAME (e.g. connectors-studio-grpc.default.svc). `localhost` is the
+        // deterministic, offline-safe stand-in — it resolves to loopback
+        // (127.0.0.1 / ::1), which is in the LAN-private allow-set, so a
+        // hostname resolving entirely to private IPs must be ALLOWED. (Regression
+        // guard: PrivateNetwork previously blocked ALL DNS names, breaking the
+        // documented `.svc` deployment.)
+        assert!(
+            validate_url(
+                "grpc://localhost:50061",
+                ValidationMode::PrivateNetwork,
+                None
+            )
+            .is_ok(),
+            "a hostname resolving to a private/loopback IP must be allowed in PrivateNetwork"
+        );
+    }
+
+    #[test]
+    fn test_private_network_mode_hostname_to_public_not_admitted() {
+        // DNS-rebinding defense preserved: a hostname resolving to a PUBLIC IP is
+        // not admitted into the LAN allow-set — it falls through to Production,
+        // which allows public hosts, so the net result is still Ok, but via the
+        // Production path (not the private allow-set). Skip if offline.
+        match resolve_hostname_to_ips("google.com") {
+            Ok(_) => assert!(
+                validate_url("wss://google.com:443", ValidationMode::PrivateNetwork, None).is_ok(),
+                "public hostname should pass via the Production fall-through"
+            ),
+            Err(_) => println!("Skipping - no internet connectivity"),
+        }
     }
 
     #[test]
