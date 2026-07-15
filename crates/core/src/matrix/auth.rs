@@ -353,6 +353,15 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
     let tx = std::sync::Arc::new(tokio::sync::Mutex::new(Some(tx)));
 
+    // Diagnostic channel: the callback page pings `/diag` immediately before it
+    // falls back to the Strategy 3 top-level redirect. That redirect only
+    // completes if the server 302s `/auth/refresh?redirect=<loopback>/token`
+    // back to us; several server builds instead return the token as JSON and
+    // never redirect (see issue #194), which strands the flow. This ping lets
+    // us fail fast with an actionable message instead of blocking the full 120s.
+    let (diag_tx, diag_rx) = tokio::sync::oneshot::channel::<String>();
+    let diag_tx = std::sync::Arc::new(tokio::sync::Mutex::new(Some(diag_tx)));
+
     // -----------------------------------------------------------------------
     // Bind the callback server FIRST so we know the local port before
     // generating the callback HTML (which embeds it for the redirect fallback).
@@ -479,10 +488,24 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
 
     // Strategy 3: Redirect to Matrix origin for same-site token exchange.
     // Top-level GET navigations send SameSite=Lax cookies. The server's
-    // /auth/refresh?redirect=<url> does the refresh and 302s back to our
-    // /token endpoint with ?access_token=xxx appended.
+    // /auth/refresh?redirect=<url> is *expected* to do the refresh and 302
+    // back to our /token endpoint with ?access_token=xxx appended.
+    //
+    // Known failure (issue #194): some server builds return the token as a
+    // JSON body instead of honoring ?redirect=, so the browser lands on raw
+    // JSON on the Matrix origin, this page's JS is gone, and /token is never
+    // hit. Because that navigation is one-way, we ping our own same-origin
+    // /diag endpoint FIRST so the connector can fail fast with a precise
+    // message instead of blocking for the full 120s timeout.
     var tokenUrl = 'http://localhost:' + LOCAL_PORT + '/token';
     var refreshUrl = MATRIX_URL + '/auth/refresh?redirect=' + encodeURIComponent(tokenUrl);
+    log('[CALLBACK] Strategies 1+2 failed; arming diagnostic before redirect');
+    try {{
+      await fetch('/diag?stage=strategy3_redirect&reason=' +
+        encodeURIComponent(e && e.message ? e.message : 'strategy2_failed'));
+    }} catch (diagErr) {{
+      log('[CALLBACK] /diag ping failed: ' + diagErr.message);
+    }}
     log('[CALLBACK] Redirecting to Matrix origin: ' + refreshUrl);
     s.textContent = 'Completing login…';
     d.textContent = 'Redirecting for token exchange…';
@@ -581,6 +604,34 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
                     }
                 }
             }),
+        )
+        .route(
+            "/diag",
+            axum::routing::get({
+                let diag_tx = diag_tx.clone();
+                move |query: axum::extract::Query<std::collections::HashMap<String, String>>| {
+                    let diag_tx = diag_tx.clone();
+                    async move {
+                        let stage = query
+                            .get("stage")
+                            .cloned()
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let reason = query
+                            .get("reason")
+                            .cloned()
+                            .unwrap_or_else(|| "unspecified".to_string());
+                        tracing::warn!(
+                            "[BROWSER_AUTH] /diag hit before redirect fallback (stage={}, reason={})",
+                            stage,
+                            reason
+                        );
+                        if let Some(sender) = diag_tx.lock().await.take() {
+                            let _ = sender.send(reason);
+                        }
+                        axum::response::Html("ok".to_string())
+                    }
+                }
+            }),
         );
 
     let server_handle = tokio::spawn(async move {
@@ -660,18 +711,26 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
     }
 
     tracing::info!("[BROWSER_AUTH] Waiting for token (120s timeout)...");
-    let token = tokio::time::timeout(std::time::Duration::from_secs(120), rx)
-        .await
-        .map_err(|_| {
-            tracing::error!("[BROWSER_AUTH] Timeout waiting for token");
-            crate::error::Error::Matrix(
-                "Login timed out — no token received within 120 seconds".into(),
-            )
-        })?
-        .map_err(|_| {
-            tracing::error!("[BROWSER_AUTH] Token channel closed unexpectedly");
-            crate::error::Error::Matrix("Token channel closed unexpectedly".into())
-        })?;
+
+    // Grace window after the callback page signals it is about to attempt the
+    // Strategy 3 redirect. If the server honors `?redirect=`, the token lands
+    // on `/token` within this window; if it returns JSON instead (issue #194),
+    // nothing more will arrive and we fail fast with a precise diagnostic
+    // rather than blocking out the full 120s.
+    const REDIRECT_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
+    const OVERALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+    let token_result = await_browser_token(rx, diag_rx, REDIRECT_GRACE, OVERALL_TIMEOUT).await;
+
+    // Stop the callback server on every exit path so the scarce CORS-whitelisted
+    // port (4000/5173) is released even when auth fails.
+    let token = match token_result {
+        Ok(token) => token,
+        Err(e) => {
+            server_handle.abort();
+            return Err(e);
+        }
+    };
 
     tracing::info!("[BROWSER_AUTH] Token received from channel, stopping server");
     server_handle.abort();
@@ -693,6 +752,83 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
     }
 
     Ok(token)
+}
+
+/// Race the token hand-off against the Strategy 3 diagnostic beacon.
+///
+/// Outcomes, in priority order:
+/// * a token arrives on `token_rx` (any strategy succeeded) -> `Ok(token)`;
+/// * the callback page pings `/diag` (`diag_rx`) just before the one-way
+///   Strategy 3 redirect -> wait `redirect_grace` for a token, then fail fast
+///   with the issue #194 contract-gap message if none lands;
+/// * neither happens within `overall_timeout` -> the legacy blanket timeout.
+///
+/// Extracted from [`fetch_matrix_token_browser`] so the wait logic is unit
+/// testable without spawning a browser or binding a socket.
+#[cfg(feature = "browser-auth")]
+async fn await_browser_token(
+    mut token_rx: tokio::sync::oneshot::Receiver<String>,
+    mut diag_rx: tokio::sync::oneshot::Receiver<String>,
+    redirect_grace: std::time::Duration,
+    overall_timeout: std::time::Duration,
+) -> crate::error::Result<String> {
+    let channel_closed = || {
+        tracing::error!("[BROWSER_AUTH] Token channel closed unexpectedly");
+        crate::error::Error::Matrix("Token channel closed unexpectedly".into())
+    };
+
+    let overall = tokio::time::sleep(overall_timeout);
+    tokio::pin!(overall);
+
+    // Exhaustive select: exactly one arm resolves, so no surrounding loop is
+    // needed. `biased` gives the token precedence over the diagnostic beacon
+    // when both are ready in the same poll.
+    tokio::select! {
+        biased;
+
+        // Token arrived (any strategy succeeded).
+        res = &mut token_rx => res.map_err(|_| channel_closed()),
+
+        // Callback page is about to attempt the one-way Strategy 3 redirect.
+        // Give the token a short grace window, then fail fast if it never
+        // lands: the redirect contract is broken server-side (issue #194).
+        diag = &mut diag_rx => {
+            let reason = diag.unwrap_or_else(|_| "unspecified".to_string());
+            tracing::warn!(
+                "[BROWSER_AUTH] Redirect fallback armed (reason={}); waiting {}s for /token",
+                reason,
+                redirect_grace.as_secs()
+            );
+            match tokio::time::timeout(redirect_grace, &mut token_rx).await {
+                Ok(res) => res.map_err(|_| channel_closed()),
+                Err(_) => {
+                    tracing::error!(
+                        "[BROWSER_AUTH] Token not delivered after redirect fallback (reason={})",
+                        reason
+                    );
+                    Err(crate::error::Error::Matrix(
+                        "Browser login could not retrieve the access token. The server \
+                         returned the token as JSON instead of redirecting it back to the \
+                         connector (GET /auth/refresh?redirect=<loopback>/token did not \
+                         302 to the loopback). This is a server-side token-relay contract \
+                         gap (issue #194), not a connectivity problem. Update the Strike48 \
+                         server to honor the ?redirect= parameter, or supply a token via \
+                         MATRIX_AUTH_TOKEN / KEYCLOAK_USERNAME+PASSWORD to bypass browser \
+                         OAuth."
+                            .into(),
+                    ))
+                }
+            }
+        }
+
+        // Hard ceiling: neither a token nor a diagnostic beacon arrived.
+        _ = &mut overall => {
+            tracing::error!("[BROWSER_AUTH] Timeout waiting for token");
+            Err(crate::error::Error::Matrix(
+                "Login timed out — no token received within 120 seconds".into(),
+            ))
+        }
+    }
 }
 
 #[cfg(not(feature = "browser-auth"))]
@@ -721,4 +857,77 @@ fn extract_form_action(html: &str) -> Option<String> {
     let rest = &html[idx + 8..];
     let end = rest.find('"')?;
     Some(rest[..end].replace("&amp;", "&"))
+}
+
+#[cfg(all(test, feature = "browser-auth"))]
+mod browser_token_tests {
+    use super::await_browser_token;
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+
+    // Generous durations relative to the sub-millisecond channel sends below,
+    // so the test asserts *which* branch wins, not wall-clock timing.
+    const GRACE: Duration = Duration::from_millis(200);
+    const OVERALL: Duration = Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn returns_token_when_delivered() {
+        let (tx, rx) = oneshot::channel();
+        let (_diag_tx, diag_rx) = oneshot::channel();
+        tx.send("jwt-abc".to_string()).unwrap();
+
+        let result = await_browser_token(rx, diag_rx, GRACE, OVERALL).await;
+        assert_eq!(result.unwrap(), "jwt-abc");
+    }
+
+    #[tokio::test]
+    async fn token_wins_over_diagnostic_when_both_present() {
+        // Strategy 3 relay actually worked: the diag beacon fired, but the
+        // token still landed within the grace window. Token must win.
+        let (tx, rx) = oneshot::channel();
+        let (diag_tx, diag_rx) = oneshot::channel();
+        diag_tx.send("strategy2_failed".to_string()).unwrap();
+        tx.send("jwt-relayed".to_string()).unwrap();
+
+        let result = await_browser_token(rx, diag_rx, GRACE, OVERALL).await;
+        assert_eq!(result.unwrap(), "jwt-relayed");
+    }
+
+    #[tokio::test]
+    async fn fails_fast_with_contract_message_when_redirect_lands_on_json() {
+        // The #194 case: /diag fires, no token ever arrives. We must fail with
+        // the server-contract diagnostic well before the OVERALL ceiling.
+        let (_tx, rx) = oneshot::channel();
+        let (diag_tx, diag_rx) = oneshot::channel();
+        diag_tx
+            .send("cross-origin fetch returned 401".to_string())
+            .unwrap();
+
+        let start = tokio::time::Instant::now();
+        let result = await_browser_token(rx, diag_rx, GRACE, OVERALL).await;
+        let elapsed = start.elapsed();
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("issue #194") && err.contains("redirect"),
+            "expected contract-gap diagnostic, got: {err}"
+        );
+        // Fast-fail: bounded by the grace window, not the 120s ceiling.
+        assert!(
+            elapsed < OVERALL,
+            "should fail via grace window ({GRACE:?}), took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn overall_timeout_when_nothing_arrives() {
+        // Neither a token nor a diagnostic beacon: fall through to the ceiling.
+        let (_tx, rx) = oneshot::channel();
+        let (_diag_tx, diag_rx) = oneshot::channel();
+
+        let short_overall = Duration::from_millis(150);
+        let result = await_browser_token(rx, diag_rx, GRACE, short_overall).await;
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("timed out"), "expected timeout, got: {err}");
+    }
 }
