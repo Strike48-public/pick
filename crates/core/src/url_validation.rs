@@ -16,12 +16,18 @@ pub enum ValidationMode {
     Production,
     /// PrivateNetwork mode - allows RFC-1918 private ranges (10/8, 172.16/12,
     /// 192.168/16), loopback, and IPv6 ULA/loopback so an in-cluster connector
-    /// can reach the platform over a private ClusterIP — while STILL blocking
-    /// the cloud-metadata / link-local range (169.254.0.0/16, fe80::/10) and
-    /// other non-LAN reserved ranges (multicast, broadcast, docs, CGN, etc.).
-    /// This is the narrow relaxation for in-cluster dev: it does not expose the
-    /// prime SSRF credential-theft target (169.254.169.254) the way Development
-    /// does.
+    /// can reach the platform over a private ClusterIP — while still blocking
+    /// the cloud-metadata / link-local range in its canonical forms
+    /// (169.254.0.0/16, fe80::/10) and other non-LAN reserved ranges (multicast,
+    /// broadcast, docs, CGN, etc.). This is the narrow relaxation for in-cluster
+    /// dev: unlike Development mode it does not broadly expose the metadata
+    /// service (169.254.169.254).
+    ///
+    /// Caveat (shared with Production mode, not specific to this variant):
+    /// IPv6-encoded IPv4 forms of link-local — IPv4-mapped `::ffff:169.254.x.x`
+    /// and NAT64 `64:ff9b::a9fe:x` — are NOT canonicalized by `is_private_ipv6`,
+    /// so they classify as public. See the follow-up to canonicalize embedded
+    /// IPv4 in `is_private_ipv6` (benefits Production too).
     PrivateNetwork,
     /// Strict mode - only allows explicitly allowlisted hosts
     Strict,
