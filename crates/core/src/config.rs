@@ -188,14 +188,49 @@ impl ConnectorConfig {
             return Err("Tenant ID is required".to_string());
         }
 
-        // Validate host URL for SSRF protection
-        use crate::url_validation::{validate_url, ValidationMode};
+        // Validate host URL for SSRF protection.
+        use crate::url_validation::validate_url;
 
-        let validation_mode = ValidationMode::default();
+        let validation_mode = Self::resolve_validation_mode(
+            std::env::var("PENTEST_ALLOW_PRIVATE_IPS").ok().as_deref(),
+        );
         validate_url(&self.host, validation_mode, None)
             .map_err(|e| format!("Invalid host URL: {}", e))?;
 
         Ok(())
+    }
+
+    /// Select the SSRF [`ValidationMode`] for the connector host from the
+    /// `PENTEST_ALLOW_PRIVATE_IPS` opt-in.
+    ///
+    /// In-cluster/local dev connects to the platform over a private ClusterIP
+    /// (e.g. `connectors-studio-grpc.default.svc:50061` -> `10.x`), which the
+    /// default Production guard blocks as SSRF. Setting
+    /// `PENTEST_ALLOW_PRIVATE_IPS=true|1` selects [`ValidationMode::PrivateNetwork`],
+    /// which permits RFC-1918 / loopback targets but STILL blocks the
+    /// cloud-metadata / link-local range (169.254.0.0/16) — a deliberately
+    /// narrower relaxation than full Development mode.
+    ///
+    /// Secure by default: any other value (including unset) falls back to
+    /// [`ValidationMode::default()`], which is Production in release builds.
+    /// Pure (no I/O) so it can be unit-tested independent of the build profile.
+    fn resolve_validation_mode(env_val: Option<&str>) -> crate::url_validation::ValidationMode {
+        use crate::url_validation::ValidationMode;
+        let allow_private = env_val
+            .map(|v| v.trim().to_ascii_lowercase())
+            .is_some_and(|v| v == "true" || v == "1");
+        if allow_private {
+            // Loud, auditable: an operator (or a leaked env var) has relaxed the
+            // SSRF guard. Emitted once per validate() call, not per request.
+            tracing::warn!(
+                "PENTEST_ALLOW_PRIVATE_IPS is set: connector host SSRF validation \
+                 relaxed to PrivateNetwork mode (RFC-1918/loopback allowed; \
+                 link-local/metadata still blocked). Do NOT use in production."
+            );
+            ValidationMode::PrivateNetwork
+        } else {
+            ValidationMode::default()
+        }
     }
 
     /// Check if this config has authentication
@@ -1155,6 +1190,81 @@ mod tests {
         assert_eq!(
             ConnectorConfig::env_scoped_instance_id("dev-1", ""),
             "dev-1"
+        );
+    }
+
+    // The SSRF-mode selection is a pure function of the env-var value, so it is
+    // tested directly — no env manipulation, and (crucially) the assertions run
+    // in CI's debug build, unlike anything gated on `debug_assertions`.
+    use crate::url_validation::ValidationMode;
+
+    #[test]
+    fn resolve_validation_mode_opts_in_on_truthy_values() {
+        // "true"/"1", case-insensitive, whitespace-tolerant → PrivateNetwork.
+        for v in ["true", "1", "TRUE", "True", "  true  ", "\t1\n"] {
+            assert_eq!(
+                ConnectorConfig::resolve_validation_mode(Some(v)),
+                ValidationMode::PrivateNetwork,
+                "{v:?} should opt in to PrivateNetwork"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_validation_mode_secure_default_otherwise() {
+        // Anything non-truthy, and unset, falls back to the default (Production
+        // in release builds). Asserting equality with default() makes the test
+        // build-profile-independent and meaningful in CI's debug run.
+        for v in [
+            Some("false"),
+            Some("0"),
+            Some("yes"),
+            Some(""),
+            Some("nope"),
+            None,
+        ] {
+            assert_eq!(
+                ConnectorConfig::resolve_validation_mode(v),
+                ValidationMode::default(),
+                "{v:?} must NOT opt in (secure default)"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_validation_mode_never_returns_development() {
+        // The opt-in must select the NARROW PrivateNetwork mode, never full
+        // Development (which would also unblock link-local / cloud-metadata).
+        assert_ne!(
+            ConnectorConfig::resolve_validation_mode(Some("true")),
+            ValidationMode::Development
+        );
+    }
+
+    #[test]
+    fn validate_allows_private_cluster_ip_via_private_network_mode() {
+        // End-to-end: PrivateNetwork mode accepts an in-cluster ClusterIP but
+        // still rejects the cloud-metadata endpoint. Uses validate_url directly
+        // with the mode resolve_validation_mode would pick, so it is stable in
+        // both debug and release.
+        use crate::url_validation::validate_url;
+        assert!(
+            validate_url(
+                "grpc://10.109.18.109:50061",
+                ValidationMode::PrivateNetwork,
+                None
+            )
+            .is_ok(),
+            "ClusterIP must be allowed in PrivateNetwork mode"
+        );
+        assert!(
+            validate_url(
+                "http://169.254.169.254:80",
+                ValidationMode::PrivateNetwork,
+                None
+            )
+            .is_err(),
+            "cloud-metadata endpoint must stay blocked in PrivateNetwork mode"
         );
     }
 }
