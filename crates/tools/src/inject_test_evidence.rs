@@ -2,6 +2,16 @@
 //!
 //! This tool allows manual testing of the Validator → Report pipeline
 //! by creating sample evidence nodes with various severities and types.
+//!
+//! # Dev/test only — never ships in release (pick#184)
+//!
+//! This tool pushes arbitrary, caller-supplied findings (with fabricated
+//! provenance) straight into the evidence graph, bypassing the grounding
+//! guardrail. It is registered in [`crate::create_tool_registry`] **only**
+//! under the opt-in `inject-test-evidence` cargo feature, which must never be
+//! enabled in a release build. The module stays compiled unconditionally so
+//! its own unit test builds under `cargo test`; only the registry registration
+//! and the `InjectTestEvidenceTool` re-export are feature-gated.
 
 use async_trait::async_trait;
 use pentest_core::error::Result;

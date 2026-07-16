@@ -239,7 +239,7 @@ Complete reference of all penetration testing tools available in Pick.
 |------|------|-------------|---------------|
 | `screenshot` | Native | Screen capture (base64 PNG) | No |
 | `traffic_capture` | Native | Network packet capture (PCAP) | Yes |
-| `inject_test_evidence` | Native | Test tool for three-agent pipeline | No |
+| `inject_test_evidence` | Native | Test tool for three-agent pipeline (dev/test only — requires the `inject-test-evidence` build feature; never registered in release, pick#184) | No |
 | `tshark` | External | Network protocol analyzer | Yes |
 
 ### Session Management

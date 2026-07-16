@@ -10,6 +10,11 @@ default = ["desktop"]
 desktop = ["pentest-platform/desktop"]
 android = ["pentest-platform/android"]
 ios = ["pentest-platform/ios"]
+# Dev/test only: registers `inject_test_evidence`, which pushes arbitrary
+# fabricated findings into the evidence graph. NEVER enable in release builds —
+# it is a grounding-guardrail bypass (pick#184). Off by default so production
+# connectors never advertise or expose the tool.
+inject-test-evidence = []
 
 [dependencies]
 # Core
