@@ -16,6 +16,24 @@ pub struct PtyShell {
     child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
+/// Return true if a `portable_pty` spawn error was caused by `EACCES`
+/// (`Permission denied`, os error 13).
+///
+/// `portable_pty` returns `anyhow::Error`; the underlying cause when a spawn is
+/// rejected is a `std::io::Error`. We first try to downcast through the error
+/// chain to inspect `io::ErrorKind::PermissionDenied` precisely, then fall back
+/// to a string match so the check stays robust if the error is wrapped without
+/// preserving the `io::Error` source.
+fn spawn_err_is_permission_denied(err: &anyhow::Error) -> bool {
+    for cause in err.chain() {
+        if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
+            return io_err.kind() == std::io::ErrorKind::PermissionDenied;
+        }
+    }
+    let msg = format!("{err:#}");
+    msg.contains("Permission denied") || msg.contains("os error 13")
+}
+
 impl PtyShell {
     /// Spawn a new interactive shell using the system default program.
     /// If `cwd` is provided, the shell will start in that directory.
@@ -64,7 +82,9 @@ impl PtyShell {
 
     /// Spawn a sandboxed interactive shell using bwrap, proot, or WSL.
     async fn spawn_sandboxed(cols: u16, rows: u16, cwd: Option<&Path>) -> Result<Self> {
-        use super::sandbox::{config::SandboxBackend, get_sandbox_manager, proot::ProotExecutor};
+        use super::sandbox::{
+            bwrap::BwrapExecutor, config::SandboxBackend, get_sandbox_manager, proot::ProotExecutor,
+        };
 
         tracing::info!("[PtyShell::spawn_sandboxed] Starting sandboxed shell spawn");
 
@@ -216,14 +236,46 @@ impl PtyShell {
             }
         };
 
-        let child = pair.slave.spawn_command(cmd).map_err(|e| {
-            tracing::error!(
-                "[PtyShell::spawn_sandboxed] spawn_command failed: {} (backend={:?})",
-                e,
-                backend,
-            );
-            Error::ToolExecution(format!("Failed to spawn sandboxed shell: {e}"))
-        })?;
+        let child = match pair.slave.spawn_command(cmd) {
+            Ok(child) => child,
+            Err(e) => {
+                tracing::error!(
+                    "[PtyShell::spawn_sandboxed] spawn_command failed: {} (backend={:?})",
+                    e,
+                    backend,
+                );
+
+                // Graceful fallback: proot can fail to spawn under portable-pty
+                // with EACCES depending on the host process context (see #238),
+                // even though the binary and rootfs are healthy. When that
+                // happens and bwrap is available, retry with bwrap rather than
+                // hard-failing the shell. bwrap is the preferred desktop backend
+                // anyway, so this only triggers when proot was selected as a
+                // fallback and the environment then rejects it.
+                if backend == SandboxBackend::Proot
+                    && spawn_err_is_permission_denied(&e)
+                    && BwrapExecutor::is_available().await
+                {
+                    tracing::warn!(
+                        "[PtyShell::spawn_sandboxed] proot spawn hit EACCES; falling back to bwrap"
+                    );
+                    let bwrap_cmd = Self::build_bwrap_cmd(config, cwd);
+                    pair.slave.spawn_command(bwrap_cmd).map_err(|e2| {
+                        tracing::error!(
+                            "[PtyShell::spawn_sandboxed] bwrap fallback also failed: {}",
+                            e2,
+                        );
+                        Error::ToolExecution(format!(
+                            "Failed to spawn sandboxed shell (proot EACCES, bwrap fallback failed): {e2}"
+                        ))
+                    })?
+                } else {
+                    return Err(Error::ToolExecution(format!(
+                        "Failed to spawn sandboxed shell: {e}"
+                    )));
+                }
+            }
+        };
 
         tracing::info!("Sandboxed shell spawned successfully");
 
@@ -497,6 +549,34 @@ mod tests {
             .iter()
             .map(|os| os.to_string_lossy().into_owned())
             .collect()
+    }
+
+    // ------------------------------------------------------------------
+    // EACCES detection for the proot -> bwrap fallback (#238)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn permission_denied_detected_from_io_error_source() {
+        let io_err = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let wrapped = anyhow::Error::new(io_err).context("spawn_command");
+        assert!(spawn_err_is_permission_denied(&wrapped));
+    }
+
+    #[test]
+    fn permission_denied_detected_from_message_fallback() {
+        // No io::Error in the chain — must fall back to the string match.
+        let err = anyhow::anyhow!("Permission denied (os error 13)");
+        assert!(spawn_err_is_permission_denied(&err));
+    }
+
+    #[test]
+    fn non_permission_error_is_not_flagged() {
+        let io_err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let wrapped = anyhow::Error::new(io_err).context("spawn_command");
+        assert!(!spawn_err_is_permission_denied(&wrapped));
+
+        let other = anyhow::anyhow!("no such file or directory");
+        assert!(!spawn_err_is_permission_denied(&other));
     }
 
     /// Build a SandboxConfig pointing at a temporary directory with a fake

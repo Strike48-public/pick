@@ -21,6 +21,22 @@ use tokio::sync::OnceCell;
 /// Global sandbox manager instance
 static SANDBOX_MANAGER: OnceCell<Arc<SandboxManager>> = OnceCell::const_new();
 
+/// Decide the preferred sandbox backend based on privilege level.
+///
+/// Root -> force bwrap (real capabilities for raw sockets).
+/// Non-root -> `None`, meaning "no forced preference"; `detect_backend` then
+/// auto-detects, preferring bwrap and using proot only as a fallback.
+///
+/// Returning `None` for non-root is deliberate: pinning proot broke the
+/// interactive PTY shell with EACCES on non-root Linux desktops (see #238).
+fn preferred_backend_for(is_root: bool) -> Option<SandboxBackend> {
+    if is_root {
+        Some(SandboxBackend::Bwrap)
+    } else {
+        None
+    }
+}
+
 /// Get or initialize the global sandbox manager
 pub async fn get_sandbox_manager() -> SandboxResult<Arc<SandboxManager>> {
     tracing::debug!("[get_sandbox_manager] Attempting to get or initialize sandbox manager");
@@ -29,31 +45,31 @@ pub async fn get_sandbox_manager() -> SandboxResult<Arc<SandboxManager>> {
             tracing::info!("[get_sandbox_manager] Initializing new sandbox manager...");
             let mut config = SandboxConfig::default();
 
-            // When running as root, prefer bwrap (real capabilities for raw sockets).
-            // Otherwise respect the user's shell_mode setting.
+            // Choose the preferred backend. When running as real root, force bwrap
+            // so tools get real capabilities (raw sockets via --cap-add ALL). When
+            // non-root, leave the preference unset and let detect_backend
+            // auto-detect: it prefers bwrap (native namespaces, works with
+            // portable-pty) and falls back to proot only when bwrap is unavailable.
+            //
+            // We intentionally do NOT force the proot backend for shell_mode ==
+            // Proot. In the ShellMode enum, "Proot" means "run sandboxed" (vs
+            // Native = run on the host), not "use the proot binary specifically".
+            // Forcing proot pinned non-root desktops to a backend that fails to
+            // spawn under portable-pty with EACCES. See #238.
             let is_root = std::process::Command::new("id")
                 .arg("-u")
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
                 .unwrap_or(false);
+            config.preferred_backend = preferred_backend_for(is_root);
             if is_root {
-                config.preferred_backend = Some(SandboxBackend::Bwrap);
                 tracing::info!(
                     "[get_sandbox_manager] Running as root, preferring bwrap for real capabilities"
                 );
             } else {
-                let settings = pentest_core::settings::load_settings();
-                match settings.shell_mode {
-                    pentest_core::config::ShellMode::Proot => {
-                        config.preferred_backend = Some(SandboxBackend::Proot);
-                        tracing::info!(
-                            "[get_sandbox_manager] User selected Proot backend via settings"
-                        );
-                    }
-                    pentest_core::config::ShellMode::Native => {
-                        // Native = no sandbox preference, auto-detect
-                    }
-                }
+                tracing::info!(
+                    "[get_sandbox_manager] Non-root: auto-detecting sandbox backend (prefers bwrap, proot fallback)"
+                );
             }
             tracing::debug!(
                 "[get_sandbox_manager] Config: data_dir={:?}, preferred_backend={:?}",
@@ -378,5 +394,18 @@ mod tests {
             Ok(backend) => println!("Detected backend: {}", backend),
             Err(e) => println!("No backend available: {}", e),
         }
+    }
+
+    #[test]
+    fn root_prefers_bwrap_for_real_capabilities() {
+        // Real root should force bwrap so tools get raw-socket capabilities.
+        assert_eq!(preferred_backend_for(true), Some(SandboxBackend::Bwrap));
+    }
+
+    #[test]
+    fn non_root_leaves_backend_unset_for_auto_detect() {
+        // Non-root must NOT pin proot (regression guard for #238): returning None
+        // lets detect_backend prefer bwrap and fall back to proot only if needed.
+        assert_eq!(preferred_backend_for(false), None);
     }
 }
