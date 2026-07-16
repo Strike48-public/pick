@@ -262,11 +262,12 @@ impl PtyShell {
                     let bwrap_cmd = Self::build_bwrap_cmd(config, cwd);
                     pair.slave.spawn_command(bwrap_cmd).map_err(|e2| {
                         tracing::error!(
-                            "[PtyShell::spawn_sandboxed] bwrap fallback also failed: {}",
+                            "[PtyShell::spawn_sandboxed] bwrap fallback also failed: {} (original proot error: {})",
                             e2,
+                            e,
                         );
                         Error::ToolExecution(format!(
-                            "Failed to spawn sandboxed shell (proot EACCES, bwrap fallback failed): {e2}"
+                            "Failed to spawn sandboxed shell (proot spawn failed: {e}; bwrap fallback also failed: {e2})"
                         ))
                     })?
                 } else {

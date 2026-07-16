@@ -60,7 +60,12 @@ pub async fn get_sandbox_manager() -> SandboxResult<Arc<SandboxManager>> {
                 .arg("-u")
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
-                .unwrap_or(false);
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        "[get_sandbox_manager] Failed to detect root via 'id -u': {e}; assuming non-root"
+                    );
+                    false
+                });
             config.preferred_backend = preferred_backend_for(is_root);
             if is_root {
                 tracing::info!(
