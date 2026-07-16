@@ -38,11 +38,20 @@ use pentest_ui::FileBrowser;
 /// Port for the internal Dioxus liveview server
 const DIOXUS_PORT: u16 = 3031;
 
-/// Workspace path (configurable via env var)
+/// Workspace path (configurable via `WORKSPACE_PATH`).
+///
+/// Defaults to the connector workspace root
+/// (`~/.local/share/pentest-connector/workspaces`) — the tree that actually
+/// holds each instance's files and generated reports — rather than the
+/// unrelated `~/workspace`, which no other component writes to. Without this the
+/// file browser enumerated an empty/irrelevant directory and generated reports
+/// were invisible from Studio/desktop (pick#35). `WORKSPACE_PATH` still overrides
+/// for operators who point the browser elsewhere.
 fn get_workspace_path() -> String {
     std::env::var("WORKSPACE_PATH").unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        format!("{}/workspace", home)
+        pentest_core::workspace::workspace_root()
+            .to_string_lossy()
+            .into_owned()
     })
 }
 

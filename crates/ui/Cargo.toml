@@ -87,3 +87,6 @@ futures = { workspace = true, optional = true }
 whoami = { version = "1", optional = true }
 strike48-proto = { workspace = true, optional = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+

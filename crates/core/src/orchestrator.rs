@@ -262,10 +262,35 @@ pub fn build_report_agent_seed_message(manifest: &ValidatedFindingsManifest) -> 
         );
         "{}".to_string()
     });
+    // Hand the Report Agent the exact, deterministic path to write to, derived
+    // from the engagement start time. The model cannot read the connector's
+    // tool-execution metadata (that lives only in the tool executor, not the
+    // prompt), so it must be told the concrete path here rather than asked to
+    // interpolate an `{instance_id}` template it has no way to resolve. The path
+    // is relative to the workspace root the file browser opens, so a generated
+    // report is immediately locatable (pick#35).
+    let report_path = report_relative_path(&manifest.engagement);
     format!(
         "The orchestrator has closed the engagement. Below is the \
          `validated_findings_manifest`. Render the final penetration test \
-         report per your system prompt.\n\n```json\n{json}\n```"
+         report per your system prompt.\n\nSave the finished report with \
+         `write_file` to exactly this path (do not invent a different one):\n\n\
+         `{report_path}`\n\nThen tell the operator: \"Report saved to \
+         {report_path}\".\n\n```json\n{json}\n```"
+    )
+}
+
+/// Deterministic, workspace-relative path for a rendered report.
+///
+/// Derived from the engagement start time so the same engagement always maps to
+/// the same file. Kept flat under `reports/` (no per-instance subdirectory — the
+/// connector workspace is already instance-scoped) so the report lands where the
+/// file browser opens (pick#35). Seconds are included so two engagements started
+/// in the same minute don't silently overwrite each other's report.
+pub fn report_relative_path(engagement: &EngagementInfo) -> String {
+    format!(
+        "reports/pentest-report-{}.md",
+        engagement.started_at.format("%Y-%m-%d-%H%M%S")
     )
 }
 
@@ -635,6 +660,55 @@ mod tests {
         assert!(msg.contains("```json"));
         assert!(msg.contains("\"c1\""));
         assert!(msg.trim_end().ends_with("```"));
+    }
+
+    #[test]
+    fn report_relative_path_is_deterministic_and_flat() {
+        // Derived from the engagement start time; flat under `reports/` with no
+        // per-instance subdirectory (pick#35). Second-granularity avoids
+        // same-minute overwrites.
+        let path = report_relative_path(&engagement());
+        assert_eq!(path, "reports/pentest-report-2026-04-17-120000.md");
+    }
+
+    #[test]
+    fn seed_message_gives_report_agent_the_concrete_write_path() {
+        // The seed must hand the model the exact path (pick#35) and must NOT ask
+        // it to interpolate an `{instance_id}` template it cannot resolve.
+        let manifest =
+            gate_for_report(&[confirmed_finding("c1", Severity::High)], engagement()).unwrap();
+        let msg = build_report_agent_seed_message(&manifest);
+        assert!(
+            msg.contains("reports/pentest-report-2026-04-17-120000.md"),
+            "seed must embed the concrete report path, got: {msg}"
+        );
+        assert!(
+            !msg.contains("{instance_id}"),
+            "seed must not contain an unresolvable instance_id template"
+        );
+        assert!(msg.contains("write_file"));
+    }
+
+    #[test]
+    fn report_path_resolves_under_workspace() {
+        // pick#35's root cause was the write path and the browse/read path
+        // disagreeing. Guard the contract: the report path must resolve to a
+        // real location *inside* the workspace (no traversal escape, resolver
+        // accepts the `reports/` subdir), so `write_file` lands where
+        // `list_files` enumerates.
+        let ws = tempfile::tempdir().unwrap();
+        let report_path = report_relative_path(&engagement());
+        let resolved = crate::workspace::resolve_path(ws.path(), &report_path)
+            .expect("report path must resolve inside the workspace");
+        let ws_canonical = ws.path().canonicalize().unwrap();
+        assert!(
+            resolved.starts_with(&ws_canonical),
+            "report path escaped workspace: {resolved:?} not under {ws_canonical:?}"
+        );
+        assert!(
+            resolved.to_string_lossy().contains("reports"),
+            "report should land in the reports/ subdir: {resolved:?}"
+        );
     }
 
     #[test]
