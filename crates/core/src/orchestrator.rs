@@ -168,6 +168,17 @@ pub enum GateError {
     /// highlight the offenders.
     #[error("{} evidence node(s) are still pending validation: {}", .pending_ids.len(), .pending_ids.join(", "))]
     PendingNodes { pending_ids: Vec<String> },
+
+    /// At least one publishable finding lacks [`Provenance`] tying it to real
+    /// tool output. The report must never present a finding the agent asserted
+    /// without a grounding tool result, so the gate fails closed (pick#184).
+    /// The offending node IDs are included so the UI can name them.
+    ///
+    /// The remedy is to ground the finding in a real tool run — never to
+    /// attach synthetic provenance to satisfy the gate, which would defeat the
+    /// guardrail.
+    #[error("{} finding(s) lack tool-output provenance and cannot be published (ungrounded): {}", .ids.len(), .ids.join(", "))]
+    UngroundedFindings { ids: Vec<String> },
 }
 
 /// Build a [`ValidatedFindingsManifest`] from the current evidence graph.
@@ -193,6 +204,24 @@ pub fn gate_for_report(
         .collect();
     if !pending_ids.is_empty() {
         return Err(GateError::PendingNodes { pending_ids });
+    }
+
+    // Fail closed on ungrounded findings (pick#184). A finding that will be
+    // published (Confirmed/Revised) must carry `Provenance` tying it to real
+    // tool output; otherwise it is a claim with no backing tool result and must
+    // never reach the report. We anchor on `is_publishable_finding()` rather
+    // than a `node_type` string (which is free-form) so this catches every
+    // finding headed for the report. InfoOnly / FalsePositive / context nodes
+    // are intentionally exempt — they are not published findings. This check
+    // follows the Pending gate: an un-adjudicated node is reported as Pending
+    // first, since its provenance is not yet the operator's concern.
+    let ungrounded: Vec<String> = nodes
+        .iter()
+        .filter(|n| n.is_publishable_finding() && n.provenance.is_none())
+        .map(|n| n.id.clone())
+        .collect();
+    if !ungrounded.is_empty() {
+        return Err(GateError::UngroundedFindings { ids: ungrounded });
     }
 
     let findings: Vec<ManifestFinding> = nodes
@@ -459,6 +488,19 @@ mod tests {
         EngagementInfo::new("10.0.0.0/24", ts()).with_completed_at(ts())
     }
 
+    /// Provenance a real finding-producing tool would attach. Every finding
+    /// node in production carries one (verified across all evidence producers),
+    /// so test fixtures for publishable findings attach it too — otherwise the
+    /// fail-closed grounding gate (pick#184) would reject them.
+    fn provenance() -> Provenance {
+        Provenance::new(
+            "nmap",
+            "7.95",
+            ProbeCommand::from_exact("nmap -sV 10.0.0.1"),
+            "Nmap scan report",
+        )
+    }
+
     fn confirmed_finding(id: &str, sev: Severity) -> EvidenceNode {
         let mut n = EvidenceNode::new(
             id,
@@ -468,7 +510,8 @@ mod tests {
             "10.0.0.1",
             sev,
             "initial rationale",
-        );
+        )
+        .with_provenance(provenance());
         n.apply_validator_decision(sev, "validator confirmed");
         n
     }
@@ -482,7 +525,8 @@ mod tests {
             "10.0.0.1",
             from,
             "initial rationale",
-        );
+        )
+        .with_provenance(provenance());
         n.apply_validator_decision(to, "severity adjusted after reproducing");
         n
     }
@@ -561,6 +605,7 @@ mod tests {
             GateError::PendingNodes { pending_ids } => {
                 assert_eq!(pending_ids, vec!["p1", "p2"]);
             }
+            other => panic!("expected PendingNodes, got {other:?}"),
         }
     }
 
@@ -636,19 +681,77 @@ mod tests {
 
     #[test]
     fn manifest_preserves_provenance_for_publishable_findings() {
-        let mut n = confirmed_finding("c1", Severity::High);
-        n.provenance = Some(Provenance::new(
-            "nmap",
-            "7.95",
-            ProbeCommand::from_exact("nmap -sV 10.0.0.1"),
-            "Nmap scan report",
-        ));
+        // confirmed_finding already carries provenance (as every real finding
+        // does); assert the gate passes it through into the manifest.
+        let n = confirmed_finding("c1", Severity::High);
         let manifest = gate_for_report(&[n], engagement()).unwrap();
         let prov = manifest.findings[0]
             .provenance
             .as_ref()
             .expect("provenance preserved in manifest");
         assert_eq!(prov.underlying_tool, "nmap");
+    }
+
+    // --- Fail-closed grounding gate (pick#184 Lever 3) --------------------
+
+    #[test]
+    fn gate_rejects_publishable_finding_without_provenance() {
+        // A Confirmed finding with no provenance is an ungrounded claim — the
+        // agent asserted it with no backing tool result. The gate must refuse.
+        let mut n = confirmed_finding("ungrounded", Severity::High);
+        n.provenance = None;
+        let err = gate_for_report(&[n], engagement()).unwrap_err();
+        match err {
+            GateError::UngroundedFindings { ids } => {
+                assert_eq!(ids, vec!["ungrounded".to_string()]);
+            }
+            other => panic!("expected UngroundedFindings, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gate_rejects_revised_finding_without_provenance() {
+        // Revised is publishable too, so the grounding requirement applies.
+        let mut n = revised_finding("rev", Severity::High, Severity::Medium);
+        n.provenance = None;
+        let err = gate_for_report(&[n], engagement()).unwrap_err();
+        assert!(matches!(err, GateError::UngroundedFindings { .. }));
+    }
+
+    #[test]
+    fn gate_accepts_publishable_finding_with_provenance() {
+        // The happy path: a grounded, adjudicated finding publishes.
+        let manifest =
+            gate_for_report(&[confirmed_finding("c1", Severity::High)], engagement()).unwrap();
+        assert_eq!(manifest.findings.len(), 1);
+    }
+
+    #[test]
+    fn gate_ignores_missing_provenance_on_non_published_nodes() {
+        // InfoOnly and FalsePositive nodes are not published findings, so the
+        // grounding requirement does not apply — even without provenance the
+        // gate must not reject them (info_only/false_positive build no prov).
+        let nodes = [info_only("i1"), false_positive("fp1")];
+        let manifest =
+            gate_for_report(&nodes, engagement()).expect("non-published nodes need no provenance");
+        assert_eq!(manifest.findings.len(), 0);
+        assert_eq!(manifest.context_nodes.len(), 1);
+        assert_eq!(manifest.counts.false_positives, 1);
+    }
+
+    #[test]
+    fn gate_reports_pending_before_ungrounded() {
+        // A still-Pending node and an ungrounded published finding together:
+        // the Pending gate fires first (provenance is not yet the operator's
+        // concern for an un-adjudicated node).
+        let mut ungrounded = confirmed_finding("c1", Severity::High);
+        ungrounded.provenance = None;
+        let nodes = [pending("p1"), ungrounded];
+        let err = gate_for_report(&nodes, engagement()).unwrap_err();
+        assert!(
+            matches!(err, GateError::PendingNodes { .. }),
+            "Pending must be reported before UngroundedFindings, got {err:?}"
+        );
     }
 
     #[test]

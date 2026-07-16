@@ -20,12 +20,16 @@
 //! drained node never reached it), so the finding could never appear in a
 //! report. This test fails closed if any of those seams regress.
 
+use pentest_core::evidence::EvidenceNode;
+use pentest_core::export::Severity;
 use pentest_core::orchestrator::{
     build_pending_evidence_manifest, gate_for_report, parse_validator_verdicts, EngagementInfo,
     GateError,
 };
 use pentest_core::provenance::{ProbeCommand, Provenance};
+use pentest_core::tools::{PentestTool, ToolContext, ToolOutcome};
 use pentest_tools::evidence_producer::{evidence_from_nmap, push_evidence};
+use pentest_tools::ExecuteCommandTool;
 use pentest_ui::session;
 use serde_json::{json, Value};
 use std::sync::{Mutex, MutexGuard};
@@ -324,6 +328,86 @@ fn drain_is_safe_under_concurrent_tool_execution() {
         total_pushed,
         "the graph must contain every forwarded node with no duplicates"
     );
+
+    session::clear_evidence();
+}
+
+/// pick#184 fail-closed grounding, on the production path. Two guarantees, end
+/// to end without a network or a live agent:
+///
+/// 1. A tool that fails to complete a probe surfaces a structured `Failed`
+///    outcome the model can trust — proven by running the real
+///    `ExecuteCommandTool` with a command that exits nonzero and prints
+///    nothing.
+/// 2. A finding with no tool-output provenance cannot reach the report — proven
+///    by adjudicating an ungrounded node to Confirmed and asserting the real
+///    `gate_for_report` refuses it with `UngroundedFindings`.
+///
+/// Before #184 the first was an indistinguishable `success:true` empty and the
+/// second passed the gate silently.
+#[tokio::test]
+async fn failed_tool_is_flagged_and_ungrounded_finding_cannot_reach_report() {
+    // (1) Run a real command that exits nonzero with empty stdout. On a host
+    // without command exec this returns Skipped; either way the outcome must
+    // NOT be a trustworthy `Ran`, and `success` must be false. This half
+    // touches no shared global evidence state, so it needs no serial guard —
+    // which also keeps us from holding a std Mutex across the `.await`.
+    let result = ExecuteCommandTool
+        .execute(
+            json!({ "command": "false", "args": [], "timeout_seconds": 10 }),
+            &ToolContext::default(),
+        )
+        .await
+        .expect("execute_command returns Ok(ToolResult) even on failure");
+    // Assert `!= Ran` rather than `== Failed` on purpose: both outcomes are
+    // correct depending on the host. With command exec available, "false"
+    // exits nonzero with empty stdout → Failed; without it, the tool returns
+    // Skipped before running. Either way it is not a trustworthy completed
+    // probe, which is all #184 requires here.
+    assert_ne!(
+        result.outcome,
+        ToolOutcome::Ran,
+        "a nonzero-exit empty command must not be reported as a completed probe"
+    );
+    assert!(
+        !result.success,
+        "a failed/skipped probe must not be a success"
+    );
+
+    // (2) An ungrounded finding must never reach the report. This half touches
+    // the shared evidence graph, so take the serial guard now — after the await
+    // above, so no lock is held across it.
+    let _guard = serial();
+    session::clear_evidence();
+
+    // Simulate the Red Team asserting a finding with no backing tool result: a
+    // node with no provenance. It is validated to Confirmed (clearing the
+    // Pending gate) so the ONLY thing between it and the report is grounding.
+    let mut ungrounded = EvidenceNode::new(
+        "ungrounded-claim",
+        "finding",
+        "Fabricated admin panel",
+        "Model asserted this with no tool output backing it.",
+        "10.0.0.9",
+        Severity::High,
+        "no grounding",
+    );
+    // No `.with_provenance(...)` — this is the whole point.
+    ungrounded.apply_validator_decision(Severity::High, "validator waved it through");
+    assert!(ungrounded.is_publishable_finding());
+    push_evidence(ungrounded).expect("push to buffer");
+    session::drain_tool_evidence_into_graph();
+
+    let snapshot = session::evidence_snapshot();
+    match gate_for_report(&snapshot, engagement()) {
+        Err(GateError::UngroundedFindings { ids }) => {
+            assert!(
+                ids.contains(&"ungrounded-claim".to_string()),
+                "the ungrounded finding must be named as the blocker, got {ids:?}"
+            );
+        }
+        other => panic!("gate must fail closed on an ungrounded finding, got {other:?}"),
+    }
 
     session::clear_evidence();
 }
