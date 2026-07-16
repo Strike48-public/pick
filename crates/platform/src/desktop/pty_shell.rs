@@ -23,26 +23,41 @@ pub struct PtyShell {
 /// `portable_pty` returns `anyhow::Error`; on Unix the underlying cause when a
 /// spawn is rejected is a `std::io::Error`, so we downcast through the error
 /// chain and inspect `io::ErrorKind::PermissionDenied` precisely. We deliberately
-/// do NOT fall back to substring-matching the message: since the shell now pins
-/// proot for users who explicitly chose it (see #238), a message that merely
+/// do NOT fall back to substring-matching the message: a message that merely
 /// mentions "Permission denied" for an unrelated reason must not silently swap
-/// their backend to bwrap. If no typed `io::Error` is present, we treat it as
-/// "not EACCES" and surface the original error instead of guessing.
+/// the sandbox backend under the user. If no typed `io::Error` is present, we
+/// treat it as "not EACCES" and surface the original error instead of guessing.
 fn spawn_err_is_permission_denied(err: &anyhow::Error) -> bool {
     err.chain()
         .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
         .any(|io_err| io_err.kind() == std::io::ErrorKind::PermissionDenied)
 }
 
-/// Decide whether a failed sandboxed spawn is eligible for a bwrap retry.
+/// Given the backend whose spawn just failed and the error, return the *other*
+/// namespace backend to retry with — or `None` if no retry applies.
 ///
-/// Only a **proot** spawn rejected with **EACCES** qualifies (the #238 failure
-/// mode: proot is healthy but `portable_pty` can't spawn it in this process
-/// context). The caller must still confirm bwrap is actually available before
-/// retrying. Kept as a pure function so the fallback decision is unit-testable
-/// without a live PTY.
-fn should_fall_back_to_bwrap(backend: SandboxBackend, err: &anyhow::Error) -> bool {
-    backend == SandboxBackend::Proot && spawn_err_is_permission_denied(err)
+/// The #238 failure mode is a healthy sandbox backend that `portable_pty` can't
+/// spawn in this process context, surfacing as `EACCES`. bwrap and proot are
+/// interchangeable for the unprivileged interactive shell (both give a fake-root
+/// BlackArch shell), so on an EACCES spawn we retry with the sibling backend:
+///
+/// - proot spawn hits EACCES -> retry **bwrap**
+/// - bwrap spawn hits EACCES -> retry **proot**
+///
+/// WSL and Docker have no namespace sibling to swap to, so they never qualify.
+/// Only EACCES qualifies: a missing binary or bad rootfs would fail identically
+/// under the sibling and must surface as-is. The caller still confirms the
+/// sibling is actually available before retrying. Pure function so the decision
+/// is unit-testable without a live PTY.
+fn fallback_backend_for(backend: SandboxBackend, err: &anyhow::Error) -> Option<SandboxBackend> {
+    if !spawn_err_is_permission_denied(err) {
+        return None;
+    }
+    match backend {
+        SandboxBackend::Proot => Some(SandboxBackend::Bwrap),
+        SandboxBackend::Bwrap => Some(SandboxBackend::Proot),
+        SandboxBackend::Wsl | SandboxBackend::Docker => None,
+    }
 }
 
 impl PtyShell {
@@ -93,7 +108,7 @@ impl PtyShell {
 
     /// Spawn a sandboxed interactive shell using bwrap, proot, or WSL.
     async fn spawn_sandboxed(cols: u16, rows: u16, cwd: Option<&Path>) -> Result<Self> {
-        use super::sandbox::{bwrap::BwrapExecutor, get_sandbox_manager, proot::ProotExecutor};
+        use super::sandbox::get_sandbox_manager;
 
         tracing::info!("[PtyShell::spawn_sandboxed] Starting sandboxed shell spawn");
 
@@ -208,6 +223,93 @@ impl PtyShell {
             })
             .map_err(|e| Error::ToolExecution(format!("Failed to open PTY: {e}")))?;
 
+        let cmd = Self::build_cmd_for_backend(backend, config, cwd).await?;
+
+        let child = match pair.slave.spawn_command(cmd) {
+            Ok(child) => child,
+            Err(e) => {
+                // Graceful symmetric fallback: a namespace backend (bwrap/proot)
+                // can fail to spawn under portable-pty with EACCES depending on
+                // the host process context (see #238), even when its binary and
+                // rootfs are healthy. bwrap and proot are interchangeable for the
+                // unprivileged interactive shell, so on EACCES we retry with the
+                // sibling backend instead of hard-failing.
+                let sibling = fallback_backend_for(backend, &e);
+                if let Some(fallback) = sibling {
+                    if Self::backend_is_available(fallback, config).await {
+                        // Log the failure at warn (not error): it is expected and
+                        // recoverable here; a preemptive error would read as a hard
+                        // failure even on the successful retry path.
+                        tracing::warn!(
+                            "[PtyShell::spawn_sandboxed] {backend:?} spawn hit EACCES ({e}); falling back to {fallback:?}"
+                        );
+
+                        // Open a *fresh* PTY for the retry. portable_pty does not
+                        // guarantee a slave is reusable after a failed spawn (the
+                        // controlling-terminal / TIOCSCTTY state may be left
+                        // partially applied by a half-forked child), so we drop
+                        // the old pair rather than spawn into it twice.
+                        drop(pair);
+                        let retry_pair = pty_system
+                            .openpty(PtySize {
+                                rows,
+                                cols,
+                                pixel_width: 0,
+                                pixel_height: 0,
+                            })
+                            .map_err(|e2| {
+                                Error::ToolExecution(format!(
+                                    "Failed to open PTY for {fallback:?} fallback: {e2} (original {backend:?} error: {e})"
+                                ))
+                            })?;
+
+                        let fallback_cmd =
+                            Self::build_cmd_for_backend(fallback, config, cwd).await?;
+                        let child = retry_pair.slave.spawn_command(fallback_cmd).map_err(|e2| {
+                            tracing::error!(
+                                "[PtyShell::spawn_sandboxed] {fallback:?} fallback also failed: {e2} (original {backend:?} error: {e})"
+                            );
+                            Error::ToolExecution(format!(
+                                "Failed to spawn sandboxed shell ({backend:?} spawn failed: {e}; {fallback:?} fallback also failed: {e2})"
+                            ))
+                        })?;
+
+                        tracing::info!(
+                            "Sandboxed shell spawned successfully ({fallback:?} fallback after {backend:?} EACCES)"
+                        );
+                        return Ok(Self {
+                            pair: retry_pair,
+                            child,
+                        });
+                    }
+                }
+
+                tracing::error!(
+                    "[PtyShell::spawn_sandboxed] spawn_command failed: {e} (backend={backend:?})"
+                );
+                return Err(Error::ToolExecution(format!(
+                    "Failed to spawn sandboxed shell: {e}"
+                )));
+            }
+        };
+
+        tracing::info!("Sandboxed shell spawned successfully");
+
+        Ok(Self { pair, child })
+    }
+
+    /// Build the interactive-shell `CommandBuilder` for a specific backend.
+    ///
+    /// Shared by the primary spawn and the symmetric EACCES fallback so both
+    /// paths construct commands identically. proot needs an async binary-path
+    /// lookup, hence the `async` signature.
+    async fn build_cmd_for_backend(
+        backend: SandboxBackend,
+        config: &super::sandbox::config::SandboxConfig,
+        cwd: Option<&Path>,
+    ) -> Result<CommandBuilder> {
+        use super::sandbox::proot::ProotExecutor;
+
         let cmd = match backend {
             SandboxBackend::Bwrap => {
                 tracing::info!("Building bwrap command for PTY shell");
@@ -245,74 +347,24 @@ impl PtyShell {
             }
         };
 
-        let child = match pair.slave.spawn_command(cmd) {
-            Ok(child) => child,
-            Err(e) => {
-                // Graceful fallback: proot can fail to spawn under portable-pty
-                // with EACCES depending on the host process context (see #238),
-                // even though the binary and rootfs are healthy. When that
-                // happens and bwrap is available, retry with bwrap rather than
-                // hard-failing the shell. This is the primary recovery path for
-                // a user who explicitly selected the proot backend (which we now
-                // honor) on a host where proot can't be spawned in this context.
-                if should_fall_back_to_bwrap(backend, &e) && BwrapExecutor::is_available().await {
-                    // Log the proot failure at warn (not error): it is expected
-                    // and recoverable here, and an unconditional error above would
-                    // read as a hard failure even on the successful retry path.
-                    tracing::warn!(
-                        "[PtyShell::spawn_sandboxed] proot spawn hit EACCES ({e}); falling back to bwrap"
-                    );
+        Ok(cmd)
+    }
 
-                    // Open a *fresh* PTY for the retry. portable_pty does not
-                    // guarantee a slave is reusable after a failed spawn (the
-                    // controlling-terminal / TIOCSCTTY state may be left partially
-                    // applied by a half-forked child), so we drop the old pair
-                    // rather than spawn into it twice.
-                    drop(pair);
-                    let retry_pair = pty_system
-                        .openpty(PtySize {
-                            rows,
-                            cols,
-                            pixel_width: 0,
-                            pixel_height: 0,
-                        })
-                        .map_err(|e2| {
-                            Error::ToolExecution(format!(
-                                "Failed to open PTY for bwrap fallback: {e2} (original proot error: {e})"
-                            ))
-                        })?;
+    /// Check whether a given backend is currently usable, used to gate the
+    /// EACCES fallback retry before we commit to swapping backends.
+    async fn backend_is_available(
+        backend: SandboxBackend,
+        config: &super::sandbox::config::SandboxConfig,
+    ) -> bool {
+        use super::sandbox::{bwrap::BwrapExecutor, proot::ProotExecutor};
 
-                    let bwrap_cmd = Self::build_bwrap_cmd(config, cwd);
-                    let child = retry_pair.slave.spawn_command(bwrap_cmd).map_err(|e2| {
-                        tracing::error!(
-                            "[PtyShell::spawn_sandboxed] bwrap fallback also failed: {e2} (original proot error: {e})"
-                        );
-                        Error::ToolExecution(format!(
-                            "Failed to spawn sandboxed shell (proot spawn failed: {e}; bwrap fallback also failed: {e2})"
-                        ))
-                    })?;
-
-                    tracing::info!(
-                        "Sandboxed shell spawned successfully (bwrap fallback after proot EACCES)"
-                    );
-                    return Ok(Self {
-                        pair: retry_pair,
-                        child,
-                    });
-                }
-
-                tracing::error!(
-                    "[PtyShell::spawn_sandboxed] spawn_command failed: {e} (backend={backend:?})"
-                );
-                return Err(Error::ToolExecution(format!(
-                    "Failed to spawn sandboxed shell: {e}"
-                )));
-            }
-        };
-
-        tracing::info!("Sandboxed shell spawned successfully");
-
-        Ok(Self { pair, child })
+        match backend {
+            SandboxBackend::Bwrap => BwrapExecutor::is_available().await,
+            SandboxBackend::Proot => ProotExecutor::is_available(config).await,
+            // Only bwrap/proot are valid fallback targets (see
+            // `fallback_backend_for`); other backends never reach here.
+            SandboxBackend::Wsl | SandboxBackend::Docker => false,
+        }
     }
 
     /// Build a `CommandBuilder` for a bwrap interactive shell.
@@ -626,33 +678,55 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Fallback-decision predicate (#238): only proot + EACCES qualifies
+    // Symmetric fallback-decision predicate (#238): bwrap <-> proot on EACCES
     // ------------------------------------------------------------------
 
-    #[test]
-    fn fallback_triggers_for_proot_eacces() {
-        let eacces = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
-        assert!(should_fall_back_to_bwrap(SandboxBackend::Proot, &eacces));
+    fn eacces() -> anyhow::Error {
+        anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
     }
 
     #[test]
-    fn no_fallback_for_proot_non_eacces() {
-        // proot failing for a non-permission reason (e.g. binary missing) must
-        // surface as-is, not silently become a bwrap shell.
+    fn proot_eacces_falls_back_to_bwrap() {
+        assert_eq!(
+            fallback_backend_for(SandboxBackend::Proot, &eacces()),
+            Some(SandboxBackend::Bwrap)
+        );
+    }
+
+    #[test]
+    fn bwrap_eacces_falls_back_to_proot() {
+        // The prefer-bwrap default means bwrap is the common primary backend; a
+        // runtime EACCES on a host where bwrap passed is_available() but can't
+        // spawn must degrade to proot rather than hard-failing the shell.
+        assert_eq!(
+            fallback_backend_for(SandboxBackend::Bwrap, &eacces()),
+            Some(SandboxBackend::Proot)
+        );
+    }
+
+    #[test]
+    fn no_fallback_for_non_eacces() {
+        // A non-permission failure (e.g. binary missing, bad rootfs) would fail
+        // identically under the sibling, so surface it as-is rather than swapping.
         let not_found = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::NotFound));
-        assert!(!should_fall_back_to_bwrap(
-            SandboxBackend::Proot,
-            &not_found
-        ));
+        assert_eq!(
+            fallback_backend_for(SandboxBackend::Proot, &not_found),
+            None
+        );
+        assert_eq!(
+            fallback_backend_for(SandboxBackend::Bwrap, &not_found),
+            None
+        );
     }
 
     #[test]
-    fn no_fallback_for_non_proot_backends() {
-        // A bwrap/wsl/docker EACCES is not the #238 failure mode; don't retry.
-        let eacces = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
-        assert!(!should_fall_back_to_bwrap(SandboxBackend::Bwrap, &eacces));
-        assert!(!should_fall_back_to_bwrap(SandboxBackend::Wsl, &eacces));
-        assert!(!should_fall_back_to_bwrap(SandboxBackend::Docker, &eacces));
+    fn no_fallback_for_backends_without_a_namespace_sibling() {
+        // WSL and Docker have no bwrap/proot sibling to swap to.
+        assert_eq!(fallback_backend_for(SandboxBackend::Wsl, &eacces()), None);
+        assert_eq!(
+            fallback_backend_for(SandboxBackend::Docker, &eacces()),
+            None
+        );
     }
 
     /// Build a SandboxConfig pointing at a temporary directory with a fake

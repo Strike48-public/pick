@@ -90,12 +90,11 @@ impl BwrapExecutor {
 
         let start = Instant::now();
 
-        // Check if we're running as real root (sudo) — skip user namespace, add capabilities
-        let is_root = std::process::Command::new("id")
-            .arg("-u")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
-            .unwrap_or(false);
+        // Check if we're running as real root (sudo) — skip user namespace, add
+        // capabilities. Use geteuid(2) via the shared helper rather than shelling
+        // out to `id -u`: this gate unlocks `--cap-add ALL`, so it must not be
+        // spoofable by a planted `id` on PATH (see #238 review).
+        let is_root = super::is_effective_root();
 
         let mut bwrap_args = vec![
             "--bind".to_string(),
