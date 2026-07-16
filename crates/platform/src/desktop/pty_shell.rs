@@ -2,6 +2,7 @@
 //!
 //! Spawns a native or sandboxed shell session via portable-pty.
 
+use super::sandbox::config::SandboxBackend;
 use pentest_core::config::ShellMode;
 use pentest_core::error::{Error, Result};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -19,19 +20,29 @@ pub struct PtyShell {
 /// Return true if a `portable_pty` spawn error was caused by `EACCES`
 /// (`Permission denied`, os error 13).
 ///
-/// `portable_pty` returns `anyhow::Error`; the underlying cause when a spawn is
-/// rejected is a `std::io::Error`. We first try to downcast through the error
-/// chain to inspect `io::ErrorKind::PermissionDenied` precisely, then fall back
-/// to a string match so the check stays robust if the error is wrapped without
-/// preserving the `io::Error` source.
+/// `portable_pty` returns `anyhow::Error`; on Unix the underlying cause when a
+/// spawn is rejected is a `std::io::Error`, so we downcast through the error
+/// chain and inspect `io::ErrorKind::PermissionDenied` precisely. We deliberately
+/// do NOT fall back to substring-matching the message: since the shell now pins
+/// proot for users who explicitly chose it (see #238), a message that merely
+/// mentions "Permission denied" for an unrelated reason must not silently swap
+/// their backend to bwrap. If no typed `io::Error` is present, we treat it as
+/// "not EACCES" and surface the original error instead of guessing.
 fn spawn_err_is_permission_denied(err: &anyhow::Error) -> bool {
-    for cause in err.chain() {
-        if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
-            return io_err.kind() == std::io::ErrorKind::PermissionDenied;
-        }
-    }
-    let msg = format!("{err:#}");
-    msg.contains("Permission denied") || msg.contains("os error 13")
+    err.chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|io_err| io_err.kind() == std::io::ErrorKind::PermissionDenied)
+}
+
+/// Decide whether a failed sandboxed spawn is eligible for a bwrap retry.
+///
+/// Only a **proot** spawn rejected with **EACCES** qualifies (the #238 failure
+/// mode: proot is healthy but `portable_pty` can't spawn it in this process
+/// context). The caller must still confirm bwrap is actually available before
+/// retrying. Kept as a pure function so the fallback decision is unit-testable
+/// without a live PTY.
+fn should_fall_back_to_bwrap(backend: SandboxBackend, err: &anyhow::Error) -> bool {
+    backend == SandboxBackend::Proot && spawn_err_is_permission_denied(err)
 }
 
 impl PtyShell {
@@ -82,9 +93,7 @@ impl PtyShell {
 
     /// Spawn a sandboxed interactive shell using bwrap, proot, or WSL.
     async fn spawn_sandboxed(cols: u16, rows: u16, cwd: Option<&Path>) -> Result<Self> {
-        use super::sandbox::{
-            bwrap::BwrapExecutor, config::SandboxBackend, get_sandbox_manager, proot::ProotExecutor,
-        };
+        use super::sandbox::{bwrap::BwrapExecutor, get_sandbox_manager, proot::ProotExecutor};
 
         tracing::info!("[PtyShell::spawn_sandboxed] Starting sandboxed shell spawn");
 
@@ -239,42 +248,65 @@ impl PtyShell {
         let child = match pair.slave.spawn_command(cmd) {
             Ok(child) => child,
             Err(e) => {
-                tracing::error!(
-                    "[PtyShell::spawn_sandboxed] spawn_command failed: {} (backend={:?})",
-                    e,
-                    backend,
-                );
-
                 // Graceful fallback: proot can fail to spawn under portable-pty
                 // with EACCES depending on the host process context (see #238),
                 // even though the binary and rootfs are healthy. When that
                 // happens and bwrap is available, retry with bwrap rather than
-                // hard-failing the shell. bwrap is the preferred desktop backend
-                // anyway, so this only triggers when proot was selected as a
-                // fallback and the environment then rejects it.
-                if backend == SandboxBackend::Proot
-                    && spawn_err_is_permission_denied(&e)
-                    && BwrapExecutor::is_available().await
-                {
+                // hard-failing the shell. This is the primary recovery path for
+                // a user who explicitly selected the proot backend (which we now
+                // honor) on a host where proot can't be spawned in this context.
+                if should_fall_back_to_bwrap(backend, &e) && BwrapExecutor::is_available().await {
+                    // Log the proot failure at warn (not error): it is expected
+                    // and recoverable here, and an unconditional error above would
+                    // read as a hard failure even on the successful retry path.
                     tracing::warn!(
-                        "[PtyShell::spawn_sandboxed] proot spawn hit EACCES; falling back to bwrap"
+                        "[PtyShell::spawn_sandboxed] proot spawn hit EACCES ({e}); falling back to bwrap"
                     );
+
+                    // Open a *fresh* PTY for the retry. portable_pty does not
+                    // guarantee a slave is reusable after a failed spawn (the
+                    // controlling-terminal / TIOCSCTTY state may be left partially
+                    // applied by a half-forked child), so we drop the old pair
+                    // rather than spawn into it twice.
+                    drop(pair);
+                    let retry_pair = pty_system
+                        .openpty(PtySize {
+                            rows,
+                            cols,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        })
+                        .map_err(|e2| {
+                            Error::ToolExecution(format!(
+                                "Failed to open PTY for bwrap fallback: {e2} (original proot error: {e})"
+                            ))
+                        })?;
+
                     let bwrap_cmd = Self::build_bwrap_cmd(config, cwd);
-                    pair.slave.spawn_command(bwrap_cmd).map_err(|e2| {
+                    let child = retry_pair.slave.spawn_command(bwrap_cmd).map_err(|e2| {
                         tracing::error!(
-                            "[PtyShell::spawn_sandboxed] bwrap fallback also failed: {} (original proot error: {})",
-                            e2,
-                            e,
+                            "[PtyShell::spawn_sandboxed] bwrap fallback also failed: {e2} (original proot error: {e})"
                         );
                         Error::ToolExecution(format!(
                             "Failed to spawn sandboxed shell (proot spawn failed: {e}; bwrap fallback also failed: {e2})"
                         ))
-                    })?
-                } else {
-                    return Err(Error::ToolExecution(format!(
-                        "Failed to spawn sandboxed shell: {e}"
-                    )));
+                    })?;
+
+                    tracing::info!(
+                        "Sandboxed shell spawned successfully (bwrap fallback after proot EACCES)"
+                    );
+                    return Ok(Self {
+                        pair: retry_pair,
+                        child,
+                    });
                 }
+
+                tracing::error!(
+                    "[PtyShell::spawn_sandboxed] spawn_command failed: {e} (backend={backend:?})"
+                );
+                return Err(Error::ToolExecution(format!(
+                    "Failed to spawn sandboxed shell: {e}"
+                )));
             }
         };
 
@@ -564,10 +596,23 @@ mod tests {
     }
 
     #[test]
-    fn permission_denied_detected_from_message_fallback() {
-        // No io::Error in the chain — must fall back to the string match.
+    fn permission_denied_detected_deep_in_error_chain() {
+        // The io::Error may be several context layers down; the chain walk must
+        // still find it.
+        let io_err = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let wrapped = anyhow::Error::new(io_err)
+            .context("spawn_command")
+            .context("PtyShell::spawn_sandboxed");
+        assert!(spawn_err_is_permission_denied(&wrapped));
+    }
+
+    #[test]
+    fn message_only_permission_denied_is_not_flagged() {
+        // No typed io::Error in the chain: we must NOT guess from the message
+        // string (that could wrongly swap a user's chosen backend). Treat it as
+        // not-EACCES and let the caller surface the original error.
         let err = anyhow::anyhow!("Permission denied (os error 13)");
-        assert!(spawn_err_is_permission_denied(&err));
+        assert!(!spawn_err_is_permission_denied(&err));
     }
 
     #[test]
@@ -578,6 +623,36 @@ mod tests {
 
         let other = anyhow::anyhow!("no such file or directory");
         assert!(!spawn_err_is_permission_denied(&other));
+    }
+
+    // ------------------------------------------------------------------
+    // Fallback-decision predicate (#238): only proot + EACCES qualifies
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn fallback_triggers_for_proot_eacces() {
+        let eacces = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(should_fall_back_to_bwrap(SandboxBackend::Proot, &eacces));
+    }
+
+    #[test]
+    fn no_fallback_for_proot_non_eacces() {
+        // proot failing for a non-permission reason (e.g. binary missing) must
+        // surface as-is, not silently become a bwrap shell.
+        let not_found = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert!(!should_fall_back_to_bwrap(
+            SandboxBackend::Proot,
+            &not_found
+        ));
+    }
+
+    #[test]
+    fn no_fallback_for_non_proot_backends() {
+        // A bwrap/wsl/docker EACCES is not the #238 failure mode; don't retry.
+        let eacces = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(!should_fall_back_to_bwrap(SandboxBackend::Bwrap, &eacces));
+        assert!(!should_fall_back_to_bwrap(SandboxBackend::Wsl, &eacces));
+        assert!(!should_fall_back_to_bwrap(SandboxBackend::Docker, &eacces));
     }
 
     /// Build a SandboxConfig pointing at a temporary directory with a fake

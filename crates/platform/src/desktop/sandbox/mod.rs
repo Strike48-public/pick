@@ -13,6 +13,7 @@ pub mod wsl;
 
 use crate::traits::CommandResult;
 use config::{SandboxBackend, SandboxConfig, SandboxError, SandboxResult};
+use pentest_core::config::ShellMode;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,19 +22,60 @@ use tokio::sync::OnceCell;
 /// Global sandbox manager instance
 static SANDBOX_MANAGER: OnceCell<Arc<SandboxManager>> = OnceCell::const_new();
 
-/// Decide the preferred sandbox backend based on privilege level.
+/// Return true if the current process is running as (effective) root.
 ///
-/// Root -> force bwrap (real capabilities for raw sockets).
-/// Non-root -> `None`, meaning "no forced preference"; `detect_backend` then
-/// auto-detects, preferring bwrap and using proot only as a fallback.
+/// Uses `geteuid(2)` directly rather than shelling out to `id -u`. The syscall
+/// cannot be spoofed via `PATH` (an attacker-planted `id` on `PATH` printing
+/// `0` previously could have flipped this to "root" and unlocked the
+/// bwrap `--cap-add ALL` path), it never forks, and it can't fail. On non-Unix
+/// desktops there is no uid concept, so we report non-root.
+fn is_effective_root() -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: `geteuid` is always safe to call — it takes no arguments,
+        // reads no memory, and cannot fail (POSIX guarantees success).
+        unsafe { libc::geteuid() == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// Decide the preferred sandbox backend from privilege level and the user's
+/// shell mode.
 ///
-/// Returning `None` for non-root is deliberate: pinning proot broke the
-/// interactive PTY shell with EACCES on non-root Linux desktops (see #238).
-fn preferred_backend_for(is_root: bool) -> Option<SandboxBackend> {
+/// - **root** -> force bwrap. Only root can grant real capabilities
+///   (raw sockets via `--cap-add ALL`), and bwrap is the desktop backend
+///   that carries them. This is gated to Linux: bwrap is Linux-only, so on
+///   other platforms we leave the preference unset and let `detect_backend`
+///   pick the right backend (WSL, Docker, ...) instead of pinning an
+///   unavailable one and logging a spurious "preferred backend not available"
+///   warning.
+/// - **non-root + `ShellMode::Proot`** -> honor the user's explicit choice and
+///   pin proot. `detect_backend` still downgrades to another backend if proot
+///   is unavailable, and the interactive PTY shell downgrades to bwrap at spawn
+///   time if proot is present but rejected with EACCES (see #238). Keeping the
+///   preference means a user on a host where bwrap is present-but-broken (subtle
+///   userns / seccomp / AppArmor breakage that passes `is_available()` yet fails
+///   at runtime) still gets the backend they asked for.
+/// - **non-root + `ShellMode::Native`** -> `None`, i.e. no forced preference;
+///   `detect_backend` auto-detects (prefers bwrap, proot as fallback).
+fn preferred_backend_for(is_root: bool, shell_mode: ShellMode) -> Option<SandboxBackend> {
     if is_root {
-        Some(SandboxBackend::Bwrap)
-    } else {
-        None
+        #[cfg(target_os = "linux")]
+        {
+            return Some(SandboxBackend::Bwrap);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            return None;
+        }
+    }
+
+    match shell_mode {
+        ShellMode::Proot => Some(SandboxBackend::Proot),
+        ShellMode::Native => None,
     }
 }
 
@@ -45,37 +87,20 @@ pub async fn get_sandbox_manager() -> SandboxResult<Arc<SandboxManager>> {
             tracing::info!("[get_sandbox_manager] Initializing new sandbox manager...");
             let mut config = SandboxConfig::default();
 
-            // Choose the preferred backend. When running as real root, force bwrap
-            // so tools get real capabilities (raw sockets via --cap-add ALL). When
-            // non-root, leave the preference unset and let detect_backend
-            // auto-detect: it prefers bwrap (native namespaces, works with
-            // portable-pty) and falls back to proot only when bwrap is unavailable.
-            //
-            // We intentionally do NOT force the proot backend for shell_mode ==
-            // Proot. In the ShellMode enum, "Proot" means "run sandboxed" (vs
-            // Native = run on the host), not "use the proot binary specifically".
-            // Forcing proot pinned non-root desktops to a backend that fails to
-            // spawn under portable-pty with EACCES. See #238.
-            let is_root = std::process::Command::new("id")
-                .arg("-u")
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
-                .unwrap_or_else(|e| {
-                    tracing::warn!(
-                        "[get_sandbox_manager] Failed to detect root via 'id -u': {e}; assuming non-root"
-                    );
-                    false
-                });
-            config.preferred_backend = preferred_backend_for(is_root);
-            if is_root {
-                tracing::info!(
-                    "[get_sandbox_manager] Running as root, preferring bwrap for real capabilities"
-                );
-            } else {
-                tracing::info!(
-                    "[get_sandbox_manager] Non-root: auto-detecting sandbox backend (prefers bwrap, proot fallback)"
-                );
-            }
+            // Choose the preferred backend from privilege level and the user's
+            // shell mode (see `preferred_backend_for`). As real root we force
+            // bwrap for real capabilities (raw sockets via --cap-add ALL). As
+            // non-root we honor an explicit ShellMode::Proot but rely on
+            // detect_backend's downgrade and the PTY shell's EACCES -> bwrap
+            // fallback (see #238) so a pinned-but-unspawnable proot degrades
+            // gracefully instead of hard-failing the shell.
+            let is_root = is_effective_root();
+            let shell_mode = pentest_core::settings::load_settings().shell_mode;
+            config.preferred_backend = preferred_backend_for(is_root, shell_mode);
+            tracing::info!(
+                "[get_sandbox_manager] is_root={is_root}, shell_mode={shell_mode:?} -> preferred_backend={:?}",
+                config.preferred_backend
+            );
             tracing::debug!(
                 "[get_sandbox_manager] Config: data_dir={:?}, preferred_backend={:?}",
                 config.data_dir,
@@ -401,16 +426,47 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn root_prefers_bwrap_for_real_capabilities() {
-        // Real root should force bwrap so tools get raw-socket capabilities.
-        assert_eq!(preferred_backend_for(true), Some(SandboxBackend::Bwrap));
+        // Real root on Linux should force bwrap so tools get raw-socket
+        // capabilities. Shell mode is irrelevant when root.
+        assert_eq!(
+            preferred_backend_for(true, ShellMode::Native),
+            Some(SandboxBackend::Bwrap)
+        );
+        assert_eq!(
+            preferred_backend_for(true, ShellMode::Proot),
+            Some(SandboxBackend::Bwrap)
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn root_does_not_pin_unavailable_bwrap_off_linux() {
+        // bwrap is Linux-only; pinning it elsewhere would only produce a
+        // spurious "preferred backend not available" warning. Leave it unset
+        // so detect_backend can choose WSL/Docker/etc.
+        assert_eq!(preferred_backend_for(true, ShellMode::Native), None);
+        assert_eq!(preferred_backend_for(true, ShellMode::Proot), None);
     }
 
     #[test]
-    fn non_root_leaves_backend_unset_for_auto_detect() {
-        // Non-root must NOT pin proot (regression guard for #238): returning None
-        // lets detect_backend prefer bwrap and fall back to proot only if needed.
-        assert_eq!(preferred_backend_for(false), None);
+    fn non_root_native_leaves_backend_unset_for_auto_detect() {
+        // Native (non-sandboxed) => no forced preference; detect_backend prefers
+        // bwrap and falls back to proot only if needed.
+        assert_eq!(preferred_backend_for(false, ShellMode::Native), None);
+    }
+
+    #[test]
+    fn non_root_proot_honors_user_choice() {
+        // H2: a non-root user who explicitly selected Proot keeps that
+        // preference. detect_backend still downgrades if proot is unavailable,
+        // and the PTY shell downgrades to bwrap on an EACCES spawn (see #238),
+        // so this is safe while still respecting the user's setting.
+        assert_eq!(
+            preferred_backend_for(false, ShellMode::Proot),
+            Some(SandboxBackend::Proot)
+        );
     }
 }
