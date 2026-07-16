@@ -237,34 +237,39 @@ impl SandboxManager {
         }
         tracing::debug!("[detect_backend] bwrap not available");
 
-        // Try Docker (works on any platform with Docker installed)
-        tracing::debug!("[detect_backend] Checking if Docker is available...");
-        if docker::DockerExecutor::is_available().await {
-            tracing::info!("[detect_backend] Detected Docker, using it as backend");
-            return Ok(SandboxBackend::Docker);
-        }
-        tracing::debug!("[detect_backend] Docker not available");
-
-        // Try proot if available locally
-        tracing::debug!("[detect_backend] Checking if proot is available...");
-        if proot::ProotExecutor::is_available(config).await {
-            tracing::info!("[detect_backend] Detected proot, using it as backend");
-            return Ok(SandboxBackend::Proot);
-        }
-        tracing::debug!("[detect_backend] proot not available locally");
-
-        // Download proot as final fallback (Linux only — proot is a Linux ELF binary)
+        // On Linux, prefer proot over Docker. proot uses ptrace (no per-command
+        // container spin-up), works on normal desktops that lack Docker, and fits
+        // the connector's many-small-commands pattern; selecting Docker here means
+        // a `docker run` per `which`/tool probe. Docker stays as the last-resort
+        // Linux fallback below. This block is Linux-only because proot is a Linux
+        // ELF binary — other platforms (macOS) fall through to Docker.
         #[cfg(target_os = "linux")]
         {
-            tracing::info!(
-                "[detect_backend] No backend found locally, downloading proot as fallback..."
-            );
+            tracing::debug!("[detect_backend] Checking if proot is available...");
+            if proot::ProotExecutor::is_available(config).await {
+                tracing::info!("[detect_backend] Detected proot, using it as backend");
+                return Ok(SandboxBackend::Proot);
+            }
+            tracing::debug!("[detect_backend] proot not available locally");
+
+            // Download proot as the final local option before falling to Docker.
+            tracing::info!("[detect_backend] proot not local, attempting to download proot...");
             if proot::ProotExecutor::download_proot(config).await.is_ok() {
                 tracing::info!("[detect_backend] proot downloaded successfully");
                 return Ok(SandboxBackend::Proot);
             }
             tracing::error!("[detect_backend] Failed to download proot");
         }
+
+        // Docker: last-resort backend on Linux, and the primary sandbox on macOS
+        // (where proot, a Linux ELF, cannot run). Works on any platform with a
+        // running Docker daemon.
+        tracing::debug!("[detect_backend] Checking if Docker is available...");
+        if docker::DockerExecutor::is_available().await {
+            tracing::info!("[detect_backend] Detected Docker, using it as backend");
+            return Ok(SandboxBackend::Docker);
+        }
+        tracing::debug!("[detect_backend] Docker not available");
 
         #[cfg(target_os = "macos")]
         tracing::error!(
