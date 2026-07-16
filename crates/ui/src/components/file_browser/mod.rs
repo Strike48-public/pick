@@ -329,3 +329,97 @@ pub fn FileBrowser(props: FileBrowserProps) -> Element {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! End-to-end guard for pick#35: a report the agent writes must be visible
+    //! to the operator's file browser.
+    //!
+    //! The orchestrator unit tests prove the *seed path* is deterministic and
+    //! flat, but they stop at the string. These tests close the remaining seam
+    //! by driving the real production chain — the `write_file` tool executor
+    //! that the LLM invokes, then the `list_directory` function the browser UI
+    //! calls — against a real filesystem, and asserting the report surfaces
+    //! where the operator looks.
+
+    use super::*;
+    use pentest_core::orchestrator::{report_relative_path, EngagementInfo};
+    use pentest_core::tools::{PentestTool, ToolContext};
+    use pentest_tools::WriteFileTool;
+    use serde_json::json;
+
+    /// A fixed engagement start so the derived report path is deterministic.
+    fn engagement() -> EngagementInfo {
+        EngagementInfo {
+            target: "10.0.0.0/24".to_string(),
+            started_at: "2026-04-17T12:00:00Z".parse().unwrap(),
+            completed_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn written_report_is_visible_to_the_file_browser() {
+        // Arrange: an instance workspace, exactly as create_workspace() lays it
+        // out, and the tool context the connector hands the write_file tool.
+        let ws = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::default().with_workspace(ws.path().to_path_buf());
+        let report_path = report_relative_path(&engagement());
+
+        // Act 1: the LLM's write_file call — the real tool executor, real fs.
+        let result = WriteFileTool
+            .execute(
+                json!({ "path": report_path, "content": "# Pentest Report\n\nFindings." }),
+                &ctx,
+            )
+            .await
+            .expect("write_file should succeed for the seeded report path");
+        assert!(result.success, "write_file reported failure: {result:?}");
+
+        // Act 2: the operator opens the file browser at the workspace root — the
+        // real list_directory the UI calls.
+        let root = list_directory(ws.path(), "").expect("root listing should succeed");
+
+        // Assert: the report is reachable. pick#35's failure was the report
+        // landing somewhere the browser never showed. The report lives under a
+        // single `reports/` dir (no per-instance nesting), visible from root.
+        let reports_dir = root
+            .iter()
+            .find(|e| e.name == "reports" && e.is_dir)
+            .expect("`reports/` must appear at the workspace root");
+
+        let inside =
+            list_directory(ws.path(), &reports_dir.path).expect("listing reports/ should succeed");
+        let report = inside
+            .iter()
+            .find(|e| e.name.starts_with("pentest-report-") && e.name.ends_with(".md"))
+            .expect("the generated report must be listed inside reports/");
+        assert!(!report.is_dir, "report should be a file, not a directory");
+
+        // And the browser can actually open it (read path agrees with write).
+        let content = read_file(ws.path(), &report.path).expect("browser should read the report");
+        assert!(content.content.contains("Pentest Report"));
+    }
+
+    #[tokio::test]
+    async fn report_is_not_buried_under_a_per_instance_subdir() {
+        // pick#35 defect #2: the old prompt produced reports/<instance_id>/...,
+        // two levels below where the browser opens. Guard that the current path
+        // keeps `reports/` one level deep with the file directly inside it.
+        let ws = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::default().with_workspace(ws.path().to_path_buf());
+        let report_path = report_relative_path(&engagement());
+
+        WriteFileTool
+            .execute(json!({ "path": report_path, "content": "x" }), &ctx)
+            .await
+            .expect("write_file should succeed");
+
+        let inside = list_directory(ws.path(), "reports").expect("reports/ should exist");
+        // Every entry directly under reports/ is the report file itself — no
+        // intermediate <instance_id> directory.
+        assert!(
+            inside.iter().all(|e| !e.is_dir),
+            "reports/ must contain the report directly, not a nested subdir: {inside:?}"
+        );
+    }
+}
