@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::provenance::{truncate_excerpt, ProbeCommand, Provenance};
 use pentest_core::tools::{
-    execute_timed_with_provenance, ParamType, PentestTool, Platform, ToolContext, ToolParam,
-    ToolResult, ToolSchema,
+    execute_timed_with_provenance, ParamType, PentestTool, Platform, ToolContext, ToolOutcome,
+    ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
@@ -61,15 +61,22 @@ impl PentestTool for ExecuteCommandTool {
     async fn execute(&self, params: Value, ctx: &ToolContext) -> Result<ToolResult> {
         let workspace_path = ctx.workspace_path.clone();
 
-        execute_timed_with_provenance(|| async move {
-            let platform = get_platform();
+        // Command execution unsupported here → the probe never ran. Return
+        // Skipped directly (precondition unmet), before timing, so we never
+        // have to string-match an error message to recover this case (#184).
+        if !get_platform().is_command_exec_supported() {
+            return Ok(ToolResult::skipped(
+                "Command execution not supported on this platform",
+            ));
+        }
 
-            // Check if command execution is supported
-            if !platform.is_command_exec_supported() {
-                return Err(pentest_core::error::Error::PlatformNotSupported(
-                    "Command execution not supported on this platform".into(),
-                ));
-            }
+        // Build the run future via the provenance-timed helper so timing and
+        // the error→Failed mapping stay consistent with every other tool. On
+        // success we then reclassify the outcome from the process exit status
+        // (see below) — a completed subprocess is not necessarily a completed
+        // probe (#184).
+        let run = execute_timed_with_provenance(|| async move {
+            let platform = get_platform();
 
             let command = params
                 .get("command")
@@ -127,7 +134,58 @@ impl PentestTool for ExecuteCommandTool {
 
             Ok((data, provenance))
         })
-        .await
+        .await?;
+
+        Ok(classify_command_outcome(run))
+    }
+}
+
+/// Reclassify a completed `execute_command` run's outcome from its process
+/// exit status (#184).
+///
+/// A subprocess that *ran* is not necessarily a *completed probe*. Applied only
+/// to a `Ran` result (an already-`Failed` result from the tool body — bad
+/// params, spawn failure — passes through unchanged; the unsupported-platform
+/// `Skipped` case is handled before this is reached). We downgrade to
+/// [`ToolOutcome::Failed`] — `with_outcome` also clears `success` — when:
+/// * the command timed out (never finished), or
+/// * it exited nonzero **and produced no stdout** (errored with nothing to show), or
+/// * the exit status is unreadable (fail closed — never assume success).
+///
+/// We deliberately do NOT fail a nonzero exit that still produced stdout: many
+/// legitimate tools use nonzero exit codes as signal (`grep` with no match,
+/// `diff`, `test`), and their stdout is real output the model may need. A zero
+/// exit with empty stdout stays [`ToolOutcome::Ran`] — a truthful empty result.
+///
+/// The captured stdout/stderr/exit_code stay in `data` in every case, for the
+/// model's diagnostic use.
+fn classify_command_outcome(result: ToolResult) -> ToolResult {
+    // Only a `Ran` result needs reclassification from exit status. Anything
+    // already Failed/Skipped (the tool body returned Err, or the platform was
+    // unsupported) is left as-is.
+    if result.outcome != ToolOutcome::Ran {
+        return result;
+    }
+
+    let timed_out = result.data.get("timed_out").and_then(Value::as_bool) == Some(true);
+    let exit_code = result.data.get("exit_code").and_then(Value::as_i64);
+    let stdout_empty = result
+        .data
+        .get("stdout")
+        .and_then(Value::as_str)
+        .map(str::is_empty)
+        .unwrap_or(true);
+
+    // Fail closed: a run whose exit status we cannot read is not a trustworthy
+    // completed probe. The tool body always writes `exit_code`, so `None` here
+    // means an unexpected data shape — treat it as Failed, never assume success.
+    let failed =
+        timed_out || exit_code.is_none() || (exit_code.is_some_and(|c| c != 0) && stdout_empty);
+
+    if failed {
+        result.with_outcome(ToolOutcome::Failed)
+    } else {
+        result
     }
 }
 
@@ -252,5 +310,95 @@ mod tests {
         assert!(eff.contains("<REDACTED>"));
         // The exact command must retain the secret for internal traceability.
         assert!(prov.probe_commands[0].command.contains("hunter2"));
+    }
+
+    // --- classify_command_outcome (pick#184 Lever 2) ----------------------
+    //
+    // A completed subprocess is not necessarily a completed probe. These pin
+    // the exit-status → ToolOutcome mapping directly on the pure classifier so
+    // they are deterministic (no live subprocess needed).
+
+    /// Build a success-path ToolResult carrying the given process status, as
+    /// the tool body produces before classification.
+    fn ran(exit_code: i64, stdout: &str, timed_out: bool) -> ToolResult {
+        ToolResult::success(json!({
+            "stdout": stdout,
+            "stderr": "",
+            "exit_code": exit_code,
+            "timed_out": timed_out,
+            "duration_ms": 1,
+        }))
+    }
+
+    #[test]
+    fn zero_exit_with_output_is_ran() {
+        let r = classify_command_outcome(ran(0, "hello\n", false));
+        assert_eq!(r.outcome, ToolOutcome::Ran);
+        assert!(r.success);
+    }
+
+    #[test]
+    fn zero_exit_empty_stdout_is_ran_truthful_empty() {
+        // A command that ran cleanly and simply produced nothing is a truthful
+        // empty result — must stay trustworthy, not be downgraded.
+        let r = classify_command_outcome(ran(0, "", false));
+        assert_eq!(r.outcome, ToolOutcome::Ran);
+        assert!(r.success);
+    }
+
+    #[test]
+    fn nonzero_exit_empty_stdout_is_failed() {
+        // Errored and produced nothing — the fabrication substrate. Fail closed.
+        let r = classify_command_outcome(ran(1, "", false));
+        assert_eq!(r.outcome, ToolOutcome::Failed);
+        assert!(!r.success);
+    }
+
+    #[test]
+    fn nonzero_exit_with_stdout_stays_ran() {
+        // Many legit tools exit nonzero yet produce real output (`grep` no
+        // match, `diff`, `test`). Their stdout is real data — do NOT discard.
+        let r = classify_command_outcome(ran(1, "line-of-real-output\n", false));
+        assert_eq!(r.outcome, ToolOutcome::Ran);
+        assert!(r.success);
+    }
+
+    #[test]
+    fn timed_out_is_failed_even_with_partial_stdout() {
+        // A timeout never finished, so even partial stdout is untrustworthy.
+        let r = classify_command_outcome(ran(0, "partial output", true));
+        assert_eq!(r.outcome, ToolOutcome::Failed);
+        assert!(!r.success);
+    }
+
+    #[test]
+    fn missing_exit_code_fails_closed() {
+        // The tool body always writes exit_code; a missing one means an
+        // unexpected data shape. Never assume success — fail closed (#184).
+        let r = classify_command_outcome(ToolResult::success(json!({
+            "stdout": "",
+            "stderr": "something broke",
+            "timed_out": false,
+            // exit_code deliberately absent
+        })));
+        assert_eq!(r.outcome, ToolOutcome::Failed);
+        assert!(!r.success);
+    }
+
+    #[test]
+    fn already_failed_result_passes_through_unchanged() {
+        // A tool body that returned Err (bad params, spawn failure) is already
+        // Failed; classification must not touch it.
+        let r = classify_command_outcome(ToolResult::error("bad params"));
+        assert_eq!(r.outcome, ToolOutcome::Failed);
+        assert!(!r.success);
+    }
+
+    #[test]
+    fn skipped_result_passes_through_unchanged() {
+        // The unsupported-platform Skipped case is produced upstream in
+        // execute(); if one reaches the classifier it must survive.
+        let r = classify_command_outcome(ToolResult::skipped("unsupported platform"));
+        assert_eq!(r.outcome, ToolOutcome::Skipped);
     }
 }

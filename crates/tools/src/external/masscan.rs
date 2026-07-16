@@ -146,10 +146,15 @@ impl PentestTool for MasscanTool {
                 .execute_command("masscan", &args_refs, timeout)
                 .await?;
 
-            if result.exit_code != 0 && result.stdout.is_empty() {
+            // Any nonzero exit means the scan did not complete cleanly. A
+            // crashed/partial port scan cannot be trusted to enumerate *all*
+            // open ports, so we fail closed (Err → outcome=Failed) rather than
+            // parse partial output as a full result (#184). A genuine
+            // zero-finding scan exits 0 and parses to an empty (truthful) list.
+            if result.exit_code != 0 {
                 return Err(pentest_core::error::Error::ToolExecution(format!(
-                    "masscan failed: {}",
-                    result.stderr
+                    "masscan failed (exit {}): {}",
+                    result.exit_code, result.stderr
                 )));
             }
 

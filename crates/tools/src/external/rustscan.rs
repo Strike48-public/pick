@@ -132,10 +132,16 @@ impl PentestTool for RustScanTool {
                 .execute_command("rustscan", &args_refs, Duration::from_secs(300))
                 .await?;
 
-            if result.exit_code != 0 && result.stdout.is_empty() {
+            // Any nonzero exit means the scan did not complete cleanly. A
+            // crashed/partial port scan cannot be trusted to enumerate *all*
+            // open ports, so we fail closed (Err → outcome=Failed) rather than
+            // parse whatever partial stdout exists as if it were a full result
+            // (#184). A genuine zero-finding scan exits 0 and parses to an
+            // empty (but truthful) port list below.
+            if result.exit_code != 0 {
                 return Err(pentest_core::error::Error::ToolExecution(format!(
-                    "rustscan failed: {}",
-                    result.stderr
+                    "rustscan failed (exit {}): {}",
+                    result.exit_code, result.stderr
                 )));
             }
 
