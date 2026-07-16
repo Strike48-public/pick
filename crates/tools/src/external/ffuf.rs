@@ -183,10 +183,15 @@ impl PentestTool for FfufTool {
                 .execute_command("ffuf", &args_refs, overall_timeout)
                 .await?;
 
-            if result.exit_code != 0 && result.stdout.is_empty() {
+            // Any nonzero exit means the fuzz run did not complete cleanly. A
+            // crashed/partial run cannot be trusted to have exhausted the
+            // wordlist, so we fail closed (Err → outcome=Failed) rather than
+            // parse partial output as a full result (#184). A genuine
+            // zero-finding run exits 0 and yields an empty (truthful) result set.
+            if result.exit_code != 0 {
                 return Err(pentest_core::error::Error::ToolExecution(format!(
-                    "ffuf failed: {}",
-                    result.stderr
+                    "ffuf failed (exit {}): {}",
+                    result.exit_code, result.stderr
                 )));
             }
 

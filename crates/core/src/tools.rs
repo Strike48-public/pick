@@ -459,6 +459,36 @@ impl ToolSchema {
     }
 }
 
+/// Whether a tool actually completed a probe, distinct from whether it
+/// "succeeded".
+///
+/// `success` is a legacy boolean that conflates two very different things: a
+/// tool that ran and legitimately found nothing (`success:true`, empty data)
+/// vs. one that failed to probe at all (which several wrappers *also* reported
+/// as `success:true`). That ambiguity is the fabrication substrate #184
+/// closes: the model cannot tell "ran, found nothing" from "never ran," so it
+/// fills the gap. `ToolOutcome` makes the distinction explicit and trustworthy.
+///
+/// Serialized `snake_case` and defaulted to [`ToolOutcome::Ran`] so payloads
+/// from older connectors (which omit the field) deserialize unchanged over the
+/// Matrix wire — no lockstep backend deploy required.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolOutcome {
+    /// The tool ran to completion; `data` is trustworthy. A zero-finding scan
+    /// that genuinely ran is still `Ran` (a truthful empty result).
+    #[default]
+    Ran,
+    /// The tool did not complete a real probe (nonzero exit, timeout,
+    /// unparseable output, crash). `data` is NOT trustworthy — the model and
+    /// the report gate must treat it as "no data," never as a finding.
+    Failed,
+    /// A precondition was not met (missing dependency, unsupported platform),
+    /// so the probe never started. Distinct from `Failed`: nothing went wrong,
+    /// the work simply did not run.
+    Skipped,
+}
+
 /// Result from a tool execution.
 ///
 /// `provenance` is `Option` because not every tool produces a finding —
@@ -466,6 +496,11 @@ impl ToolSchema {
 /// Tools that produce findings (scanners, probes, exploits) must attach a
 /// `Provenance` so the Report Agent can render a reproducible evidence
 /// block. See [`crate::provenance`] and GitHub issue #52.
+///
+/// `outcome` distinguishes "ran" from "failed"/"skipped" so a functional
+/// failure can never masquerade as a legitimate empty result (#184). It is
+/// additive and defaulted for wire compatibility; `success` is retained
+/// unchanged.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     pub success: bool,
@@ -474,6 +509,9 @@ pub struct ToolResult {
     pub duration_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Provenance>,
+    /// Whether the tool actually completed a probe. See [`ToolOutcome`].
+    #[serde(default)]
+    pub outcome: ToolOutcome,
 }
 
 impl ToolResult {
@@ -485,6 +523,7 @@ impl ToolResult {
             error: None,
             duration_ms: 0,
             provenance: None,
+            outcome: ToolOutcome::Ran,
         }
     }
 
@@ -496,10 +535,15 @@ impl ToolResult {
             error: None,
             duration_ms,
             provenance: None,
+            outcome: ToolOutcome::Ran,
         }
     }
 
-    /// Create an error result
+    /// Create an error result.
+    ///
+    /// An error means the tool did not complete a real probe, so the outcome
+    /// is [`ToolOutcome::Failed`] — the structured "this did not run" signal
+    /// the model and report gate rely on (#184).
     pub fn error(message: impl Into<String>) -> Self {
         Self {
             success: false,
@@ -507,6 +551,7 @@ impl ToolResult {
             error: Some(message.into()),
             duration_ms: 0,
             provenance: None,
+            outcome: ToolOutcome::Failed,
         }
     }
 
@@ -518,6 +563,21 @@ impl ToolResult {
             error: Some(message.into()),
             duration_ms,
             provenance: None,
+            outcome: ToolOutcome::Failed,
+        }
+    }
+
+    /// Create a skipped result: a precondition was not met (missing
+    /// dependency, unsupported platform) so the probe never started. Distinct
+    /// from an error — nothing went wrong, the work simply did not run (#184).
+    pub fn skipped(message: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            data: Value::Null,
+            error: Some(message.into()),
+            duration_ms: 0,
+            provenance: None,
+            outcome: ToolOutcome::Skipped,
         }
     }
 
@@ -525,6 +585,28 @@ impl ToolResult {
     /// this before returning.
     pub fn with_provenance(mut self, provenance: Provenance) -> Self {
         self.provenance = Some(provenance);
+        self
+    }
+
+    /// Override the outcome classification.
+    ///
+    /// Use when a tool ran the subprocess but the run was not a completed
+    /// probe — e.g. `execute_command` with a nonzero exit or a timeout — so it
+    /// can keep the captured stdout/stderr in `data` while still telling the
+    /// model and the report gate the probe did not complete (`Failed`). See
+    /// [`ToolOutcome`] and #184.
+    ///
+    /// Enforces the `success`/`outcome` invariant: a `Failed` or `Skipped`
+    /// probe is never a success. `success = true, outcome = Failed` is a
+    /// contradiction and exactly the ambiguity #184 exists to remove, so it is
+    /// unrepresentable through this builder. Setting `Ran` leaves `success`
+    /// untouched.
+    #[must_use = "with_outcome consumes self; assign the returned result or the outcome is lost"]
+    pub fn with_outcome(mut self, outcome: ToolOutcome) -> Self {
+        self.outcome = outcome;
+        if matches!(outcome, ToolOutcome::Failed | ToolOutcome::Skipped) {
+            self.success = false;
+        }
         self
     }
 }
@@ -868,6 +950,101 @@ fn levenshtein_distance(s1: &str, s2: &str) -> usize {
     }
 
     matrix[len1][len2]
+}
+
+#[cfg(test)]
+mod tool_outcome_tests {
+    //! pick#184 Lever 2: `ToolOutcome` must distinguish a completed probe from
+    //! a failed/skipped one, and the field must be additive + wire-compatible
+    //! so older connector payloads (which omit it) still deserialize.
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn success_constructors_are_ran() {
+        assert_eq!(ToolResult::success(json!({})).outcome, ToolOutcome::Ran);
+        assert_eq!(
+            ToolResult::success_with_duration(json!({}), 5).outcome,
+            ToolOutcome::Ran
+        );
+    }
+
+    #[test]
+    fn error_constructors_are_failed() {
+        // An error is the structured "did not complete a probe" signal (#184).
+        assert_eq!(ToolResult::error("boom").outcome, ToolOutcome::Failed);
+        assert_eq!(
+            ToolResult::error_with_duration("boom", 5).outcome,
+            ToolOutcome::Failed
+        );
+    }
+
+    #[test]
+    fn skipped_constructor_is_skipped_and_not_success() {
+        let r = ToolResult::skipped("dependency missing");
+        assert_eq!(r.outcome, ToolOutcome::Skipped);
+        assert!(!r.success);
+    }
+
+    #[test]
+    fn with_outcome_overrides() {
+        let r = ToolResult::success(json!({})).with_outcome(ToolOutcome::Failed);
+        assert_eq!(r.outcome, ToolOutcome::Failed);
+    }
+
+    #[test]
+    fn with_outcome_failed_or_skipped_forces_success_false() {
+        // `success=true, outcome=Failed` is the exact ambiguity #184 removes;
+        // the builder must make it unrepresentable.
+        let failed = ToolResult::success(json!({})).with_outcome(ToolOutcome::Failed);
+        assert!(!failed.success);
+        let skipped = ToolResult::success(json!({})).with_outcome(ToolOutcome::Skipped);
+        assert!(!skipped.success);
+        // Ran leaves success untouched.
+        let ran = ToolResult::success(json!({})).with_outcome(ToolOutcome::Ran);
+        assert!(ran.success);
+    }
+
+    #[test]
+    fn legacy_json_without_outcome_deserializes_as_ran() {
+        // A payload from an older connector omits `outcome` entirely. It must
+        // deserialize as `Ran` (the pre-#184 implicit contract), not error.
+        let legacy = json!({
+            "success": true,
+            "data": {"ports": []},
+            "error": null,
+            "duration_ms": 12
+        });
+        let r: ToolResult = serde_json::from_value(legacy).unwrap();
+        assert_eq!(r.outcome, ToolOutcome::Ran);
+        assert!(r.success);
+    }
+
+    #[test]
+    fn outcome_round_trips_snake_case() {
+        for (oc, wire) in [
+            (ToolOutcome::Ran, "\"ran\""),
+            (ToolOutcome::Failed, "\"failed\""),
+            (ToolOutcome::Skipped, "\"skipped\""),
+        ] {
+            assert_eq!(serde_json::to_string(&oc).unwrap(), wire);
+            let back: ToolOutcome = serde_json::from_str(wire).unwrap();
+            assert_eq!(back, oc);
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_timed_err_arm_yields_failed_outcome() {
+        // The Err branch of execute_timed is the shared path scanner wrappers
+        // now flow through on a nonzero exit; it must stamp Failed.
+        let r = execute_timed(|| async {
+            Err::<serde_json::Value, _>(crate::error::Error::ToolExecution("nonzero exit".into()))
+        })
+        .await
+        .unwrap();
+        assert_eq!(r.outcome, ToolOutcome::Failed);
+        assert!(!r.success);
+    }
 }
 
 #[cfg(test)]

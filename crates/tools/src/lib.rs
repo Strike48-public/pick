@@ -67,6 +67,12 @@ pub use external::{
     TheHarvesterTool, TsharkTool, UnicornscanTool, Wafw00fTool, WaybackurlsTool, WfuzzTool,
     WhatwebTool, WhoisTool, WpscanTool, XsstrikeTool, ZapTool,
 }; // External tools
+
+// Only re-exported when the opt-in dev/test feature is on (pick#184). The
+// module itself stays compiled so its own `#[cfg(test)]` unit test builds under
+// `cargo test`; the tool is just not surfaced to callers of the registry in
+// release builds.
+#[cfg(feature = "inject-test-evidence")]
 pub use inject_test_evidence::InjectTestEvidenceTool;
 pub use lateral_movement::LateralMovementTool;
 pub use list_files::ListFilesTool;
@@ -237,7 +243,11 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(WriteFileTool);
     registry.register(ListFilesTool);
 
-    // Testing tools
+    // Testing tools — `inject_test_evidence` pushes arbitrary fabricated
+    // findings into the evidence graph, so it is a grounding-guardrail bypass
+    // (pick#184). Gate it behind an opt-in feature so release builds never
+    // register or advertise it; dev/test builds enable it explicitly.
+    #[cfg(feature = "inject-test-evidence")]
     registry.register(InjectTestEvidenceTool);
 
     // Data transformation and analysis
@@ -310,5 +320,43 @@ mod webwright_tests {
         assert_eq!(json_schema["name"], "webwright");
         assert!(json_schema["parameters"]["properties"]["mode"].is_object());
         assert!(json_schema["parameters"]["properties"]["start_url"].is_object());
+    }
+}
+
+#[cfg(test)]
+mod inject_test_evidence_gating {
+    //! pick#184 Lever 1: `inject_test_evidence` injects arbitrary fabricated
+    //! findings into the evidence graph, so it must never ship in release
+    //! builds. It is gated behind the opt-in `inject-test-evidence` feature.
+    //! These two tests pin both sides of that gate; each runs only in the build
+    //! configuration where its assertion is true.
+    use super::*;
+
+    /// Default/release build (the configuration CI's `cargo test` uses): the
+    /// tool must be absent from the registry. This is the security-critical
+    /// assertion — if it fails, a fabrication path shipped.
+    #[cfg(not(feature = "inject-test-evidence"))]
+    #[test]
+    fn inject_test_evidence_absent_from_default_registry() {
+        let registry = create_tool_registry();
+        assert!(
+            registry.get("inject_test_evidence").is_none(),
+            "inject_test_evidence must NOT be registered without the \
+             `inject-test-evidence` feature — it is a grounding-guardrail \
+             bypass and must never ship in release builds (pick#184)"
+        );
+    }
+
+    /// With the opt-in feature enabled (dev/test), the tool is available.
+    /// Run via `cargo test -p pentest-tools --features inject-test-evidence`.
+    #[cfg(feature = "inject-test-evidence")]
+    #[test]
+    fn inject_test_evidence_present_when_feature_enabled() {
+        let registry = create_tool_registry();
+        assert!(
+            registry.get("inject_test_evidence").is_some(),
+            "inject_test_evidence should be registered when the \
+             `inject-test-evidence` feature is enabled"
+        );
     }
 }

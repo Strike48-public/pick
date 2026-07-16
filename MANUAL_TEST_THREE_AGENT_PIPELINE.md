@@ -12,11 +12,19 @@ git fetch fork feature/three-agent-pipeline
 git checkout feature/three-agent-pipeline
 
 # 2. Build
-cargo build
+#    The `inject_test_evidence` tool used below is a dev/test-only fabrication
+#    path (pick#184) and is NOT registered unless you opt in at build time.
+#    Enable the feature so the steps that call it work:
+cargo build --features pentest-tools/inject-test-evidence
 
 # 3. Verify environment
 cat .env | grep -E "STRIKE48_HOST|TENANT_ID"
 ```
+
+> **Note (pick#184):** `inject_test_evidence` is only registered when the
+> connector is built with the `inject-test-evidence` feature. A default/release
+> build will not expose it (the tool would reply "Unknown tool"). The real-tool
+> test suites below (nmap, service banner, whatweb) do not need the feature.
 
 ## Quick Smoke Test (5 minutes)
 
