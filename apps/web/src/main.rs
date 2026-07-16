@@ -12,7 +12,7 @@ const WEB_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
     platform_name: "Web (Liveview)",
     container_class: "mobile-app",
     shell_route_mode: ShellMode::Native,
-    default_proot: false,
+    default_proot: true,
     start_liveview_server: false,
     inject_css: false,
     extra_init_messages: &["Tools execute on the server machine."],

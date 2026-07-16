@@ -9,9 +9,10 @@ use crate::aggression::AggressionLevel;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ShellMode {
     /// Run commands directly on the host machine (native shell)
-    #[default]
     Native,
-    /// Run commands inside the proot BlackArch environment
+    /// Run commands inside the sandboxed BlackArch environment (bwrap/proot).
+    /// Default: the connector sandboxes tool execution out of the box.
+    #[default]
     Proot,
 }
 
