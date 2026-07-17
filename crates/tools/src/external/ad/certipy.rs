@@ -52,7 +52,10 @@ impl PentestTool for CertipyTool {
                     "Certipy - Active Directory Certificate Services (AD CS) attack tool",
                 )
                 .custom_installer("certipy")
-                .category(ToolCategory::ActiveDirectory),
+                .category(ToolCategory::ActiveDirectory)
+                // Specialized AD-engagement tooling: installed on explicit
+                // operator action, not swept in by "install all recommended".
+                .recommended(false),
             )
             .param(ToolParam::required(
                 "target",

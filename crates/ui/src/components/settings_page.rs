@@ -82,6 +82,12 @@ pub fn SettingsPage(
     let mut installing = use_signal(|| None::<String>);
     let mut install_message = use_signal(String::new);
     let mut install_error = use_signal(|| None::<String>);
+    // Seconds elapsed since the current install began, ticked once a second by a
+    // background task while `installing` is Some. Drives the elapsed-vs-estimate
+    // progress bar so the operator can see how long an install is taking.
+    let mut install_elapsed = use_signal(|| 0u32);
+    // Expected duration (seconds) for the current install; 0 hides the estimate.
+    let mut install_estimate = use_signal(|| 0u32);
 
     // Load seed status on mount
     use_effect(move || {
@@ -99,6 +105,28 @@ pub fn SettingsPage(
             let items = pentest_tools::catalog::build_catalog_items().await;
             catalog_items.set(Some(items));
             catalog_loading.set(false);
+        });
+    });
+
+    // Tick the install elapsed clock once a second while an install is running.
+    // Reads `installing` reactively: the effect re-runs whenever an install
+    // starts or stops. The spawned loop exits as soon as `installing` clears (or
+    // changes), so at most one ticker is active at a time.
+    use_effect(move || {
+        let active = installing().is_some();
+        if !active {
+            return;
+        }
+        let started_for = installing();
+        spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                // Stop if the install finished or a different one started.
+                if installing() != started_for {
+                    break;
+                }
+                install_elapsed.set(install_elapsed() + 1);
+            }
         });
     });
 
@@ -273,10 +301,23 @@ pub fn SettingsPage(
 
                     // Install all recommended (bulk) action
                     if installing() == Some("__all__".to_string()) {
-                        div { class: "sidebar-download-status",
-                            span { "Installing recommended tools... {install_message}" }
-                            div { class: "download-progress",
-                                div { class: "download-progress-fill indeterminate" }
+                        {
+                            let (fraction, label) = install_progress(install_elapsed(), install_estimate());
+                            rsx! {
+                                div { class: "sidebar-download-status",
+                                    span { "Installing recommended tools... {install_message}" }
+                                    div { class: "download-progress",
+                                        if install_estimate() > 0 {
+                                            div {
+                                                class: "download-progress-fill",
+                                                style: "width: {fraction * 100.0}%",
+                                            }
+                                        } else {
+                                            div { class: "download-progress-fill indeterminate" }
+                                        }
+                                    }
+                                    div { class: "text-dim-xs", "{label}" }
+                                }
                             }
                         }
                     } else {
@@ -284,8 +325,25 @@ pub fn SettingsPage(
                             class: "sidebar-download-btn",
                             disabled: installing().is_some(),
                             onclick: move |_| {
+                                // Estimate the bulk install as the sum of the
+                                // pending recommended, auto-installable entries.
+                                let estimate = catalog_items()
+                                    .map(|items| {
+                                        items
+                                            .iter()
+                                            .filter(|i| {
+                                                i.recommended
+                                                    && i.auto_installable
+                                                    && i.state != "installed"
+                                            })
+                                            .map(|i| i.estimated_secs)
+                                            .sum::<u32>()
+                                    })
+                                    .unwrap_or(0);
                                 spawn(async move {
                                     use tokio::sync::mpsc;
+                                    install_elapsed.set(0);
+                                    install_estimate.set(estimate);
                                     installing.set(Some("__all__".to_string()));
                                     install_error.set(None);
                                     install_message.set(String::new());
@@ -350,12 +408,25 @@ pub fn SettingsPage(
                                             // No action; chip shown above.
                                         } else if item.auto_installable {
                                             if installing() == Some(item.binary_name.clone()) {
-                                                div { style: "flex: 1; max-width: 240px;",
-                                                    div { class: "text-dim-xs",
-                                                        "Installing... {install_message}"
-                                                    }
-                                                    div { class: "download-progress",
-                                                        div { class: "download-progress-fill indeterminate" }
+                                                {
+                                                    let (fraction, label) = install_progress(install_elapsed(), install_estimate());
+                                                    rsx! {
+                                                        div { style: "flex: 1; max-width: 240px;",
+                                                            div { class: "text-dim-xs",
+                                                                "Installing... {install_message}"
+                                                            }
+                                                            div { class: "download-progress",
+                                                                if install_estimate() > 0 {
+                                                                    div {
+                                                                        class: "download-progress-fill",
+                                                                        style: "width: {fraction * 100.0}%",
+                                                                    }
+                                                                } else {
+                                                                    div { class: "download-progress-fill indeterminate" }
+                                                                }
+                                                            }
+                                                            div { class: "text-dim-xs", "{label}" }
+                                                        }
                                                     }
                                                 }
                                             } else {
@@ -364,10 +435,13 @@ pub fn SettingsPage(
                                                     disabled: installing().is_some(),
                                                     onclick: {
                                                         let bin = item.binary_name.clone();
+                                                        let estimate = item.estimated_secs;
                                                         move |_| {
                                                             let bin = bin.clone();
                                                             spawn(async move {
                                                                 use tokio::sync::mpsc;
+                                                                install_elapsed.set(0);
+                                                                install_estimate.set(estimate);
                                                                 installing.set(Some(bin.clone()));
                                                                 install_error.set(None);
                                                                 install_message.set(String::new());
@@ -1368,6 +1442,39 @@ pub fn SettingsPage(
     }
 }
 
+/// Turn elapsed and estimated install seconds into a progress fraction
+/// (`0.0..=0.95`) and a human label like `"0:42 elapsed · ~2:00 expected"`.
+///
+/// The fraction is capped below `1.0` while an install is running so the bar
+/// never claims completion before the install actually finishes; if the install
+/// overruns its estimate the bar holds near-full rather than resetting or
+/// looking stuck. When no estimate is available the fraction is `0.0` (callers
+/// render an indeterminate bar) and the label shows elapsed time only.
+fn install_progress(elapsed_secs: u32, estimate_secs: u32) -> (f64, String) {
+    let elapsed_label = format_duration(elapsed_secs);
+    if estimate_secs == 0 {
+        return (0.0, format!("{elapsed_label} elapsed"));
+    }
+    let fraction = (elapsed_secs as f64 / estimate_secs as f64).min(0.95);
+    let label = format!(
+        "{elapsed_label} elapsed \u{00b7} ~{} expected",
+        format_duration(estimate_secs)
+    );
+    (fraction, label)
+}
+
+/// Format a whole-second duration as `M:SS` (or `H:MM:SS` once past an hour).
+fn format_duration(secs: u32) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
 /// Helper function to count how many resources in a tier are already seeded
 fn count_seeded_in_tier(status: &[(String, bool)], tier_resources: &[&str]) -> String {
     let seeded = tier_resources
@@ -1422,5 +1529,43 @@ fn humanize_category(category: &str) -> String {
             })
             .collect::<Vec<_>>()
             .join(" "),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_duration_renders_minutes_and_hours() {
+        assert_eq!(format_duration(0), "0:00");
+        assert_eq!(format_duration(9), "0:09");
+        assert_eq!(format_duration(75), "1:15");
+        assert_eq!(format_duration(600), "10:00");
+        assert_eq!(format_duration(3661), "1:01:01");
+    }
+
+    #[test]
+    fn install_progress_with_no_estimate_is_indeterminate() {
+        let (fraction, label) = install_progress(42, 0);
+        assert_eq!(fraction, 0.0, "no estimate => indeterminate (0.0)");
+        assert_eq!(label, "0:42 elapsed");
+    }
+
+    #[test]
+    fn install_progress_fills_toward_estimate() {
+        let (fraction, label) = install_progress(30, 120);
+        assert!((fraction - 0.25).abs() < 1e-9, "30/120 = 0.25");
+        assert_eq!(label, "0:30 elapsed \u{00b7} ~2:00 expected");
+    }
+
+    #[test]
+    fn install_progress_caps_below_full_when_overrunning() {
+        // Elapsed past the estimate must not claim 100% (or overflow past it).
+        let (fraction, _) = install_progress(600, 120);
+        assert!(
+            (fraction - 0.95).abs() < 1e-9,
+            "overrun must cap at 0.95, got {fraction}"
+        );
     }
 }

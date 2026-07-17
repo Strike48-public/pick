@@ -66,7 +66,48 @@ pub struct CatalogEntry {
     pub state: InstallState,
 }
 
+/// Rough expected install duration, in seconds, for a dependency. Used only to
+/// drive the UI's elapsed-vs-estimate progress bar — it is a soft hint, never a
+/// guarantee. The command layer runs installs to completion without streaming
+/// byte-level progress, so a true percentage is not available; a labeled
+/// estimate is the honest signal we can give.
+///
+/// Values are deliberately generous (a bar that fills slightly slow reads
+/// better than one that pins at 100% and keeps spinning). The default covers a
+/// single `pacman`/`apt` package fetch on a warm mirror; heavyweight custom
+/// installers override by `id`.
+pub fn estimated_install_secs(method: &InstallMethod, binary_name: &str) -> u32 {
+    // Sensible per-mechanism defaults.
+    let base = match method {
+        // Manual installs are operator-driven; no automated timer applies.
+        InstallMethod::Manual { .. } => 0,
+        // A single package plus the -Sy DB refresh on the sandbox rootfs.
+        InstallMethod::Pacman => 90,
+        InstallMethod::AptHost => 60,
+        // Bespoke installers vary widely; refined by binary below.
+        InstallMethod::Custom { .. } => 120,
+    };
+
+    // Per-tool overrides for the installers whose real-world duration is far
+    // from the mechanism default. Keyed by the catalog binary name.
+    match binary_name {
+        // Metasploit pulls a very large package set + Ruby gems.
+        "msfconsole" => 360,
+        // ZAP downloads a sizable Java app bundle.
+        "zaproxy" | "zap" => 150,
+        // webwright installs a Python env plus a Playwright Chromium download.
+        "webwright" => 180,
+        _ => base,
+    }
+}
+
 impl CatalogEntry {
+    /// Rough expected install duration in seconds. See
+    /// [`estimated_install_secs`]. `0` means no automated install (manual).
+    pub fn estimated_install_secs(&self) -> u32 {
+        estimated_install_secs(&self.install_method, &self.binary_name)
+    }
+
     /// Whether this entry can be installed automatically in the current mode.
     pub fn is_auto_installable(&self) -> bool {
         match &self.install_method {
@@ -357,6 +398,10 @@ pub struct CatalogItem {
     pub manual_instructions: Option<String>,
     /// Tools that declared this dependency.
     pub used_by: Vec<String>,
+    /// Rough expected install duration in seconds, for the UI's
+    /// elapsed-vs-estimate progress bar. `0` for manual-only entries. Soft hint.
+    #[serde(default)]
+    pub estimated_secs: u32,
 }
 
 impl From<&CatalogEntry> for CatalogItem {
@@ -381,6 +426,7 @@ impl From<&CatalogEntry> for CatalogItem {
             auto_installable: e.is_auto_installable(),
             manual_instructions: e.manual_instructions(),
             used_by: e.used_by.clone(),
+            estimated_secs: e.estimated_install_secs(),
         }
     }
 }
@@ -633,6 +679,7 @@ mod tests {
             auto_installable: true,
             manual_instructions: None,
             used_by: vec!["zap".into()],
+            estimated_secs: 150,
         };
         let json = serde_json::to_string(&item).unwrap();
         let back: CatalogItem = serde_json::from_str(&json).unwrap();
@@ -685,6 +732,75 @@ mod tests {
         deduped.dedup();
         assert_eq!(cats.len(), deduped.len(), "categories must be distinct");
         assert!(cats.iter().any(|c| c == "active_directory"));
+    }
+
+    #[test]
+    fn estimated_secs_defaults_by_method_and_overrides_by_binary() {
+        // Mechanism defaults.
+        assert_eq!(
+            estimated_install_secs(&InstallMethod::Pacman, "nmap"),
+            90,
+            "pacman default"
+        );
+        assert_eq!(
+            estimated_install_secs(&InstallMethod::AptHost, "some-apt-tool"),
+            60,
+            "apt default"
+        );
+        assert_eq!(
+            estimated_install_secs(
+                &InstallMethod::Custom {
+                    id: "certipy".into()
+                },
+                "certipy"
+            ),
+            120,
+            "custom default"
+        );
+        // Manual has no automated timer.
+        assert_eq!(
+            estimated_install_secs(
+                &InstallMethod::Manual {
+                    url: None,
+                    instructions: "x".into()
+                },
+                "burpsuite"
+            ),
+            0,
+            "manual = 0"
+        );
+        // Heavyweight per-binary overrides beat the mechanism default.
+        assert_eq!(
+            estimated_install_secs(
+                &InstallMethod::Custom {
+                    id: "metasploit".into()
+                },
+                "msfconsole"
+            ),
+            360,
+            "metasploit override"
+        );
+        assert!(
+            estimated_install_secs(&InstallMethod::Custom { id: "zap".into() }, "zaproxy")
+                > estimated_install_secs(&InstallMethod::Pacman, "nmap"),
+            "zap should estimate longer than a plain pacman package"
+        );
+    }
+
+    #[tokio::test]
+    async fn ad_suite_is_not_in_recommended_default_set() {
+        // Specialized AD-engagement tooling must not be swept in by the bulk
+        // "install all recommended" action (the operator installs it on demand).
+        let catalog = build_catalog().await;
+        for bin in ["bloodhound-python", "certipy", "kerbrute", "nxc"] {
+            let entry = catalog.iter().find(|e| e.binary_name == bin);
+            if let Some(entry) = entry {
+                assert!(
+                    !entry.recommended,
+                    "{bin} must be opt-in, not part of the recommended default set"
+                );
+            }
+        }
     }
 
     #[tokio::test]

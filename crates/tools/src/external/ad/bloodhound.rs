@@ -63,7 +63,10 @@ impl PentestTool for BloodHoundTool {
                     "BloodHound AD data collector (bloodhound-python ingestor)",
                 )
                 .custom_installer("bloodhound")
-                .category(ToolCategory::ActiveDirectory),
+                .category(ToolCategory::ActiveDirectory)
+                // Specialized AD-engagement tooling: installed on explicit
+                // operator action, not swept in by "install all recommended".
+                .recommended(false),
             )
             .param(ToolParam::required(
                 "domain",
