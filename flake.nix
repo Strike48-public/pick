@@ -3,13 +3,17 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Pinned solely for `dioxus-cli` 0.7.9 (our main nixpkgs pin only has 0.7.6,
+    # which mismatches the dioxus 0.7.9 crates and prints a version-skew warning).
+    # A cached binary — avoids building dx from source. Bump this rev to move dx.
+    nixpkgs-dx.url = "github:NixOS/nixpkgs/753cc8a3a87467296ddd1fa93f0cc3e81120ee46";
     fenix = {
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { nixpkgs, fenix, ... }:
+  outputs = { nixpkgs, nixpkgs-dx, fenix, ... }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs {
@@ -20,6 +24,10 @@
           android_sdk.accept_license = true;
         };
       };
+
+      # dioxus-cli 0.7.9 from the pinned nixpkgs-dx input (matches the dioxus
+      # 0.7.9 crates; the main pin only ships 0.7.6).
+      dxCli = (import nixpkgs-dx { inherit system; }).dioxus-cli;
 
       # Rust toolchain with Android cross-compile targets.
       # nixpkgs rustc is 1.91 and cannot add targets; CLAUDE.md requires 1.92+,
@@ -88,6 +96,7 @@
         system = darwinSystem;
         config.allowUnfree = true;
       };
+      dxCliDarwin = (import nixpkgs-dx { system = darwinSystem; }).dioxus-cli;
       fxDarwin = fenix.packages.${darwinSystem};
       darwinRust = fxDarwin.combine [
         fxDarwin.stable.rustc
@@ -104,7 +113,7 @@
       devShells.${system}.default = pkgs.mkShell {
         packages = [
           rustToolchain
-          pkgs.dioxus-cli   # `dx` 0.7.x, matches dioxus 0.7 in Cargo.toml
+          dxCli             # `dx` 0.7.9, matches dioxus 0.7.9 in Cargo.lock
           androidSdk
           pkgs.jdk17        # Gradle / Android Gradle Plugin need a JDK
         ] ++ (with pkgs; [
@@ -156,7 +165,7 @@
       devShells.${darwinSystem}.default = darwinPkgs.mkShell {
         packages = [
           darwinRust
-          darwinPkgs.dioxus-cli   # `dx` 0.7.x, matches dioxus 0.7 in Cargo.toml
+          dxCliDarwin   # `dx` 0.7.9, matches dioxus 0.7.9 in Cargo.lock
           darwinPkgs.just
         ];
 

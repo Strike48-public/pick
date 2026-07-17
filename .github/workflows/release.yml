@@ -222,62 +222,40 @@ jobs:
   # ===========================================
   build-android:
     name: Android
-    if: false  # Disabled: Android build has pre-existing compile issues
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,x86_64-linux-android
-      - uses: Swatinem/rust-cache@v2
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
+      # Build through the nix flake so CI uses the exact same toolchain, SDK/NDK,
+      # dx CLI, build-tools and aapt2 as local `just build-android` — no drift.
+      # (No nix cache action here: prebuilt paths come from cache.nixos.org. Add
+      # a FlakeHub/cachix cache later if release-build time becomes a problem.)
+      - uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android NDK
-        run: sdkmanager "ndk;26.1.10909125"
-
-      - name: Install protoc
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-
-      - name: Install Dioxus CLI
-        run: curl -sSLf https://dioxus.dev/install.sh | bash
-
-      - name: Build APK
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.1.10909125
-        run: |
-          export PATH="$HOME/.dx/bin:$PATH"
-          unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH
-          dx build --platform android --package pentest-mobile --release
+      - name: Build APK (release, arm64)
+        run: nix develop --command just build-android-release
 
       - name: Package
         run: |
           mkdir -p dist
           cp target/dx/pentest-mobile/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk \
-             dist/pentest-connector-android.apk 2>/dev/null || \
-          cp target/dx/pentest-mobile/release/android/app/app/build/outputs/apk/debug/app-debug.apk \
-             dist/pentest-connector-android.apk
+             dist/pentest-connector-android-arm64.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: dist/pentest-connector-android.apk
+          path: dist/pentest-connector-android-arm64.apk
 
   # ===========================================
   # iOS Build (requires macOS + signing)
   # ===========================================
   build-ios:
     name: iOS
-    if: false  # Disabled: iOS build requires Apple signing setup
+    # Disabled: blocked on Apple Developer signing (account suspended, see the
+    # macos_signing note above). The build environment now exists — the flake's
+    # aarch64-darwin devShell + `just build-ios` — so re-enable this (as a
+    # simulator/unsigned build first) once signing is available.
+    if: false
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
