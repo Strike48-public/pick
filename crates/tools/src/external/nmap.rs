@@ -496,14 +496,15 @@ async fn validate_nse_scripts<P: CommandExec>(
 /// target can be recovered, the original params are returned so the normal
 /// "target parameter is required" error still fires.
 fn normalize_legacy_nmap_params(params: Value) -> Value {
-    // A `flags` string (e.g. {"flags": "-sn -T4 ...", "target": "..."}) is a
-    // shape the LLM emits by analogy to a raw CLI, but there is no `flags`
-    // schema param. Fold its recognized flags into structured params FIRST —
-    // this must run even when `target` is already present (otherwise the
-    // target-present short-circuit below would silently drop the flags, which
-    // is exactly the bug where -sn/-T4 never took effect). Same allowlist +
-    // drop-unknown safety as the `args`/`command` path.
-    let params = fold_flags_string(params);
+    // A `flags` value (e.g. {"flags": "-sn -T4 ...", "target": "..."} or the
+    // array shape {"flags": ["-sn", "-T4"], "target": "..."}) is a shape the LLM
+    // emits by analogy to a raw CLI, but there is no `flags` schema param. Fold
+    // its recognized flags into structured params FIRST — this must run even
+    // when `target` is already present (otherwise the target-present
+    // short-circuit below would silently drop the flags, which is exactly the
+    // bug where -sn/-T4 never took effect). Same allowlist + drop-unknown safety
+    // as the `args`/`command` path.
+    let params = fold_flags(params);
 
     // Already in the structured shape — nothing more to do.
     if params
@@ -517,19 +518,7 @@ fn normalize_legacy_nmap_params(params: Value) -> Value {
     // Collect the flag/argument tokens from either `args` (array or string) or
     // a `command` string (with a leading "nmap" stripped).
     let tokens: Vec<String> = match params.get("args") {
-        Some(Value::Array(items)) => items
-            .iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .collect(),
-        Some(Value::String(s)) => {
-            // The args string may itself be a JSON-encoded array, e.g.
-            // "[\"-sn\", \"10.0.8.0/22\"]" — parse that first, else split on
-            // whitespace.
-            match serde_json::from_str::<Vec<String>>(s) {
-                Ok(parsed) => parsed,
-                Err(_) => s.split_whitespace().map(|t| t.to_string()).collect(),
-            }
-        }
+        Some(v @ (Value::Array(_) | Value::String(_))) => tokenize_flag_value(v),
         _ => match params.get("command").and_then(|v| v.as_str()) {
             Some(cmd) => cmd
                 .split_whitespace()
@@ -547,12 +536,16 @@ fn normalize_legacy_nmap_params(params: Value) -> Value {
     // Start from any structured params the caller DID provide so we don't clobber them.
     let mut out = params.as_object().cloned().unwrap_or_default();
 
-    // Map recognized flags onto `out`, recover ports, and return any target the
-    // tokens contained (shared with the `flags`-string path).
-    let target = apply_flag_tokens(&mut out, &tokens);
+    // Map recognized flags to a fresh `derived` map and recover any target the
+    // tokens contained (shared with the `flags` path). Merge derived values
+    // ONLY into gaps — an explicit structured param the caller set always wins.
+    let (derived, target) = apply_flag_tokens(&tokens);
+    merge_fill(&mut out, derived);
 
     match target {
         Some(t) => {
+            // No valid `target` reached here (the target-present short-circuit
+            // above returned already), so the recovered token is the target.
             out.insert("target".into(), json!(t));
             Value::Object(out)
         }
@@ -562,38 +555,46 @@ fn normalize_legacy_nmap_params(params: Value) -> Value {
     }
 }
 
-/// Fold a `flags` STRING param into structured scan params.
+/// Fold a `flags` param into structured scan params.
 ///
 /// Callers (the LLM generalizing from a raw CLI) sometimes pass
-/// `{"flags": "-sn -T4 ...", "target": "..."}`. There is no `flags` schema
-/// param, so without this the flags are silently ignored (and previously, when
-/// `target` was present, dropped entirely by the early return). This tokenizes
-/// `flags` (whitespace-split), maps the recognized allowlist onto structured
-/// params via the shared [`apply_flag_tokens`], recovers a target from the
-/// flags string if the caller didn't provide one, and removes the raw `flags`
-/// key so it is never passed through or shelled out. Unrecognized flags are
-/// dropped, exactly like the `args`/`command` path.
+/// `{"flags": "-sn -T4 ...", "target": "..."}` or the array form
+/// `{"flags": ["-sn", "-T4"], "target": "..."}` — the same string-or-array shape
+/// the sibling `args` path already tolerates. There is no `flags` schema param,
+/// so without this the flags are silently ignored (and previously, when
+/// `target` was present, dropped entirely by the early return — the exact bug
+/// this PR kills, which an array-shaped `flags` would otherwise reintroduce).
 ///
-/// Non-string or absent `flags` is a no-op.
-fn fold_flags_string(params: Value) -> Value {
-    let Some(flags) = params.get("flags").and_then(|v| v.as_str()) else {
+/// This tokenizes `flags` via the shared [`tokenize_flag_value`], maps the
+/// recognized allowlist onto structured params via [`apply_flag_tokens`],
+/// recovers a target from the flags tokens if the caller didn't provide one,
+/// and ALWAYS removes the raw `flags` key (for any shape — string, array, or an
+/// unexpected object) so it is never passed through or shelled out. Derived
+/// values fill only gaps: an explicit structured param the caller set wins over
+/// a flag (matching the tool description, which makes the typed params
+/// authoritative). Unrecognized flags are dropped, exactly like the
+/// `args`/`command` path.
+///
+/// Absent `flags` is a no-op.
+fn fold_flags(params: Value) -> Value {
+    if params.get("flags").is_none() {
         return params;
-    };
-
-    let tokens: Vec<String> = flags.split_whitespace().map(|t| t.to_string()).collect();
-    if tokens.is_empty() {
-        // Still strip the (empty/whitespace) flags key.
-        let mut out = params.as_object().cloned().unwrap_or_default();
-        out.remove("flags");
-        return Value::Object(out);
     }
 
     let mut out = params.as_object().cloned().unwrap_or_default();
-    out.remove("flags");
+    // Strip the raw `flags` key regardless of its shape — a `flags` value that
+    // is neither a string nor an array (e.g. an object) must NOT ride through
+    // to `execute()`, which would ignore it and silently scan with defaults.
+    let flags = out.remove("flags").unwrap_or(Value::Null);
 
-    let recovered = apply_flag_tokens(&mut out, &tokens);
+    let tokens = tokenize_flag_value(&flags);
+    if tokens.is_empty() {
+        return Value::Object(out);
+    }
 
-    // Only adopt a target from the flags string if the caller didn't set one.
+    let (derived, recovered) = apply_flag_tokens(&tokens);
+
+    // Only adopt a target from the flags tokens if the caller didn't set one.
     let has_target = out
         .get("target")
         .and_then(|v| v.as_str())
@@ -604,66 +605,109 @@ fn fold_flags_string(params: Value) -> Value {
         }
     }
 
+    // Explicit structured params win; flags only fill gaps.
+    merge_fill(&mut out, derived);
+
     Value::Object(out)
+}
+
+/// Tokenize a legacy `flags`/`args` value that may be a JSON array of strings or
+/// a single string (whitespace-split, or a JSON-encoded array string).
+///
+/// Mirrors the tolerance the `args` path always had, so `flags` accepts the
+/// same string-or-array shapes the LLM emits interchangeably. Any other JSON
+/// shape (number, bool, object, null) yields no tokens.
+fn tokenize_flag_value(value: &Value) -> Vec<String> {
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect(),
+        Value::String(s) => {
+            // The string may itself be a JSON-encoded array, e.g.
+            // "[\"-sn\", \"10.0.8.0/22\"]" — parse that first, else split on
+            // whitespace.
+            match serde_json::from_str::<Vec<String>>(s) {
+                Ok(parsed) => parsed,
+                Err(_) => s.split_whitespace().map(|t| t.to_string()).collect(),
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Insert every entry of `derived` into `out` ONLY where `out` has no value for
+/// that key. An explicit param the caller already set is never overwritten.
+fn merge_fill(out: &mut serde_json::Map<String, Value>, derived: serde_json::Map<String, Value>) {
+    for (k, v) in derived {
+        out.entry(k).or_insert(v);
+    }
 }
 
 /// Map a small allowlist of nmap flag tokens onto structured params in `out`,
 /// returning the first token that validates as a scan target (if any).
 ///
-/// Shared by both legacy shapes (`args`/`command`) and the `flags` string.
+/// Shared by both legacy shapes (`args`/`command`) and the `flags` value.
 /// Recognized: `-sn`/`-sS`/`-sT`/`-sU` (scan_type), `-Pn` (no_ping), `-sV`
 /// (service_detection), `-O` (os_detection), `-A` (aggressive), `-T<n>`
 /// (timing), `-p <spec>` / `-p<spec>` (ports). Every other flag is dropped and
 /// never shelled out. A bare integer is never treated as a target (it's almost
 /// always a dropped flag's value, e.g. `--min-rate 1000`).
-fn apply_flag_tokens(
-    out: &mut serde_json::Map<String, Value>,
-    tokens: &[String],
-) -> Option<String> {
+///
+/// Returns a fresh map of the derived structured params (so callers can merge
+/// them without clobbering explicit caller values) plus the first token that
+/// validates as a scan target (if any). Any token that is dropped is recorded
+/// and emitted at `debug` level so a "why did my scan run with defaults"
+/// investigation can see what the normalizer discarded.
+fn apply_flag_tokens(tokens: &[String]) -> (serde_json::Map<String, Value>, Option<String>) {
+    let mut derived = serde_json::Map::new();
+    let mut dropped: Vec<&str> = Vec::new();
     let mut target: Option<String> = None;
     let mut i = 0;
     while i < tokens.len() {
         let tok = tokens[i].as_str();
         match tok {
             "-sn" => {
-                out.insert("scan_type".into(), json!("ping"));
+                derived.insert("scan_type".into(), json!("ping"));
             }
             "-sS" => {
-                out.insert("scan_type".into(), json!("syn"));
+                derived.insert("scan_type".into(), json!("syn"));
             }
             "-sT" => {
-                out.insert("scan_type".into(), json!("connect"));
+                derived.insert("scan_type".into(), json!("connect"));
             }
             "-sU" => {
-                out.insert("scan_type".into(), json!("udp"));
+                derived.insert("scan_type".into(), json!("udp"));
             }
             "-Pn" => {
-                out.insert("no_ping".into(), json!(true));
+                derived.insert("no_ping".into(), json!(true));
             }
             "-sV" => {
-                out.insert("service_detection".into(), json!(true));
+                derived.insert("service_detection".into(), json!(true));
             }
             "-O" => {
-                out.insert("os_detection".into(), json!(true));
+                derived.insert("os_detection".into(), json!(true));
             }
             "-A" => {
-                out.insert("aggressive".into(), json!(true));
+                derived.insert("aggressive".into(), json!(true));
             }
             "-p" => {
                 // Next token is the port spec.
                 if i + 1 < tokens.len() {
-                    out.insert("ports".into(), json!(tokens[i + 1]));
+                    derived.insert("ports".into(), json!(tokens[i + 1]));
                     i += 1;
                 }
             }
             _ if tok.starts_with("-T") && tok.len() == 3 => {
                 if let Some(d) = tok.chars().nth(2).and_then(|c| c.to_digit(10)) {
-                    out.insert("timing".into(), json!(d));
+                    derived.insert("timing".into(), json!(d));
+                } else {
+                    dropped.push(tok);
                 }
             }
             _ if tok.starts_with("-p") && tok.len() > 2 => {
                 // -p80, -p1-1000 (port spec attached to the flag)
-                out.insert("ports".into(), json!(tok[2..].to_string()));
+                derived.insert("ports".into(), json!(tok[2..].to_string()));
             }
             _ if tok.starts_with('-') => {
                 // Unrecognized flag (e.g. --min-rate, -PE, -PP, -PM): drop it.
@@ -671,6 +715,7 @@ fn apply_flag_tokens(
                 // falls through as a non-flag token below; the target heuristic
                 // only accepts a value that validates as a target, so a stray
                 // numeric like "1000" won't be mistaken for the target.
+                dropped.push(tok);
             }
             _ => {
                 // Non-flag token: candidate target. Take the first one that
@@ -684,12 +729,26 @@ fn apply_flag_tokens(
                 let is_bare_integer = !tok.is_empty() && tok.bytes().all(|b| b.is_ascii_digit());
                 if target.is_none() && !is_bare_integer && validate_target(tok).is_ok() {
                     target = Some(tok.to_string());
+                } else {
+                    // Not adopted as the target (already have one, a bare
+                    // integer, or fails validation) and not a recognized flag —
+                    // it is discarded, so record it for the investigator.
+                    dropped.push(tok);
                 }
             }
         }
         i += 1;
     }
-    target
+
+    if !dropped.is_empty() {
+        tracing::debug!(
+            dropped_tokens = ?dropped,
+            "nmap legacy-arg normalizer dropped unrecognized tokens; \
+             the scan runs only with recognized/structured params"
+        );
+    }
+
+    (derived, target)
 }
 
 /// Calculate smart timeout based on scan parameters
@@ -1266,12 +1325,12 @@ mod tests {
     }
 
     #[test]
-    fn flags_does_not_clobber_explicit_structured_params() {
-        // If the caller ALSO set a structured param, flags-derived values fill
-        // gaps but an explicit conflicting flag still maps (last-writer = flags,
-        // matching how a real nmap invocation's later flag would win). Here the
-        // caller set service_detection=false and flags add -sV; the flag maps it
-        // true. Target from the structured field is preserved.
+    fn flags_do_not_clobber_explicit_structured_params() {
+        // Explicit structured params are authoritative (matching the tool
+        // description): a flag only fills a param the caller left unset. Here the
+        // caller explicitly set service_detection=false, so -sV must NOT flip it
+        // to true; but timing was unset, so -T2 fills it. Target from the
+        // structured field is preserved.
         let p = json!({
             "target": "10.0.0.5",
             "service_detection": false,
@@ -1279,8 +1338,62 @@ mod tests {
         });
         let out = normalize_legacy_nmap_params(p);
         assert_eq!(out["target"], json!("10.0.0.5"));
-        assert_eq!(out["service_detection"], json!(true)); // -sV
-        assert_eq!(out["timing"], json!(2)); // -T2
+        assert_eq!(out["service_detection"], json!(false)); // explicit param wins over -sV
+        assert_eq!(out["timing"], json!(2)); // -T2 fills the unset param
+    }
+
+    #[test]
+    fn flags_as_array_with_target_maps_recognized_flags() {
+        // The array shape {"flags": ["-sn", "-T4"], "target": "..."} — the same
+        // string-or-array tolerance the `args` path has. Before this was handled
+        // the array `flags` rode through unconsumed and execute() ignored it, so
+        // the scan silently ran with defaults (the very bug this PR kills, via a
+        // different shape). Recognized flags must fold in and the raw key must be
+        // consumed.
+        let p = json!({
+            "flags": ["-sn", "-T4", "-PE", "-PP"],
+            "target": "10.0.8.0/22"
+        });
+        let out = normalize_legacy_nmap_params(p);
+        assert_eq!(out["target"], json!("10.0.8.0/22"));
+        assert_eq!(out["scan_type"], json!("ping")); // -sn
+        assert_eq!(out["timing"], json!(4)); // -T4
+        assert!(
+            out.get("flags").is_none(),
+            "array flags value must be consumed, not passed through"
+        );
+    }
+
+    #[test]
+    fn flags_as_object_is_stripped_not_passed_through() {
+        // A `flags` value that is neither string nor array (here an object) yields
+        // no tokens, but it must STILL be removed so it can't ride through to
+        // execute() (which would ignore it and silently scan with defaults). The
+        // structured params the caller did set are preserved unchanged.
+        let p = json!({
+            "target": "10.0.0.5",
+            "scan_type": "syn",
+            "flags": {"unexpected": "shape"}
+        });
+        let out = normalize_legacy_nmap_params(p);
+        assert_eq!(out["target"], json!("10.0.0.5"));
+        assert_eq!(out["scan_type"], json!("syn"));
+        assert!(
+            out.get("flags").is_none(),
+            "non-string/array flags value must be stripped, not passed through"
+        );
+    }
+
+    #[test]
+    fn flags_array_recovers_target_from_tokens() {
+        // Array `flags` with no separate target key still recovers the target
+        // token, mirroring the string path.
+        let p = json!({"flags": ["-sS", "-p", "80,443", "192.168.1.1"]});
+        let out = normalize_legacy_nmap_params(p);
+        assert_eq!(out["target"], json!("192.168.1.1"));
+        assert_eq!(out["scan_type"], json!("syn"));
+        assert_eq!(out["ports"], json!("80,443"));
+        assert!(out.get("flags").is_none());
     }
 
     #[test]
