@@ -18,6 +18,7 @@
 mod bloodhound;
 mod metasploit;
 mod package;
+pub(crate) mod pacman;
 mod webwright;
 mod zap;
 

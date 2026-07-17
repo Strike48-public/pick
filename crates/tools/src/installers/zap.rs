@@ -69,21 +69,9 @@ impl ToolInstaller for ZapInstaller {
         progress(InstallEvent::step(
             "Installing OWASP ZAP via pacman (zaproxy)...",
         ));
-        let platform = get_platform();
-        let result = platform
-            .execute_command(
-                "pacman",
-                &["-S", "--noconfirm", "zaproxy"],
-                Duration::from_secs(600),
-            )
-            .await?;
-
-        if result.exit_code != 0 {
-            return Err(Error::ToolExecution(format!(
-                "Failed to install zaproxy: {}",
-                result.stderr
-            )));
-        }
+        // -Sy refreshes the package DBs first; a bare -S fails on a rootfs whose
+        // sync DBs have gone stale (see installers::pacman).
+        super::pacman::install("zaproxy", Duration::from_secs(600)).await?;
 
         if !Self::launcher_present().await {
             return Err(Error::ToolExecution(

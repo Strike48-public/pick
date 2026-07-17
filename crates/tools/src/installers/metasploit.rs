@@ -63,22 +63,10 @@ impl ToolInstaller for MetasploitInstaller {
         progress(InstallEvent::step(
             "Installing Metasploit via pacman (this is large, ~2GB)...",
         ));
-        let platform = get_platform();
-        let result = platform
-            .execute_command(
-                "pacman",
-                &["-S", "--noconfirm", "metasploit"],
-                // Metasploit is a large package; allow a generous timeout.
-                Duration::from_secs(1800),
-            )
-            .await?;
-
-        if result.exit_code != 0 {
-            return Err(Error::ToolExecution(format!(
-                "Failed to install metasploit: {}",
-                result.stderr
-            )));
-        }
+        // -Sy refreshes the package DBs first; a bare -S fails on a rootfs whose
+        // sync DBs have gone stale (see installers::pacman). Metasploit is a
+        // large package, so allow a generous timeout.
+        super::pacman::install("metasploit", Duration::from_secs(1800)).await?;
 
         if !Self::msfconsole_present().await {
             return Err(Error::ToolExecution(

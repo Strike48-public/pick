@@ -65,21 +65,9 @@ impl ToolInstaller for BloodHoundInstaller {
         progress(InstallEvent::step(
             "Installing BloodHound collector via pacman (python-bloodhound)...",
         ));
-        let platform = get_platform();
-        let result = platform
-            .execute_command(
-                "pacman",
-                &["-S", "--noconfirm", "python-bloodhound"],
-                Duration::from_secs(600),
-            )
-            .await?;
-
-        if result.exit_code != 0 {
-            return Err(Error::ToolExecution(format!(
-                "Failed to install python-bloodhound: {}",
-                result.stderr
-            )));
-        }
+        // -Sy refreshes the package DBs first; a bare -S fails on a rootfs whose
+        // sync DBs have gone stale (see installers::pacman).
+        super::pacman::install("python-bloodhound", Duration::from_secs(600)).await?;
 
         if !Self::collector_present().await {
             return Err(Error::ToolExecution(

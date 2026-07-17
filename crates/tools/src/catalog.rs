@@ -233,24 +233,13 @@ async fn install_pacman(entry: &CatalogEntry, progress: &ProgressSink) -> Result
         "Installing {} via pacman...",
         entry.display_name
     )));
-    let platform = get_platform();
     // package_name is keyed by binary in the catalog; look it up fresh from the
     // dependency to get the real package name.
     let pkg = pacman_package_for(&entry.binary_name).unwrap_or_else(|| entry.binary_name.clone());
     validate_package_name(&pkg)?;
-    let result = platform
-        .execute_command(
-            "pacman",
-            &["-S", "--noconfirm", &pkg],
-            Duration::from_secs(600),
-        )
-        .await?;
-    if result.exit_code != 0 {
-        return Err(Error::ToolExecution(format!(
-            "Failed to install {pkg}: {}",
-            result.stderr
-        )));
-    }
+    // -Sy refreshes the package DBs first; a bare -S fails on a rootfs whose
+    // sync DBs have gone stale (see installers::pacman).
+    crate::installers::pacman::install(&pkg, Duration::from_secs(600)).await?;
     progress(InstallEvent::step(format!(
         "{} installed",
         entry.display_name

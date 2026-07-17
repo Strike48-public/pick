@@ -105,21 +105,9 @@ impl ToolInstaller for PackageInstaller {
             self.display_name, self.pacman_package
         )));
 
-        let platform = get_platform();
-        let result = platform
-            .execute_command(
-                "pacman",
-                &["-S", "--noconfirm", self.pacman_package],
-                Duration::from_secs(600),
-            )
-            .await?;
-
-        if result.exit_code != 0 {
-            return Err(Error::ToolExecution(format!(
-                "Failed to install {}: {}",
-                self.pacman_package, result.stderr
-            )));
-        }
+        // -Sy refreshes the package DBs first; a bare -S fails on a rootfs whose
+        // sync DBs have gone stale (see installers::pacman).
+        super::pacman::install(self.pacman_package, Duration::from_secs(600)).await?;
 
         if !self.is_installed().await {
             return Err(Error::ToolExecution(format!(
