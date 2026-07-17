@@ -36,6 +36,7 @@ pub mod status_bar;
 mod terminal;
 pub mod text_input;
 mod toast;
+mod tool_category;
 pub mod tools_page;
 mod wifi_warning_dialog;
 #[cfg(feature = "liveview")]

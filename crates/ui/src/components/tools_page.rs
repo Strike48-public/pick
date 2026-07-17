@@ -7,41 +7,7 @@
 
 use dioxus::prelude::*;
 
-use super::icons::{Folder, Lock, Network, Search, Shield, Terminal, Wifi};
-
-/// Humanize a stable category key into a section label.
-fn humanize_category(category: &str) -> &'static str {
-    match category {
-        "network" => "Network",
-        "web" => "Web",
-        "active_directory" => "Active Directory",
-        "credentials" => "Credentials",
-        "post_exploit" => "Post-Exploitation",
-        "wireless" => "Wireless",
-        "recon" => "Reconnaissance",
-        "forensics" => "Forensics",
-        "system" => "System",
-        "files" => "Files",
-        _ => "Other",
-    }
-}
-
-/// Icon per category key.
-fn render_category_icon(category: &str) -> Element {
-    match category {
-        "network" => rsx! { Network { size: 18 } },
-        "web" => rsx! { Search { size: 18 } },
-        "active_directory" => rsx! { Lock { size: 18 } },
-        "credentials" => rsx! { Lock { size: 18 } },
-        "post_exploit" => rsx! { Shield { size: 18 } },
-        "wireless" => rsx! { Wifi { size: 18 } },
-        "recon" => rsx! { Search { size: 18 } },
-        "forensics" => rsx! { Search { size: 18 } },
-        "system" => rsx! { Terminal { size: 18 } },
-        "files" => rsx! { Folder { size: 18 } },
-        _ => rsx! { Terminal { size: 18 } },
-    }
-}
+use super::tool_category::{category_icon, humanize_category};
 
 /// Tools page — displays all registered connector tools grouped by category.
 #[component]
@@ -64,7 +30,7 @@ pub fn ToolsPage(on_open_chat: EventHandler<String>) -> Element {
                         div { class: "tools-category-header",
                             span {
                                 class: "tools-category-icon",
-                                {render_category_icon(&category)}
+                                {category_icon(&category)}
                             }
                             h3 { class: "tools-category-title", "{humanize_category(&category)}" }
                         }
