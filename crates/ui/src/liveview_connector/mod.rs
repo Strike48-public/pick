@@ -769,12 +769,81 @@ impl LiveViewConnector {
         // once we see the first successful execute (or WS open). For now, emit
         // a best-effort Registered event after a short delay to indicate the
         // runner has started and is handling registration internally.
+        //
+        // We also probe the runner's `get_stats()` at that point and log a
+        // clear verdict (search: "[Connector]") so an operator can tell "the
+        // WS came up" from "still trying" without hunting for the SDK's own
+        // `Registered successfully` line in a fast-scrolling log. `running`
+        // plus a non-null `last_connected_at_ms` is the strongest cheap signal
+        // that the transport actually established; `reconnection_attempts` and
+        // `last_disconnect_reason` explain a stuck connector at a glance.
         let event_tx_clone = self.event_tx.clone();
+        let runner_probe = runner.clone();
         tokio::spawn(async move {
             // Give the runner time to connect and register
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+            let stats = runner_probe.get_stats().await;
+            let running = stats
+                .get("running")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let ever_connected = stats
+                .get("last_connected_at_ms")
+                .map(|v| !v.is_null())
+                .unwrap_or(false);
+            if running && ever_connected {
+                tracing::info!(
+                    "[Connector] transport up 3s after startup: reconnects={} disconnects={} \
+                     heartbeat_rtt_last_ms={}",
+                    stats
+                        .get("reconnection_attempts")
+                        .cloned()
+                        .unwrap_or_default(),
+                    stats.get("total_disconnects").cloned().unwrap_or_default(),
+                    stats
+                        .get("heartbeat_rtt_last_ms")
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+            } else {
+                tracing::warn!(
+                    "[Connector] transport NOT established 3s after startup \
+                     (running={} ever_connected={} last_disconnect_reason={}). Check host \
+                     reachability, TLS/cert settings, and auth token; the runner keeps retrying \
+                     with backoff.",
+                    running,
+                    ever_connected,
+                    stats
+                        .get("last_disconnect_reason")
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+            }
             let _ = event_tx_clone.send(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
         });
+
+        // One-time startup summary. The SDK runner logs its registration/OTT/
+        // keepalive internals at debug and emits no user-facing events, so at
+        // `info` there is no single line confirming *what* this connector is
+        // trying to be. Emit a compact, greppable banner (search: "[Connector]")
+        // so an operator staring at a fast-scrolling poll log can confirm the
+        // host, tenant, identity, and whether an auth token is present without
+        // reconstructing it from a dozen debug lines.
+        tracing::info!(
+            "[Connector] starting: host={} tenant={} instance_id={} connector_name={} \
+             matrix_api_url={} auth_token={} aggression={:?}",
+            self.config.host,
+            self.config.tenant_id,
+            self.config.instance_id,
+            self.config.connector_name,
+            self.derive_matrix_api_url(),
+            if self.config.auth_token.is_empty() {
+                "absent"
+            } else {
+                "present"
+            },
+            self.config.aggression_level,
+        );
 
         // Run the connector — this blocks until shutdown or non-recoverable error
         match runner.run().await {
