@@ -272,7 +272,11 @@ impl PtyShell {
         // so the arm above never sees it; instead we briefly watch whether the
         // child dies almost immediately with a non-zero status and, if so, retry
         // with the sibling backend. A healthy interactive shell stays alive well
-        // past this window, so the common path returns without added latency.
+        // past this window, so it is never mis-detected as a failure — but note
+        // this poll costs up to EARLY_EXIT_WINDOW (~500ms) on the common
+        // (healthy) path, since try_wait returns None until the window elapses.
+        // The one-time cost at shell-open is an accepted trade for detecting
+        // silent init failures; see wait_for_early_exit.
         if let Some(status) = Self::wait_for_early_exit(&mut child).await {
             if !status.success() {
                 if let Some(fallback) = namespace_sibling(backend) {
@@ -316,6 +320,13 @@ impl PtyShell {
     /// Poll a freshly spawned child for up to [`Self::EARLY_EXIT_WINDOW`],
     /// returning its exit status if it dies within the window, or `None` if it
     /// is still running (the healthy case).
+    ///
+    /// Cost: a child that dies returns as soon as the next 20ms poll observes
+    /// it, but a healthy child makes this block for the full window (~500ms) —
+    /// `try_wait` returns `None` on every poll until the loop times out. That
+    /// added latency is paid once per sandboxed shell open. Kept simple
+    /// (polling, not event-driven) deliberately; revisit if shell-open latency
+    /// becomes a concern.
     async fn wait_for_early_exit(
         child: &mut Box<dyn portable_pty::Child + Send + Sync>,
     ) -> Option<portable_pty::ExitStatus> {
@@ -386,7 +397,7 @@ impl PtyShell {
             })?;
 
         let fallback_cmd = Self::build_cmd_for_backend(fallback, config, cwd).await?;
-        let child = retry_pair.slave.spawn_command(fallback_cmd).map_err(|e2| {
+        let mut child = retry_pair.slave.spawn_command(fallback_cmd).map_err(|e2| {
             tracing::error!(
                 "[PtyShell::spawn_sandboxed] {fallback:?} fallback also failed: {e2} (original {backend:?} {reason})"
             );
@@ -394,6 +405,22 @@ impl PtyShell {
                 "Failed to spawn sandboxed shell ({backend:?} {reason}; {fallback:?} fallback also failed: {e2})"
             ))
         })?;
+
+        // The fallback child can also die during init (e.g. a nested-userns box
+        // where neither backend can set up its uid map). Apply the same
+        // early-exit poll the primary path uses, so we never hand back an
+        // already-dead PTY as a successful fallback. This is terminal: there is
+        // no further sibling to try, so an early exit here is a hard error.
+        if let Some(status) = Self::wait_for_early_exit(&mut child).await {
+            if !status.success() {
+                tracing::error!(
+                    "[PtyShell::spawn_sandboxed] {fallback:?} fallback shell exited immediately ({status:?}) (original {backend:?} {reason})"
+                );
+                return Err(Error::ToolExecution(format!(
+                    "Sandboxed shell fallback ({fallback:?}) exited immediately during startup ({status:?}); original {backend:?} {reason}"
+                )));
+            }
+        }
 
         tracing::info!(
             "Sandboxed shell spawned successfully ({fallback:?} fallback after {backend:?} {reason})"
