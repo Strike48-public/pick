@@ -50,7 +50,10 @@ impl PentestTool for KerbruteTool {
                     "Kerbrute - Kerberos pre-auth username enumeration and password spraying",
                 )
                 .custom_installer("kerbrute")
-                .category(ToolCategory::ActiveDirectory),
+                .category(ToolCategory::ActiveDirectory)
+                // Specialized AD-engagement tooling: installed on explicit
+                // operator action, not swept in by "install all recommended".
+                .recommended(false),
             )
             .param(ToolParam::required(
                 "mode",
