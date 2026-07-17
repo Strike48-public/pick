@@ -98,3 +98,8 @@ pentest-tools = { path = "crates/tools", default-features = false }
 lto = true
 opt-level = "z"
 codegen-units = 1
+# Strip symbol tables from release binaries. On Android this takes libmain.so
+# from ~40MB to ~26MB (release APK ~16MB -> ~13MB); also shrinks the desktop
+# binaries. (panic = "abort" would save a few MB more but is deliberately left
+# off: it turns an isolated tokio task panic into a whole-process abort.)
+strip = true
