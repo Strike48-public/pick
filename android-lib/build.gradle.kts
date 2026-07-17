@@ -5,7 +5,8 @@ plugins {
 
 android {
     namespace = "com.strike48.pentest_connector.nativelib"
-    compileSdk = 34
+    compileSdk = 35
+    buildToolsVersion = "35.0.1"
 
     defaultConfig {
         minSdk = 24

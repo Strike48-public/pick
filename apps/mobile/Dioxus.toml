@@ -6,5 +6,14 @@ default_platform = "android"
 identifier = "com.strike48.pentest_connector"
 publisher = "Strike48"
 
+# Android SDK versions. nixpkgs androidenv packages platform/build-tools 35 & 36
+# (not 34, dx's built-in default), so pin to 35 here. dx writes these into the
+# generated Gradle project on every build, so no post-generation patching is
+# needed. See flake.nix for the matching NDK/SDK and the aapt2 override.
+[android]
+compile_sdk = 35
+target_sdk = 35
+min_sdk = 24
+
 [web.app]
 title = "Pentest Connector"

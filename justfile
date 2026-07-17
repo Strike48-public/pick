@@ -249,8 +249,12 @@ _android-ndk-bin:
     fi
     echo "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
-# Build mobile app for Android (debug)
-build-android:
+# Build mobile app for Android (debug). Defaults to arm64 (physical devices);
+# pass `arch=x86_64-linux-android` for an emulator build.
+# SDK versions come from apps/mobile/Dioxus.toml; the Nix devshell provides the
+# NDK/SDK, the build-tools shim, and the patched aapt2 (see flake.nix), so
+# `dx build` succeeds on its own with no post-generation patching.
+build-android arch="aarch64-linux-android":
     #!/usr/bin/env bash
     set -euo pipefail
     # Avoid Nix header conflicts
@@ -272,12 +276,20 @@ build-android:
     # Unset global CC/CXX that would override the target-specific ones
     unset CC CXX
 
-    {{dx}} build --platform android --package pentest-mobile
+    # dx preserves the generated Gradle project between builds and does NOT
+    # clean jniLibs, so a previously-built ABI (app + native tool libs) would
+    # otherwise be bundled alongside the arch we're building now. Wipe it so the
+    # APK contains exactly one architecture.
+    rm -rf target/dx/pentest-mobile/debug/android/app/app/src/main/jniLibs
+
+    {{dx}} build --platform android --package pentest-mobile --target {{arch}}
     just _inject-android-lib target/dx/pentest-mobile/debug/android/app
     cd target/dx/pentest-mobile/debug/android/app && ./gradlew assembleDebug
 
-# Build mobile app for Android (release)
-build-android-release:
+# Build mobile app for Android (release). Defaults to arm64; pass
+# `arch=x86_64-linux-android` for an emulator build. Produces an UNSIGNED APK —
+# see [android.signing] in Dioxus.toml to sign for distribution.
+build-android-release arch="aarch64-linux-android":
     #!/usr/bin/env bash
     set -euo pipefail
     # Avoid Nix header conflicts
@@ -299,7 +311,13 @@ build-android-release:
     # Unset global CC/CXX that would override the target-specific ones
     unset CC CXX
 
-    {{dx}} build --platform android --package pentest-mobile --release
+    # dx preserves the generated Gradle project between builds and does NOT
+    # clean jniLibs, so a previously-built ABI (app + native tool libs) would
+    # otherwise be bundled alongside the arch we're building now. Wipe it so the
+    # APK contains exactly one architecture.
+    rm -rf target/dx/pentest-mobile/release/android/app/app/src/main/jniLibs
+
+    {{dx}} build --platform android --package pentest-mobile --release --target {{arch}}
     just _inject-android-lib target/dx/pentest-mobile/release/android/app
     cd target/dx/pentest-mobile/release/android/app && ./gradlew assembleRelease
 

@@ -57,3 +57,6 @@ android-jniLibs
 .mise.local.toml
 .direnv/
 __pycache__/
+
+# Repo-local GRADLE_USER_HOME provisioned by the nix devshell (Android builds)
+/.gradle-nix/
