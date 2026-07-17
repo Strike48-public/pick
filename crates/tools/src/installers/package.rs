@@ -8,7 +8,6 @@
 
 use super::{InstallEvent, ProgressSink, ToolInstaller};
 use pentest_core::error::{Error, Result};
-use pentest_platform::{get_platform, CommandExec};
 use std::time::Duration;
 
 use crate::installers::sandbox_enabled;
@@ -74,12 +73,7 @@ impl ToolInstaller for PackageInstaller {
     }
 
     async fn is_installed(&self) -> bool {
-        let platform = get_platform();
-        platform
-            .execute_command("which", &[self.binary_name], Duration::from_secs(5))
-            .await
-            .map(|r| r.exit_code == 0)
-            .unwrap_or(false)
+        super::binary_on_path(self.binary_name).await
     }
 
     async fn install(&self, progress: &ProgressSink) -> Result<()> {

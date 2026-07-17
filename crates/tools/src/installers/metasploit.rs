@@ -11,7 +11,6 @@
 
 use super::{InstallEvent, ProgressSink, ToolInstaller};
 use pentest_core::error::{Error, Result};
-use pentest_platform::{get_platform, CommandExec};
 use std::time::Duration;
 
 use crate::installers::sandbox_enabled;
@@ -25,12 +24,7 @@ pub struct MetasploitInstaller;
 
 impl MetasploitInstaller {
     async fn msfconsole_present() -> bool {
-        let platform = get_platform();
-        platform
-            .execute_command("which", &["msfconsole"], Duration::from_secs(5))
-            .await
-            .map(|r| r.exit_code == 0)
-            .unwrap_or(false)
+        super::binary_on_path("msfconsole").await
     }
 }
 

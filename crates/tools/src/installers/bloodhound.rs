@@ -10,15 +10,22 @@
 
 use super::{InstallEvent, ProgressSink, ToolInstaller};
 use pentest_core::error::{Error, Result};
-use pentest_platform::{get_platform, CommandExec};
 use std::time::Duration;
 
 use crate::installers::sandbox_enabled;
 
-const COLLECTOR_BINARY: &str = "bloodhound-python";
+/// Binary the collector package installs. The BlackArch package
+/// `bloodhound-ce-python` provides the `bloodhound-ce-python` collector (the
+/// v5/CE data collector). The old `python-bloodhound` / `bloodhound-python`
+/// names do not exist in the current repos — using them caused
+/// `error: target not found: python-bloodhound`.
+const COLLECTOR_BINARY: &str = "bloodhound-ce-python";
+
+/// BlackArch package that provides [`COLLECTOR_BINARY`].
+const COLLECTOR_PACKAGE: &str = "bloodhound-ce-python";
 
 const HOST_INSTRUCTIONS: &str =
-    "Install the collector on the host with: pipx install bloodhound  (provides `bloodhound-python`). \
+    "Install the collector on the host with: pipx install bloodhound-ce  (provides `bloodhound-ce-python`). \
      For the BloodHound CE UI + neo4j graph, run the official Docker Compose stack from \
      https://github.com/SpecterOps/BloodHound (docker compose up); that service is not auto-managed \
      by the connector.";
@@ -27,12 +34,7 @@ pub struct BloodHoundInstaller;
 
 impl BloodHoundInstaller {
     async fn collector_present() -> bool {
-        let platform = get_platform();
-        platform
-            .execute_command("which", &[COLLECTOR_BINARY], Duration::from_secs(5))
-            .await
-            .map(|r| r.exit_code == 0)
-            .unwrap_or(false)
+        super::binary_on_path(COLLECTOR_BINARY).await
     }
 }
 
@@ -52,27 +54,29 @@ impl ToolInstaller for BloodHoundInstaller {
 
     async fn install(&self, progress: &ProgressSink) -> Result<()> {
         if Self::collector_present().await {
-            progress(InstallEvent::step("bloodhound-python already installed"));
+            progress(InstallEvent::step(format!(
+                "{COLLECTOR_BINARY} already installed"
+            )));
             return Ok(());
         }
 
         if !sandbox_enabled() {
             return Err(Error::ToolExecution(format!(
-                "bloodhound-python is not installed and sandbox is disabled. {HOST_INSTRUCTIONS}"
+                "{COLLECTOR_BINARY} is not installed and sandbox is disabled. {HOST_INSTRUCTIONS}"
             )));
         }
 
-        progress(InstallEvent::step(
-            "Installing BloodHound collector via pacman (python-bloodhound)...",
-        ));
+        progress(InstallEvent::step(format!(
+            "Installing BloodHound collector via pacman ({COLLECTOR_PACKAGE})..."
+        )));
         // -Sy refreshes the package DBs first; a bare -S fails on a rootfs whose
         // sync DBs have gone stale (see installers::pacman).
-        super::pacman::install("python-bloodhound", Duration::from_secs(600)).await?;
+        super::pacman::install(COLLECTOR_PACKAGE, Duration::from_secs(600)).await?;
 
         if !Self::collector_present().await {
-            return Err(Error::ToolExecution(
-                "python-bloodhound installed but bloodhound-python is not on PATH".to_string(),
-            ));
+            return Err(Error::ToolExecution(format!(
+                "{COLLECTOR_PACKAGE} installed but {COLLECTOR_BINARY} is not on PATH"
+            )));
         }
 
         progress(InstallEvent::step("BloodHound collector installed"));
@@ -97,5 +101,15 @@ mod tests {
     fn manual_instructions_mention_neo4j_stack() {
         let instr = BloodHoundInstaller.manual_instructions().unwrap();
         assert!(instr.contains("Docker Compose") || instr.contains("docker compose"));
+    }
+
+    #[test]
+    fn collector_package_and_binary_are_the_real_repo_names() {
+        // Regression: the old `python-bloodhound` package name does not exist
+        // in the BlackArch repos and caused `target not found`. The real
+        // package/binary is `bloodhound-ce-python`.
+        assert_eq!(COLLECTOR_PACKAGE, "bloodhound-ce-python");
+        assert_eq!(COLLECTOR_BINARY, "bloodhound-ce-python");
+        assert_ne!(COLLECTOR_PACKAGE, "python-bloodhound");
     }
 }

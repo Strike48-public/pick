@@ -129,11 +129,22 @@ fn collect_dependencies() -> BTreeMap<String, (ExternalDependency, Vec<String>)>
     deps
 }
 
-/// Probe whether a single binary is present on PATH (cheap `which`).
+/// Probe whether a single binary is present on PATH.
+///
+/// Uses the POSIX `command -v` shell builtin, not the `which` binary: the
+/// minimal BlackArch sandbox rootfs does not ship `which`, so a `which` probe
+/// reports every tool as Missing even when installed (certipy/kerbrute landed
+/// in `/usr/sbin` but read as absent). `command -v` is a shell builtin and
+/// works in both the sandbox and on the host. The binary name is passed as a
+/// positional arg (`$1`), never interpolated, so no shell-escaping is needed.
 async fn binary_present(binary: &str) -> InstallState {
     let platform = get_platform();
     match platform
-        .execute_command("which", &[binary], Duration::from_secs(5))
+        .execute_command(
+            "sh",
+            &["-c", "command -v \"$1\" > /dev/null 2>&1", "sh", binary],
+            Duration::from_secs(5),
+        )
         .await
     {
         Ok(r) if r.exit_code == 0 => InstallState::Installed,

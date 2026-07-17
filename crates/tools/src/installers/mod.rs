@@ -74,6 +74,32 @@ pub(crate) fn sandbox_enabled() -> bool {
     false
 }
 
+/// Return true if `binary` resolves on PATH in the current execution
+/// environment (sandbox when enabled, host otherwise).
+///
+/// Uses the POSIX `command -v` shell builtin rather than the `which` binary:
+/// the minimal BlackArch sandbox rootfs does **not** ship `which`, so a
+/// `which <bin>` probe fails with "command not found" even for a tool that is
+/// correctly installed (e.g. certipy/kerbrute land in `/usr/sbin` but the
+/// post-install check reported them missing). `command -v` is a builtin of
+/// every POSIX shell, so it works in both the sandbox and on the host.
+///
+/// The binary name is passed as a positional shell argument (`sh -c '...' _ <bin>`
+/// referenced as `$1`), never interpolated into the script, so no shell-escaping
+/// of the name is required.
+pub(crate) async fn binary_on_path(binary: &str) -> bool {
+    let platform = pentest_platform::get_platform();
+    pentest_platform::CommandExec::execute_command(
+        &platform,
+        "sh",
+        &["-c", "command -v \"$1\" > /dev/null 2>&1", "sh", binary],
+        std::time::Duration::from_secs(5),
+    )
+    .await
+    .map(|r| r.exit_code == 0)
+    .unwrap_or(false)
+}
+
 /// A bespoke installer for one tool (or tool bundle) that cannot be installed
 /// by a single package-manager command.
 ///

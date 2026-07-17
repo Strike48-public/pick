@@ -8,7 +8,6 @@
 
 use super::{InstallEvent, ProgressSink, ToolInstaller};
 use pentest_core::error::{Error, Result};
-use pentest_platform::{get_platform, CommandExec};
 use std::time::Duration;
 
 use crate::installers::sandbox_enabled;
@@ -25,14 +24,8 @@ pub struct ZapInstaller;
 
 impl ZapInstaller {
     async fn launcher_present() -> bool {
-        let platform = get_platform();
         for bin in ZAP_BINARIES {
-            if platform
-                .execute_command("which", &[bin], Duration::from_secs(5))
-                .await
-                .map(|r| r.exit_code == 0)
-                .unwrap_or(false)
-            {
+            if super::binary_on_path(bin).await {
                 return true;
             }
         }
