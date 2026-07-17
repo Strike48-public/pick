@@ -704,11 +704,29 @@ impl LiveViewConnector {
         // can exclude this connector's host from engagement scanning (#2274).
         // Previously injected in the hand-rolled registration message; the SDK
         // ConnectorRunner migration moved the injection point here.
-        if let Some(ips) = pentest_platform::desktop::get_local_ipv4_addresses() {
-            tracing::info!("Reporting host interfaces for exclusion: {:?}", ips);
+        // `get_network_interfaces` is the cross-platform accessor on the
+        // PlatformProvider abstraction (desktop/android/ios); the previous
+        // desktop-only `desktop::get_local_ipv4_addresses` did not compile on
+        // mobile. Filter to non-loopback IPv4 to match the exclusion set the
+        // orchestrator expects.
+        use pentest_platform::SystemInfo;
+        let host_ips: Vec<String> = pentest_platform::get_platform()
+            .get_network_interfaces()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|iface| iface.ip_addresses)
+            .filter(|ip| {
+                ip.parse::<std::net::IpAddr>()
+                    .map(|addr| addr.is_ipv4() && !addr.is_loopback())
+                    .unwrap_or(false)
+            })
+            .collect();
+        if !host_ips.is_empty() {
+            tracing::info!("Reporting host interfaces for exclusion: {:?}", host_ips);
             sdk_config
                 .metadata
-                .insert("host_interfaces".to_string(), ips.join(","));
+                .insert("host_interfaces".to_string(), host_ips.join(","));
         }
 
         // Resolve the IPC address from the LiveView handle (if started)
