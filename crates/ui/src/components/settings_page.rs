@@ -404,44 +404,75 @@ pub fn SettingsPage(
                                                     }
                                                 }
                                             } else if item.auto_installable {
-                                                // Missing but installable: the whole card is a
-                                                // button so click-to-install is keyboard- and
-                                                // screen-reader-accessible without extra wiring.
+                                                // Missing but installable. The card is a
+                                                // div[role=button] (not a <button>) because it
+                                                // holds block-level children — a <button> may only
+                                                // contain phrasing content. tabindex + onkeydown
+                                                // restore the keyboard/AT affordances a native
+                                                // button would provide.
                                                 let installing_this =
                                                     installing() == Some(item.binary_name.clone());
-                                                let bin = item.binary_name.clone();
-                                                let estimate = item.estimated_secs;
-                                                rsx! {
-                                                    button {
-                                                        class: "tool-status-card missing",
-                                                        disabled: installing().is_some(),
-                                                        onclick: move |_| {
-                                                            let bin = bin.clone();
+                                                let disabled = installing().is_some();
+                                                // Shared install action, invoked from both click
+                                                // and Enter/Space. Guards on `installing` so only
+                                                // one install runs at a time (mirrors the old
+                                                // `disabled` on every button).
+                                                let start_install = {
+                                                    let bin = item.binary_name.clone();
+                                                    let estimate = item.estimated_secs;
+                                                    move || {
+                                                        if installing().is_some() {
+                                                            return;
+                                                        }
+                                                        let bin = bin.clone();
+                                                        spawn(async move {
+                                                            use tokio::sync::mpsc;
+                                                            install_elapsed.set(0);
+                                                            install_estimate.set(estimate);
+                                                            installing.set(Some(bin.clone()));
+                                                            install_error.set(None);
+                                                            install_message.set(String::new());
+                                                            let (tx, mut rx) = mpsc::unbounded_channel();
                                                             spawn(async move {
-                                                                use tokio::sync::mpsc;
-                                                                install_elapsed.set(0);
-                                                                install_estimate.set(estimate);
-                                                                installing.set(Some(bin.clone()));
-                                                                install_error.set(None);
-                                                                install_message.set(String::new());
-                                                                let (tx, mut rx) = mpsc::unbounded_channel();
-                                                                spawn(async move {
-                                                                    while let Some(msg) = rx.recv().await {
-                                                                        install_message.set(msg);
-                                                                    }
-                                                                });
-                                                                let progress = move |evt: pentest_tools::installers::InstallEvent| {
-                                                                    let _ = tx.send(evt.message);
-                                                                };
-                                                                match pentest_tools::catalog::install_by_binary(&bin, &progress).await {
-                                                                    Ok(()) => {
-                                                                        let items = pentest_tools::catalog::build_catalog_items().await;
-                                                                        catalog_items.set(Some(items));
-                                                                    }
-                                                                    Err(e) => install_error.set(Some(e.to_string())),
+                                                                while let Some(msg) = rx.recv().await {
+                                                                    install_message.set(msg);
                                                                 }
-                                                                installing.set(None);
                                                             });
+                                                            let progress = move |evt: pentest_tools::installers::InstallEvent| {
+                                                                let _ = tx.send(evt.message);
+                                                            };
+                                                            match pentest_tools::catalog::install_by_binary(&bin, &progress).await {
+                                                                Ok(()) => {
+                                                                    let items = pentest_tools::catalog::build_catalog_items().await;
+                                                                    catalog_items.set(Some(items));
+                                                                }
+                                                                Err(e) => install_error.set(Some(e.to_string())),
+                                                            }
+                                                            installing.set(None);
+                                                        });
+                                                    }
+                                                };
+                                                rsx! {
+                                                    div {
+                                                        class: "tool-status-card missing",
+                                                        role: "button",
+                                                        tabindex: if disabled { -1 } else { 0 },
+                                                        "aria-disabled": "{disabled}",
+                                                        onclick: {
+                                                            let start = start_install.clone();
+                                                            move |_| start()
+                                                        },
+                                                        onkeydown: {
+                                                            let start = start_install.clone();
+                                                            move |evt: Event<KeyboardData>| {
+                                                                let key = evt.key();
+                                                                if key == Key::Enter
+                                                                    || matches!(key, Key::Character(ref c) if c == " ")
+                                                                {
+                                                                    evt.prevent_default();
+                                                                    start();
+                                                                }
+                                                            }
                                                         },
                                                         div { class: "tool-status-card-name", "{item.display_name}" }
                                                         if !desc.is_empty() {

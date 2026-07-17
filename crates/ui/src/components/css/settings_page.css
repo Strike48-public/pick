@@ -555,14 +555,21 @@
     transition: border-color 0.15s, background-color 0.15s;
 }
 
-.tool-status-card.missing:hover:not(:disabled) {
+.tool-status-card.missing:hover:not([aria-disabled="true"]) {
     border-left-color: var(--primary);
     background: var(--secondary);
 }
 
-.tool-status-card.missing:disabled {
+/* Keyboard focus ring for the div[role=button] card. */
+.tool-status-card.missing:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+}
+
+.tool-status-card.missing[aria-disabled="true"] {
     opacity: 0.5;
     cursor: not-allowed;
+    pointer-events: none;
 }
 
 .tool-status-card.manual {
