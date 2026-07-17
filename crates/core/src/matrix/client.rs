@@ -89,7 +89,7 @@ impl MatrixChatClient {
         variables: serde_json::Value,
     ) -> crate::error::Result<T> {
         let gql_url = format!("{}/api/v1alpha", super::normalize_url(&self.api_url));
-        tracing::info!(
+        tracing::debug!(
             "[gql] POST {} (token_len={} query={})",
             gql_url,
             self.auth_token.as_ref().map(|t| t.len()).unwrap_or(0),
@@ -110,7 +110,7 @@ impl MatrixChatClient {
             })?;
 
         let status = resp.status();
-        tracing::info!("[gql] response status={}", status);
+        tracing::debug!("[gql] response status={}", status);
 
         // Defense against hostile Matrix API responses: limit response size to prevent OOM
         const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024; // 10 MB

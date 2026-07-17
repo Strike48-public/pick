@@ -58,11 +58,7 @@ impl ToolInstaller for WebwrightInstaller {
             "Installing webwright (Python package)...",
         ));
 
-        let uv_available = platform
-            .execute_command("which", &["uv"], Duration::from_secs(5))
-            .await
-            .map(|r| r.exit_code == 0)
-            .unwrap_or(false);
+        let uv_available = super::binary_on_path("uv").await;
 
         let git_spec = format!("git+{WEBWRIGHT_GIT_URL}");
 

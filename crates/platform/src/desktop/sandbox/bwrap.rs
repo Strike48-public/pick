@@ -9,6 +9,13 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
+use tokio::sync::OnceCell;
+
+/// Cached result of the real bwrap usability probe. Computing it spawns a
+/// throwaway bwrap process, and `is_available()` is called frequently (per tool
+/// install, per shell spawn, during backend detection), so we probe once per
+/// process. Availability does not change over a run.
+static BWRAP_USABLE: OnceCell<bool> = OnceCell::const_new();
 
 /// Bubblewrap executor for Linux namespace-based sandboxing
 pub struct BwrapExecutor {
@@ -21,21 +28,37 @@ impl BwrapExecutor {
         Self { config }
     }
 
-    /// Check if bwrap is available and usable
+    /// Check if bwrap is available and *actually usable*.
+    ///
+    /// This is authoritative: it always confirms with a real `bwrap` spawn
+    /// rather than trusting `unprivileged_userns_clone` alone. On Ubuntu 24.04+
+    /// that sysctl reads `1` while `kernel.apparmor_restrict_unprivileged_userns`
+    /// separately denies the uid-map setup, so a sysctl-only check reports bwrap
+    /// as available when every real invocation fails with "setting up uid map:
+    /// Permission denied" (see #238). Getting this right lets `detect_backend`
+    /// pick proot for *all* execution paths (shell and tool installs), instead of
+    /// each path having to recover from a bwrap that never worked.
     pub async fn is_available() -> bool {
-        // Check for bwrap binary
-        if !Self::bwrap_exists().await {
-            tracing::debug!("bwrap binary not found");
-            return false;
-        }
-
-        // Check for user namespace support
-        if !Self::user_namespaces_enabled().await {
-            tracing::debug!("User namespaces not enabled");
-            return false;
-        }
-
-        true
+        *BWRAP_USABLE
+            .get_or_init(|| async {
+                // Cheap pre-filter: no binary => definitely unavailable.
+                if !Self::bwrap_exists().await {
+                    tracing::debug!("bwrap binary not found");
+                    return false;
+                }
+                // Authoritative: attempt a real (unprivileged, uid-mapping) spawn.
+                // This is the exact operation that AppArmor blocks, so it is the
+                // only reliable signal.
+                let usable = Self::test_bwrap().await;
+                if !usable {
+                    tracing::info!(
+                        "bwrap present but not usable (user-namespace/uid-map setup denied); \
+                         treating as unavailable so proot is used instead"
+                    );
+                }
+                usable
+            })
+            .await
     }
 
     /// Check if bwrap binary exists
@@ -50,22 +73,25 @@ impl BwrapExecutor {
             .unwrap_or(false)
     }
 
-    /// Check if unprivileged user namespaces are enabled
-    async fn user_namespaces_enabled() -> bool {
-        // Check /proc/sys/kernel/unprivileged_userns_clone
-        match tokio::fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone").await {
-            Ok(content) => content.trim() == "1",
-            Err(_) => {
-                // File might not exist on all systems; try a test invocation
-                Self::test_bwrap().await
-            }
-        }
-    }
-
-    /// Test if bwrap can actually run
+    /// Test if bwrap can actually run an unprivileged user namespace.
+    ///
+    /// Uses `--unshare-user --uid 0 --gid 0` so the probe exercises the exact
+    /// uid-map setup that real sandbox commands need — a plain `--ro-bind`
+    /// invocation would succeed even where uid mapping is denied, giving a false
+    /// positive on AppArmor-restricted hosts (#238).
     async fn test_bwrap() -> bool {
         Command::new("bwrap")
-            .args(["--ro-bind", "/", "/", "true"])
+            .args([
+                "--unshare-user",
+                "--uid",
+                "0",
+                "--gid",
+                "0",
+                "--ro-bind",
+                "/",
+                "/",
+                "true",
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -90,12 +116,11 @@ impl BwrapExecutor {
 
         let start = Instant::now();
 
-        // Check if we're running as real root (sudo) — skip user namespace, add capabilities
-        let is_root = std::process::Command::new("id")
-            .arg("-u")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
-            .unwrap_or(false);
+        // Check if we're running as real root (sudo) — skip user namespace, add
+        // capabilities. Use geteuid(2) via the shared helper rather than shelling
+        // out to `id -u`: this gate unlocks `--cap-add ALL`, so it must not be
+        // spoofable by a planted `id` on PATH (see #238 review).
+        let is_root = super::is_effective_root();
 
         let mut bwrap_args = vec![
             "--bind".to_string(),

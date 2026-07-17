@@ -47,7 +47,7 @@ matrix_api := env_var_or_default("MATRIX_API_URL", "https://studio.strike48.test
 matrix_tenant := env_var_or_default("MATRIX_TENANT_ID", "*")
 
 # Run headless agent in dev mode against studio.strike48.test
-dev STRIKE48_HOST="wss://studio.strike48.test" MATRIX_API_URL="https://studio.strike48.test" MATRIX_TENANT_ID="*" INSTANCE_ID="pick-dev" MATRIX_TLS_INSECURE="true" RUST_LOG="debug" STRIKE48_ACCEPT_INVALID_CERTS="true" *ARGS="":
+dev STRIKE48_HOST="wss://studio.strike48.test" MATRIX_API_URL="https://studio.strike48.test" MATRIX_TENANT_ID="*" INSTANCE_ID="pick-dev" MATRIX_TLS_INSECURE="true" RUST_LOG="debug,hyper_util=warn,hyper=warn" STRIKE48_ACCEPT_INVALID_CERTS="true" *ARGS="":
     #!/usr/bin/env bash
     set -euo pipefail
     export STRIKE48_HOST="{{STRIKE48_HOST}}"
