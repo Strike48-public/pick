@@ -133,9 +133,10 @@ impl CatalogEntry {
 /// Binaries that are install prerequisites for other tools rather than
 /// operator-facing tools in their own right. They are hidden from the catalog
 /// UI (no one "installs Python" as a pentest tool), but remain real
-/// `external_dependency` declarations so the tools that need them (e.g.
-/// webwright) still pull them in through their own installer.
-const HIDDEN_CATALOG_BINARIES: &[&str] = &["python3", "playwright"];
+/// `external_dependency` declarations so the tools that need them still pull
+/// them in through their own installer: `python3`/`playwright` for webwright,
+/// `node` (Node.js) for the CyberChef recipe runner.
+const HIDDEN_CATALOG_BINARIES: &[&str] = &["python3", "playwright", "node"];
 
 /// Collect the unique external dependencies declared across all registered
 /// tools, mapping each `binary_name` to its dependency plus the tools that use
