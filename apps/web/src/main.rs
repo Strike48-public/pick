@@ -37,7 +37,13 @@ fn preferred_port() -> u16 {
 /// retry; any other bind error is fatal and returned as-is.
 async fn bind_with_fallback(preferred: u16) -> std::io::Result<(TcpListener, u16)> {
     for offset in 0..MAX_PORT_ATTEMPTS {
-        let port = preferred.saturating_add(offset);
+        // Stop rather than re-probe: near the u16 ceiling `preferred + offset`
+        // would saturate and re-target the same top port, so a busy port high
+        // in the range would spin uselessly. Skipping keeps every attempt a
+        // distinct port.
+        let Some(port) = preferred.checked_add(offset) else {
+            break;
+        };
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
         match TcpListener::bind(&addr).await {
             Ok(listener) => {
