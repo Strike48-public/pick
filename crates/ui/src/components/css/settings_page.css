@@ -480,6 +480,153 @@
 }
 
 /* ==========================================================================
+   Tools grid (category-grouped status cards)
+   ========================================================================== */
+
+.settings-tools-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.settings-tools-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.settings-tools-icon {
+    display: flex;
+    align-items: center;
+    width: 16px;
+    height: 16px;
+    line-height: 0;
+    color: var(--muted-foreground);
+}
+
+.settings-tools-icon svg {
+    width: 14px;
+    height: 14px;
+}
+
+.settings-tools-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted-foreground);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 0;
+}
+
+.settings-page .tools-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 8px;
+}
+
+/* One tool as a compact status card. Rendered either as a <div> (installed /
+   manual) or a <button> (missing + auto-installable, click-to-install). Reset
+   button chrome so both render identically. */
+.tool-status-card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-left-width: 3px;
+    border-radius: 6px;
+    background: var(--background);
+    text-align: left;
+    font: inherit;
+    color: var(--foreground);
+    width: 100%;
+    min-width: 0;
+}
+
+/* Color-coded install state via the left border + status text. */
+.tool-status-card.installed {
+    border-left-color: #10b981;
+}
+
+.tool-status-card.missing {
+    border-left-color: var(--muted-foreground);
+    cursor: pointer;
+    transition: border-color 0.15s, background-color 0.15s;
+}
+
+.tool-status-card.missing:hover:not([aria-disabled="true"]) {
+    border-left-color: var(--primary);
+    background: var(--secondary);
+}
+
+/* Keyboard focus ring for the div[role=button] card. */
+.tool-status-card.missing:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+}
+
+.tool-status-card.missing[aria-disabled="true"] {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+.tool-status-card.manual {
+    border-left-color: var(--border);
+}
+
+.tool-status-card-name {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--foreground);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tool-status-card-desc {
+    font-size: 11px;
+    color: var(--muted-foreground);
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.tool-status-card-status {
+    font-size: 11px;
+    font-family: var(--font-mono);
+}
+
+.tool-status-card-status.installed {
+    color: #10b981;
+}
+
+.tool-status-card-status.action {
+    color: var(--primary);
+    font-weight: 600;
+}
+
+.tool-status-card-status.muted {
+    color: var(--muted-foreground);
+}
+
+.tool-status-card-instructions {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--muted-foreground);
+    line-height: 1.35;
+    white-space: pre-wrap;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* ==========================================================================
    Seed Resources
    ========================================================================== */
 
