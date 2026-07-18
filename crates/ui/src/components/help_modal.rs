@@ -50,7 +50,9 @@ pub fn HelpModal(props: HelpModalProps) -> Element {
                         ShortcutRow { key_label: "1", description: "Dashboard" }
                         ShortcutRow { key_label: "2", description: "Tools" }
                         ShortcutRow { key_label: "3", description: "Files" }
-                        ShortcutRow { key_label: "4", description: "Shell" }
+                        if !cfg!(target_os = "ios") {
+                            ShortcutRow { key_label: "4", description: "Shell" }
+                        }
                         ShortcutRow { key_label: "c", description: "Chat" }
                         ShortcutRow { key_label: "5", description: "Logs" }
                         ShortcutRow { key_label: "6", description: "Settings" }

@@ -174,7 +174,9 @@ pub fn Sidebar(
 
             // Nav items
             div { class: "sidebar-flat-nav",
-                for page in ALL_PAGES {
+                // The interactive shell has no iOS implementation (no PTY/proot
+                // under the iOS sandbox), so drop it from the nav on iOS.
+                for page in ALL_PAGES.into_iter().filter(|&p| !(cfg!(target_os = "ios") && p == NavPage::Shell)) {
                     {
                         let is_active = page == active_page;
                         let class_name = if is_active { "sidebar-flat-item active" } else { "sidebar-flat-item" };

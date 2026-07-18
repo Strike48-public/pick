@@ -155,11 +155,15 @@ pub fn Dashboard(
                             span { class: "action-card-icon", Shield { size: 24 } }
                             span { class: "action-card-label", "Vuln Assessment" }
                         }
-                        div {
-                            class: "action-card",
-                            onclick: move |_| on_open_shell.call(()),
-                            span { class: "action-card-icon", Terminal { size: 24 } }
-                            span { class: "action-card-label", "Shell" }
+                        // No interactive shell on iOS (no PTY/proot in the iOS
+                        // sandbox), so hide the shell quick-action there.
+                        if !cfg!(target_os = "ios") {
+                            div {
+                                class: "action-card",
+                                onclick: move |_| on_open_shell.call(()),
+                                span { class: "action-card-icon", Terminal { size: 24 } }
+                                span { class: "action-card-label", "Shell" }
+                            }
                         }
                     }
                 }
