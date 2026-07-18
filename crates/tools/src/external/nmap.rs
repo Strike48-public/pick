@@ -37,14 +37,15 @@ impl PentestTool for NmapTool {
     }
 
     fn schema(&self) -> ToolSchema {
-        use pentest_core::tools::ExternalDependency;
+        use pentest_core::tools::{ExternalDependency, ToolCategory};
 
         ToolSchema::new(self.name(), self.description())
             .external_dependency(ExternalDependency::new(
                 "nmap",
                 "nmap",
                 "Network Mapper - Security scanner for network exploration"
-            ))
+            )
+            .category(ToolCategory::Network))
             .param(ToolParam::required(
                 "target",
                 ParamType::String,

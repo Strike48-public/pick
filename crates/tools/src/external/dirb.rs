@@ -31,14 +31,17 @@ impl PentestTool for DirbTool {
     }
 
     fn schema(&self) -> ToolSchema {
-        use pentest_core::tools::ExternalDependency;
+        use pentest_core::tools::{ExternalDependency, ToolCategory};
 
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new(
-                "dirb",
-                "dirb",
-                "Web content scanner for dictionary-based attacks",
-            ))
+            .external_dependency(
+                ExternalDependency::new(
+                    "dirb",
+                    "dirb",
+                    "Web content scanner for dictionary-based attacks",
+                )
+                .category(ToolCategory::WebDiscovery),
+            )
             .param(ToolParam::required(
                 "url",
                 ParamType::String,

@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ExternalDependency, ParamType, PentestTool, Platform, ToolContext, ToolParam,
-    ToolResult, ToolSchema,
+    execute_timed, ExternalDependency, ParamType, PentestTool, Platform, ToolCategory, ToolContext,
+    ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
@@ -27,11 +27,14 @@ impl PentestTool for ExiftoolTool {
 
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new(
-                "exiftool",
-                "perl-image-exiftool",
-                "Metadata extraction tool (Perl-based)",
-            ))
+            .external_dependency(
+                ExternalDependency::new(
+                    "exiftool",
+                    "perl-image-exiftool",
+                    "Metadata extraction tool (Perl-based)",
+                )
+                .category(ToolCategory::Forensics),
+            )
             .param(ToolParam::required(
                 "file_path",
                 ParamType::String,

@@ -32,14 +32,15 @@ impl PentestTool for MasscanTool {
     }
 
     fn schema(&self) -> ToolSchema {
-        use pentest_core::tools::ExternalDependency;
+        use pentest_core::tools::{ExternalDependency, ToolCategory};
 
         ToolSchema::new(self.name(), self.description())
             .external_dependency(ExternalDependency::new(
                 "masscan",
                 "masscan",
                 "Internet-scale asynchronous TCP port scanner",
-            ))
+            )
+            .category(ToolCategory::Network))
             .param(ToolParam::required(
                 "target",
                 ParamType::String,

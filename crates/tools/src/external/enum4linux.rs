@@ -30,14 +30,13 @@ impl PentestTool for Enum4linuxTool {
     }
 
     fn schema(&self) -> ToolSchema {
-        use pentest_core::tools::ExternalDependency;
+        use pentest_core::tools::{ExternalDependency, ToolCategory};
 
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new(
-                "enum4linux",
-                "enum4linux",
-                "SMB/Windows enumeration tool",
-            ))
+            .external_dependency(
+                ExternalDependency::new("enum4linux", "enum4linux", "SMB/Windows enumeration tool")
+                    .category(ToolCategory::ActiveDirectory),
+            )
             .param(ToolParam::required(
                 "target",
                 ParamType::String,

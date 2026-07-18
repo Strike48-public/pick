@@ -54,7 +54,7 @@ impl PentestTool for BurpSuiteTool {
                      paid license.",
                     Some("https://portswigger.net/burp/communitydownload".to_string()),
                 )
-                .category(ToolCategory::Web)
+                .category(ToolCategory::Proxy)
                 .recommended(false),
             )
             .param(ToolParam::optional(

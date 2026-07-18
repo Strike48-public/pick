@@ -29,14 +29,13 @@ impl PentestTool for JohnTool {
     }
 
     fn schema(&self) -> ToolSchema {
-        use pentest_core::tools::ExternalDependency;
+        use pentest_core::tools::{ExternalDependency, ToolCategory};
 
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new(
-                "john",
-                "john",
-                "John the Ripper password cracker",
-            ))
+            .external_dependency(
+                ExternalDependency::new("john", "john", "John the Ripper password cracker")
+                    .category(ToolCategory::Credentials),
+            )
             .param(ToolParam::required(
                 "hash_file",
                 ParamType::String,

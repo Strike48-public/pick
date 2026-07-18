@@ -31,14 +31,17 @@ impl PentestTool for RustScanTool {
     }
 
     fn schema(&self) -> ToolSchema {
-        use pentest_core::tools::ExternalDependency;
+        use pentest_core::tools::{ExternalDependency, ToolCategory};
 
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new(
-                "rustscan",
-                "rustscan",
-                "Modern ultra-fast port scanner written in Rust",
-            ))
+            .external_dependency(
+                ExternalDependency::new(
+                    "rustscan",
+                    "rustscan",
+                    "Modern ultra-fast port scanner written in Rust",
+                )
+                .category(ToolCategory::Network),
+            )
             .param(ToolParam::required(
                 "target",
                 ParamType::String,

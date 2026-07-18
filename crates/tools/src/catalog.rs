@@ -130,6 +130,14 @@ impl CatalogEntry {
     }
 }
 
+/// Binaries that are install prerequisites for other tools rather than
+/// operator-facing tools in their own right. They are hidden from the catalog
+/// UI (no one "installs Python" as a pentest tool), but remain real
+/// `external_dependency` declarations so the tools that need them still pull
+/// them in through their own installer: `python3`/`playwright` for webwright,
+/// `node` (Node.js) for the CyberChef recipe runner.
+const HIDDEN_CATALOG_BINARIES: &[&str] = &["python3", "playwright", "node"];
+
 /// Collect the unique external dependencies declared across all registered
 /// tools, mapping each `binary_name` to its dependency plus the tools that use
 /// it. Uses a `BTreeMap` for deterministic ordering.
@@ -144,6 +152,9 @@ fn collect_dependencies() -> BTreeMap<String, (ExternalDependency, Vec<String>)>
     // advertised/executed, not here. See #183.
     for schema in registry.schemas() {
         for dep in &schema.external_dependencies {
+            if HIDDEN_CATALOG_BINARIES.contains(&dep.binary_name.as_str()) {
+                continue;
+            }
             let entry = deps
                 .entry(dep.binary_name.clone())
                 .or_insert_with(|| (dep.clone(), Vec::new()));
@@ -459,6 +470,32 @@ pub struct ToolOverviewItem {
     pub category: String,
 }
 
+/// Stable lowercase key for a [`ToolCategory`], matching its serde rename.
+///
+/// This is the single source of truth for category string keys shared by the
+/// catalog and the read-only overview. It is an exhaustive match on purpose:
+/// adding a `ToolCategory` variant without a key here is a compile error, so a
+/// new category can never silently fall through to a wrong bucket.
+fn category_key(cat: ToolCategory) -> &'static str {
+    match cat {
+        ToolCategory::Network => "network",
+        ToolCategory::Web => "web",
+        ToolCategory::WebDiscovery => "web_discovery",
+        ToolCategory::Proxy => "proxy",
+        ToolCategory::ActiveDirectory => "active_directory",
+        ToolCategory::Credentials => "credentials",
+        ToolCategory::Exploitation => "exploitation",
+        ToolCategory::PostExploit => "post_exploit",
+        ToolCategory::Sniffing => "sniffing",
+        ToolCategory::Wireless => "wireless",
+        ToolCategory::Recon => "recon",
+        ToolCategory::Crypto => "crypto",
+        ToolCategory::Forensics => "forensics",
+        ToolCategory::Utilities => "utilities",
+        ToolCategory::Other => "other",
+    }
+}
+
 /// Map a tool's name + its (optional) declared category to a display category.
 ///
 /// Tools that declare an `ExternalDependency` carry an explicit
@@ -467,18 +504,11 @@ pub struct ToolOverviewItem {
 /// sensibly rather than dumping everything in "other".
 fn overview_category(name: &str, declared: Option<ToolCategory>) -> &'static str {
     if let Some(cat) = declared {
-        // Reuse the serde rename for a stable key.
-        return match cat {
-            ToolCategory::Network => "network",
-            ToolCategory::Web => "web",
-            ToolCategory::ActiveDirectory => "active_directory",
-            ToolCategory::Credentials => "credentials",
-            ToolCategory::PostExploit => "post_exploit",
-            ToolCategory::Wireless => "wireless",
-            ToolCategory::Recon => "recon",
-            ToolCategory::Forensics => "forensics",
-            ToolCategory::Other => "other",
-        };
+        // Reuse the serde rename for a stable key. Deriving it from serde
+        // (rather than a hand-written match) keeps this in lockstep with the
+        // enum: new `ToolCategory` variants are covered automatically and can
+        // never silently fall through.
+        return category_key(cat);
     }
     // Heuristic for built-ins with no declared category.
     match name {
@@ -620,7 +650,7 @@ mod tests {
         assert!(nmap.is_some(), "nmap should be in the catalog");
         let nmap = nmap.unwrap();
         assert!(!nmap.used_by.is_empty());
-        assert_eq!(nmap.category, ToolCategory::Other); // nmap hasn't set a category yet
+        assert_eq!(nmap.category, ToolCategory::Network);
     }
 
     #[tokio::test]
@@ -722,6 +752,32 @@ mod tests {
         assert_eq!(overview_category("read_file", None), "files");
         // Unknown built-in falls back to "other".
         assert_eq!(overview_category("some_new_builtin", None), "other");
+    }
+
+    #[test]
+    fn category_key_covers_new_taxonomy_variants() {
+        // The curated taxonomy keys must match the enum's serde rename so the
+        // UI's humanize_category lookups line up.
+        assert_eq!(category_key(ToolCategory::WebDiscovery), "web_discovery");
+        assert_eq!(category_key(ToolCategory::Proxy), "proxy");
+        assert_eq!(category_key(ToolCategory::Exploitation), "exploitation");
+        assert_eq!(category_key(ToolCategory::Sniffing), "sniffing");
+        assert_eq!(category_key(ToolCategory::Crypto), "crypto");
+        assert_eq!(category_key(ToolCategory::Utilities), "utilities");
+    }
+
+    #[tokio::test]
+    async fn runtime_dep_binaries_are_hidden_from_catalog() {
+        // python3 / playwright are install prerequisites, not operator-facing
+        // tools; they must not appear as catalog entries even though tools
+        // (webwright) declare them as dependencies.
+        let catalog = build_catalog().await;
+        for hidden in HIDDEN_CATALOG_BINARIES {
+            assert!(
+                !catalog.iter().any(|e| &e.binary_name == hidden),
+                "{hidden} should be hidden from the catalog"
+            );
+        }
     }
 
     #[test]

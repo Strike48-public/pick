@@ -59,7 +59,7 @@ impl PentestTool for MetasploitTool {
                     "Metasploit Framework - exploitation and payload generation",
                 )
                 .custom_installer("metasploit")
-                .category(ToolCategory::PostExploit)
+                .category(ToolCategory::Exploitation)
                 .recommended(false),
             )
             .param(ToolParam::required(
