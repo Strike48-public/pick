@@ -150,3 +150,62 @@ npx playwright test --grep "should reorder operations"
 - **Total coverage**: 39 automated tests
 
 Run unit tests frequently, E2E tests before commits.
+
+---
+
+## Capturing UI Media for PRs
+
+The connector UI is a Dioxus liveview app served by `pentest-web` on
+`http://localhost:3000/app`, and it boots to a "Connect to Strike48" gate: the
+sidebar, Settings, and Tools panel only render after connecting. The e2e suite
+above targets a different surface, so a dedicated helper drives the connector UI
+and produces screenshots + a GIF for pull-request documentation.
+
+`scripts/capture-ui.sh` (a thin wrapper over `scripts/capture_ui.py`) launches
+the web app, connects to a local Strike48 studio, navigates to a view, runs an
+optional interaction, and writes media to `docs/assets/<feature>/`.
+
+### Requirements
+
+Same Playwright + Chromium used elsewhere, plus `ffmpeg` for GIF conversion:
+
+```bash
+pip install playwright && playwright install chromium   # in the mise python env
+```
+
+Connection settings come from `--host` / `--tenant`, else `STRIKE48_HOST` /
+`STRIKE48_TENANT`, else the repo `.env` (gitignored). Point it at a **local**
+studio (e.g. `wss://studio.strike48.test`), not a production tenant.
+
+### Usage
+
+```bash
+# Screenshots + GIF of an install with the elapsed/estimate progress bar
+scripts/capture-ui.sh --feature install-progress \
+    --view Settings --interaction install-first-tool
+
+# A static view, screenshots only (no GIF)
+scripts/capture-ui.sh --feature dashboard --view Dashboard --no-video
+```
+
+Artifacts land in `docs/assets/<feature>/` (`NN-*.png` frames plus
+`<feature>.gif`). The intermediate WebM/palette scratch files are removed.
+
+### Committing and referencing media
+
+Per project convention, commit the intended PNG/GIF into the PR diff and
+reference them with a repo-relative path in the PR body:
+
+```markdown
+![install progress](docs/assets/install-progress/02-installing.png)
+```
+
+Commit only the frames you actually reference; delete the rest so the diff and
+repo history stay lean. Do not commit `.webm` scratch files.
+
+### Adding a new interaction
+
+Interactions live in `scripts/capture_ui.py` under the `INTERACTIONS` map. Add a
+`interaction_<name>(page, out_dir)` function that drives the feature and drops
+screenshots, then register it in the map; it becomes selectable via
+`--interaction <name>`.
