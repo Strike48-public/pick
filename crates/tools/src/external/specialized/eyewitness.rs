@@ -29,7 +29,7 @@ impl PentestTool for EyewitnessTool {
         ToolSchema::new(self.name(), self.description())
             .external_dependency(
                 ExternalDependency::new("eyewitness", "eyewitness", "Screenshot tool")
-                    .category(ToolCategory::Web),
+                    .category(ToolCategory::Recon),
             )
             .param(ToolParam::required(
                 "url",

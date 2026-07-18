@@ -29,7 +29,7 @@ impl PentestTool for FfufDnsTool {
         ToolSchema::new(self.name(), self.description())
             .external_dependency(
                 ExternalDependency::new("ffuf", "ffuf", "Fast fuzzer")
-                    .category(ToolCategory::WebDiscovery),
+                    .category(ToolCategory::Recon),
             )
             .param(ToolParam::required(
                 "domain",
