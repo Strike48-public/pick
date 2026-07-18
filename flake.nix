@@ -159,6 +159,12 @@
 
           # Point the justfile's `dx` (defaults to ~/.dx/bin/dx) at the Nix CLI.
           export DX_PATH="$(command -v dx)"
+
+          # Test binaries dynamically link openssl (via native-tls); without the
+          # nix openssl lib on the loader path they fail at runtime with
+          # "libssl.so.3: cannot open shared object file". buildInputs only
+          # affects the compile/link env, not the runtime loader, so export it.
+          export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.openssl ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         '';
       };
 
