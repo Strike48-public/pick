@@ -54,8 +54,14 @@
         platformVersions = [ "35" "36" ];
         includeNDK = true;
         ndkVersions = [ ndkVersion ];
-        # Emulator + system images are large and left out; enable them here
-        # (includeEmulator = true; includeSystemImages = true;) if you need an AVD.
+        # Emulator + a rootable google_apis x86_64 system image for android-36,
+        # matching what `just emulator-setup` / `just emulator` expect. These are
+        # multi-GB; they only download when someone actually enters the devshell
+        # needing an AVD.
+        includeEmulator = true;
+        includeSystemImages = true;
+        systemImageTypes = [ "google_apis" ];
+        abiVersions = [ "x86_64" ];
       };
       androidSdk = androidComposition.androidsdk;
       androidHome = "${androidSdk}/libexec/android-sdk";
@@ -184,18 +190,31 @@
         ];
 
         # Build-time tools only. protoc for build.rs; pkg-config so crates that
-        # need it can still discover libs. No GTK/WebKit stack (Linux desktop
-        # only) and no Nix C compiler — Apple's clang/ld from Xcode does the work.
-        nativeBuildInputs = with darwinPkgs; [ pkg-config protobuf ];
+        # need it can still discover libs; libclang so bindgen (rquickjs-sys,
+        # which ships no pre-generated iOS bindings) can parse the QuickJS
+        # headers. No GTK/WebKit stack (Linux desktop only) and no Nix C
+        # compiler — Apple's clang/ld from Xcode does the actual work.
+        nativeBuildInputs = with darwinPkgs; [ pkg-config protobuf libclang ];
 
         shellHook = ''
           # Point the justfile's `dx` (defaults to ~/.dx/bin/dx) at the Nix CLI.
           export DX_PATH="$(command -v dx)"
 
+          # bindgen (rquickjs-sys) needs libclang and, when parsing C headers for
+          # an iOS target, the iOS sysroot + an Apple target triple — otherwise
+          # its clang can't find stdio.h or understand the `-sim` triple suffix.
+          export LIBCLANG_PATH="${darwinPkgs.libclang.lib}/lib"
+
           # Host + iOS compiles use Apple's clang from the active Xcode; no Nix cc
           # wrapper is present, so /usr/bin is the toolchain source. Warn early if
           # a full Xcode isn't selected (Command Line Tools alone lack the iOS SDK).
-          if ! /usr/bin/xcrun --sdk iphonesimulator --show-sdk-path >/dev/null 2>&1; then
+          if /usr/bin/xcrun --sdk iphonesimulator --show-sdk-path >/dev/null 2>&1; then
+            # Point bindgen at the *simulator* SDK by default — matches the
+            # `dx build --platform ios` simulator flow. For a device build,
+            # override with the iphoneos SDK + `-target arm64-apple-ios14.0`.
+            _sim_sdk="$(/usr/bin/xcrun --sdk iphonesimulator --show-sdk-path)"
+            export BINDGEN_EXTRA_CLANG_ARGS="-isysroot $_sim_sdk -target arm64-apple-ios14.0-simulator"
+          else
             echo "WARNING: no iphonesimulator SDK found."
             echo "  iOS builds need full Xcode, not just Command Line Tools."
             echo "  Install Xcode, then: sudo xcode-select --switch /Applications/Xcode.app"

@@ -22,6 +22,7 @@ pub mod port_scan;
 pub mod provenance_support;
 pub mod read_file;
 pub mod registry; // Quick action registry for UI
+pub mod run_js; // Sandboxed JavaScript (QuickJS) tool runner
 pub mod safety_check; // NEW: Network safety validation
 pub mod safety_check_tool; // NEW: Safety check tool wrapper
 pub mod screenshot;
@@ -79,6 +80,7 @@ pub use list_files::ListFilesTool;
 pub use network_discover::NetworkDiscoverTool;
 pub use port_scan::PortScanTool;
 pub use read_file::ReadFileTool;
+pub use run_js::RunJsTool;
 pub use safety_check_tool::SafetyCheckTool;
 pub use screenshot::ScreenshotTool;
 pub use service_banner::ServiceBannerTool;
@@ -242,6 +244,7 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(ReadFileTool);
     registry.register(WriteFileTool);
     registry.register(ListFilesTool);
+    registry.register(RunJsTool); // Sandboxed JavaScript payload runner (iOS-capable)
 
     // Testing tools — `inject_test_evidence` pushes arbitrary fabricated
     // findings into the evidence graph, so it is a grounding-guardrail bypass
