@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ExternalDependency, ParamType, PentestTool, Platform, ToolContext, ToolParam,
-    ToolResult, ToolSchema,
+    execute_timed, ExternalDependency, ParamType, PentestTool, Platform, ToolCategory, ToolContext,
+    ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
@@ -27,7 +27,10 @@ impl PentestTool for NiktoNgTool {
 
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new("nikto", "nikto", "Web scanner"))
+            .external_dependency(
+                ExternalDependency::new("nikto", "nikto", "Web scanner")
+                    .category(ToolCategory::Web),
+            )
             .param(ToolParam::required(
                 "host",
                 ParamType::String,

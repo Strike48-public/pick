@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
     execute_timed_with_provenance, ExternalDependency, ParamType, PentestTool, Platform,
-    ToolContext, ToolParam, ToolResult, ToolSchema,
+    ToolCategory, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
@@ -28,11 +28,10 @@ impl PentestTool for WhatwebTool {
 
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new(
-                "whatweb",
-                "whatweb",
-                "Web tech identifier",
-            ))
+            .external_dependency(
+                ExternalDependency::new("whatweb", "whatweb", "Web tech identifier")
+                    .category(ToolCategory::Web),
+            )
             .param(ToolParam::required("url", ParamType::String, "Target URL"))
             .param(ToolParam::optional(
                 "timeout",

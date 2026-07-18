@@ -214,20 +214,32 @@ pub enum InstallMethod {
 pub enum ToolCategory {
     /// Host/port/service discovery and network mapping.
     Network,
-    /// Web application scanning and fuzzing.
+    /// Web application scanning and exploitation (nikto, sqlmap, nuclei, ...).
     Web,
+    /// Web content/endpoint discovery and fuzzing (gobuster, ffuf, katana, ...).
+    WebDiscovery,
+    /// Intercepting/scanning web proxies (Burp Suite, OWASP ZAP).
+    Proxy,
     /// Active Directory, SMB, Kerberos, LDAP.
     ActiveDirectory,
-    /// Credential attacks: cracking, spraying, dumping.
+    /// Credential attacks: cracking, spraying, wordlist generation.
     Credentials,
+    /// Exploitation frameworks and exploit lookup (Metasploit, searchsploit).
+    Exploitation,
     /// Post-exploitation, C2, lateral movement, payload generation.
     PostExploit,
+    /// Traffic sniffing and network spoofing/poisoning.
+    Sniffing,
     /// Wireless.
     Wireless,
     /// OSINT and reconnaissance.
     Recon,
+    /// TLS/SSL and cryptography analysis.
+    Crypto,
     /// Forensics and evidence handling.
     Forensics,
+    /// General-purpose networking/support utilities (socat, ncat, exiftool).
+    Utilities,
     /// Anything that doesn't fit a more specific group.
     #[default]
     Other,

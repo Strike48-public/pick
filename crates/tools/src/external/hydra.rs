@@ -32,14 +32,17 @@ impl PentestTool for HydraTool {
     }
 
     fn schema(&self) -> ToolSchema {
-        use pentest_core::tools::ExternalDependency;
+        use pentest_core::tools::{ExternalDependency, ToolCategory};
 
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new(
-                "hydra",
-                "hydra",
-                "Parallelized login bruteforcer (THC Hydra)",
-            ))
+            .external_dependency(
+                ExternalDependency::new(
+                    "hydra",
+                    "hydra",
+                    "Parallelized login bruteforcer (THC Hydra)",
+                )
+                .category(ToolCategory::Credentials),
+            )
             .param(ToolParam::required(
                 "target",
                 ParamType::String,

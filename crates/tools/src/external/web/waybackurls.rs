@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ExternalDependency, ParamType, PentestTool, Platform, ToolContext, ToolParam,
-    ToolResult, ToolSchema,
+    execute_timed, ExternalDependency, ParamType, PentestTool, Platform, ToolCategory, ToolContext,
+    ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
@@ -27,11 +27,14 @@ impl PentestTool for WaybackurlsTool {
 
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(self.name(), self.description())
-            .external_dependency(ExternalDependency::new(
-                "waybackurls",
-                "waybackurls",
-                "Wayback Machine URL fetcher (Go)",
-            ))
+            .external_dependency(
+                ExternalDependency::new(
+                    "waybackurls",
+                    "waybackurls",
+                    "Wayback Machine URL fetcher (Go)",
+                )
+                .category(ToolCategory::Recon),
+            )
             .param(ToolParam::required(
                 "domain",
                 ParamType::String,

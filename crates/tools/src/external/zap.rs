@@ -53,7 +53,7 @@ impl PentestTool for ZapTool {
                     "OWASP ZAP - dynamic application security testing engine",
                 )
                 .custom_installer("zap")
-                .category(ToolCategory::Web),
+                .category(ToolCategory::Proxy),
             )
             .param(ToolParam::required(
                 "target",

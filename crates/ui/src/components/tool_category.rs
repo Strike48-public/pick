@@ -17,14 +17,20 @@ use super::icons::{Folder, Lock, Network, Search, Shield, Terminal, Wifi};
 /// to "Other".
 pub fn humanize_category(category: &str) -> &'static str {
     match category {
-        "network" => "Network",
-        "web" => "Web",
-        "active_directory" => "Active Directory",
-        "credentials" => "Credentials",
+        "network" => "Network Scanning",
+        "web" => "Web - Scanning & Exploit",
+        "web_discovery" => "Web - Content Discovery",
+        "proxy" => "Proxies",
+        "active_directory" => "Active Directory & Windows",
+        "credentials" => "Password Attacks",
+        "exploitation" => "Exploitation",
         "post_exploit" => "Post-Exploitation",
+        "sniffing" => "Sniffing & Spoofing",
         "wireless" => "Wireless",
-        "recon" => "Reconnaissance",
+        "recon" => "Recon & OSINT",
+        "crypto" => "TLS / Crypto",
         "forensics" => "Forensics",
+        "utilities" => "Utilities",
         "system" => "System",
         "files" => "Files",
         _ => "Other",
@@ -35,11 +41,15 @@ pub fn humanize_category(category: &str) -> &'static str {
 pub fn category_icon(category: &str) -> Element {
     match category {
         "network" => rsx! { Network { size: 18 } },
-        "web" => rsx! { Search { size: 18 } },
+        "web" | "web_discovery" => rsx! { Search { size: 18 } },
+        "proxy" => rsx! { Network { size: 18 } },
         "active_directory" | "credentials" => rsx! { Lock { size: 18 } },
-        "post_exploit" => rsx! { Shield { size: 18 } },
+        "exploitation" | "post_exploit" => rsx! { Shield { size: 18 } },
+        "sniffing" => rsx! { Wifi { size: 18 } },
         "wireless" => rsx! { Wifi { size: 18 } },
         "recon" | "forensics" => rsx! { Search { size: 18 } },
+        "crypto" => rsx! { Lock { size: 18 } },
+        "utilities" => rsx! { Terminal { size: 18 } },
         "files" => rsx! { Folder { size: 18 } },
         _ => rsx! { Terminal { size: 18 } },
     }
