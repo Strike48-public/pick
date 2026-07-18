@@ -18,8 +18,9 @@ use pentest_core::tools::ToolRegistry;
 
 use crate::components::icons::MessageCircle;
 use crate::components::{
-    AppLayout, ChatPanel, ConfigForm, ConnectingScreen, ConnectingStep, Dashboard, FileBrowser,
-    InteractiveShell, NavPage, SettingsPage, Terminal, ToolsPage, STRIKE48_SIDEBAR_LOGO_SVG,
+    AppLayout, ChatPanel, ConfigForm, ConnectingScreen, ConnectingStep, Dashboard,
+    EasyModeShell, FileBrowser, InteractiveShell, NavPage, SettingsPage, Terminal, ToolsPage,
+    STRIKE48_SIDEBAR_LOGO_SVG,
 };
 use crate::download_manager::is_blackarch_ready;
 use crate::{
@@ -751,6 +752,19 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                             String::new()
                         }
                     };
+
+                    if cfg.easy_mode {
+                        return rsx! {
+                            EasyModeShell {
+                                api_url: chat_api_url.clone(),
+                                auth_token: matrix_auth_token.read().clone(),
+                                tenant_id: config.read().tenant_id.clone(),
+                                chat_mailbox,
+                                conversation_mailbox,
+                            }
+                        };
+                    }
+
                     let page_subtitle = match page {
                         NavPage::Dashboard => Some(host.clone()),
                         NavPage::Tools => Some("12 connector tools available".to_string()),
