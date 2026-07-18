@@ -17,6 +17,7 @@ const DESKTOP_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
     extra_init_messages: &[],
     create_tools: pentest_tools::create_tool_registry,
     set_sandbox: Some(pentest_platform::set_use_sandbox),
+    easy_mode: false,
 };
 
 fn main() {
