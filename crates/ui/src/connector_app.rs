@@ -757,7 +757,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                     };
 
                     if cfg.easy_mode {
-                        return rsx! {
+                        rsx! {
                             EasyModeShell {
                                 api_url: chat_api_url.clone(),
                                 auth_token: matrix_auth_token.read().clone(),
@@ -765,111 +765,111 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                 chat_mailbox,
                                 conversation_mailbox,
                             }
-                        };
-                    }
-
-                    let page_subtitle = match page {
-                        NavPage::Dashboard => Some(host.clone()),
-                        NavPage::Tools => Some("12 connector tools available".to_string()),
-                        _ => None,
-                    };
-                    let page_actions = if page == NavPage::Dashboard {
-                        Some(rsx! {
-                            button {
-                                class: "desktop-header-btn",
-                                title: "Chat",
-                                onclick: move |_| {
-                                    active_page.set(NavPage::Chat);
-                                },
-                                MessageCircle { size: 20 }
-                            }
-                        })
+                        }
                     } else {
-                        None
-                    };
-                    rsx! {
-                        AppLayout {
-                            active_page: page,
-                            page_subtitle,
-                            page_actions,
-                            on_navigate: move |p: NavPage| {
-                                if p == NavPage::Logs {
-                                    last_seen_terminal_count.set(terminal_lines.peek().len());
+                        let page_subtitle = match page {
+                            NavPage::Dashboard => Some(host.clone()),
+                            NavPage::Tools => Some("12 connector tools available".to_string()),
+                            _ => None,
+                        };
+                        let page_actions = if page == NavPage::Dashboard {
+                            Some(rsx! {
+                                button {
+                                    class: "desktop-header-btn",
+                                    title: "Chat",
+                                    onclick: move |_| {
+                                        active_page.set(NavPage::Chat);
+                                    },
+                                    MessageCircle { size: 20 }
                                 }
-                                active_page.set(p);
-                            },
-                            connected: true,
-                            unread_logs: unread,
-                            host: host.clone(),
-                            api_url: chat_api_url.clone(),
-                            auth_token: matrix_auth_token.read().clone(),
-                            on_open_conversation: move |conv_id: String| {
-                                conversation_mailbox.set(Some(conv_id));
-                                active_page.set(NavPage::Chat);
-                            },
-
-                            // Page content — routed by ConnectorPages
-                            ConnectorPages {
+                            })
+                        } else {
+                            None
+                        };
+                        rsx! {
+                            AppLayout {
                                 active_page: page,
-                                host: host,
-                                terminal_lines,
-                                workspace_path,
-                                shell_mode: shell_mode_str,
-                                blackarch_downloaded: blackarch_ready,
-                                download_progress: *download_progress.read(),
-                                setup_error: setup_error.read().clone(),
-                                on_open_chat: move |msg: String| {
-                                    if !msg.is_empty() {
-                                        chat_mailbox.set(Some(msg));
+                                page_subtitle,
+                                page_actions,
+                                on_navigate: move |p: NavPage| {
+                                    if p == NavPage::Logs {
+                                        last_seen_terminal_count.set(terminal_lines.peek().len());
                                     }
+                                    active_page.set(p);
+                                },
+                                connected: true,
+                                unread_logs: unread,
+                                host: host.clone(),
+                                api_url: chat_api_url.clone(),
+                                auth_token: matrix_auth_token.read().clone(),
+                                on_open_conversation: move |conv_id: String| {
+                                    conversation_mailbox.set(Some(conv_id));
                                     active_page.set(NavPage::Chat);
                                 },
-                                on_open_shell: move |_| {
-                                    active_page.set(NavPage::Shell);
-                                },
-                                on_disconnect: move |_| on_disconnect(()),
-                                on_start_download: on_start_download,
-                                settings_shell_mode: settings.read().shell_mode,
-                                on_shell_mode_change: move |mode: ShellMode| {
-                                    let mut s = settings.write();
-                                    s.shell_mode = mode;
-                                    let _ = save_settings(&s);
-                                    if let Some(set_sb) = cfg.set_sandbox {
-                                        set_sb(mode == ShellMode::Proot);
-                                    }
-                                },
-                                wifi_adapter: settings.read().wifi_adapter.clone(),
-                                on_wifi_adapter_change: move |adapter: Option<String>| {
-                                    let mut s = settings.write();
-                                    s.wifi_adapter = adapter;
-                                    let _ = save_settings(&s);
-                                },
-                                theme: *theme.read(),
-                                on_theme_change: move |t: Theme| {
-                                    let mut s = settings.write();
-                                    s.theme = t;
-                                    let _ = save_settings(&s);
-                                    theme.set(t);
-                                },
-                                border_radius: *border_radius.read(),
-                                on_border_radius_change: move |r: BorderRadius| {
-                                    let mut s = settings.write();
-                                    s.border_radius = r;
-                                    let _ = save_settings(&s);
-                                    border_radius.set(r);
-                                },
-                                density: *density.read(),
-                                on_density_change: move |d: Density| {
-                                    let mut s = settings.write();
-                                    s.density = d;
-                                    let _ = save_settings(&s);
-                                    density.set(d);
-                                },
-                                api_url: chat_api_url,
-                                auth_token: matrix_auth_token.read().clone(),
-                                tenant_id: config.read().tenant_id.clone(),
-                                chat_mailbox,
-                                conversation_mailbox,
+
+                                // Page content — routed by ConnectorPages
+                                ConnectorPages {
+                                    active_page: page,
+                                    host: host,
+                                    terminal_lines,
+                                    workspace_path,
+                                    shell_mode: shell_mode_str,
+                                    blackarch_downloaded: blackarch_ready,
+                                    download_progress: *download_progress.read(),
+                                    setup_error: setup_error.read().clone(),
+                                    on_open_chat: move |msg: String| {
+                                        if !msg.is_empty() {
+                                            chat_mailbox.set(Some(msg));
+                                        }
+                                        active_page.set(NavPage::Chat);
+                                    },
+                                    on_open_shell: move |_| {
+                                        active_page.set(NavPage::Shell);
+                                    },
+                                    on_disconnect: move |_| on_disconnect(()),
+                                    on_start_download: on_start_download,
+                                    settings_shell_mode: settings.read().shell_mode,
+                                    on_shell_mode_change: move |mode: ShellMode| {
+                                        let mut s = settings.write();
+                                        s.shell_mode = mode;
+                                        let _ = save_settings(&s);
+                                        if let Some(set_sb) = cfg.set_sandbox {
+                                            set_sb(mode == ShellMode::Proot);
+                                        }
+                                    },
+                                    wifi_adapter: settings.read().wifi_adapter.clone(),
+                                    on_wifi_adapter_change: move |adapter: Option<String>| {
+                                        let mut s = settings.write();
+                                        s.wifi_adapter = adapter;
+                                        let _ = save_settings(&s);
+                                    },
+                                    theme: *theme.read(),
+                                    on_theme_change: move |t: Theme| {
+                                        let mut s = settings.write();
+                                        s.theme = t;
+                                        let _ = save_settings(&s);
+                                        theme.set(t);
+                                    },
+                                    border_radius: *border_radius.read(),
+                                    on_border_radius_change: move |r: BorderRadius| {
+                                        let mut s = settings.write();
+                                        s.border_radius = r;
+                                        let _ = save_settings(&s);
+                                        border_radius.set(r);
+                                    },
+                                    density: *density.read(),
+                                    on_density_change: move |d: Density| {
+                                        let mut s = settings.write();
+                                        s.density = d;
+                                        let _ = save_settings(&s);
+                                        density.set(d);
+                                    },
+                                    api_url: chat_api_url,
+                                    auth_token: matrix_auth_token.read().clone(),
+                                    tenant_id: config.read().tenant_id.clone(),
+                                    chat_mailbox,
+                                    conversation_mailbox,
+                                }
                             }
                         }
                     }
