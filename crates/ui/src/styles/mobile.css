@@ -390,3 +390,20 @@
 .dashboard-card {
     border-color: color-mix(in srgb, var(--border) 100%, var(--muted-foreground) 20%);
 }
+
+/* Easy Mode: full-height column — scan card on top, chat fills the rest. */
+.easy-mode {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+}
+.easy-mode .action-grid {
+    padding: 12px;
+    flex: 0 0 auto;
+}
+.easy-mode-chat {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+}
