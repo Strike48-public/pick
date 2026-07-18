@@ -714,8 +714,15 @@ mod tests {
             assert!(!names.contains(&t), "iOS overview must not include {t}");
         }
         // Desktop is unchanged (full unfiltered list), and iOS is a strict subset.
-        assert_eq!(desktop.len(), tools_overview().len(), "desktop must be a no-op");
-        assert!(ios.len() < desktop.len(), "iOS list must be smaller than desktop");
+        assert_eq!(
+            desktop.len(),
+            tools_overview().len(),
+            "desktop must be a no-op"
+        );
+        assert!(
+            ios.len() < desktop.len(),
+            "iOS list must be smaller than desktop"
+        );
     }
 
     #[test]

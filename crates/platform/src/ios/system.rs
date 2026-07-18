@@ -12,9 +12,7 @@ use std::ffi::{CStr, CString};
 
 /// Read device/system information via `sysctl`.
 pub async fn get_device_info() -> Result<DeviceInfo> {
-    let cpu_count = sysctl_int("hw.logicalcpu")
-        .filter(|&n| n > 0)
-        .unwrap_or(1) as usize;
+    let cpu_count = sysctl_int("hw.logicalcpu").filter(|&n| n > 0).unwrap_or(1) as usize;
     let total_memory_mb = sysctl_int("hw.memsize").unwrap_or(0).max(0) as u64 / 1024 / 1024;
 
     Ok(DeviceInfo {
@@ -191,7 +189,10 @@ mod tests {
     #[tokio::test]
     async fn network_interfaces_include_loopback() {
         let ifaces = get_network_interfaces().await.unwrap();
-        assert!(!ifaces.is_empty(), "should enumerate at least one interface");
+        assert!(
+            !ifaces.is_empty(),
+            "should enumerate at least one interface"
+        );
         // Loopback is always present and should carry 127.0.0.1.
         let lo = ifaces
             .iter()

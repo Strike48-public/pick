@@ -26,11 +26,8 @@ pub enum Platform {
 /// tool works there. iOS is opt-in — a tool that genuinely runs natively on
 /// iOS (in-process / outbound-network only) declares `Platform::Ios` in its
 /// own `supported_platforms` override.
-pub const DEFAULT_TOOL_PLATFORMS: &[Platform] = &[
-    Platform::Desktop,
-    Platform::Android,
-    Platform::Tui,
-];
+pub const DEFAULT_TOOL_PLATFORMS: &[Platform] =
+    &[Platform::Desktop, Platform::Android, Platform::Tui];
 
 impl Platform {
     /// Get the current platform
