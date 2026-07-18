@@ -1,6 +1,7 @@
 //! iOS platform implementation (stub)
 
 pub mod pty_shell;
+pub mod system;
 
 use crate::traits::*;
 use async_trait::async_trait;
@@ -69,21 +70,11 @@ impl NetworkOps for IosPlatform {
 #[async_trait]
 impl SystemInfo for IosPlatform {
     async fn get_device_info(&self) -> Result<DeviceInfo> {
-        Ok(DeviceInfo {
-            os_name: "iOS".to_string(),
-            os_version: String::new(),
-            hostname: "iphone".to_string(),
-            architecture: std::env::consts::ARCH.to_string(),
-            cpu_count: 1,
-            total_memory_mb: 0,
-            platform_specific: PlatformDetails::Ios,
-        })
+        system::get_device_info().await
     }
 
     async fn get_network_interfaces(&self) -> Result<Vec<NetworkInterface>> {
-        Err(Error::PlatformNotSupported(
-            "get_network_interfaces not available on iOS".into(),
-        ))
+        system::get_network_interfaces().await
     }
 
     async fn get_wifi_networks(&self, interface: Option<String>) -> Result<Vec<WifiNetwork>> {

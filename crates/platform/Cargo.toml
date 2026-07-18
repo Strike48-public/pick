@@ -13,7 +13,9 @@ desktop-screenshots = ["desktop", "screenshots"]
 desktop-mdns = ["desktop", "mdns-sd"]
 desktop-pcap = ["desktop", "pcap"]
 android = ["dep:jni", "dep:ndk-context", "dep:reqwest", "dep:portable-pty", "dep:libc", "dep:tar", "dep:xz2", "dep:sha2"]
-ios = []
+# getifaddrs(3) + sysctl(3) are permitted in the iOS app sandbox with no
+# entitlement, so native interface/device-info enumeration only needs libc.
+ios = ["dep:libc"]
 
 [dependencies]
 # Core
