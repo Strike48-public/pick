@@ -13,6 +13,7 @@ mod cyberchef_page;
 #[cfg(test)]
 mod cyberchef_sortable_tests;
 mod dashboard;
+pub mod easy_mode;
 pub mod extension;
 pub mod file_browser;
 pub mod help_modal;
