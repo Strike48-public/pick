@@ -65,7 +65,10 @@ mod tests {
     #[test]
     fn scan_prompt_mentions_network_and_report_document() {
         let p = easy_mode_scan_prompt().to_lowercase();
-        assert!(p.contains("network"), "prompt should mention the network: {p}");
+        assert!(
+            p.contains("network"),
+            "prompt should mention the network: {p}"
+        );
         assert!(
             p.contains("report document"),
             "prompt must ask the agent to write a report document: {p}"

@@ -18,8 +18,8 @@ use pentest_core::tools::ToolRegistry;
 
 use crate::components::icons::MessageCircle;
 use crate::components::{
-    AppLayout, ChatPanel, ConfigForm, ConnectingScreen, ConnectingStep, Dashboard,
-    EasyModeShell, FileBrowser, InteractiveShell, NavPage, SettingsPage, Terminal, ToolsPage,
+    AppLayout, ChatPanel, ConfigForm, ConnectingScreen, ConnectingStep, Dashboard, EasyModeShell,
+    FileBrowser, InteractiveShell, NavPage, SettingsPage, Terminal, ToolsPage,
     STRIKE48_SIDEBAR_LOGO_SVG,
 };
 use crate::download_manager::is_blackarch_ready;
@@ -605,7 +605,10 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         download_progress.set(Some(-1.0));
 
         spawn(async move {
-            #[cfg(all(feature = "shell-ws", not(any(target_os = "android", target_os = "ios"))))]
+            #[cfg(all(
+                feature = "shell-ws",
+                not(any(target_os = "android", target_os = "ios"))
+            ))]
             {
                 let result = match pentest_platform::desktop::sandbox::get_sandbox_manager().await {
                     Ok(manager) => manager.ensure_ready().await.map_err(|e| format!("{}", e)),
