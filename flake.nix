@@ -162,45 +162,35 @@
         '';
       };
 
-      devShells.${darwinSystem}.default = darwinPkgs.mkShell {
+      # mkShellNoCC (not mkShell): we deliberately do NOT pull Nix's darwin cc
+      # stdenv. That stdenv wraps clang/ld for a *macOS* sysroot and injects
+      # `-mmacos-version-min` plus its own `xcrun` shim and DEVELOPER_DIR — all of
+      # which fight iOS cross-compilation (ObjC deps get `-mmacos-version-min` vs
+      # `-mios-simulator-version-min` conflicts, and cc-rs can't find the iphone
+      # SDK). On a Mac with real Xcode, the system Apple toolchain already
+      # compiles/links both host (macOS) and iOS targets correctly, so we let it,
+      # and Nix supplies only Rust (+ iOS std), dx, and build-time tools.
+      devShells.${darwinSystem}.default = darwinPkgs.mkShellNoCC {
         packages = [
           darwinRust
           dxCliDarwin   # `dx` 0.7.9, matches dioxus 0.7.9 in Cargo.lock
           darwinPkgs.just
         ];
 
-        # Native build deps. The desktop GTK/WebKit stack (gtk3, webkitgtk,
-        # dbus, libsoup, xdotool) is Linux-only and irrelevant to iOS, so the
-        # macOS shell stays lean.
+        # Build-time tools only. protoc for build.rs; pkg-config so crates that
+        # need it can still discover libs. No GTK/WebKit stack (Linux desktop
+        # only) and no Nix C compiler — Apple's clang/ld from Xcode does the work.
         nativeBuildInputs = with darwinPkgs; [ pkg-config protobuf ];
-        buildInputs = with darwinPkgs; [ openssl libpcap ];
 
         shellHook = ''
           # Point the justfile's `dx` (defaults to ~/.dx/bin/dx) at the Nix CLI.
           export DX_PATH="$(command -v dx)"
 
-          # iOS builds need Apple's real iOS SDKs (iphoneos / iphonesimulator),
-          # which Nix cannot vendor. The Nix darwin stdenv ships only a macOS SDK
-          # stub plus an `xcrun` shim and points DEVELOPER_DIR at them — so cc-rs,
-          # compiling ObjC deps (objc2 &c.) for an iOS target, fails on
-          # `xcrun --show-sdk-path --sdk iphonesimulator`.
-          #
-          # When a full Xcode with the iPhone platforms is installed, defer iOS
-          # SDK resolution to Apple's toolchain: point DEVELOPER_DIR at the real
-          # Xcode and shadow the Nix `xcrun` shim with /usr/bin/xcrun. Rust, cargo
-          # and dx still come from Nix; only Apple's SDK lookups go to Xcode. The
-          # whole block is guarded on a working iphonesimulator SDK, so it is a
-          # no-op (shell behaves identically) until Xcode is present.
-          _dev="$(/usr/bin/xcode-select -p 2>/dev/null || true)"
-          if [ -n "$_dev" ] && DEVELOPER_DIR="$_dev" /usr/bin/xcrun --sdk iphonesimulator --show-sdk-path >/dev/null 2>&1; then
-            export DEVELOPER_DIR="$_dev"
-            _ios_shim="$PWD/.nix-ios-shims"
-            mkdir -p "$_ios_shim"
-            ln -sf /usr/bin/xcrun "$_ios_shim/xcrun"
-            export PATH="$_ios_shim:$PATH"
-            echo "iOS: deferring SDK resolution to system Xcode ($_dev)."
-          else
-            echo "WARNING: full Xcode iOS SDK not found (only a macOS SDK stub)."
+          # Host + iOS compiles use Apple's clang from the active Xcode; no Nix cc
+          # wrapper is present, so /usr/bin is the toolchain source. Warn early if
+          # a full Xcode isn't selected (Command Line Tools alone lack the iOS SDK).
+          if ! /usr/bin/xcrun --sdk iphonesimulator --show-sdk-path >/dev/null 2>&1; then
+            echo "WARNING: no iphonesimulator SDK found."
             echo "  iOS builds need full Xcode, not just Command Line Tools."
             echo "  Install Xcode, then: sudo xcode-select --switch /Applications/Xcode.app"
           fi

@@ -601,7 +601,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         download_progress.set(Some(-1.0));
 
         spawn(async move {
-            #[cfg(all(feature = "shell-ws", not(target_os = "android")))]
+            #[cfg(all(feature = "shell-ws", not(any(target_os = "android", target_os = "ios"))))]
             {
                 let result = match pentest_platform::desktop::sandbox::get_sandbox_manager().await {
                     Ok(manager) => manager.ensure_ready().await.map_err(|e| format!("{}", e)),

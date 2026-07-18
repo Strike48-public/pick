@@ -26,9 +26,24 @@ pub use desktop::pty_shell::PtyShell;
 #[cfg(all(feature = "android", not(feature = "desktop")))]
 pub use android::pty_shell::PtyShell;
 
+#[cfg(all(feature = "ios", not(feature = "desktop"), not(feature = "android")))]
+pub use ios::pty_shell::PtyShell;
+
 /// Re-export sandbox control for desktop
 #[cfg(feature = "desktop")]
 pub use desktop::{is_sandbox_enabled, set_use_sandbox};
+
+/// Command sandboxing (bubblewrap/proot) is a desktop-only concept. On
+/// non-desktop platforms (mobile) there is no command sandbox, so report it
+/// disabled and make toggling it a no-op. Mirrors the `is_pcap_available`
+/// fallback below so callers can stay platform-agnostic.
+#[cfg(not(feature = "desktop"))]
+pub fn is_sandbox_enabled() -> bool {
+    false
+}
+
+#[cfg(not(feature = "desktop"))]
+pub fn set_use_sandbox(_use_sandbox: bool) {}
 
 /// Re-export capture session management for desktop
 #[cfg(feature = "desktop")]

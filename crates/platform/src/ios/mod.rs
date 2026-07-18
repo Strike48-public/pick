@@ -1,5 +1,7 @@
 //! iOS platform implementation (stub)
 
+pub mod pty_shell;
+
 use crate::traits::*;
 use async_trait::async_trait;
 use pentest_core::error::{Error, Result};

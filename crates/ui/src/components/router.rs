@@ -394,7 +394,7 @@ fn Settings() -> Element {
                     crate::download_manager::set_global_progress(Some(-1.0));
                     state.write().download_progress = Some(-1.0);
                     spawn(async move {
-                        #[cfg(all(feature = "shell-ws", not(target_os = "android")))]
+                        #[cfg(all(feature = "shell-ws", not(any(target_os = "android", target_os = "ios"))))]
                         {
                             let result = pentest_platform::desktop::sandbox::get_sandbox_manager()
                                 .await
@@ -421,7 +421,7 @@ fn Settings() -> Element {
                 shell_mode,
                 on_shell_mode_change: move |mode: ShellMode| {
                     state.write().set_shell_mode(mode);
-                    #[cfg(all(feature = "shell-ws", not(target_os = "android")))]
+                    #[cfg(all(feature = "shell-ws", not(any(target_os = "android", target_os = "ios"))))]
                     pentest_platform::set_use_sandbox(mode == ShellMode::Proot);
                 },
             }
