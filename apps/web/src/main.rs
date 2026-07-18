@@ -41,12 +41,17 @@ async fn bind_with_fallback(preferred: u16) -> std::io::Result<(TcpListener, u16
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
         match TcpListener::bind(&addr).await {
             Ok(listener) => {
+                // Read the port back from the socket rather than trusting
+                // `port`: with PORT=0 the OS assigns an ephemeral port, and the
+                // caller must log the real one (not 0). Falls back to `port`
+                // only if local_addr() somehow fails.
+                let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);
                 if offset > 0 {
                     tracing::warn!(
-                        "Port {preferred} was in use; bound {port} instead (set PORT to pin a specific port)"
+                        "Port {preferred} was in use; bound {bound} instead (set PORT to pin a specific port)"
                     );
                 }
-                return Ok((listener, port));
+                return Ok((listener, bound));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                 tracing::debug!("Port {port} in use, trying next");
