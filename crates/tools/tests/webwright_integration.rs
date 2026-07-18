@@ -14,6 +14,20 @@ use pentest_tools::webwright::evidence::{ingest_webwright_evidence, ingest_webwr
 use pentest_tools::webwright::workspace::WebwrightWorkspace;
 use pentest_tools::WebwrightTool;
 use serde_json::json;
+use std::sync::{Mutex, MutexGuard};
+
+/// Serializes the tests that touch the process-global `PENDING_EVIDENCE`
+/// buffer (via `push_evidence`/`drain_pending_evidence`). Without this, tests
+/// that drain-then-assert-count race each other: one test's pushed nodes land
+/// in another's drain, so counts come out wrong nondeterministically (the
+/// classic doubling/halving). Holding this lock for the whole
+/// drain-ingest-drain sequence makes each such test see only its own evidence.
+/// Poison-tolerant: a panic in one test must not cascade-fail the others.
+static EVIDENCE_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_evidence() -> MutexGuard<'static, ()> {
+    EVIDENCE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// Test that execute mode runs a Python script and captures output.
 #[tokio::test]
@@ -396,6 +410,7 @@ async fn workspace_creates_and_collects_artifacts() {
 fn evidence_ingestion_produces_typed_nodes() {
     use pentest_core::provenance::ProbeCommand;
 
+    let _guard = lock_evidence();
     let _ = drain_pending_evidence();
 
     let artifacts = json!({
@@ -488,6 +503,7 @@ fn findings_ingestion_maps_all_severity_levels() {
     use pentest_core::export::Severity;
     use pentest_core::provenance::ProbeCommand;
 
+    let _guard = lock_evidence();
     let _ = drain_pending_evidence();
 
     let findings = json!([
