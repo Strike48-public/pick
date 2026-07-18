@@ -57,7 +57,6 @@ impl PentestTool for TrafficCaptureTool {
             Platform::Desktop,
             Platform::Web,
             Platform::Android,
-            Platform::Ios,
             Platform::Tui,
         ]
     }

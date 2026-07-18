@@ -19,11 +19,16 @@ pub enum Platform {
     Tui,
 }
 
-/// Default platforms supported by most tools (all except Web).
+/// Default platforms supported by most tools.
+///
+/// iOS is intentionally NOT in the default: the iOS app sandbox can't spawn
+/// subprocesses, open raw sockets, or run the proot toolchain, so almost no
+/// tool works there. iOS is opt-in — a tool that genuinely runs natively on
+/// iOS (in-process / outbound-network only) declares `Platform::Ios` in its
+/// own `supported_platforms` override.
 pub const DEFAULT_TOOL_PLATFORMS: &[Platform] = &[
     Platform::Desktop,
     Platform::Android,
-    Platform::Ios,
     Platform::Tui,
 ];
 
@@ -824,6 +829,21 @@ impl ToolRegistry {
         self.tools
             .values()
             .filter(|t| t.is_supported())
+            .map(|t| t.schema())
+            .collect()
+    }
+
+    /// Schemas for tools that declare support for `platform`, gated on the
+    /// trait-level `supported_platforms()` (the source of truth a tool
+    /// intentionally overrides — the `ToolSchema.supported_platforms` field is
+    /// only kept in sync when a tool doesn't override `schema()`).
+    ///
+    /// Takes an explicit platform (rather than `Platform::current()`) so the
+    /// per-platform tool list is testable off-target.
+    pub fn schemas_for_platform(&self, platform: Platform) -> Vec<ToolSchema> {
+        self.tools
+            .values()
+            .filter(|t| t.supported_platforms().contains(&platform))
             .map(|t| t.schema())
             .collect()
     }

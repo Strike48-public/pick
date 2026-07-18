@@ -13,6 +13,17 @@ pub struct ReadFileTool;
 
 #[async_trait]
 impl PentestTool for ReadFileTool {
+    fn supported_platforms(&self) -> Vec<pentest_core::tools::Platform> {
+        use pentest_core::tools::Platform;
+        // Workspace file read (container-scoped) — runs on iOS.
+        vec![
+            Platform::Desktop,
+            Platform::Android,
+            Platform::Ios,
+            Platform::Tui,
+        ]
+    }
+
     fn name(&self) -> &str {
         "read_file"
     }

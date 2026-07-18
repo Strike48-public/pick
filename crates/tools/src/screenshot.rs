@@ -24,7 +24,6 @@ impl PentestTool for ScreenshotTool {
             Platform::Desktop,
             Platform::Web,
             Platform::Android,
-            Platform::Ios,
             Platform::Tui,
         ]
     }

@@ -13,6 +13,17 @@ pub struct ListFilesTool;
 
 #[async_trait]
 impl PentestTool for ListFilesTool {
+    fn supported_platforms(&self) -> Vec<pentest_core::tools::Platform> {
+        use pentest_core::tools::Platform;
+        // Workspace directory listing (container-scoped) — runs on iOS.
+        vec![
+            Platform::Desktop,
+            Platform::Android,
+            Platform::Ios,
+            Platform::Tui,
+        ]
+    }
+
     fn name(&self) -> &str {
         "list_files"
     }
