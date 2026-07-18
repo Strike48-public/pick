@@ -55,6 +55,9 @@ pub struct ConnectorAppConfig {
     pub create_tools: fn() -> ToolRegistry,
     /// Optional sandbox toggle. Desktop/Web pass `pentest_platform::set_use_sandbox`.
     pub set_sandbox: Option<fn(bool)>,
+    /// When true, render the simplified "Easy Mode" shell (scan + chat) instead
+    /// of the full dashboard/sidebar UI. Default target is mobile.
+    pub easy_mode: bool,
 }
 
 // ---------------------------------------------------------------------------

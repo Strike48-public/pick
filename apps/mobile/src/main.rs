@@ -15,6 +15,7 @@ const MOBILE_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
     extra_init_messages: &[],
     create_tools: pentest_tools::create_tool_registry,
     set_sandbox: None,
+    easy_mode: true,
 };
 
 fn main() {
