@@ -17,3 +17,10 @@ min_sdk = 24
 
 [web.app]
 title = "Pentest Connector"
+
+# iOS Info.plist additions. Since iOS 14 any local-network access (even the
+# native TCP port scan) triggers the Local Network privacy prompt, and the OS
+# blocks it unless this usage-description key is present. dx merges [ios.plist]
+# entries into the generated Info.plist on every build.
+[ios.plist]
+NSLocalNetworkUsageDescription = "Pick discovers and scans hosts on your local network during authorized security engagements."
