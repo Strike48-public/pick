@@ -4,8 +4,9 @@
 use dioxus::prelude::*;
 use pentest_core::config::{BorderRadius, Density, ShellMode, Theme};
 use pentest_platform::WifiConnectionStatus;
+use std::collections::HashSet;
 
-use super::icons::{Download, Palette, Settings, Wifi};
+use super::icons::{ChevronDown, Download, Palette, Settings, Wifi};
 use super::tool_category::{category_icon, humanize_category};
 use crate::platform_helper;
 use pentest_core::seed::{SeedManager, SeedProgress, SeedTier};
@@ -78,6 +79,10 @@ pub fn SettingsPage(
     // Tools catalog state
     let mut catalog_items = use_signal(|| None::<Vec<pentest_tools::catalog::CatalogItem>>);
     let mut catalog_loading = use_signal(|| false);
+    // Category keys the operator has expanded. Categories are collapsed by
+    // default (empty set) so the panel stays compact even as the catalog grows;
+    // a collapsed category renders only its header, not its cards.
+    let mut expanded_categories = use_signal(HashSet::<String>::new);
     // binary_name currently installing, or the "__all__" sentinel for the bulk
     // install, or None when idle.
     let mut installing = use_signal(|| None::<String>);
@@ -394,11 +399,47 @@ pub fn SettingsPage(
                         div { class: "text-dim-xs", style: "margin-top: 12px;", "Loading tools..." }
                     } else if let Some(items) = catalog_items() {
                         for category in tool_categories(&items) {
+                            {
+                                let count = items.iter().filter(|i| i.category == category).count();
+                                let is_expanded = expanded_categories().contains(&category);
+                                let toggle_category = category.clone();
+                                rsx! {
                             div { class: "settings-tools-section",
-                                div { class: "settings-tools-header",
+                                div {
+                                    class: "settings-tools-header",
+                                    role: "button",
+                                    tabindex: 0,
+                                    "aria-expanded": "{is_expanded}",
+                                    onclick: move |_| {
+                                        let mut set = expanded_categories.write();
+                                        if !set.remove(&toggle_category) {
+                                            set.insert(toggle_category.clone());
+                                        }
+                                    },
+                                    onkeydown: {
+                                        let key_category = category.clone();
+                                        move |evt: Event<KeyboardData>| {
+                                            let key = evt.key();
+                                            if key == Key::Enter
+                                                || matches!(key, Key::Character(ref c) if c == " ")
+                                            {
+                                                evt.prevent_default();
+                                                let mut set = expanded_categories.write();
+                                                if !set.remove(&key_category) {
+                                                    set.insert(key_category.clone());
+                                                }
+                                            }
+                                        }
+                                    },
+                                    span {
+                                        class: if is_expanded { "settings-tools-caret expanded" } else { "settings-tools-caret" },
+                                        ChevronDown { size: 14 }
+                                    }
                                     span { class: "settings-tools-icon", {category_icon(&category)} }
                                     h3 { class: "settings-tools-title", "{humanize_category(&category)}" }
+                                    span { class: "settings-tools-count", "{count}" }
                                 }
+                                if is_expanded {
                                 div { class: "tools-grid",
                                     for item in items.iter().filter(|i| i.category == category).cloned() {
                                         {
@@ -552,6 +593,9 @@ pub fn SettingsPage(
                                             }
                                         }
                                     }
+                                }
+                                }
+                            }
                                 }
                             }
                         }
