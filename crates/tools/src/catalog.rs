@@ -346,7 +346,13 @@ async fn install_apt_host(entry: &CatalogEntry, progress: &ProgressSink) -> Resu
 /// metacharacters that could matter on the sandbox's shell-escaped exec path.
 /// Allows the conservative set of characters real package names use.
 fn validate_package_name(pkg: &str) -> Result<()> {
+    // A leading '-' would be parsed by pacman/apt-get as a flag rather than a
+    // package (argument injection): a name like "-Syu" or "--purge" would
+    // change the command's behavior. Real package names never start with '-',
+    // so reject it explicitly. This matters most on the uninstall path, where
+    // "--purge" would escalate `apt-get remove` into config deletion.
     if pkg.is_empty()
+        || pkg.starts_with('-')
         || !pkg
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+'))
@@ -405,6 +411,10 @@ pub struct CatalogItem {
     pub recommended: bool,
     /// Whether an Install button should be offered (auto-installable in mode).
     pub auto_installable: bool,
+    /// Whether the UI should offer to uninstall this tool (removable in the
+    /// current mode). Only meaningful when `state == "installed"`.
+    #[serde(default)]
+    pub uninstallable: bool,
     /// Manual instructions to show when not auto-installable.
     pub manual_instructions: Option<String>,
     /// Tools that declared this dependency.
@@ -435,6 +445,7 @@ impl From<&CatalogEntry> for CatalogItem {
             state: state.to_string(),
             recommended: e.recommended,
             auto_installable: e.is_auto_installable(),
+            uninstallable: is_uninstallable(&e.install_method),
             manual_instructions: e.manual_instructions(),
             used_by: e.used_by.clone(),
             estimated_secs: e.estimated_install_secs(),
@@ -578,6 +589,95 @@ pub async fn install_by_binary(binary_name: &str, progress: &ProgressSink) -> Re
     install_entry(entry, progress).await
 }
 
+/// Whether a catalog entry can be uninstalled from the UI in the current mode.
+///
+/// Mirrors [`CatalogEntry::is_auto_installable`]: we only offer removal for
+/// mechanisms we can actually drive here.
+/// - `Pacman`: only inside the sandbox (that's where the package lives).
+/// - `AptHost`: only in native mode (the host's package manager).
+/// - `Custom`: never (bespoke installers have no standard teardown; a future
+///   `ToolInstaller::uninstall` could enable this per-installer).
+/// - `Manual`: never (we didn't install it, so we won't remove it).
+pub fn is_uninstallable(method: &InstallMethod) -> bool {
+    match method {
+        InstallMethod::Pacman => sandbox_enabled(),
+        InstallMethod::AptHost => !sandbox_enabled(),
+        InstallMethod::Custom { .. } | InstallMethod::Manual { .. } => false,
+    }
+}
+
+/// Remove a single catalog entry, routing by its install method. Emits progress
+/// through `progress`. Refuses methods that [`is_uninstallable`] rejects rather
+/// than attempting a removal it cannot safely perform.
+pub async fn uninstall_entry(entry: &CatalogEntry, progress: &ProgressSink) -> Result<()> {
+    if !is_uninstallable(&entry.install_method) {
+        return Err(Error::ToolExecution(format!(
+            "{} cannot be uninstalled from here.",
+            entry.display_name
+        )));
+    }
+    match &entry.install_method {
+        InstallMethod::Pacman => uninstall_pacman(entry, progress).await,
+        InstallMethod::AptHost => uninstall_apt_host(entry, progress).await,
+        // Guarded by is_uninstallable above; unreachable in practice.
+        InstallMethod::Custom { .. } | InstallMethod::Manual { .. } => Err(Error::ToolExecution(
+            format!("{} cannot be uninstalled from here.", entry.display_name),
+        )),
+    }
+}
+
+/// Remove a Pacman entry from the sandbox via `pacman -Rns`.
+async fn uninstall_pacman(entry: &CatalogEntry, progress: &ProgressSink) -> Result<()> {
+    progress(InstallEvent::step(format!(
+        "Removing {} via pacman...",
+        entry.display_name
+    )));
+    let pkg = pacman_package_for(&entry.binary_name).unwrap_or_else(|| entry.binary_name.clone());
+    validate_package_name(&pkg)?;
+    crate::installers::pacman::uninstall(&pkg, Duration::from_secs(300)).await?;
+    progress(InstallEvent::step(format!(
+        "{} removed",
+        entry.display_name
+    )));
+    Ok(())
+}
+
+/// Remove an apt-host entry (native mode) via `apt-get remove`.
+async fn uninstall_apt_host(entry: &CatalogEntry, progress: &ProgressSink) -> Result<()> {
+    progress(InstallEvent::step(format!(
+        "Removing {} via apt-get...",
+        entry.display_name
+    )));
+    let platform = get_platform();
+    let pkg = entry.binary_name.clone();
+    validate_package_name(&pkg)?;
+    let result = platform
+        .execute_command("apt-get", &["remove", "-y", &pkg], Duration::from_secs(300))
+        .await?;
+    if result.exit_code != 0 {
+        return Err(Error::ToolExecution(format!(
+            "Failed to apt-get remove {pkg}: {}",
+            result.stderr
+        )));
+    }
+    progress(InstallEvent::step(format!(
+        "{} removed",
+        entry.display_name
+    )));
+    Ok(())
+}
+
+/// Uninstall the catalog entry keyed by `binary_name`. UI entrypoint mirroring
+/// [`install_by_binary`].
+pub async fn uninstall_by_binary(binary_name: &str, progress: &ProgressSink) -> Result<()> {
+    let catalog = build_catalog().await;
+    let entry = catalog
+        .iter()
+        .find(|e| e.binary_name == binary_name)
+        .ok_or_else(|| Error::ToolExecution(format!("Unknown tool '{binary_name}'")))?;
+    uninstall_entry(entry, progress).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,7 +723,18 @@ mod tests {
         ] {
             assert!(validate_package_name(ok).is_ok(), "should accept {ok}");
         }
-        for bad in ["pkg; rm -rf /", "a b", "$(id)", "", "pkg|nc", "../evil"] {
+        for bad in [
+            "pkg; rm -rf /",
+            "a b",
+            "$(id)",
+            "",
+            "pkg|nc",
+            "../evil",
+            // Flag injection: a leading dash would be read as a pacman/apt-get
+            // option, not a package (e.g. -Syu, --purge). Must be rejected.
+            "-Syu",
+            "--purge",
+        ] {
             assert!(validate_package_name(bad).is_err(), "should reject {bad:?}");
         }
     }
@@ -676,6 +787,37 @@ mod tests {
         assert!(entry.manual_instructions().unwrap().contains("manually"));
     }
 
+    #[tokio::test]
+    async fn manual_and_custom_entries_are_never_uninstallable() {
+        // We never installed Manual tools (Burp) and have no standard teardown
+        // for Custom installers, so the UI must not offer to remove them.
+        assert!(!is_uninstallable(&InstallMethod::Manual {
+            url: None,
+            instructions: "x".into(),
+        }));
+        assert!(!is_uninstallable(&InstallMethod::Custom {
+            id: "zap".into()
+        }));
+
+        // uninstall_entry must refuse a Manual entry rather than shell out.
+        let entry = CatalogEntry {
+            binary_name: "burpsuite".into(),
+            display_name: "Burp Suite".into(),
+            description: "proxy".into(),
+            category: ToolCategory::Proxy,
+            install_method: InstallMethod::Manual {
+                url: None,
+                instructions: "install manually".into(),
+            },
+            recommended: false,
+            used_by: vec![],
+            state: InstallState::Installed,
+        };
+        let progress = crate::installers::noop_progress();
+        let result = uninstall_entry(&entry, progress.as_ref()).await;
+        assert!(result.is_err(), "manual entries must not be uninstalled");
+    }
+
     #[test]
     fn catalog_item_maps_state_and_category_to_strings() {
         let entry = CatalogEntry {
@@ -707,6 +849,7 @@ mod tests {
             state: "installed".into(),
             recommended: true,
             auto_installable: true,
+            uninstallable: false,
             manual_instructions: None,
             used_by: vec!["zap".into()],
             estimated_secs: 150,

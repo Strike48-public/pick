@@ -574,6 +574,7 @@
    manual) or a <button> (missing + auto-installable, click-to-install). Reset
    button chrome so both render identically. */
 .tool-status-card {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -587,6 +588,125 @@
     color: var(--foreground);
     width: 100%;
     min-width: 0;
+}
+
+/* Trash-can, top-right of an installed card. Faint until the card is hovered
+   so it doesn't compete with the tool name, then clarifies to destructive red. */
+.tool-uninstall-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    padding: 2px 4px;
+    border: none;
+    background: transparent;
+    color: var(--muted-foreground);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.35;
+    border-radius: 4px;
+    transition: opacity 0.15s, color 0.15s, background-color 0.15s;
+}
+
+.tool-status-card:hover .tool-uninstall-btn {
+    opacity: 1;
+}
+
+.tool-uninstall-btn:hover:not(:disabled) {
+    color: var(--destructive, #ef4444);
+    background: rgba(239, 68, 68, 0.12);
+}
+
+.tool-uninstall-btn:focus-visible {
+    opacity: 1;
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+}
+
+.tool-uninstall-btn:disabled {
+    opacity: 0.2;
+    cursor: not-allowed;
+}
+
+/* Uninstall confirmation dialog. */
+.uninstall-dialog-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    padding: 16px;
+}
+
+.uninstall-dialog {
+    background: var(--secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    max-width: 420px;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.uninstall-dialog-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--foreground);
+}
+
+.uninstall-dialog-body {
+    font-size: 13px;
+    color: var(--muted-foreground);
+    line-height: 1.5;
+}
+
+.uninstall-dialog-pkg {
+    font-family: var(--font-mono);
+    color: var(--foreground);
+}
+
+.uninstall-dialog-warning {
+    font-size: 12px;
+    line-height: 1.5;
+    color: #ff9800;
+    background: rgba(255, 152, 0, 0.1);
+    border-left: 3px solid #ff9800;
+    border-radius: 3px;
+    padding: 8px 10px;
+}
+
+.uninstall-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.uninstall-dialog-confirm-btn {
+    background: var(--destructive, #ef4444);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    padding: 8px 16px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: opacity 0.15s;
+}
+
+.uninstall-dialog-confirm-btn:hover:not(:disabled) {
+    opacity: 0.9;
+}
+
+.uninstall-dialog-confirm-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 /* Color-coded install state via the left border + status text. */

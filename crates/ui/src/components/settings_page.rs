@@ -100,6 +100,12 @@ pub fn SettingsPage(
     // for a later install — even a restart of the same tool, where `installing`
     // would otherwise look unchanged.
     let mut install_generation = use_signal(|| 0u64);
+    // The tool pending an uninstall confirmation, if any. Some(item) shows the
+    // confirm dialog; cleared to None on cancel or after removal completes.
+    let mut uninstall_confirm = use_signal(|| None::<pentest_tools::catalog::CatalogItem>);
+    // binary_name currently being uninstalled, or None when idle. Disables the
+    // trash-cans and shows a per-card "Removing..." state.
+    let mut uninstalling = use_signal(|| None::<String>);
 
     // Load seed status on mount
     use_effect(move || {
@@ -445,14 +451,39 @@ pub fn SettingsPage(
                                         {
                                             let desc = item.description.clone();
                                             if item.state == "installed" {
+                                                let removing = uninstalling() == Some(item.binary_name.clone());
                                                 rsx! {
                                                     div { class: "tool-status-card installed",
+                                                        // Trash-can (top-right) opens the confirm
+                                                        // dialog. Only shown when the tool can
+                                                        // actually be removed in this mode.
+                                                        if item.uninstallable {
+                                                            button {
+                                                                class: "tool-uninstall-btn",
+                                                                r#type: "button",
+                                                                disabled: uninstalling().is_some(),
+                                                                title: "Uninstall {item.display_name}",
+                                                                "aria-label": "Uninstall {item.display_name}",
+                                                                onclick: {
+                                                                    let confirm_item = item.clone();
+                                                                    move |evt: Event<MouseData>| {
+                                                                        evt.stop_propagation();
+                                                                        uninstall_confirm.set(Some(confirm_item.clone()));
+                                                                    }
+                                                                },
+                                                                "\u{1F5D1}"
+                                                            }
+                                                        }
                                                         div { class: "tool-status-card-name", "{item.display_name}" }
                                                         if !desc.is_empty() {
                                                             div { class: "tool-status-card-desc", title: "{desc}", "{desc}" }
                                                         }
-                                                        div { class: "tool-status-card-status installed",
-                                                            "\u{2713} Installed"
+                                                        if removing {
+                                                            div { class: "tool-status-card-status muted", "Removing..." }
+                                                        } else {
+                                                            div { class: "tool-status-card-status installed",
+                                                                "\u{2713} Installed"
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -601,6 +632,85 @@ pub fn SettingsPage(
                         }
                     } else {
                         div { class: "text-dim-xs", style: "margin-top: 12px;", "No tools available" }
+                    }
+                }
+            }
+
+            // Uninstall confirmation dialog. Destructive action, so it is always
+            // gated behind an explicit confirm that names the package and warns
+            // about other tools that share the dependency (blast radius).
+            if let Some(target) = uninstall_confirm() {
+                {
+                    let bin = target.binary_name.clone();
+                    // Other tools that declared this same binary dependency. pacman
+                    // -Rns keeps deps still needed by another package, but removing a
+                    // shared binary can still break sibling tools, so surface them.
+                    let shared_with: Vec<String> = target
+                        .used_by
+                        .iter()
+                        .filter(|t| **t != target.display_name && **t != target.binary_name)
+                        .cloned()
+                        .collect();
+                    rsx! {
+                        div { class: "uninstall-dialog-overlay",
+                            onclick: move |_| uninstall_confirm.set(None),
+                            div { class: "uninstall-dialog",
+                                onclick: move |evt: Event<MouseData>| evt.stop_propagation(),
+                                h3 { class: "uninstall-dialog-title", "Uninstall {target.display_name}?" }
+                                div { class: "uninstall-dialog-body",
+                                    "This removes the "
+                                    span { class: "uninstall-dialog-pkg", "{target.binary_name}" }
+                                    " package and its unneeded dependencies."
+                                }
+                                if !shared_with.is_empty() {
+                                    div { class: "uninstall-dialog-warning",
+                                        "Heads up: this dependency is also used by "
+                                        strong { "{shared_with.join(\", \")}" }
+                                        ". Removing it may affect those tools."
+                                    }
+                                }
+                                div { class: "uninstall-dialog-actions",
+                                    button {
+                                        class: "settings-discard-btn",
+                                        r#type: "button",
+                                        onclick: move |_| uninstall_confirm.set(None),
+                                        "Cancel"
+                                    }
+                                    button {
+                                        class: "uninstall-dialog-confirm-btn",
+                                        r#type: "button",
+                                        disabled: uninstalling().is_some(),
+                                        onclick: move |_| {
+                                            let bin = bin.clone();
+                                            uninstall_confirm.set(None);
+                                            spawn(async move {
+                                                use tokio::sync::mpsc;
+                                                uninstalling.set(Some(bin.clone()));
+                                                install_error.set(None);
+                                                let (tx, mut rx) = mpsc::unbounded_channel();
+                                                spawn(async move {
+                                                    while let Some(msg) = rx.recv().await {
+                                                        install_message.set(msg);
+                                                    }
+                                                });
+                                                let progress = move |evt: pentest_tools::installers::InstallEvent| {
+                                                    let _ = tx.send(evt.message);
+                                                };
+                                                match pentest_tools::catalog::uninstall_by_binary(&bin, &progress).await {
+                                                    Ok(()) => {
+                                                        let items = pentest_tools::catalog::build_catalog_items().await;
+                                                        catalog_items.set(Some(items));
+                                                    }
+                                                    Err(e) => install_error.set(Some(e.to_string())),
+                                                }
+                                                uninstalling.set(None);
+                                            });
+                                        },
+                                        "Uninstall"
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
