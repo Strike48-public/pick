@@ -89,6 +89,12 @@ pub fn SettingsPage(
     let mut install_elapsed = use_signal(|| 0u32);
     // Expected duration (seconds) for the current install; 0 hides the estimate.
     let mut install_estimate = use_signal(|| 0u32);
+    // Monotonic id for the current install session, bumped each time an install
+    // starts. A ticker captures the generation it was spawned for and stops as
+    // soon as a newer session begins, so a stale ticker can't advance the clock
+    // for a later install — even a restart of the same tool, where `installing`
+    // would otherwise look unchanged.
+    let mut install_generation = use_signal(|| 0u64);
 
     // Load seed status on mount
     use_effect(move || {
@@ -110,20 +116,24 @@ pub fn SettingsPage(
     });
 
     // Tick the install elapsed clock once a second while an install is running.
-    // Reads `installing` reactively: the effect re-runs whenever an install
-    // starts or stops. The spawned loop exits as soon as `installing` clears (or
-    // changes), so at most one ticker is active at a time.
+    // Reads `installing`/`install_generation` reactively, so the effect re-runs
+    // whenever an install starts, stops, or is replaced. The spawned loop
+    // captures the generation it was started for and exits as soon as a newer
+    // session begins; because a fresh session always bumps the generation, a
+    // stale ticker cannot advance the clock for a later install (including a
+    // restart of the same tool). The clock is reset here so the reset is atomic
+    // with the ticker spawn rather than racing the onclick handlers.
     use_effect(move || {
-        let active = installing().is_some();
-        if !active {
+        if installing().is_none() {
             return;
         }
-        let started_for = installing();
+        let generation = install_generation();
+        install_elapsed.set(0);
         spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                // Stop if the install finished or a different one started.
-                if installing() != started_for {
+                // Stop if this session was superseded or the install finished.
+                if install_generation() != generation || installing().is_none() {
                     break;
                 }
                 install_elapsed.set(install_elapsed() + 1);
@@ -343,7 +353,9 @@ pub fn SettingsPage(
                                     .unwrap_or(0);
                                 spawn(async move {
                                     use tokio::sync::mpsc;
-                                    install_elapsed.set(0);
+                                    // Bump the session id so any stale ticker
+                                    // stops; the ticker effect resets the clock.
+                                    install_generation.set(install_generation() + 1);
                                     install_estimate.set(estimate);
                                     installing.set(Some("__all__".to_string()));
                                     install_error.set(None);
@@ -427,7 +439,10 @@ pub fn SettingsPage(
                                                         let bin = bin.clone();
                                                         spawn(async move {
                                                             use tokio::sync::mpsc;
-                                                            install_elapsed.set(0);
+                                                            // Bump the session id so any stale
+                                                            // ticker stops; the ticker effect
+                                                            // resets the clock.
+                                                            install_generation.set(install_generation() + 1);
                                                             install_estimate.set(estimate);
                                                             installing.set(Some(bin.clone()));
                                                             install_error.set(None);

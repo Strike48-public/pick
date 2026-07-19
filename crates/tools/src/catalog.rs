@@ -836,6 +836,16 @@ mod tests {
             360,
             "metasploit override"
         );
+        assert_eq!(
+            estimated_install_secs(
+                &InstallMethod::Custom {
+                    id: "webwright".into()
+                },
+                "webwright"
+            ),
+            180,
+            "webwright override (Python env + Playwright Chromium download)"
+        );
         assert!(
             estimated_install_secs(&InstallMethod::Custom { id: "zap".into() }, "zaproxy")
                 > estimated_install_secs(&InstallMethod::Pacman, "nmap"),
@@ -849,13 +859,17 @@ mod tests {
         // "install all recommended" action (the operator installs it on demand).
         let catalog = build_catalog().await;
         for bin in ["bloodhound-python", "certipy", "kerbrute", "nxc"] {
-            let entry = catalog.iter().find(|e| e.binary_name == bin);
-            if let Some(entry) = entry {
-                assert!(
-                    !entry.recommended,
-                    "{bin} must be opt-in, not part of the recommended default set"
-                );
-            }
+            // Assert the entry EXISTS before checking its flag: without this the
+            // test would pass vacuously if a rename/refactor dropped the binary
+            // from the catalog, silently retiring the regression guard.
+            let entry = catalog
+                .iter()
+                .find(|e| e.binary_name == bin)
+                .unwrap_or_else(|| panic!("{bin} should be present in the catalog"));
+            assert!(
+                !entry.recommended,
+                "{bin} must be opt-in, not part of the recommended default set"
+            );
         }
     }
 
