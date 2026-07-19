@@ -83,11 +83,16 @@ pub fn SettingsPage(
     // default (empty set) so the panel stays compact even as the catalog grows;
     // a collapsed category renders only its header, not its cards.
     let mut expanded_categories = use_signal(HashSet::<String>::new);
-    // binary_name currently installing, or the "__all__" sentinel for the bulk
-    // install, or None when idle.
+    // binary_name currently installing, the "__all__" sentinel for the bulk
+    // install, or a "cat:<key>" sentinel for a category "install all"; None when
+    // idle. Any Some(..) value disables the other install buttons.
     let mut installing = use_signal(|| None::<String>);
     let mut install_message = use_signal(String::new);
     let mut install_error = use_signal(|| None::<String>);
+    // A pending category "Install all", if any: (category_key, count,
+    // total_estimated_secs). Some(..) shows the confirm dialog so a bulk install
+    // is never kicked off without the operator seeing how many tools it fetches.
+    let mut category_install_confirm = use_signal(|| None::<(String, usize, u32)>);
     // Seconds elapsed since the current install began, ticked once a second by a
     // background task while `installing` is Some. Drives the elapsed-vs-estimate
     // progress bar so the operator can see how long an install is taking.
@@ -409,6 +414,19 @@ pub fn SettingsPage(
                                 let count = items.iter().filter(|i| i.category == category).count();
                                 let is_expanded = expanded_categories().contains(&category);
                                 let toggle_category = category.clone();
+                                // Tools in this category that an "Install all" would fetch:
+                                // not yet installed and auto-installable in the current mode.
+                                let pending: Vec<_> = items
+                                    .iter()
+                                    .filter(|i| {
+                                        i.category == category
+                                            && i.state != "installed"
+                                            && i.auto_installable
+                                    })
+                                    .collect();
+                                let pending_count = pending.len();
+                                let pending_secs: u32 =
+                                    pending.iter().map(|i| i.estimated_secs).sum();
                                 rsx! {
                             div { class: "settings-tools-section",
                                 div {
@@ -444,6 +462,31 @@ pub fn SettingsPage(
                                     span { class: "settings-tools-icon", {category_icon(&category)} }
                                     h3 { class: "settings-tools-title", "{humanize_category(&category)}" }
                                     span { class: "settings-tools-count", "{count}" }
+                                    // "Install all" for the category: shown only when
+                                    // something is actually installable. Opens a confirm
+                                    // dialog (count + estimate) rather than installing on
+                                    // the first click. stop_propagation so it doesn't also
+                                    // toggle the header's expand/collapse.
+                                    if pending_count > 0 {
+                                        button {
+                                            class: "settings-tools-install-all",
+                                            r#type: "button",
+                                            disabled: installing().is_some(),
+                                            title: "Install the {pending_count} not-installed tool(s) in this category",
+                                            onclick: {
+                                                let cat = category.clone();
+                                                move |evt: Event<MouseData>| {
+                                                    evt.stop_propagation();
+                                                    category_install_confirm.set(Some((
+                                                        cat.clone(),
+                                                        pending_count,
+                                                        pending_secs,
+                                                    )));
+                                                }
+                                            },
+                                            "\u{2193} Install all"
+                                        }
+                                    }
                                 }
                                 if is_expanded {
                                 div { class: "tools-grid",
@@ -707,6 +750,79 @@ pub fn SettingsPage(
                                             });
                                         },
                                         "Uninstall"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Category "Install all" confirmation. A bulk install can fetch
+            // several packages, so it is always gated behind a confirm that
+            // states the count and an estimated time before anything downloads.
+            if let Some((cat, n, secs)) = category_install_confirm() {
+                {
+                    let label = humanize_category(&cat);
+                    rsx! {
+                        div { class: "settings-dialog-overlay",
+                            onclick: move |_| category_install_confirm.set(None),
+                            div { class: "settings-dialog",
+                                onclick: move |evt: Event<MouseData>| evt.stop_propagation(),
+                                h3 { class: "settings-dialog-title", "Install all {label} tools?" }
+                                div { class: "settings-dialog-body",
+                                    "This will install "
+                                    span { class: "settings-dialog-emph", "{n}" }
+                                    if n == 1 { " tool" } else { " tools" }
+                                    " in this category (est. ~{format_duration(secs)})."
+                                }
+                                div { class: "settings-dialog-actions",
+                                    button {
+                                        class: "settings-discard-btn",
+                                        r#type: "button",
+                                        onclick: move |_| category_install_confirm.set(None),
+                                        "Cancel"
+                                    }
+                                    button {
+                                        class: "sidebar-download-btn",
+                                        r#type: "button",
+                                        disabled: installing().is_some(),
+                                        onclick: move |_| {
+                                            let cat = cat.clone();
+                                            category_install_confirm.set(None);
+                                            spawn(async move {
+                                                use tokio::sync::mpsc;
+                                                install_generation.set(install_generation() + 1);
+                                                install_estimate.set(secs);
+                                                installing.set(Some(format!("cat:{cat}")));
+                                                install_error.set(None);
+                                                install_message.set(String::new());
+                                                let (tx, mut rx) = mpsc::unbounded_channel();
+                                                spawn(async move {
+                                                    while let Some(msg) = rx.recv().await {
+                                                        install_message.set(msg);
+                                                    }
+                                                });
+                                                let progress = move |evt: pentest_tools::installers::InstallEvent| {
+                                                    let _ = tx.send(evt.message);
+                                                };
+                                                let failures = pentest_tools::catalog::install_all_in_category(&cat, &progress).await;
+                                                if !failures.is_empty() {
+                                                    let detail = failures
+                                                        .iter()
+                                                        .map(|(bin, err)| format!("{bin}: {err}"))
+                                                        .collect::<Vec<_>>()
+                                                        .join("\n");
+                                                    install_error.set(Some(format!(
+                                                        "Some tools failed to install:\n{detail}"
+                                                    )));
+                                                }
+                                                let items = pentest_tools::catalog::build_catalog_items().await;
+                                                catalog_items.set(Some(items));
+                                                installing.set(None);
+                                            });
+                                        },
+                                        "Install {n}"
                                     }
                                 }
                             }

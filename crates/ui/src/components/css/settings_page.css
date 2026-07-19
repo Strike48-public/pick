@@ -541,6 +541,93 @@
     padding: 1px 8px;
 }
 
+/* "Install all" for a category, in its header (right of the count badge).
+   Faint until the row is hovered so it doesn't compete with the title. */
+.settings-tools-install-all {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--primary);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 8px;
+    cursor: pointer;
+    opacity: 0.6;
+    white-space: nowrap;
+    transition: opacity 0.15s, border-color 0.15s, background-color 0.15s;
+}
+
+.settings-tools-header:hover .settings-tools-install-all {
+    opacity: 1;
+}
+
+.settings-tools-install-all:hover:not(:disabled) {
+    border-color: var(--primary);
+    background: var(--secondary);
+}
+
+.settings-tools-install-all:focus-visible {
+    opacity: 1;
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+}
+
+.settings-tools-install-all:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+/* Generic settings modal (category install-all confirm; reused by any
+   settings confirm dialog). */
+.settings-dialog-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    padding: 16px;
+}
+
+.settings-dialog {
+    background: var(--secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    max-width: 420px;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.settings-dialog-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--foreground);
+}
+
+.settings-dialog-body {
+    font-size: 13px;
+    color: var(--muted-foreground);
+    line-height: 1.5;
+}
+
+.settings-dialog-emph {
+    font-family: var(--font-mono);
+    color: var(--foreground);
+}
+
+.settings-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 4px;
+}
+
 .settings-tools-icon {
     display: flex;
     align-items: center;

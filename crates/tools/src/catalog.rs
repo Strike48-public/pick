@@ -394,6 +394,52 @@ pub async fn install_all_recommended(progress: &ProgressSink) -> Vec<(String, St
     failures
 }
 
+/// The auto-installable, not-yet-installed entries in a category, as
+/// `(binary_name, estimated_secs)`. Lets the UI preview how many tools an
+/// "Install all" for that category will fetch (and their summed time estimate)
+/// before the operator commits — the count/size confirm for category installs.
+/// `category` is the stable snake_case key (e.g. "network"), matching
+/// [`CatalogItem::category`].
+pub async fn pending_installs_in_category(category: &str) -> Vec<(String, u32)> {
+    build_catalog()
+        .await
+        .into_iter()
+        .filter(|e| {
+            category_key(e.category) == category
+                && e.state != InstallState::Installed
+                && e.is_auto_installable()
+        })
+        .map(|e| (e.binary_name.clone(), e.estimated_install_secs()))
+        .collect()
+}
+
+/// Install every auto-installable, not-yet-installed tool in one category.
+/// Mirrors [`install_all_recommended`] but scopes to a single category key
+/// (the "Install all" action on a category header). Already-installed and
+/// non-auto-installable entries are skipped; returns `(binary, error)` for any
+/// that failed so the caller can report partial success.
+pub async fn install_all_in_category(
+    category: &str,
+    progress: &ProgressSink,
+) -> Vec<(String, String)> {
+    let catalog = build_catalog().await;
+    let mut failures = Vec::new();
+
+    for entry in catalog {
+        if category_key(entry.category) != category
+            || entry.state == InstallState::Installed
+            || !entry.is_auto_installable()
+        {
+            continue;
+        }
+        if let Err(e) = install_entry(&entry, progress).await {
+            failures.push((entry.binary_name.clone(), e.to_string()));
+        }
+    }
+
+    failures
+}
+
 /// A flat, serializable, UI-facing view of one catalog entry. The Dioxus
 /// settings panel holds a `Vec<CatalogItem>` in a signal; keeping this separate
 /// from [`CatalogEntry`] avoids leaking `InstallMethod`/`ToolCategory` into the
@@ -921,6 +967,36 @@ mod tests {
                 "{hidden} should be hidden from the catalog"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn pending_installs_in_category_scopes_to_that_category() {
+        // Every entry the "network" install-all would touch must actually be a
+        // network-category, not-installed, auto-installable tool — the exact
+        // set install_all_in_category will act on. Guards against a filter that
+        // leaks other categories (or already-installed tools) into a bulk
+        // install. The set can legitimately be empty (e.g. everything already
+        // installed, or nothing auto-installable in native mode), so we assert
+        // the scoping property, not a fixed count.
+        let full = build_catalog().await;
+        let pending = pending_installs_in_category("network").await;
+        for (bin, _secs) in &pending {
+            let entry = full
+                .iter()
+                .find(|e| &e.binary_name == bin)
+                .unwrap_or_else(|| panic!("{bin} not in catalog"));
+            assert_eq!(category_key(entry.category), "network", "{bin} not network");
+            assert_ne!(
+                entry.state,
+                InstallState::Installed,
+                "{bin} already installed"
+            );
+            assert!(entry.is_auto_installable(), "{bin} not auto-installable");
+        }
+        // A category with no matching tools yields an empty set (not an error).
+        assert!(pending_installs_in_category("no_such_category")
+            .await
+            .is_empty());
     }
 
     #[test]
