@@ -12,12 +12,8 @@ use tokio::process::Command;
 
 /// Release tag hosting the openat2-capable proot binaries (#248/#252). The
 /// `build-proot.yml` workflow publishes `proot-<arch>` + `proot-<arch>.sha256`
-/// under this tag on Strike48-public/pick.
-///
-/// TODO(#252): set this to the tag the build workflow actually publishes, and
-/// fill in the SHA-256 values below from the published `.sha256` files, once
-/// the build has run. Until then `download_proot` fails closed (see
-/// [`PROOT_DOWNLOADS`] placeholders).
+/// under this tag on Strike48-public/pick. Bump this (and the SHA-256 values in
+/// [`PROOT_DOWNLOADS`]) when republishing under a new `proot-openat2-vN` tag.
 #[cfg(target_os = "linux")]
 const PROOT_RELEASE_TAG: &str = "proot-openat2-v1";
 
@@ -41,14 +37,16 @@ const PROOT_DOWNLOADS: &[ProotDownload] = &[
     ProotDownload {
         arch: "x86_64",
         url: "https://github.com/Strike48-public/pick/releases/download/proot-openat2-v1/proot-x86_64",
-        // TODO(#252): fill from proot-x86_64.sha256 published by build-proot.yml.
-        sha256: "",
+        // Published by build-proot.yml (run 29788507360); verified against the
+        // release's proot-x86_64.sha256 and the binary itself.
+        sha256: "2b5e31b7da36b7319eb82483d176cf5ffd6ffbd89480934deb1eb258aca521c4",
     },
     ProotDownload {
         arch: "aarch64",
         url: "https://github.com/Strike48-public/pick/releases/download/proot-openat2-v1/proot-aarch64",
-        // TODO(#252): fill from proot-aarch64.sha256 published by build-proot.yml.
-        sha256: "",
+        // Published by build-proot.yml (run 29788507360); verified against the
+        // release's proot-aarch64.sha256 and the binary itself.
+        sha256: "fddb92926ed9384bedd67db532518d5284fa6bbd7cc2d530672801b871288473",
     },
 ];
 
@@ -353,5 +351,44 @@ mod tests {
     fn verify_sha256_refuses_empty_pin() {
         // An unpinned checksum must fail closed, never run unverified.
         assert!(verify_sha256(b"hello", "", "x86_64").is_err());
+    }
+
+    // Guard the shipped pins: every PROOT_DOWNLOADS entry must carry a
+    // well-formed (64-hex-char, lowercase) SHA-256. Catches a regression to the
+    // empty placeholder or a truncated/typo'd hash at test time — before it
+    // degrades the connector to "refuses to run an unverified binary" in the
+    // field. (Does not fetch the network; it only asserts the pins are shaped
+    // like real digests.)
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn every_proot_download_has_a_wellformed_pinned_sha256() {
+        assert!(!PROOT_DOWNLOADS.is_empty(), "no proot downloads configured");
+        for d in PROOT_DOWNLOADS {
+            assert_eq!(
+                d.sha256.len(),
+                64,
+                "proot ({}) SHA-256 must be 64 hex chars, got {}",
+                d.arch,
+                d.sha256.len()
+            );
+            assert!(
+                d.sha256.chars().all(|c| c.is_ascii_hexdigit()),
+                "proot ({}) SHA-256 has non-hex chars: {}",
+                d.arch,
+                d.sha256
+            );
+            assert!(
+                d.sha256.chars().all(|c| !c.is_ascii_uppercase()),
+                "proot ({}) SHA-256 should be lowercase hex",
+                d.arch
+            );
+            // And it must actually satisfy verify_sha256's own well-formedness
+            // path (non-empty pin) — i.e. it would not fail closed.
+            let mismatch = verify_sha256(b"not the real binary", d.sha256, d.arch);
+            assert!(
+                matches!(mismatch, Err(SandboxError::Download(_))),
+                "expected a mismatch error (pin is well-formed but data differs)"
+            );
+        }
     }
 }
