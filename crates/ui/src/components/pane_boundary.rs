@@ -12,6 +12,22 @@
 //! `catch_unwind` and abort the process (see #130/#191/#224) — a boundary cannot
 //! help those. Fix known render panics at the source (e.g. #287); this is the
 //! backstop for the unanticipated ones.
+//!
+//! ## Usage
+//!
+//! Wrap any subtree that should degrade gracefully instead of blanking its
+//! pane. Give each region a short `name` shown in the fallback message:
+//!
+//! ```ignore
+//! PaneBoundary { name: "settings".to_string(),
+//!     SettingsPage { /* ... */ }
+//! }
+//! ```
+//!
+//! Prefer one boundary per independently-recoverable region (see `AppLayout`
+//! for the sidebar/content split). Always-mounted background panes (e.g. the
+//! Files/Shell panes in `WorkspaceApp`) should each get their own boundary so a
+//! panic in a hidden pane cannot blank the visible page.
 
 use dioxus::prelude::*;
 

@@ -761,3 +761,46 @@ fn load_screenshots_from_result(result_json: &str) -> Vec<(String, String)> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::webwright_display_name;
+
+    // End-to-end guard for the render.rs truncation call site (#287). Unlike the
+    // three sidebar/history/agent_selector sites (inline in rsx! and gated on a
+    // network-populated signal), webwright_display_name is a pure function, so we
+    // can exercise the exact truncation branch a user hits. If this site regressed
+    // to `&t[..57]`, this test would panic on the boundary-straddling task title.
+    #[test]
+    fn webwright_task_title_truncates_on_char_boundary_without_panic() {
+        // 'é' (2 bytes) straddles byte 57: bytes 0..56 ASCII, then 'é' at 56-57.
+        let task = format!(
+            "{}\u{e9}rest of the very long task description",
+            "a".repeat(56)
+        );
+        assert!(
+            task.len() > 60,
+            "precondition: task exceeds the 57-char cutoff"
+        );
+        assert!(
+            !task.is_char_boundary(57),
+            "precondition: byte 57 splits the 'é' — a byte slice would panic here"
+        );
+
+        let args = Some(format!(r#"{{"mode":"explore","task":"{task}"}}"#));
+        let out = webwright_display_name(&args);
+
+        // 57 kept chars + "..." ellipsis, prefixed by the webwright label.
+        assert!(out.starts_with("webwright explore \u{2014} "));
+        assert!(out.ends_with("..."));
+        assert!(out.contains(&"a".repeat(56)));
+        assert!(out.contains('\u{e9}'), "the 57th char (é) should be kept");
+    }
+
+    #[test]
+    fn webwright_short_task_is_not_truncated() {
+        let args = Some(r#"{"mode":"explore","task":"quick scan"}"#.to_string());
+        let out = webwright_display_name(&args);
+        assert_eq!(out, "webwright explore \u{2014} quick scan");
+    }
+}
