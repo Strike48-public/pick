@@ -13,7 +13,7 @@
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{define_class, msg_send, MainThreadOnly};
+use objc2::{define_class, msg_send, AllocAnyThread, MainThreadOnly};
 use objc2_authentication_services::ASWebAuthenticationSession;
 use objc2_foundation::{MainThreadMarker, NSError, NSObject, NSObjectProtocol, NSString, NSURL};
 use objc2_ui_kit::{UIApplication, UIWindow};
