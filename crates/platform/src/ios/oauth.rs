@@ -12,21 +12,22 @@
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
+use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, MainThreadOnly};
-use objc2_authentication_services::{
-    ASPresentationAnchor, ASWebAuthenticationPresentationContextProviding,
-    ASWebAuthenticationSession,
-};
+use objc2_authentication_services::ASWebAuthenticationSession;
 use objc2_foundation::{MainThreadMarker, NSError, NSObject, NSObjectProtocol, NSString, NSURL};
 use objc2_ui_kit::{UIApplication, UIWindow};
 use pentest_core::error::{Error, Result};
 use std::sync::mpsc;
 
 define_class!(
-    // A minimal main-thread object conforming to
-    // ASWebAuthenticationPresentationContextProviding. The session asks it for
-    // the window to anchor the auth sheet to; we return the app's key window.
+    // A minimal main-thread object serving as the session's
+    // ASWebAuthenticationPresentationContextProviding delegate. We declare the
+    // `presentationAnchorForWebAuthenticationSession:` selector directly (via
+    // raw #[method]) rather than `impl`ing the typed trait: the crate gates that
+    // trait method to macOS and types the anchor as NSObject, which the typed
+    // path can't encode as a method return. Returning a raw `*mut AnyObject`
+    // pointer is a valid objc return and works on iOS.
     //
     // SAFETY:
     // - Superclass NSObject has no subclassing requirements.
@@ -39,14 +40,17 @@ define_class!(
     // SAFETY: NSObjectProtocol has no safety requirements.
     unsafe impl NSObjectProtocol for PresentationContext {}
 
-    // SAFETY: the method signature matches the protocol.
-    unsafe impl ASWebAuthenticationPresentationContextProviding for PresentationContext {
+    impl PresentationContext {
+        // SAFETY: selector + signature match ASWebAuthenticationPresentation-
+        // ContextProviding; returns the key window (an ASPresentationAnchor /
+        // UIWindow) as a retained raw pointer the objc runtime can encode.
         #[unsafe(method(presentationAnchorForWebAuthenticationSession:))]
-        fn presentation_anchor(
-            &self,
-            _session: &ASWebAuthenticationSession,
-        ) -> Retained<ASPresentationAnchor> {
-            key_window(self.mtm())
+        fn presentation_anchor(&self, _session: &ASWebAuthenticationSession) -> *mut AnyObject {
+            let window = key_window(self.mtm());
+            // Hand ownership to the caller (objc +1 return convention for a
+            // property-style getter is not expected here; the session does not
+            // release it, so retain-and-leak the pointer).
+            Retained::into_raw(window) as *mut AnyObject
         }
     }
 );
@@ -60,7 +64,7 @@ impl PresentationContext {
 
 /// The app's key window (an `ASPresentationAnchor` == `UIWindow` on iOS), to
 /// anchor the auth session. Must run on the main thread.
-fn key_window(mtm: MainThreadMarker) -> Retained<ASPresentationAnchor> {
+fn key_window(mtm: MainThreadMarker) -> Retained<UIWindow> {
     let app = UIApplication::sharedApplication(mtm);
     // Walk windows for the key one; fall back to the first. Raw msg_send keeps
     // this tolerant of UIKit-binding shape across versions.
@@ -72,15 +76,15 @@ fn key_window(mtm: MainThreadMarker) -> Retained<ASPresentationAnchor> {
             let w = windows.objectAtIndex(i);
             let is_key: bool = msg_send![&w, isKeyWindow];
             if is_key {
-                return Retained::cast_unchecked(w);
+                return w;
             }
         }
         // No key window: return the first (still a valid anchor). If there are
         // somehow no windows, fall through to a freshly-made one.
         if count > 0 {
-            return Retained::cast_unchecked(windows.objectAtIndex(0));
+            return windows.objectAtIndex(0);
         }
-        Retained::cast_unchecked(UIWindow::new(mtm))
+        UIWindow::new(mtm)
     }
 }
 
@@ -146,7 +150,7 @@ fn start_session(
     // SAFETY: main-thread AuthenticationServices calls; objects kept alive below.
     let session = unsafe {
         ASWebAuthenticationSession::initWithURL_callbackURLScheme_completionHandler(
-            ASWebAuthenticationSession::alloc(),
+            ASWebAuthenticationSession::alloc(mtm),
             &auth_url,
             Some(&scheme),
             RcBlock::as_ptr(&handler) as *mut _,
@@ -154,11 +158,11 @@ fn start_session(
     };
 
     let ctx = PresentationContext::new(mtm);
-    let proto: &ProtocolObject<dyn ASWebAuthenticationPresentationContextProviding> =
-        ProtocolObject::from_ref(&*ctx);
-    // SAFETY: setting the (weak) presentation-context provider + starting.
+    // SAFETY: set the (weak) presentation-context provider via the raw selector
+    // (the typed setter wants a ProtocolObject we intentionally don't construct)
+    // and start the session.
     let started = unsafe {
-        session.setPresentationContextProvider(Some(proto));
+        let _: () = msg_send![&session, setPresentationContextProvider: &*ctx];
         session.start()
     };
     if !started {
