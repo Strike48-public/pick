@@ -1,62 +1,18 @@
 //! iOS platform implementation (stub)
 
+pub mod oauth;
 pub mod pty_shell;
 pub mod system;
+
+pub use oauth::present_web_auth_session;
 
 use crate::traits::*;
 use async_trait::async_trait;
 use pentest_core::error::{Error, Result};
 use std::time::Duration;
 
-/// Open a URL in the system browser (Safari) via `UIApplication`.
-///
-/// The iOS analog of [`crate::android::open_browser`]. The app registers this
-/// as the Matrix OAuth browser opener (see the mobile app's `main`), because
-/// `open::that()` has no working backend inside the iOS app sandbox — it fails
-/// with "No such file or directory", so the OAuth flow never opens Safari.
-///
-/// `openURL:` must run on the main thread; the OAuth flow calls this from an
-/// async task, so we hop to the main queue via `dispatch_async`.
-pub fn open_browser(url: &str) -> Result<()> {
-    use objc2::runtime::AnyObject;
-    use objc2::{class, msg_send};
-    use objc2_foundation::{NSString, NSURL};
-
-    let ns = NSString::from_str(url);
-    // SAFETY: NSURL::URLWithString returns nil for a malformed URL; we check.
-    let nsurl = unsafe { NSURL::URLWithString(&ns) }
-        .ok_or_else(|| Error::InvalidParams(format!("invalid URL for browser open: {url}")))?;
-
-    // UIApplication access + openURL must run on the main thread. Use the objc
-    // runtime directly (raw msg_send) rather than objc2-ui-kit's typed
-    // UIApplication, whose surface varies across crate versions; the runtime
-    // selectors are stable. openURL:options:completionHandler: is the iOS 10+
-    // opener; empty options dict, nil completion handler.
-    dispatch_on_main(move || {
-        // SAFETY: sharedApplication exists once the app has launched (true by
-        // the time an OAuth flow runs). We send well-known, stable selectors and
-        // keep every objc return as a raw pointer (objc2's msg_send return-type
-        // conversion doesn't accept Retained<NSObject> for an untyped class).
-        unsafe {
-            let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
-            if app.is_null() {
-                return;
-            }
-            let options: *mut AnyObject = msg_send![class!(NSDictionary), dictionary];
-            let _: () = msg_send![
-                app,
-                openURL: &*nsurl,
-                options: options,
-                completionHandler: std::ptr::null::<AnyObject>(),
-            ];
-        }
-    });
-
-    Ok(())
-}
-
 /// Run `f` on the main dispatch queue (required for UIKit calls).
-fn dispatch_on_main<F: FnOnce() + Send + 'static>(f: F) {
+pub(crate) fn dispatch_on_main<F: FnOnce() + Send + 'static>(f: F) {
     use std::os::raw::c_void;
 
     extern "C" {

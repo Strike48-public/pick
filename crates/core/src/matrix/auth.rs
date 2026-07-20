@@ -251,6 +251,36 @@ where
     }
 }
 
+/// Native web-auth-session hook (iOS `ASWebAuthenticationSession`).
+///
+/// Given the login URL and the callback URL scheme (e.g. `com.strike48.pentest`),
+/// present the platform's in-app auth browser and return the full callback URL
+/// (`com.strike48.pentest://oauth/callback?...`) it redirects to. Blocking; the
+/// caller runs it on a blocking thread. When registered, iOS uses this instead
+/// of the loopback callback server (which can't work: launching a browser
+/// backgrounds the app and suspends the server).
+#[cfg(feature = "browser-auth")]
+type WebAuthSessionFn = Option<Box<dyn Fn(&str, &str) -> Result<String, String> + Send + Sync>>;
+
+#[cfg(feature = "browser-auth")]
+static WEB_AUTH_SESSION: std::sync::Mutex<WebAuthSessionFn> = std::sync::Mutex::new(None);
+
+/// Register a native web-auth-session provider (iOS `ASWebAuthenticationSession`).
+#[cfg(feature = "browser-auth")]
+pub fn set_web_auth_session<F>(session: F)
+where
+    F: Fn(&str, &str) -> Result<String, String> + Send + Sync + 'static,
+{
+    if let Ok(mut lock) = WEB_AUTH_SESSION.lock() {
+        *lock = Some(Box::new(session));
+    }
+}
+
+/// Custom URL scheme (no path) for the native OAuth callback, used as the
+/// `ASWebAuthenticationSession` callback scheme on iOS.
+#[cfg(feature = "browser-auth")]
+const NATIVE_OAUTH_SCHEME: &str = "com.strike48.pentest";
+
 /// Register a callback to set the OAuth callback port on the native side.
 ///
 /// On Android, this should call `ConnectorBridge.setOAuthCallbackPort(port)` via JNI
@@ -263,6 +293,90 @@ where
     if let Ok(mut s) = OAUTH_PORT_SETTER.lock() {
         *s = Some(Box::new(setter));
     }
+}
+
+/// If a native web-auth-session is registered (iOS), run the OIDC flow through
+/// it and return the token. Returns `Ok(None)` when no session is registered so
+/// the caller falls through to the loopback-server flow (desktop/Android).
+///
+/// The provider presents `ASWebAuthenticationSession` for
+/// `{base}/auth/login?redirect=com.strike48.pentest://oauth/callback` and
+/// returns the callback URL; we pull `access_token` from its query.
+#[cfg(feature = "browser-auth")]
+async fn try_native_web_auth_session(base: &str) -> crate::error::Result<Option<String>> {
+    let has_session = WEB_AUTH_SESSION
+        .lock()
+        .map(|l| l.is_some())
+        .unwrap_or(false);
+    if !has_session {
+        return Ok(None);
+    }
+
+    // Build the login URL with the native-scheme redirect using the url crate
+    // (reqwest re-exports it) so query encoding is correct, not hand-rolled.
+    let redirect = format!("{NATIVE_OAUTH_SCHEME}://oauth/callback");
+    let mut login_url = reqwest::Url::parse(base)
+        .map_err(|e| crate::error::Error::Matrix(format!("invalid Matrix base URL: {e}")))?;
+    login_url.set_path("/auth/login");
+    login_url
+        .query_pairs_mut()
+        .append_pair("redirect", &redirect);
+    let login_url = login_url.to_string();
+    tracing::info!("[BROWSER_AUTH] iOS: presenting web auth session -> {login_url}");
+
+    // The session is blocking (waits for the user + callback), so run it off the
+    // async executor.
+    let scheme = NATIVE_OAUTH_SCHEME.to_string();
+    let callback_url = tokio::task::spawn_blocking(move || {
+        let lock = WEB_AUTH_SESSION
+            .lock()
+            .map_err(|_| "session lock poisoned".to_string())?;
+        let session = lock
+            .as_ref()
+            .ok_or_else(|| "no web auth session".to_string())?;
+        session(&login_url, &scheme)
+    })
+    .await
+    .map_err(|e| crate::error::Error::Matrix(format!("web auth task join error: {e}")))?
+    .map_err(crate::error::Error::Matrix)?;
+
+    tracing::info!("[BROWSER_AUTH] iOS: web auth session returned a callback URL");
+    let token = token_from_callback_url(&callback_url).ok_or_else(|| {
+        crate::error::Error::Matrix(
+            "iOS web auth callback URL contained no access_token".to_string(),
+        )
+    })?;
+
+    // Cache like the loopback flow does, so a later chat visit reuses it.
+    if let Ok(mut cache) = BROWSER_TOKEN_CACHE.lock() {
+        *cache = Some(token.clone());
+    }
+    Ok(Some(token))
+}
+
+/// Extract the `access_token` query parameter from a callback URL, using the
+/// url crate's parser (handles percent-decoding). The callback carries the
+/// token in either the query string or the fragment, so try both.
+#[cfg(feature = "browser-auth")]
+fn token_from_callback_url(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if let Some((_, v)) = parsed.query_pairs().find(|(k, _)| k == "access_token") {
+        if !v.is_empty() {
+            return Some(v.into_owned());
+        }
+    }
+    // Fragment form: ...#access_token=...&token_type=...
+    if let Some(frag) = parsed.fragment() {
+        for (k, v) in reqwest::Url::parse(&format!("{NATIVE_OAUTH_SCHEME}://x/?{frag}"))
+            .ok()?
+            .query_pairs()
+        {
+            if k == "access_token" && !v.is_empty() {
+                return Some(v.into_owned());
+            }
+        }
+    }
+    None
 }
 
 /// Tell the native side (Android) which port the callback server is on.
@@ -349,6 +463,14 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
     }
 
     let base = super::normalize_url(matrix_url).to_string();
+
+    // iOS: use the native ASWebAuthenticationSession when registered. It keeps
+    // the app foregrounded and delivers the custom-scheme callback URL directly,
+    // so we skip the loopback callback server entirely (that server can't work
+    // on iOS — launching a browser suspends the app process).
+    if let Some(token) = try_native_web_auth_session(&base).await? {
+        return Ok(token);
+    }
 
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
     let tx = std::sync::Arc::new(tokio::sync::Mutex::new(Some(tx)));

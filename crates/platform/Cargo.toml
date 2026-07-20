@@ -78,9 +78,21 @@ pcap = { version = "2", optional = true }
 # iOS: open URLs via UIApplication (objc2 is already in the tree via
 # dioxus-mobile). Used to register a browser opener for the Matrix OAuth flow,
 # since `open::that()` has no backend inside the iOS app sandbox.
+# iOS native bits. Pin to the same objc2 0.6 major that dioxus 0.7's wry/tao
+# stack already uses (objc2-ui-kit 0.3, objc2-foundation 0.3) so there's a
+# single objc2 in the iOS FFI path — mixing 0.5 and 0.6 in one call chain
+# breaks. AuthenticationServices provides ASWebAuthenticationSession, the
+# proper iOS OIDC flow (in-app browser + custom-scheme callback, no localhost).
 [target.'cfg(target_os = "ios")'.dependencies]
-objc2 = "0.5"
-objc2-foundation = { version = "0.2", features = ["NSString", "NSURL"] }
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSError"] }
+objc2-ui-kit = { version = "0.3", features = ["UIApplication", "UIResponder", "UIWindow", "UIScene", "UIWindowScene"] }
+objc2-authentication-services = { version = "0.3", features = [
+    "ASWebAuthenticationSession",
+    "ASWebAuthenticationSessionCallback",
+    "ASFoundation",
+] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -45,13 +45,14 @@ fn main() {
 
     #[cfg(target_os = "ios")]
     {
-        // Register iOS browser opener for OAuth flows. `open::that()` has no
-        // backend in the iOS sandbox (fails with "No such file or directory"),
-        // so without this the Matrix OAuth flow can't open Safari and chat
-        // never gets its token. UIApplication.openURL is the iOS analog of
-        // Android's JNI Intent opener above.
-        pentest_core::matrix::set_browser_opener(|url| {
-            pentest_platform::ios::open_browser(url).map_err(|e| e.to_string())
+        // Register the iOS native OIDC session (ASWebAuthenticationSession).
+        // The loopback-callback flow can't work on iOS — launching a browser
+        // backgrounds the app and suspends the callback server — so iOS uses
+        // this in-app auth session with a custom-scheme callback instead. It's
+        // the iOS analog of Android's OAuthCallbackActivity. The callback scheme
+        // (com.strike48.pentest) is declared in the Info.plist via Dioxus.toml.
+        pentest_core::matrix::set_web_auth_session(|url, scheme| {
+            pentest_platform::ios::present_web_auth_session(url, scheme).map_err(|e| e.to_string())
         });
     }
 
