@@ -10,18 +10,68 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 
-/// URLs for downloading static proot binaries (Linux only)
+/// Release tag hosting the openat2-capable proot binaries (#248/#252). The
+/// `build-proot.yml` workflow publishes `proot-<arch>` + `proot-<arch>.sha256`
+/// under this tag on Strike48-public/pick.
+///
+/// TODO(#252): set this to the tag the build workflow actually publishes, and
+/// fill in the SHA-256 values below from the published `.sha256` files, once
+/// the build has run. Until then `download_proot` fails closed (see
+/// [`PROOT_DOWNLOADS`] placeholders).
 #[cfg(target_os = "linux")]
-const PROOT_DOWNLOAD_URLS: &[(&str, &str)] = &[
-    (
-        "x86_64",
-        "https://github.com/proot-me/proot/releases/download/v5.3.0/proot-v5.3.0-x86_64-static",
-    ),
-    (
-        "aarch64",
-        "https://github.com/proot-me/proot/releases/download/v5.3.0/proot-v5.3.0-aarch64-static",
-    ),
+const PROOT_RELEASE_TAG: &str = "proot-openat2-v1";
+
+/// Per-architecture proot download: (arch, url, expected SHA-256 hex).
+///
+/// The SHA-256 is verified after download and before the binary is made
+/// executable; a mismatch (or an empty placeholder) fails the download rather
+/// than running an unverified binary — closing the supply-chain gap the old
+/// unchecked `reqwest::get -> write -> chmod` had.
+#[cfg(target_os = "linux")]
+struct ProotDownload {
+    arch: &'static str,
+    url: &'static str,
+    /// Lowercase hex SHA-256. EMPTY = not yet filled from a published build;
+    /// treated as "unverifiable" and refused by `verify_sha256`.
+    sha256: &'static str,
+}
+
+#[cfg(target_os = "linux")]
+const PROOT_DOWNLOADS: &[ProotDownload] = &[
+    ProotDownload {
+        arch: "x86_64",
+        url: "https://github.com/Strike48-public/pick/releases/download/proot-openat2-v1/proot-x86_64",
+        // TODO(#252): fill from proot-x86_64.sha256 published by build-proot.yml.
+        sha256: "",
+    },
+    ProotDownload {
+        arch: "aarch64",
+        url: "https://github.com/Strike48-public/pick/releases/download/proot-openat2-v1/proot-aarch64",
+        // TODO(#252): fill from proot-aarch64.sha256 published by build-proot.yml.
+        sha256: "",
+    },
 ];
+
+/// Verify `bytes` hashes to the expected lowercase-hex SHA-256. An empty
+/// `expected` means the checksum has not been pinned yet (see #252); we refuse
+/// rather than run an unverified binary.
+#[cfg(target_os = "linux")]
+fn verify_sha256(bytes: &[u8], expected: &str, arch: &str) -> SandboxResult<()> {
+    if expected.is_empty() {
+        return Err(SandboxError::Download(format!(
+            "no pinned SHA-256 for proot ({arch}); refusing to run an unverified binary. \
+             See #252: fill PROOT_DOWNLOADS[{arch}].sha256 from the published build."
+        )));
+    }
+    use sha2::{Digest, Sha256};
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err(SandboxError::Download(format!(
+            "proot ({arch}) SHA-256 mismatch: expected {expected}, got {actual}"
+        )));
+    }
+    Ok(())
+}
 
 /// Proot executor for universal sandbox support
 pub struct ProotExecutor {
@@ -92,12 +142,11 @@ impl ProotExecutor {
         #[cfg(target_os = "linux")]
         {
             let arch = std::env::consts::ARCH;
-            let url = PROOT_DOWNLOAD_URLS
+            let download = PROOT_DOWNLOADS
                 .iter()
-                .find(|(a, _)| *a == arch)
-                .map(|(_, url)| *url)
+                .find(|d| d.arch == arch)
                 .ok_or_else(|| {
-                    SandboxError::Download(format!("No proot binary available for arch: {}", arch))
+                    SandboxError::Download(format!("No proot binary available for arch: {arch}"))
                 })?;
 
             let dest = config.proot_binary_path();
@@ -107,10 +156,15 @@ impl ProotExecutor {
                 tokio::fs::create_dir_all(parent).await?;
             }
 
-            tracing::info!("Downloading proot from {}", url);
+            tracing::info!(
+                "Downloading openat2-capable proot ({}) from {} [{}]",
+                arch,
+                download.url,
+                PROOT_RELEASE_TAG
+            );
 
             // Download using reqwest
-            let response = reqwest::get(url)
+            let response = reqwest::get(download.url)
                 .await
                 .map_err(|e| SandboxError::Download(e.to_string()))?;
 
@@ -126,6 +180,10 @@ impl ProotExecutor {
                 .await
                 .map_err(|e| SandboxError::Download(e.to_string()))?;
 
+            // Verify the SHA-256 BEFORE writing/executing. Fails closed on an
+            // unpinned or mismatched checksum — never run an unverified binary.
+            verify_sha256(&bytes, download.sha256, arch)?;
+
             // Write to file
             tokio::fs::write(&dest, &bytes).await?;
 
@@ -138,7 +196,7 @@ impl ProotExecutor {
                 tokio::fs::set_permissions(&dest, perms).await?;
             }
 
-            tracing::info!("Downloaded proot to {}", dest.display());
+            tracing::info!("Downloaded + verified proot to {}", dest.display());
 
             Ok(dest)
         }
@@ -268,5 +326,32 @@ mod tests {
         let config = SandboxConfig::default();
         let available = ProotExecutor::is_available(&config).await;
         println!("proot available: {}", available);
+    }
+
+    // SHA-256 of the 5 bytes "hello", precomputed:
+    //   printf 'hello' | sha256sum
+    #[cfg(target_os = "linux")]
+    const HELLO_SHA256: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn verify_sha256_accepts_matching_digest() {
+        assert!(verify_sha256(b"hello", HELLO_SHA256, "x86_64").is_ok());
+        // Case-insensitive hex comparison.
+        assert!(verify_sha256(b"hello", &HELLO_SHA256.to_uppercase(), "x86_64").is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn verify_sha256_rejects_mismatch() {
+        let bad = "0000000000000000000000000000000000000000000000000000000000000000";
+        assert!(verify_sha256(b"hello", bad, "x86_64").is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn verify_sha256_refuses_empty_pin() {
+        // An unpinned checksum must fail closed, never run unverified.
+        assert!(verify_sha256(b"hello", "", "x86_64").is_err());
     }
 }
