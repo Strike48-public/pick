@@ -3,6 +3,7 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{class, msg_send, MainThreadMarker};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSString};
 use objc2_ui_kit::{UIApplication, UIWindow};
 use pentest_core::error::Result;
@@ -51,28 +52,7 @@ pub fn share_text(text: &str) -> Result<()> {
                         if !root_view.is_null() {
                             let _: () = msg_send![popover, setSourceView: root_view];
                             // Set a small sourceRect at origin (0,0) with size (1,1)
-                            #[repr(C)]
-                            struct CGRect {
-                                origin: CGPoint,
-                                size: CGSize,
-                            }
-                            #[repr(C)]
-                            struct CGPoint {
-                                x: f64,
-                                y: f64,
-                            }
-                            #[repr(C)]
-                            struct CGSize {
-                                width: f64,
-                                height: f64,
-                            }
-                            let rect = CGRect {
-                                origin: CGPoint { x: 0.0, y: 0.0 },
-                                size: CGSize {
-                                    width: 1.0,
-                                    height: 1.0,
-                                },
-                            };
+                            let rect = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(1.0, 1.0));
                             let _: () = msg_send![popover, setSourceRect: rect];
                         }
                     }

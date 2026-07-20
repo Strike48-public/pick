@@ -93,6 +93,7 @@ objc2-authentication-services = { version = "0.3", features = [
     "ASWebAuthenticationSessionCallback",
     "ASFoundation",
 ] }
+objc2-core-foundation = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
