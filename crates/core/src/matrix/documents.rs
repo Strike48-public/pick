@@ -108,9 +108,12 @@ struct SharedLinkNode {
     url: String,
 }
 
+// `listDocuments` is a Relay connection, so it requires a pagination arg
+// (`first` or `last`) even though the schema only lists `filter` explicitly —
+// omitting it returns a "You must provide either 'first' or 'last'" error.
 const LIST_DOCUMENTS_QUERY: &str = r#"
-    query ListDocuments($filter: ListDocumentsFilter) {
-        listDocuments(filter: $filter) {
+    query ListDocuments($first: Int, $filter: ListDocumentsFilter) {
+        listDocuments(first: $first, filter: $filter) {
             edges {
                 node {
                     id
@@ -122,6 +125,10 @@ const LIST_DOCUMENTS_QUERY: &str = r#"
         }
     }
 "#;
+
+/// Page size for the document list. Easy Mode shows a flat report list, so one
+/// generous page is enough (no infinite scroll).
+const DOCUMENTS_PAGE_SIZE: i32 = 100;
 
 const CREATE_SHARED_LINK_QUERY: &str = r#"
     mutation CreateSharedLink($input: CreateSharedLinkInput!) {
@@ -144,7 +151,10 @@ impl MatrixChatClient {
             None => serde_json::Value::Null,
         };
         let data: ListDocumentsData = self
-            .execute_gql(LIST_DOCUMENTS_QUERY, serde_json::json!({ "filter": filter }))
+            .execute_gql(
+                LIST_DOCUMENTS_QUERY,
+                serde_json::json!({ "first": DOCUMENTS_PAGE_SIZE, "filter": filter }),
+            )
             .await?;
         Ok(documents_from_data(data))
     }
