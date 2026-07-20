@@ -1,0 +1,159 @@
+# Build an openat2-capable static `proot` for the BlackArch sandbox.
+#
+# Why this exists (#248 / #252): the upstream proot-me v5.3.0 binary the
+# connector downloads cannot translate the `openat2` syscall. Modern libalpm
+# (pacman 7) opens the sync databases with `openat2`, so under that proot every
+# DB read fails with a bogus "not readable: No such file or directory" and
+# ALL pacman-based tool installs fail with "target not found" — even though the
+# .db files are on disk and readable via cat.
+#
+# termux/proot carries an `openat2 -> openat` rewrite that upstream proot-me
+# lacks. Building that statically (glibc, not musl — musl chokes on
+# `struct rlimit64`) produces a proot whose DB reads work, which fixes #248.
+#
+# This workflow builds that binary for x86_64 + aarch64, verifies it can
+# translate openat2 (smoke test), checksums it, and — on a tagged/dispatched
+# run — publishes it to a GitHub release the connector's downloader points at.
+#
+# Manual, not push-triggered: building proot is infrastructure, run
+# deliberately (workflow_dispatch) or when a `proot-openat2-vN` tag is pushed.
+name: Build proot
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to publish under (e.g. proot-openat2-v1). Blank = build + smoke-test only, no publish."
+        required: false
+        default: ""
+  push:
+    tags:
+      - "proot-openat2-v*"
+
+permissions:
+  contents: write
+
+env:
+  # Pinned termux/proot commit that carries the openat2 rewrite. Pin by SHA so
+  # the build is reproducible and an upstream force-push can't change what we
+  # ship. TODO(#252): replace with the exact commit verified during the spike
+  # before this workflow is relied upon.
+  TERMUX_PROOT_REF: "master"
+
+jobs:
+  build:
+    name: Build proot (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            docker_platform: linux/amd64
+          - arch: aarch64
+            docker_platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v5
+
+      # QEMU lets the arm64 build run in an arm64 Debian container on the
+      # x86_64 runner. The x86_64 build also runs in a container so both arches
+      # use the identical Debian toolchain.
+      - name: Set up QEMU (for aarch64 emulation)
+        if: matrix.arch == 'aarch64'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build static proot in Debian
+        env:
+          ARCH: ${{ matrix.arch }}
+          DOCKER_PLATFORM: ${{ matrix.docker_platform }}
+        run: |
+          set -euo pipefail
+          # The build script and support files (ashmem.h stub, openat2 probe)
+          # are committed under .github/proot-build/ and bind-mounted into the
+          # container. This deliberately avoids nesting heredocs inside a
+          # docker `bash -c '...'` inline script, where multi-layer YAML+shell
+          # quoting silently corrupts the payload.
+          docker run --rm --platform "$DOCKER_PLATFORM" \
+            -e TERMUX_PROOT_REF="$TERMUX_PROOT_REF" \
+            -e ARCH="$ARCH" \
+            -v "$PWD:/work" \
+            debian:bookworm \
+            bash -euxo pipefail /work/.github/proot-build/build.sh
+
+      - name: Verify static + record checksum
+        run: |
+          set -euo pipefail
+          file "proot-${{ matrix.arch }}" | tee /dev/stderr | grep -q "statically linked" \
+            || { echo "ERROR: proot-${{ matrix.arch }} is not statically linked"; exit 1; }
+          sha256sum "proot-${{ matrix.arch }}" | tee "proot-${{ matrix.arch }}.sha256"
+
+      # openat2 smoke test (x86_64 only — the arm64 binary runs under QEMU where
+      # syscall probing is unreliable). A rootfs file opened via syscall 437
+      # (openat2) must return a valid fd, not ENOENT. This is the exact failure
+      # #248 hit; a regression here must fail the build, never ship silently.
+      - name: openat2 smoke test
+        if: matrix.arch == 'x86_64'
+        run: |
+          set -euo pipefail
+          # Probe source is committed at .github/proot-build/openat2_probe.c.
+          cc -static -o /tmp/openat2_probe .github/proot-build/openat2_probe.c
+          # Run the probe UNDER the freshly built proot on a minimal rootfs (/).
+          # If proot cannot translate openat2, the probe exits non-zero and the
+          # build fails — exactly the #248 signature.
+          ./proot-x86_64 -0 -r / /tmp/openat2_probe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proot-${{ matrix.arch }}
+          path: |
+            proot-${{ matrix.arch }}
+            proot-${{ matrix.arch }}.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish proot release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only publish when a tag was pushed or a release_tag input was given;
+    # a bare workflow_dispatch with no tag builds + smoke-tests only.
+    if: startsWith(github.ref, 'refs/tags/proot-openat2-v') || inputs.release_tag != ''
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage release assets
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp artifacts/proot-x86_64/proot-x86_64 dist/
+          cp artifacts/proot-x86_64/proot-x86_64.sha256 dist/
+          cp artifacts/proot-aarch64/proot-aarch64 dist/
+          cp artifacts/proot-aarch64/proot-aarch64.sha256 dist/
+          ls -l dist
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to GitHub release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "openat2-capable proot (${{ steps.tag.outputs.tag }})"
+          body: |
+            Static, openat2-capable `proot` for the BlackArch sandbox (fixes #248).
+            Built from termux/proot @ `${{ env.TERMUX_PROOT_REF }}`.
+            Verify with the published `.sha256` files before use.
+          files: |
+            dist/proot-x86_64
+            dist/proot-x86_64.sha256
+            dist/proot-aarch64
+            dist/proot-aarch64.sha256
