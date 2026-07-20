@@ -34,11 +34,14 @@ permissions:
   contents: write
 
 env:
-  # Pinned termux/proot commit that carries the openat2 rewrite. Pin by SHA so
-  # the build is reproducible and an upstream force-push can't change what we
-  # ship. TODO(#252): replace with the exact commit verified during the spike
-  # before this workflow is relied upon.
-  TERMUX_PROOT_REF: "master"
+  # Pinned termux/proot commit that carries the openat2 handling (#248 fix).
+  # Pinned by full SHA so the build is reproducible and an upstream force-push
+  # can't change what we ship. Verified at pin time: this ref references
+  # `openat2` across 13 files, including the syscall rewrite in
+  # src/syscall/enter.c and the per-arch sysnums-*.h tables — the code the old
+  # proot-me v5.3.0 lacks. Bump deliberately (and re-verify) when adopting a
+  # newer termux/proot.
+  TERMUX_PROOT_REF: "6c09638b65797997e33b218a42e5e2c7645cb788"
 
 jobs:
   build:
