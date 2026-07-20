@@ -1,13 +1,23 @@
 //! Easy Mode Documents list: shows scan reports, opens them in the browser,
 //! and creates shareable links (copy + OS share sheet).
+//!
+//! Both "open" (tap the title) and "share" go through `create_shared_link`:
+//! the shareable `/s/:token` page renders the report's markdown as HTML, and it
+//! is the only web route that shows a single document (there is no hosted
+//! per-document viewer, and the Studio conversation page lives under
+//! `/pincharts/conversations/:id` and shows the whole conversation, not the
+//! report). Opening the share link therefore gives the user the actual report.
 
-use dioxus::prelude::*;
 use dioxus::document;
-use pentest_core::matrix::{studio_web_base, DocumentSummary, MatrixChatClient};
+use dioxus::prelude::*;
+use pentest_core::matrix::{DocumentSummary, MatrixChatClient};
 
-/// Build the Studio conversation URL a document opens to.
-pub fn conversation_url(web_base: &str, conversation_id: &str) -> String {
-    format!("{}/conversations/{}", web_base.trim_end_matches('/'), conversation_id)
+/// Build the JS snippet that copies `url` to the clipboard. `serde_json`
+/// produces a spec-valid JS string literal (safe for any input), unlike
+/// `{:?}` which emits `\u{..}` brace-escapes that are invalid JavaScript.
+fn clipboard_js(url: &str) -> String {
+    let literal = serde_json::to_string(url).unwrap_or_else(|_| "\"\"".to_string());
+    format!("navigator.clipboard && navigator.clipboard.writeText({literal})")
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -32,13 +42,16 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
     let mut loading = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
     let mut toast = use_signal(|| None::<String>);
+    // Bumped by the in-panel Refresh button to force a reload on demand.
+    let mut manual_nonce = use_signal(|| 0u32);
 
-    // (Re)load when token, agent, or nonce changes.
+    // (Re)load when token, agent, the external nonce, or the manual nonce changes.
     {
         let api_url = api_url.clone();
         let auth_token = auth_token.clone();
         use_effect(move || {
-            let _ = refresh_nonce();          // subscribe
+            let _ = refresh_nonce();          // subscribe (bumped after a scan)
+            let _ = manual_nonce();           // subscribe (Refresh button)
             let aid = agent_id();              // subscribe
             let api_url = api_url.clone();
             let auth_token = auth_token.clone();
@@ -58,11 +71,16 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
         });
     }
 
-    let web_base = studio_web_base(&api_url);
-
     rsx! {
         div { class: "easy-docs",
-            div { class: "easy-docs-header", "Reports" }
+            div { class: "easy-docs-header",
+                span { "Reports" }
+                button {
+                    class: "easy-docs-refresh",
+                    onclick: move |_| { manual_nonce += 1; },
+                    "Refresh"
+                }
+            }
             if let Some(msg) = toast() {
                 div { class: "easy-docs-toast", "{msg}" }
             }
@@ -77,9 +95,12 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                     {
                         // Each closure below is `move`, so give each its own owned clones.
                         let title = doc.title.clone();
-                        // For open-in-browser:
-                        let open_url = conversation_url(&web_base, &doc.conversation_id);
-                        // For share:
+                        // For open-in-browser (tap title): create + open the share link.
+                        let open_api_url = api_url.clone();
+                        let open_token = auth_token.clone();
+                        let open_conv = doc.conversation_id.clone();
+                        let open_doc = doc.id.clone();
+                        // For share (button): create link + copy + OS share sheet.
                         let share_api_url = api_url.clone();
                         let share_token = auth_token.clone();
                         let share_conv = doc.conversation_id.clone();
@@ -89,8 +110,25 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                                 span {
                                     class: "easy-docs-title",
                                     onclick: move |_| {
-                                        // Open in system browser via the registered opener.
-                                        let _ = pentest_core::matrix::open_browser(&open_url);
+                                        let api_url = open_api_url.clone();
+                                        let auth_token = open_token.clone();
+                                        let conv = open_conv.clone();
+                                        let doc_id = open_doc.clone();
+                                        spawn(async move {
+                                            let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
+                                            // The /s/:token page renders the report markdown; open it
+                                            // in the system browser via the registered opener.
+                                            match client.create_shared_link(&conv, &doc_id).await {
+                                                Ok(url) => {
+                                                    // open_url_in_browser uses the registered opener
+                                                    // (mobile) and falls back to open::that (desktop/web).
+                                                    if let Err(e) = pentest_core::matrix::open_url_in_browser(&url) {
+                                                        toast.set(Some(format!("Couldn't open report: {e}")));
+                                                    }
+                                                }
+                                                Err(e) => toast.set(Some(format!("Couldn't open report: {e}"))),
+                                            }
+                                        });
                                     },
                                     "{title}"
                                 }
@@ -106,11 +144,7 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                                             match client.create_shared_link(&conv, &doc_id).await {
                                                 Ok(url) => {
                                                     // Copy to clipboard (WebView) + OS share sheet.
-                                                    let js = format!(
-                                                        "navigator.clipboard && navigator.clipboard.writeText({:?})",
-                                                        url
-                                                    );
-                                                    let _ = document::eval(&js);
+                                                    let _ = document::eval(&clipboard_js(&url));
                                                     let _ = pentest_core::share::share_text(&url);
                                                     toast.set(Some(format!("Link copied: {url}")));
                                                 }
@@ -134,18 +168,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn conversation_url_builds_studio_path() {
+    fn clipboard_js_produces_valid_js_string_literal() {
         assert_eq!(
-            conversation_url("https://studio.example.test", "conv-1"),
-            "https://studio.example.test/conversations/conv-1"
+            clipboard_js("https://studio.example.test/s/abc123"),
+            r#"navigator.clipboard && navigator.clipboard.writeText("https://studio.example.test/s/abc123")"#
         );
     }
 
     #[test]
-    fn conversation_url_trims_trailing_slash() {
+    fn clipboard_js_escapes_quotes_and_backslashes() {
+        // A hostile/odd URL must not break out of the JS string literal.
+        let js = clipboard_js(r#"a"b\c"#);
         assert_eq!(
-            conversation_url("https://studio.example.test/", "c"),
-            "https://studio.example.test/conversations/c"
+            js,
+            r#"navigator.clipboard && navigator.clipboard.writeText("a\"b\\c")"#
         );
     }
 }
