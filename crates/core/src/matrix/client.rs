@@ -83,7 +83,7 @@ impl MatrixChatClient {
     ///
     /// Handles the full request lifecycle: send, status check, JSON decode,
     /// GraphQL-level error check, and `data` unwrap.
-    async fn execute_gql<T: serde::de::DeserializeOwned>(
+    pub(crate) async fn execute_gql<T: serde::de::DeserializeOwned>(
         &self,
         query: &str,
         variables: serde_json::Value,

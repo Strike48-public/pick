@@ -5,10 +5,12 @@
 
 mod auth;
 mod client;
+pub mod documents;
 mod types;
 
 pub use auth::*;
 pub use client::MatrixChatClient;
+pub use documents::{studio_web_base, DocumentSummary};
 pub use types::*;
 
 /// Strip trailing slashes from a URL.
