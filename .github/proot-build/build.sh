@@ -35,14 +35,23 @@ git checkout "$TERMUX_PROOT_REF"
 mkdir -p /usr/include/linux
 cp /work/.github/proot-build/ashmem.h /usr/include/linux/ashmem.h
 
-# Static glibc build. Pass LDFLAGS through the ENVIRONMENT, not as a make
-# argument: `make LDFLAGS=-static` is a command-line assignment that OVERRIDES
-# the makefile's `LDFLAGS += -ltalloc -Wl,-z,noexecstack` (src/GNUmakefile:19),
-# dropping -ltalloc and failing the final link with `undefined reference to
-# _talloc_*`. Setting it in the environment lets the makefile's `+=` append, so
-# both -static and -ltalloc reach the link. (Verified: GNU make gives env vars
-# lower precedence than `+=`, command-line vars higher.)
-LDFLAGS="-static" make -C src V=1
+# Static glibc build.
+#
+# LDFLAGS via the ENVIRONMENT, not as a make argument: `make LDFLAGS=-static` is
+# a command-line assignment that OVERRIDES the makefile's
+# `LDFLAGS += -ltalloc -Wl,-z,noexecstack` (src/GNUmakefile:19), dropping
+# -ltalloc and failing the final link with `undefined reference to _talloc_*`.
+# In the environment, the makefile's `+=` appends, so both -static and -ltalloc
+# reach the link. (GNU make: env vars have lower precedence than `+=`.)
+#
+# HAS_LOADER_32BIT= (command-line, empty) disables the 32-bit compat loader. The
+# makefile derives it from arch.h and, on aarch64, tries to build loader-m32 with
+# `cc -m32` — which the aarch64 toolchain has no notion of (`unrecognized
+# command-line option '-m32'`). The sandbox only runs native-arch tools, so the
+# 32-bit guest loader is dead weight; disable it on every arch for a uniform,
+# reproducible build. (GNU make: a command-line `VAR=` overrides the makefile's
+# `:=`, and `ifdef` on the resulting empty value is false.)
+LDFLAGS="-static" make -C src HAS_LOADER_32BIT= V=1
 /src/src/proot --version
 
 cp /src/src/proot "/work/proot-${ARCH}"
