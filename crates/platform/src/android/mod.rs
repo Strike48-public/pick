@@ -60,6 +60,11 @@ pub fn open_browser(url: &str) -> Result<()> {
     jni_bridge::open_browser(url)
 }
 
+/// Share text via the OS share sheet.
+pub fn share_text(text: &str) -> Result<()> {
+    jni_bridge::share_text(text)
+}
+
 /// Tell the Android OAuthCallbackActivity which port the local callback server is on.
 pub fn set_oauth_callback_port(port: u16) -> Result<()> {
     jni_bridge::set_oauth_callback_port(port)

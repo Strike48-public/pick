@@ -3,10 +3,12 @@
 pub mod browser;
 pub mod oauth;
 pub mod pty_shell;
+pub mod share;
 pub mod system;
 
 pub use browser::open_url;
 pub use oauth::present_web_auth_session;
+pub use share::share_text;
 
 use crate::traits::*;
 use async_trait::async_trait;

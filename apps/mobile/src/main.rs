@@ -34,6 +34,11 @@ fn main() {
             pentest_platform::android::open_browser(url).map_err(|e| e.to_string())
         });
 
+        // Register share handler
+        pentest_core::share::set_share_handler(|text| {
+            pentest_platform::android::share_text(text).map_err(|e| e.to_string())
+        });
+
         // Register OAuth callback port setter — tells OAuthCallbackActivity
         // which port the local Axum server is listening on.
         pentest_core::matrix::set_oauth_port_setter(|port| {
@@ -53,6 +58,16 @@ fn main() {
         // (com.strike48.pentest) is declared in the Info.plist via Dioxus.toml.
         pentest_core::matrix::set_web_auth_session(|url, scheme| {
             pentest_platform::ios::present_web_auth_session(url, scheme).map_err(|e| e.to_string())
+        });
+
+        // Register iOS browser opener for opening report URLs
+        pentest_core::matrix::set_browser_opener(|url| {
+            pentest_platform::ios::open_url(url).map_err(|e| e.to_string())
+        });
+
+        // Register share handler
+        pentest_core::share::set_share_handler(|text| {
+            pentest_platform::ios::share_text(text).map_err(|e| e.to_string())
         });
     }
 

@@ -255,3 +255,56 @@ pub fn open_browser(url: &str) -> Result<()> {
         Ok(())
     })
 }
+
+/// Share text via the OS share sheet.
+///
+/// Uses ConnectorBridge.invoke(context, "share_text", {"text": "..."})
+pub fn share_text(text: &str) -> Result<()> {
+    let params = serde_json::json!({ "text": text }).to_string();
+
+    with_activity(move |env, activity| {
+        let ctx = env
+            .call_method(
+                activity,
+                "getApplicationContext",
+                "()Landroid/content/Context;",
+                &[],
+            )
+            .and_then(|v| v.l())
+            .map_err(|e| Error::ToolExecution(format!("getApplicationContext: {e}")))?;
+
+        let bridge_cls = find_app_class(env, "com/strike48/pentest_connector/ConnectorBridge")?;
+
+        let method_str = env
+            .new_string("share_text")
+            .map_err(|e| Error::ToolExecution(format!("JNI string: {e}")))?;
+        let params_str = env
+            .new_string(&params)
+            .map_err(|e| Error::ToolExecution(format!("JNI string: {e}")))?;
+
+        let result = env
+            .call_static_method(
+                &bridge_cls,
+                "invoke",
+                "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                &[
+                    JValue::Object(&ctx),
+                    JValue::Object(&method_str.into()),
+                    JValue::Object(&params_str.into()),
+                ],
+            )
+            .and_then(|v| v.l())
+            .map_err(|e| Error::ToolExecution(format!("ConnectorBridge.invoke: {e}")))?;
+
+        let result_str = jstring_to_string(env, &result);
+
+        // Check for error response
+        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&result_str) {
+            if let Some(err) = obj.get("error").and_then(|e| e.as_str()) {
+                return Err(Error::ToolExecution(format!("share_text error: {err}")));
+            }
+        }
+
+        Ok(())
+    })
+}
