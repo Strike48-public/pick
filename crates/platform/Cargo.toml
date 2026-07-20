@@ -81,7 +81,6 @@ pcap = { version = "2", optional = true }
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString", "NSURL"] }
-objc2-ui-kit = { version = "0.2", features = ["UIApplication"] }
 
 [dev-dependencies]
 tempfile = "3"

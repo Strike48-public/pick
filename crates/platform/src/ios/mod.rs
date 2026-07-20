@@ -18,6 +18,9 @@ use std::time::Duration;
 /// `openURL:` must run on the main thread; the OAuth flow calls this from an
 /// async task, so we hop to the main queue via `dispatch_async`.
 pub fn open_browser(url: &str) -> Result<()> {
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyObject, NSObject};
+    use objc2::{class, msg_send};
     use objc2_foundation::{NSString, NSURL};
 
     let ns = NSString::from_str(url);
@@ -25,19 +28,26 @@ pub fn open_browser(url: &str) -> Result<()> {
     let nsurl = unsafe { NSURL::URLWithString(&ns) }
         .ok_or_else(|| Error::InvalidParams(format!("invalid URL for browser open: {url}")))?;
 
-    // UIApplication access + openURL must be on the main thread.
+    // UIApplication access + openURL must run on the main thread. Use the objc
+    // runtime directly (raw msg_send) rather than objc2-ui-kit's typed
+    // UIApplication, whose surface varies across crate versions; the runtime
+    // selectors are stable. openURL:options:completionHandler: is the iOS 10+
+    // opener; empty options dict, nil completion handler.
     dispatch_on_main(move || {
-        // SAFETY: sharedApplication is valid once the app has launched, which
-        // it has by the time an OAuth flow runs. openURL:options:completionHandler:
-        // is the modern (iOS 10+) opener; pass empty options and no handler.
+        // SAFETY: sharedApplication exists once the app has launched (true by
+        // the time an OAuth flow runs). We send well-known, stable selectors.
         unsafe {
-            use objc2::rc::Retained;
-            use objc2_ui_kit::UIApplication;
-            let app: Retained<UIApplication> = UIApplication::sharedApplication(
-                objc2_foundation::MainThreadMarker::new_unchecked(),
-            );
-            let empty = objc2_foundation::NSDictionary::dictionary();
-            app.openURL_options_completionHandler(&nsurl, &empty, None);
+            let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
+            if app.is_null() {
+                return;
+            }
+            let options: Retained<NSObject> = msg_send![class!(NSDictionary), dictionary];
+            let _: () = msg_send![
+                app,
+                openURL: &*nsurl,
+                options: &*options,
+                completionHandler: std::ptr::null::<AnyObject>(),
+            ];
         }
     });
 

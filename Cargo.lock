@@ -6607,7 +6607,6 @@ dependencies = [
  "network-interface",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
- "objc2-ui-kit 0.2.2",
  "pcap",
  "pentest-core",
  "portable-pty",
