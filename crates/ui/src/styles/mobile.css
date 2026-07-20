@@ -397,8 +397,12 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
-    /* Keep the scan card clear of the status bar / notch. */
-    padding-top: env(safe-area-inset-top, 24px);
+    /* Keep the scan card clear of the status bar / Dynamic Island. The dx
+       WebView doesn't set viewport-fit=cover, so env(safe-area-inset-top) is 0
+       on iOS; max() floors it at 59px to clear the iPhone Pro Dynamic Island
+       (and still grows if a real inset is ever reported). ~24px covers a plain
+       Android status bar. */
+    padding-top: max(env(safe-area-inset-top, 0px), 59px);
     box-sizing: border-box;
 }
 .easy-mode .action-grid {
