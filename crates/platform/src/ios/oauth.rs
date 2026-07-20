@@ -149,8 +149,10 @@ fn start_session(
 
     // SAFETY: main-thread AuthenticationServices calls; objects kept alive below.
     let session = unsafe {
+        // ASWebAuthenticationSession is not MainThreadOnly (AllocAnyThread), so
+        // alloc() takes no marker. We're already on the main thread for start().
         ASWebAuthenticationSession::initWithURL_callbackURLScheme_completionHandler(
-            ASWebAuthenticationSession::alloc(mtm),
+            ASWebAuthenticationSession::alloc(),
             &auth_url,
             Some(&scheme),
             RcBlock::as_ptr(&handler) as *mut _,
