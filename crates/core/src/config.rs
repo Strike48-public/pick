@@ -389,6 +389,56 @@ impl ConnectorConfig {
         None
     }
 
+    /// Build a config from environment variables alone (host + tenant + tls),
+    /// with an empty auth token (post-approval flow). Returns `None` if no host
+    /// env var is set, so callers can distinguish "env configured a PLG target"
+    /// from "nothing configured". Used by easy mode (#283) to default-connect to
+    /// a PLG tenant supplied at build/deploy time without a baked-in host.
+    ///
+    /// Host carriers: `STRIKE48_HOST` / `STRIKE48_URL` / `STRIKE48_API_URL`.
+    /// Tenant resolution mirrors [`load_connector_config`]: prefer a UUID-shaped
+    /// value across [`TENANT_ENV_VARS`], else the first non-empty slug.
+    pub fn from_env() -> Option<Self> {
+        let host = std::env::var("STRIKE48_HOST")
+            .or_else(|_| std::env::var("STRIKE48_URL"))
+            .or_else(|_| std::env::var("STRIKE48_API_URL"))
+            .ok()
+            .map(|h| h.trim().to_string())
+            .filter(|h| !h.is_empty())?;
+
+        let mut config = ConnectorConfig {
+            host,
+            ..Default::default()
+        };
+
+        // Tenant: UUID wins over slug across the supported carriers.
+        let mut slug_fallback: Option<String> = None;
+        for var in Self::TENANT_ENV_VARS {
+            let Ok(v) = std::env::var(var) else { continue };
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if Self::is_uuid_like(trimmed) {
+                config.tenant_id = trimmed.to_string();
+                slug_fallback = None;
+                break;
+            }
+            if slug_fallback.is_none() {
+                slug_fallback = Some(trimmed.to_string());
+            }
+        }
+        if let Some(slug) = slug_fallback {
+            config.tenant_id = slug;
+        }
+
+        if let Ok(tls) = std::env::var("STRIKE48_TLS") {
+            config.use_tls = tls != "false" && tls != "0";
+        }
+
+        Some(config)
+    }
+
     /// Read the tenant UUID the SDK stored during OTT approval, if any.
     ///
     /// Studio addresses App-behavior connectors by tenant UUID

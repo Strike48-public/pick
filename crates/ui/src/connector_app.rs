@@ -265,12 +265,27 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         }
         s
     });
-    let initial_auto_connect = settings.peek().auto_connect;
     let device_id = settings.peek().device_id.clone();
+
+    // Easy-mode default PLG connection (#283): when there's no saved config,
+    // easy mode seeds host/tenant from the environment (STRIKE48_HOST /
+    // STRIKE48_TENANT etc., via ConnectorConfig::from_env) so a PLG build can
+    // point at its tenant without the user touching the connect form. Empty
+    // token → the existing post-approval flow. If no env host is present we
+    // fall through to Default (empty host) and the connect form still shows —
+    // that form is the override/escape hatch. No host is baked into the repo.
+    let easy_mode_env_config = if cfg.easy_mode {
+        ConnectorConfig::from_env().filter(|c| !c.host.is_empty())
+    } else {
+        None
+    };
+    let has_saved_config = settings.peek().last_config.is_some();
+
     let initial_config = settings
         .peek()
         .last_config
         .clone()
+        .or_else(|| easy_mode_env_config.clone())
         .map(|mut c| {
             c.instance_id = device_id.clone();
             c
@@ -279,6 +294,12 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             instance_id: device_id.clone(),
             ..Default::default()
         });
+
+    // Auto-connect when the user opted in (saved auto_connect) OR when easy mode
+    // has an env-provided PLG host to connect to. Easy mode with no env host
+    // still shows the connect form.
+    let initial_auto_connect = settings.peek().auto_connect
+        || (cfg.easy_mode && !has_saved_config && easy_mode_env_config.is_some());
 
     // ---- signals ----
     let mut status = use_signal(|| ConnectorStatus::Disconnected);
@@ -555,14 +576,26 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     };
 
     // ---- auto-connect ----
+    let easy_mode_autoconnect_config = easy_mode_env_config.clone();
     use_effect(move || {
-        if initial_auto_connect {
-            if let Some(saved_config) = settings.read().last_config.clone() {
-                terminal_lines
-                    .write()
-                    .push(TerminalLine::info("Auto-connecting with saved settings..."));
-                on_connect((saved_config, true));
-            }
+        if !initial_auto_connect {
+            return;
+        }
+        if let Some(saved_config) = settings.read().last_config.clone() {
+            terminal_lines
+                .write()
+                .push(TerminalLine::info("Auto-connecting with saved settings..."));
+            on_connect((saved_config, true));
+        } else if let Some(plg_config) = easy_mode_autoconnect_config.clone() {
+            // Easy mode with no saved config but a PLG host from the env (#283).
+            // remember=false: don't persist a build-time default as the user's
+            // saved config, so an env change on next launch still takes effect.
+            let mut c = plg_config;
+            c.instance_id = device_id.clone();
+            terminal_lines.write().push(TerminalLine::info(
+                "Easy mode: connecting to your Strike48 tenant...",
+            ));
+            on_connect((c, false));
         }
     });
 
