@@ -5,7 +5,12 @@
 # bind-mounted at /work. Reads $TERMUX_PROOT_REF and $ARCH from the env.
 # Recipe verified A/B during the #248 spike:
 #   - glibc-static (musl fails on `struct rlimit64`)
-#   - strip the lld-only `--rosegment` linker flag (GNU ld rejects it)
+#   - let the makefile auto-detect the lld-only `--rosegment` flag: its src/GNUmakefile
+#     probe test-links with `-Wl,--rosegment` and only enables it if the linker
+#     accepts it, so on GNU ld (which rejects it) it is skipped automatically.
+#     Do NOT sed it out — the flag's only literal occurrence is inside that probe,
+#     so editing it breaks detection and forces `--rosegment` onto the real link
+#     line, which GNU ld then rejects (the loader/loader link fails).
 #   - stub <linux/ashmem.h> so the Android-only ashmem_memfd extension compiles
 #     (do NOT delete the object — cli/proot.c references ashmem_memfd_callback)
 set -euo pipefail
@@ -22,12 +27,11 @@ git clone https://github.com/termux/proot /src
 cd /src
 git checkout "$TERMUX_PROOT_REF"
 
-# Patch 1: strip the lld-only --rosegment flag (GNU ld rejects it).
-if grep -rl -- "--rosegment" . >/dev/null 2>&1; then
-  grep -rl -- "--rosegment" . | xargs sed -i "s/-Wl,--rosegment//g"
-fi
+# NOTE: no --rosegment patch. The makefile's own probe (src/GNUmakefile) disables
+# the flag on GNU ld automatically; sed-ing it out corrupts that probe and forces
+# the flag on, breaking the loader link (#252, first live run of this workflow).
 
-# Patch 2: install the committed linux/ashmem.h stub.
+# Patch: install the committed linux/ashmem.h stub.
 mkdir -p /usr/include/linux
 cp /work/.github/proot-build/ashmem.h /usr/include/linux/ashmem.h
 
