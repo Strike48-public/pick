@@ -35,8 +35,14 @@ git checkout "$TERMUX_PROOT_REF"
 mkdir -p /usr/include/linux
 cp /work/.github/proot-build/ashmem.h /usr/include/linux/ashmem.h
 
-# Static glibc build.
-make -C src LDFLAGS="-static" V=1
+# Static glibc build. Pass LDFLAGS through the ENVIRONMENT, not as a make
+# argument: `make LDFLAGS=-static` is a command-line assignment that OVERRIDES
+# the makefile's `LDFLAGS += -ltalloc -Wl,-z,noexecstack` (src/GNUmakefile:19),
+# dropping -ltalloc and failing the final link with `undefined reference to
+# _talloc_*`. Setting it in the environment lets the makefile's `+=` append, so
+# both -static and -ltalloc reach the link. (Verified: GNU make gives env vars
+# lower precedence than `+=`, command-line vars higher.)
+LDFLAGS="-static" make -C src V=1
 /src/src/proot --version
 
 cp /src/src/proot "/work/proot-${ARCH}"
