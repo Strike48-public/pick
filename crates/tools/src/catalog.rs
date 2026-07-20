@@ -377,21 +377,68 @@ fn pacman_package_for(binary: &str) -> Option<String> {
 /// caller can report partial success. Already-installed entries are skipped.
 pub async fn install_all_recommended(progress: &ProgressSink) -> Vec<(String, String)> {
     let catalog = build_catalog().await;
-    let mut failures = Vec::new();
+    let selected: Vec<CatalogEntry> = catalog
+        .into_iter()
+        .filter(|e| e.recommended && e.state != InstallState::Installed && e.is_auto_installable())
+        .collect();
+    install_entries(&selected, progress).await
+}
 
-    for entry in catalog {
-        if !entry.recommended
-            || entry.state == InstallState::Installed
-            || !entry.is_auto_installable()
-        {
-            continue;
-        }
-        if let Err(e) = install_entry(&entry, progress).await {
+/// Install a pre-selected set of entries, aggregating per-entry failures as
+/// `(binary_name, error)` so the caller can report partial success. Shared by
+/// [`install_all_recommended`] and [`install_all_in_category`] so the loop and
+/// its failure-aggregation are defined (and tested) once.
+async fn install_entries(
+    entries: &[CatalogEntry],
+    progress: &ProgressSink,
+) -> Vec<(String, String)> {
+    let mut failures = Vec::new();
+    for entry in entries {
+        if let Err(e) = install_entry(entry, progress).await {
             failures.push((entry.binary_name.clone(), e.to_string()));
         }
     }
-
     failures
+}
+
+/// The auto-installable, not-yet-installed entries in a category, as
+/// `(binary_name, estimated_secs)`. Lets the UI preview how many tools an
+/// "Install all" for that category will fetch (and their summed time estimate)
+/// before the operator commits — the count/size confirm for category installs.
+/// `category` is the stable snake_case key (e.g. "network"), matching
+/// [`CatalogItem::category`].
+pub async fn pending_installs_in_category(category: &str) -> Vec<(String, u32)> {
+    build_catalog()
+        .await
+        .into_iter()
+        .filter(|e| {
+            category_key(e.category) == category
+                && e.state != InstallState::Installed
+                && e.is_auto_installable()
+        })
+        .map(|e| (e.binary_name.clone(), e.estimated_install_secs()))
+        .collect()
+}
+
+/// Install every auto-installable, not-yet-installed tool in one category.
+/// Mirrors [`install_all_recommended`] but scopes to a single category key
+/// (the "Install all" action on a category header). Already-installed and
+/// non-auto-installable entries are skipped; returns `(binary, error)` for any
+/// that failed so the caller can report partial success.
+pub async fn install_all_in_category(
+    category: &str,
+    progress: &ProgressSink,
+) -> Vec<(String, String)> {
+    let catalog = build_catalog().await;
+    let selected: Vec<CatalogEntry> = catalog
+        .into_iter()
+        .filter(|e| {
+            category_key(e.category) == category
+                && e.state != InstallState::Installed
+                && e.is_auto_installable()
+        })
+        .collect();
+    install_entries(&selected, progress).await
 }
 
 /// A flat, serializable, UI-facing view of one catalog entry. The Dioxus
@@ -921,6 +968,75 @@ mod tests {
                 "{hidden} should be hidden from the catalog"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn pending_installs_in_category_scopes_to_that_category() {
+        // Every entry the "network" install-all would touch must actually be a
+        // network-category, not-installed, auto-installable tool — the exact
+        // set install_all_in_category will act on. Guards against a filter that
+        // leaks other categories (or already-installed tools) into a bulk
+        // install. The set can legitimately be empty (e.g. everything already
+        // installed, or nothing auto-installable in native mode), so we assert
+        // the scoping property, not a fixed count.
+        let full = build_catalog().await;
+        let pending = pending_installs_in_category("network").await;
+        for (bin, _secs) in &pending {
+            let entry = full
+                .iter()
+                .find(|e| &e.binary_name == bin)
+                .unwrap_or_else(|| panic!("{bin} not in catalog"));
+            assert_eq!(category_key(entry.category), "network", "{bin} not network");
+            assert_ne!(
+                entry.state,
+                InstallState::Installed,
+                "{bin} already installed"
+            );
+            assert!(entry.is_auto_installable(), "{bin} not auto-installable");
+        }
+        // A category with no matching tools yields an empty set (not an error).
+        assert!(pending_installs_in_category("no_such_category")
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn install_entries_aggregates_per_entry_failures() {
+        // The shared bulk-install loop (used by both install_all_recommended
+        // and install_all_in_category) must collect a (binary, error) entry for
+        // each failure and skip the rest silently. A Manual entry fails
+        // deterministically in install_entry without shelling out, so it's the
+        // stable way to exercise the failure-aggregation offline.
+        let progress = crate::installers::noop_progress();
+
+        // Empty input -> no failures.
+        assert!(install_entries(&[], progress.as_ref()).await.is_empty());
+
+        // One Manual entry -> exactly one failure, keyed by its binary name.
+        let manual = CatalogEntry {
+            binary_name: "burpsuite".into(),
+            display_name: "Burp Suite".into(),
+            description: "proxy".into(),
+            category: ToolCategory::Proxy,
+            install_method: InstallMethod::Manual {
+                url: None,
+                instructions: "install manually".into(),
+            },
+            recommended: false,
+            used_by: vec![],
+            state: InstallState::Manual,
+        };
+        let failures = install_entries(std::slice::from_ref(&manual), progress.as_ref()).await;
+        assert_eq!(
+            failures.len(),
+            1,
+            "manual entry must be reported as a failure"
+        );
+        assert_eq!(failures[0].0, "burpsuite", "failure keyed by binary name");
+        assert!(
+            !failures[0].1.is_empty(),
+            "failure must carry a non-empty error message"
+        );
     }
 
     #[test]
