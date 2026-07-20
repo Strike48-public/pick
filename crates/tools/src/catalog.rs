@@ -377,20 +377,27 @@ fn pacman_package_for(binary: &str) -> Option<String> {
 /// caller can report partial success. Already-installed entries are skipped.
 pub async fn install_all_recommended(progress: &ProgressSink) -> Vec<(String, String)> {
     let catalog = build_catalog().await;
-    let mut failures = Vec::new();
+    let selected: Vec<CatalogEntry> = catalog
+        .into_iter()
+        .filter(|e| e.recommended && e.state != InstallState::Installed && e.is_auto_installable())
+        .collect();
+    install_entries(&selected, progress).await
+}
 
-    for entry in catalog {
-        if !entry.recommended
-            || entry.state == InstallState::Installed
-            || !entry.is_auto_installable()
-        {
-            continue;
-        }
-        if let Err(e) = install_entry(&entry, progress).await {
+/// Install a pre-selected set of entries, aggregating per-entry failures as
+/// `(binary_name, error)` so the caller can report partial success. Shared by
+/// [`install_all_recommended`] and [`install_all_in_category`] so the loop and
+/// its failure-aggregation are defined (and tested) once.
+async fn install_entries(
+    entries: &[CatalogEntry],
+    progress: &ProgressSink,
+) -> Vec<(String, String)> {
+    let mut failures = Vec::new();
+    for entry in entries {
+        if let Err(e) = install_entry(entry, progress).await {
             failures.push((entry.binary_name.clone(), e.to_string()));
         }
     }
-
     failures
 }
 
@@ -423,21 +430,15 @@ pub async fn install_all_in_category(
     progress: &ProgressSink,
 ) -> Vec<(String, String)> {
     let catalog = build_catalog().await;
-    let mut failures = Vec::new();
-
-    for entry in catalog {
-        if category_key(entry.category) != category
-            || entry.state == InstallState::Installed
-            || !entry.is_auto_installable()
-        {
-            continue;
-        }
-        if let Err(e) = install_entry(&entry, progress).await {
-            failures.push((entry.binary_name.clone(), e.to_string()));
-        }
-    }
-
-    failures
+    let selected: Vec<CatalogEntry> = catalog
+        .into_iter()
+        .filter(|e| {
+            category_key(e.category) == category
+                && e.state != InstallState::Installed
+                && e.is_auto_installable()
+        })
+        .collect();
+    install_entries(&selected, progress).await
 }
 
 /// A flat, serializable, UI-facing view of one catalog entry. The Dioxus
@@ -997,6 +998,45 @@ mod tests {
         assert!(pending_installs_in_category("no_such_category")
             .await
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn install_entries_aggregates_per_entry_failures() {
+        // The shared bulk-install loop (used by both install_all_recommended
+        // and install_all_in_category) must collect a (binary, error) entry for
+        // each failure and skip the rest silently. A Manual entry fails
+        // deterministically in install_entry without shelling out, so it's the
+        // stable way to exercise the failure-aggregation offline.
+        let progress = crate::installers::noop_progress();
+
+        // Empty input -> no failures.
+        assert!(install_entries(&[], progress.as_ref()).await.is_empty());
+
+        // One Manual entry -> exactly one failure, keyed by its binary name.
+        let manual = CatalogEntry {
+            binary_name: "burpsuite".into(),
+            display_name: "Burp Suite".into(),
+            description: "proxy".into(),
+            category: ToolCategory::Proxy,
+            install_method: InstallMethod::Manual {
+                url: None,
+                instructions: "install manually".into(),
+            },
+            recommended: false,
+            used_by: vec![],
+            state: InstallState::Manual,
+        };
+        let failures = install_entries(std::slice::from_ref(&manual), progress.as_ref()).await;
+        assert_eq!(
+            failures.len(),
+            1,
+            "manual entry must be reported as a failure"
+        );
+        assert_eq!(failures[0].0, "burpsuite", "failure keyed by binary name");
+        assert!(
+            !failures[0].1.is_empty(),
+            "failure must carry a non-empty error message"
+        );
     }
 
     #[test]
