@@ -1,9 +1,11 @@
 //! iOS platform implementation (stub)
 
+pub mod browser;
 pub mod oauth;
 pub mod pty_shell;
 pub mod system;
 
+pub use browser::open_url;
 pub use oauth::present_web_auth_session;
 
 use crate::traits::*;
