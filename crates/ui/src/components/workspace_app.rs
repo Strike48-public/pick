@@ -20,6 +20,7 @@ use super::keyboard_shortcuts::KeyboardShortcuts;
 use super::licenses_page::LicensesPage;
 use super::log_filter_bar::LogFilterBar;
 use super::matrix_rain::MatrixRainOverlay;
+use super::pane_boundary::PaneBoundary;
 use super::settings_page::SettingsPage;
 use super::shell::InteractiveShell;
 use super::sidebar::NavPage;
@@ -140,27 +141,34 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
                 CyberChefPage {}
             }
 
-            // Files — always mounted so directory state is preserved
+            // Files — always mounted so directory state is preserved. Wrapped
+            // in its own boundary because it renders on every page (not just
+            // when active); a panic here must not blank the visible page (#288).
             div {
                 class: if page == NavPage::Files { "workspace-pane" } else { "workspace-pane hidden" },
-                if !workspace.is_empty() {
-                    FileBrowser { workspace_path: workspace.clone() }
-                } else {
-                    div {
-                        class: "empty-state",
-                        "No workspace available"
+                PaneBoundary { name: "files".to_string(),
+                    if !workspace.is_empty() {
+                        FileBrowser { workspace_path: workspace.clone() }
+                    } else {
+                        div {
+                            class: "empty-state",
+                            "No workspace available"
+                        }
                     }
                 }
             }
 
-            // Shell — always mounted for persistent WebSocket
+            // Shell — always mounted for persistent WebSocket. Wrapped for the
+            // same reason as Files: it renders regardless of the active page.
             div {
                 class: if page == NavPage::Shell { "shell-pane-active" } else { "hidden" },
-                InteractiveShell {
-                    shell_mode: match props.shell_mode {
-                        ShellMode::Native => "native".to_string(),
-                        ShellMode::Proot => "proot".to_string(),
-                    },
+                PaneBoundary { name: "shell".to_string(),
+                    InteractiveShell {
+                        shell_mode: match props.shell_mode {
+                            ShellMode::Native => "native".to_string(),
+                            ShellMode::Proot => "proot".to_string(),
+                        },
+                    }
                 }
             }
 
