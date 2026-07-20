@@ -19,9 +19,13 @@ set -euo pipefail
 : "${ARCH:?ARCH must be set}"
 
 apt-get update
+# gawk (not the default mawk): the makefile's loader-info.awk uses strtonum(),
+# a gawk extension. Under mawk the loader-info.c generation step dies with
+# "function strtonum never defined" (GNUmakefile:246). Installing gawk points
+# Debian's `awk` alternative at gawk, so `awk` resolves strtonum on every arch.
 apt-get install -y --no-install-recommends \
   git ca-certificates build-essential libc6-dev \
-  pkg-config uthash-dev libtalloc-dev python3 gzip file
+  pkg-config uthash-dev libtalloc-dev python3 gzip file gawk
 
 git clone https://github.com/termux/proot /src
 cd /src
