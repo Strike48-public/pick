@@ -8,6 +8,68 @@ use async_trait::async_trait;
 use pentest_core::error::{Error, Result};
 use std::time::Duration;
 
+/// Open a URL in the system browser (Safari) via `UIApplication`.
+///
+/// The iOS analog of [`crate::android::open_browser`]. The app registers this
+/// as the Matrix OAuth browser opener (see the mobile app's `main`), because
+/// `open::that()` has no working backend inside the iOS app sandbox — it fails
+/// with "No such file or directory", so the OAuth flow never opens Safari.
+///
+/// `openURL:` must run on the main thread; the OAuth flow calls this from an
+/// async task, so we hop to the main queue via `dispatch_async`.
+pub fn open_browser(url: &str) -> Result<()> {
+    use objc2_foundation::{NSString, NSURL};
+
+    let ns = NSString::from_str(url);
+    // SAFETY: NSURL::URLWithString returns nil for a malformed URL; we check.
+    let nsurl = unsafe { NSURL::URLWithString(&ns) }
+        .ok_or_else(|| Error::InvalidParams(format!("invalid URL for browser open: {url}")))?;
+
+    // UIApplication access + openURL must be on the main thread.
+    dispatch_on_main(move || {
+        // SAFETY: sharedApplication is valid once the app has launched, which
+        // it has by the time an OAuth flow runs. openURL:options:completionHandler:
+        // is the modern (iOS 10+) opener; pass empty options and no handler.
+        unsafe {
+            use objc2::rc::Retained;
+            use objc2_ui_kit::UIApplication;
+            let app: Retained<UIApplication> = UIApplication::sharedApplication(
+                objc2_foundation::MainThreadMarker::new_unchecked(),
+            );
+            let empty = objc2_foundation::NSDictionary::dictionary();
+            app.openURL_options_completionHandler(&nsurl, &empty, None);
+        }
+    });
+
+    Ok(())
+}
+
+/// Run `f` on the main dispatch queue (required for UIKit calls).
+fn dispatch_on_main<F: FnOnce() + Send + 'static>(f: F) {
+    use std::os::raw::c_void;
+
+    extern "C" {
+        static _dispatch_main_q: c_void;
+        fn dispatch_async_f(
+            queue: *const c_void,
+            context: *mut c_void,
+            work: extern "C" fn(*mut c_void),
+        );
+    }
+
+    extern "C" fn trampoline<F: FnOnce()>(ctx: *mut c_void) {
+        // SAFETY: ctx is the Box<F> we leaked below; reconstruct and call once.
+        let f = unsafe { Box::from_raw(ctx as *mut F) };
+        f();
+    }
+
+    let boxed = Box::into_raw(Box::new(f)) as *mut c_void;
+    // SAFETY: dispatching the boxed closure to the main queue; trampoline frees it.
+    unsafe {
+        dispatch_async_f(&_dispatch_main_q as *const c_void, boxed, trampoline::<F>);
+    }
+}
+
 /// iOS platform provider
 pub struct IosPlatform;
 

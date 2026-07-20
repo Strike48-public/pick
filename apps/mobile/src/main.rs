@@ -43,6 +43,18 @@ fn main() {
         });
     }
 
+    #[cfg(target_os = "ios")]
+    {
+        // Register iOS browser opener for OAuth flows. `open::that()` has no
+        // backend in the iOS sandbox (fails with "No such file or directory"),
+        // so without this the Matrix OAuth flow can't open Safari and chat
+        // never gets its token. UIApplication.openURL is the iOS analog of
+        // Android's JNI Intent opener above.
+        pentest_core::matrix::set_browser_opener(|url| {
+            pentest_platform::ios::open_browser(url).map_err(|e| e.to_string())
+        });
+    }
+
     dioxus::launch(MobileApp);
 }
 
