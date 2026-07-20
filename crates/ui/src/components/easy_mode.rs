@@ -2,6 +2,7 @@
 
 use dioxus::prelude::*;
 
+use super::chat_panel::ChatHeaderCtx;
 use super::icons::Network;
 use crate::components::ChatPanel;
 
@@ -32,6 +33,35 @@ pub struct EasyModeShellProps {
 #[component]
 pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     let mut chat_mailbox = props.chat_mailbox;
+    // ChatPanel consumes this context via `use_context` (and panics if absent).
+    // In the standard shell `AppLayout` provides it; Easy Mode has no AppLayout,
+    // so we provide it here. Easy Mode has no header bar to render the actions
+    // into, so nothing reads the value -- it just needs to exist.
+    use_context_provider(|| Signal::new(None::<ChatHeaderCtx>));
+
+    // The Matrix auth token arrives asynchronously: the connector registers, the
+    // browser-OAuth callback writes it into the session store, and this
+    // always-mounted panel must re-render so ChatPanel re-reads it and fetches
+    // agents. Subscribe to the reactive token store and feed it to ChatPanel's
+    // `auth_token` prop so the token landing triggers that re-render.
+    let mut auth_token = use_signal(|| {
+        let t = crate::session::get_auth_token();
+        if t.is_empty() {
+            props.auth_token.clone()
+        } else {
+            t
+        }
+    });
+    use_future(move || async move {
+        let mut rx = crate::session::watch_auth_token();
+        while rx.changed().await.is_ok() {
+            let t = rx.borrow().clone();
+            if !t.is_empty() {
+                auth_token.set(t);
+            }
+        }
+    });
+
     rsx! {
         div { class: "easy-mode",
             div { class: "action-grid",
@@ -46,7 +76,7 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                 ChatPanel {
                     visible: true,
                     api_url: props.api_url.clone(),
-                    auth_token: props.auth_token.clone(),
+                    auth_token: auth_token(),
                     tenant_id: props.tenant_id.clone(),
                     on_close: move |_| {},
                     send_mailbox: props.chat_mailbox,

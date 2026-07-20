@@ -397,10 +397,41 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
+    /* Keep the scan card clear of the status bar / notch. */
+    padding-top: env(safe-area-inset-top, 24px);
+    box-sizing: border-box;
 }
 .easy-mode .action-grid {
-    padding: 12px;
+    padding: 16px;
     flex: 0 0 auto;
+}
+/* Prominent full-width scan button (overrides the dashboard grid-cell card,
+   which collapses to cramped inline text without its grid context). */
+.easy-mode .action-card {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 72px;
+    padding: 18px 20px;
+    border-radius: var(--radius, 12px);
+    background: var(--accent, #16a34a);
+    color: #fff;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.easy-mode .action-card:active {
+    filter: brightness(0.92);
+}
+.easy-mode .action-card-icon {
+    display: flex;
+    align-items: center;
+}
+.easy-mode .action-card-label {
+    font-size: 18px;
+    font-weight: 600;
 }
 .easy-mode-chat {
     flex: 1 1 auto;

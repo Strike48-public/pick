@@ -23,7 +23,16 @@ fn recover_poisoned<T>(err: PoisonError<T>, name: &'static str) -> T {
     err.into_inner()
 }
 
-static AUTH_TOKEN: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
+/// Auth token store, backed by a `watch` channel so it is both a plain
+/// process-global (any thread may `set`/`get`, including the non-Dioxus
+/// connector and token-refresh threads) AND reactively observable
+/// (`watch_auth_token` hands out a receiver a Dioxus `use_future` can await on).
+/// A raw Dioxus `GlobalSignal` cannot be used here: its writes panic outside a
+/// running Dioxus runtime, and several writers run on background tokio threads.
+static AUTH_TOKEN: LazyLock<(
+    tokio::sync::watch::Sender<String>,
+    tokio::sync::watch::Receiver<String>,
+)> = LazyLock::new(|| tokio::sync::watch::channel(String::new()));
 static TENANT_ID: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
 static CONNECTOR_NAME: LazyLock<RwLock<String>> =
     LazyLock::new(|| RwLock::new("pentest-connector".to_string()));
@@ -58,19 +67,31 @@ static EVIDENCE_GRAPH: LazyLock<RwLock<Vec<EvidenceNode>>> =
 
 /// Read the current session auth token (Matrix access token for GraphQL).
 pub fn get_auth_token() -> String {
-    AUTH_TOKEN
-        .read()
-        .unwrap_or_else(|e| recover_poisoned(e, "AUTH_TOKEN"))
-        .clone()
+    AUTH_TOKEN.1.borrow().clone()
 }
 
-/// Store a new session auth token.
+/// Store a new session auth token. Safe to call from any thread (including the
+/// non-Dioxus connector/token-refresh threads); reactive observers subscribed
+/// via [`watch_auth_token`] are notified. A no-op (no notification) if the
+/// value is unchanged, so idempotent re-sets don't churn subscribers.
 pub fn set_auth_token(token: &str) {
-    let mut guard = AUTH_TOKEN
-        .write()
-        .unwrap_or_else(|e| recover_poisoned(e, "AUTH_TOKEN"));
-    guard.clear();
-    guard.push_str(token);
+    AUTH_TOKEN.0.send_if_modified(|current| {
+        if current == token {
+            false
+        } else {
+            current.clear();
+            current.push_str(token);
+            true
+        }
+    });
+}
+
+/// Reactive subscription to the session auth token. Returns a `watch::Receiver`
+/// whose `changed()` future resolves whenever the token is updated — lets a
+/// Dioxus `use_future` re-render when the token arrives asynchronously (e.g.
+/// after the browser-OAuth callback), instead of polling the store.
+pub fn watch_auth_token() -> tokio::sync::watch::Receiver<String> {
+    AUTH_TOKEN.1.clone()
 }
 
 /// Read the current tenant/realm name (e.g. "non-prod").
