@@ -18,8 +18,7 @@ use std::time::Duration;
 /// `openURL:` must run on the main thread; the OAuth flow calls this from an
 /// async task, so we hop to the main queue via `dispatch_async`.
 pub fn open_browser(url: &str) -> Result<()> {
-    use objc2::rc::Retained;
-    use objc2::runtime::{AnyObject, NSObject};
+    use objc2::runtime::AnyObject;
     use objc2::{class, msg_send};
     use objc2_foundation::{NSString, NSURL};
 
@@ -35,17 +34,19 @@ pub fn open_browser(url: &str) -> Result<()> {
     // opener; empty options dict, nil completion handler.
     dispatch_on_main(move || {
         // SAFETY: sharedApplication exists once the app has launched (true by
-        // the time an OAuth flow runs). We send well-known, stable selectors.
+        // the time an OAuth flow runs). We send well-known, stable selectors and
+        // keep every objc return as a raw pointer (objc2's msg_send return-type
+        // conversion doesn't accept Retained<NSObject> for an untyped class).
         unsafe {
             let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
             if app.is_null() {
                 return;
             }
-            let options: Retained<NSObject> = msg_send![class!(NSDictionary), dictionary];
+            let options: *mut AnyObject = msg_send![class!(NSDictionary), dictionary];
             let _: () = msg_send![
                 app,
                 openURL: &*nsurl,
-                options: &*options,
+                options: options,
                 completionHandler: std::ptr::null::<AnyObject>(),
             ];
         }
