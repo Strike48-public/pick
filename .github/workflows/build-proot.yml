@@ -91,19 +91,29 @@ jobs:
           sha256sum "proot-${{ matrix.arch }}" | tee "proot-${{ matrix.arch }}.sha256"
 
       # openat2 smoke test (x86_64 only — the arm64 binary runs under QEMU where
-      # syscall probing is unreliable). A rootfs file opened via syscall 437
-      # (openat2) must return a valid fd, not ENOENT. This is the exact failure
-      # #248 hit; a regression here must fail the build, never ship silently.
+      # syscall probing is unreliable). This must reproduce the EXACT #248
+      # signature: the broken proot does not fail openat2 outright — it executes
+      # openat2 but returns a bogus ENOENT because it fails to translate the
+      # guest path to the rootfs path. So the probe MUST run under a real,
+      # NON-identity rootfs: the probe opens `/etc/hostname`, which a correct
+      # proot rewrites to `<rootfs>/etc/hostname` (present here) and returns a
+      # valid fd; a proot with the #248 path-translation bug leaves the path
+      # untranslated -> ENOENT -> probe exits non-zero -> build fails.
+      #
+      # (An identity rootfs `-r /` would false-pass: guest /etc/hostname maps to
+      # the host's real /etc/hostname whether or not translation happens.)
       - name: openat2 smoke test
         if: matrix.arch == 'x86_64'
         run: |
           set -euo pipefail
           # Probe source is committed at .github/proot-build/openat2_probe.c.
           cc -static -o /tmp/openat2_probe .github/proot-build/openat2_probe.c
-          # Run the probe UNDER the freshly built proot on a minimal rootfs (/).
-          # If proot cannot translate openat2, the probe exits non-zero and the
-          # build fails — exactly the #248 signature.
-          ./proot-x86_64 -0 -r / /tmp/openat2_probe
+          # Minimal non-identity rootfs whose /etc/hostname differs from the
+          # host, so only correct path-translation can open it.
+          mkdir -p /tmp/rootfs/etc /tmp/rootfs/tmp
+          echo "proot-rootfs-marker" > /tmp/rootfs/etc/hostname
+          cp /tmp/openat2_probe /tmp/rootfs/tmp/openat2_probe
+          ./proot-x86_64 -0 -r /tmp/rootfs /tmp/openat2_probe
 
       - uses: actions/upload-artifact@v4
         with:
