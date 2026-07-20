@@ -251,6 +251,27 @@ where
     }
 }
 
+/// Open a URL in the system browser via the registered browser opener.
+/// Returns Err(String) if no opener is registered or it fails.
+#[cfg(feature = "browser-auth")]
+pub fn open_browser(url: &str) -> Result<(), String> {
+    if let Ok(lock) = BROWSER_OPENER.lock() {
+        if let Some(opener) = lock.as_ref() {
+            return opener(url);
+        }
+    }
+    Err("no browser opener registered".to_string())
+}
+
+/// Open a URL in the system browser via the registered browser opener.
+/// Returns Err(String) if no opener is registered or it fails.
+///
+/// This stub is available when browser-auth is disabled (e.g., headless builds).
+#[cfg(not(feature = "browser-auth"))]
+pub fn open_browser(_url: &str) -> Result<(), String> {
+    Err("browser-auth feature not enabled".to_string())
+}
+
 /// Native web-auth-session hook (iOS `ASWebAuthenticationSession`).
 ///
 /// Given the login URL and the callback URL scheme (e.g. `com.strike48.pentest`),

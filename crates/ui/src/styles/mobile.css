@@ -442,3 +442,13 @@
     min-height: 0;
     display: flex;
 }
+
+/* Easy Mode Documents Panel */
+.easy-docs { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; }
+.easy-docs-header { font-weight: 600; font-size: 15px; opacity: 0.9; }
+.easy-docs-empty, .easy-docs-error { opacity: 0.7; font-size: 14px; padding: 8px 0; }
+.easy-docs-error { color: #ff6b6b; }
+.easy-docs-toast { background: #1e3a2f; color: #b6f2c9; padding: 8px 10px; border-radius: 8px; font-size: 13px; }
+.easy-docs-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.easy-docs-title { flex: 1; cursor: pointer; text-decoration: underline; }
+.easy-docs-share { padding: 6px 14px; border-radius: 8px; border: none; background: #3b82f6; color: #fff; font-size: 14px; }

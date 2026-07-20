@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 
 use super::chat_panel::ChatHeaderCtx;
 use super::icons::Network;
-use crate::components::ChatPanel;
+use crate::components::{ChatPanel, DocumentsPanel};
 
 /// The canned chat message the Easy Mode "Scan" button sends. It instructs the
 /// server-side agent to enumerate local interfaces, scan the local subnet, and
@@ -38,6 +38,10 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     // so we provide it here. Easy Mode has no header bar to render the actions
     // into, so nothing reads the value -- it just needs to exist.
     use_context_provider(|| Signal::new(None::<ChatHeaderCtx>));
+
+    // Track the selected agent ID and refresh nonce for the DocumentsPanel.
+    let agent_id = use_signal(|| None::<String>);
+    let refresh_nonce = use_signal(|| 0u32);
 
     // The Matrix auth token arrives asynchronously: the connector registers, the
     // browser-OAuth callback writes it into the session store, and this
@@ -82,7 +86,14 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                     send_mailbox: props.chat_mailbox,
                     full_page: true,
                     open_conversation_id: props.conversation_mailbox,
+                    selected_agent_out: Some(agent_id),
                 }
+            }
+            DocumentsPanel {
+                api_url: props.api_url.clone(),
+                auth_token: auth_token(),
+                agent_id: agent_id,
+                refresh_nonce: refresh_nonce,
             }
         }
     }

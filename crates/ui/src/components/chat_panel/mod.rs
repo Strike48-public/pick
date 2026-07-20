@@ -137,6 +137,9 @@ pub struct ChatPanelProps {
     /// Mailbox to open a specific conversation by ID (set by sidebar recent conversations).
     #[props(default)]
     pub open_conversation_id: Option<Signal<Option<String>>>,
+    /// Output signal: writes the selected agent ID whenever it changes (for Easy Mode documents list).
+    #[props(default)]
+    pub selected_agent_out: Option<Signal<Option<String>>>,
 }
 
 #[component]
@@ -432,7 +435,10 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 );
                                 agents.set(list);
                                 agents_loaded.set(true);
-                                selected_agent.set(Some(updated));
+                                selected_agent.set(Some(updated.clone()));
+                                if let Some(mut out) = props.selected_agent_out {
+                                    out.set(Some(updated.id.clone()));
+                                }
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -441,7 +447,10 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 );
                                 agents.set(list);
                                 agents_loaded.set(true);
-                                selected_agent.set(Some(agent));
+                                selected_agent.set(Some(agent.clone()));
+                                if let Some(mut out) = props.selected_agent_out {
+                                    out.set(Some(agent.id.clone()));
+                                }
                             }
                         }
                     } else {
@@ -458,7 +467,10 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 list.push(new_agent.clone());
                                 agents.set(list);
                                 agents_loaded.set(true);
-                                selected_agent.set(Some(new_agent));
+                                selected_agent.set(Some(new_agent.clone()));
+                                if let Some(mut out) = props.selected_agent_out {
+                                    out.set(Some(new_agent.id.clone()));
+                                }
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -883,6 +895,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             }
 
             selected_agent.set(Some(validator_agent.clone()));
+            if let Some(mut out) = props.selected_agent_out {
+                out.set(Some(validator_agent.id.clone()));
+            }
             conversation_id.set(None);
             messages.set(Vec::new());
             show_history.set(false);
@@ -1036,6 +1051,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             }
 
             selected_agent.set(Some(report_agent.clone()));
+            if let Some(mut out) = props.selected_agent_out {
+                out.set(Some(report_agent.id.clone()));
+            }
             conversation_id.set(None);
             messages.set(Vec::new());
             show_history.set(false);
