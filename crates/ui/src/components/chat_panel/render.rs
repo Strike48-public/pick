@@ -8,6 +8,8 @@ use pentest_tools::webwright::{
 };
 use pulldown_cmark::{html, Options, Parser};
 
+use crate::text::truncate_chars;
+
 fn base64_encode(bytes: &[u8]) -> String {
     BASE64.encode(bytes)
 }
@@ -103,13 +105,8 @@ fn webwright_display_name(args: &Option<String>) -> String {
     } else {
         v.get("task")
             .and_then(|t| t.as_str())
-            .map(|t| {
-                if t.len() > 60 {
-                    format!("{}...", &t[..57])
-                } else {
-                    t.to_string()
-                }
-            })
+            // Char-boundary-safe truncation (#287).
+            .map(|t| truncate_chars(t, 57))
             .or_else(|| {
                 v.get("start_url")
                     .and_then(|u| u.as_str())

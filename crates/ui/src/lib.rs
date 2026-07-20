@@ -14,6 +14,7 @@ mod platform_helper;
 pub mod session;
 #[cfg(feature = "shell-ws")]
 pub mod shell_ws;
+pub mod text;
 pub mod theme;
 pub mod view_transitions;
 

@@ -8,6 +8,7 @@ use dioxus::prelude::*;
 use pentest_core::matrix::ConversationInfo;
 
 use super::render::format_relative_time;
+use crate::text::truncate_chars;
 
 /// Props for [`HistoryDropdown`].
 #[derive(Props, Clone, PartialEq)]
@@ -41,10 +42,9 @@ pub fn HistoryDropdown(props: HistoryDropdownProps) -> Element {
                         let conv_id_val = conv.id.clone();
                         let conv_title = if conv.title.is_empty() {
                             "Untitled".to_string()
-                        } else if conv.title.len() > 40 {
-                            format!("{}...", &conv.title[..37])
                         } else {
-                            conv.title.clone()
+                            // Char-boundary-safe truncation (#287).
+                            truncate_chars(&conv.title, 37)
                         };
                         let is_active = conversation_id
                             .read()

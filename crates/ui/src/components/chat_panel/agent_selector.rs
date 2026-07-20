@@ -10,6 +10,7 @@ use pentest_core::matrix::{AgentInfo, ConversationInfo};
 use super::constants::SUGGESTED_ACTIONS;
 use super::render::format_relative_time;
 use crate::components::icons::{ChevronDown, FileText, History, Plus, Shield};
+use crate::text::truncate_chars;
 
 /// Props for [`ChatHeader`].
 #[derive(Props, Clone, PartialEq)]
@@ -378,10 +379,9 @@ pub fn SuggestedActions(props: SuggestedActionsProps) -> Element {
                                 let cid = conv.id.clone();
                                 let title = if conv.title.is_empty() {
                                     "Untitled".to_string()
-                                } else if conv.title.len() > 50 {
-                                    format!("{}...", &conv.title[..47])
                                 } else {
-                                    conv.title.clone()
+                                    // Char-boundary-safe truncation (#287).
+                                    truncate_chars(&conv.title, 47)
                                 };
                                 let time_str = format_relative_time(&conv.updated_at);
                                 let on_select = props.on_select_conversation;

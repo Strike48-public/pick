@@ -9,6 +9,7 @@ use super::icons::{
     Bolt, FileText, Folder, House, MessageSquare, ScrollText, Settings, Terminal, Wrench,
     STRIKE48_SIDEBAR_LOGO_SVG, X,
 };
+use crate::text::truncate_chars;
 
 /// Navigation pages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,10 +201,10 @@ pub fn Sidebar(
                                             let cid = conv.id.clone();
                                             let title = if conv.title.is_empty() {
                                                 "Untitled".to_string()
-                                            } else if conv.title.len() > 28 {
-                                                format!("{}...", &conv.title[..25])
                                             } else {
-                                                conv.title.clone()
+                                                // Char-boundary-safe truncation — a byte slice here
+                                                // panics on multi-byte titles and blanks the pane (#287).
+                                                truncate_chars(&conv.title, 25)
                                             };
                                             let time_str = format_relative_time(&conv.updated_at);
                                             rsx! {
