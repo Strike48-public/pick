@@ -420,6 +420,11 @@ body {
    =========================================================================== */
 .easy-mode,
 .easy-doc-viewer {
+    /* Body copy is IBM Plex Sans per the Sage type ramp; monospace is reserved
+       for identifiers/labels (tool names, the STRIKE48 tag, report metadata),
+       which set --font-mono explicitly on their own rules. */
+    font-family: var(--font-sans);
+
     /* -----------------------------------------------------------------------
        Sage theme (Strike48 Operator "Sage" DS · APPROVED Option 2B).
        Muted sage-green pastel, Material-3 shapes (pill controls, 16px cards),
@@ -459,6 +464,16 @@ body {
     --em-radius-pill: 999px;                 /* buttons / chips */
     --em-radius-card: 16px;                  /* cards / rows */
     --em-radius-control: 12px;               /* inputs / notes */
+
+    /* Spacing scale (4px base) — the single source of vertical/horizontal
+       rhythm for the chat, so bubbles, tool tiles and gaps stay uniform. */
+    --em-space-1: 4px;
+    --em-space-2: 8px;
+    --em-space-3: 12px;
+    --em-space-4: 16px;
+    --em-gap-block: var(--em-space-3);       /* between stacked chat blocks */
+    --em-pad-tile: var(--em-space-3);        /* inside tool tiles */
+    --em-pad-list: var(--em-space-4);        /* chat list edge padding */
 
     /* Social brand colors keep their own identity; text stays white. */
     --em-social-x: #000000;
@@ -517,7 +532,48 @@ body {
     background: var(--em-brand);
     color: var(--em-on-primary);
     border-radius: var(--em-radius-card);
+    padding: var(--em-space-2) var(--em-space-3);
 }
+
+/* -----------------------------------------------------------------------------
+   Uniform chat spacing (Easy Mode). One rhythm from the --em spacing scale:
+   - the message list has consistent edge padding + a single gap between blocks
+   - each agent message stacks its text/tool parts with that same gap
+   - tool tiles and markdown paragraphs drop their ad-hoc margins so nothing
+     double-spaces or crowds
+   ----------------------------------------------------------------------------- */
+.easy-mode .chat-messages {
+    padding: var(--em-pad-list);
+    gap: var(--em-gap-block);
+}
+/* An agent message is a column of parts (text + tool tiles) — space them evenly
+   with the same block gap, no per-part margins. */
+.easy-mode .chat-bubble-agent {
+    display: flex;
+    flex-direction: column;
+    gap: var(--em-gap-block);
+}
+.easy-mode .chat-bubble-agent > * {
+    margin: 0;
+}
+/* Tool tile: uniform internal padding, no outer margin (the parent gap owns
+   spacing). */
+.easy-mode .chat-tool-call {
+    margin: 0;
+}
+.easy-mode .chat-tool-header {
+    padding: var(--em-pad-tile) var(--em-space-4);
+}
+.easy-mode .chat-tool-details {
+    padding: var(--em-pad-tile) var(--em-space-4);
+}
+/* Markdown prose: first/last elements flush so the message gap is the only
+   spacing; interior paragraphs use one consistent gap. */
+.easy-mode .chat-markdown > :first-child { margin-top: 0; }
+.easy-mode .chat-markdown > :last-child { margin-bottom: 0; }
+.easy-mode .chat-markdown p { margin: 0 0 var(--em-space-2); }
+.easy-mode .chat-markdown ul,
+.easy-mode .chat-markdown ol { margin: var(--em-space-2) 0; }
 
 /* Easy Mode: full-height column — scan card on top, chat fills the rest. */
 .easy-mode {
@@ -631,8 +687,12 @@ body {
 .easy-docs-chevron { opacity: 0.4; font-size: 20px; padding-right: 2px; }
 .easy-docs-prev-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-top: 4px; }
 
+/* Full-screen wrapper for the report viewer — fills the viewport with no extra
+   top padding (the viewer bar owns the safe-area inset). */
+.easy-doc-screen { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
 /* Full-screen in-app report viewer (replaces the Easy Mode screen). */
-.easy-doc-viewer { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.easy-doc-viewer { display: flex; flex-direction: column; flex: 1 1 auto; height: 100%; min-height: 0; }
 .easy-doc-viewer-bar {
     display: flex; align-items: center; gap: 10px;
     padding: 12px 16px; border-bottom: 1px solid var(--em-border);

@@ -72,8 +72,11 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     // A report open in the viewer replaces the whole Easy Mode screen so it's
     // genuinely full-screen (matches the app's signal-driven navigation).
     if let Some(doc) = viewing() {
+        // Wrap in .easy-doc-screen (full viewport height, no extra top padding —
+        // the viewer's own bar handles the safe area) rather than .easy-mode,
+        // whose 59px notch padding would double up and leave a gap above "Back".
         return rsx! {
-            div { class: "easy-mode",
+            div { class: "easy-doc-screen",
                 DocumentViewer {
                     api_url: props.api_url.clone(),
                     auth_token: auth_token(),
