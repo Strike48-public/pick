@@ -2,9 +2,11 @@
 
 use dioxus::prelude::*;
 
+use pentest_core::matrix::DocumentSummary;
+
 use super::chat_panel::ChatHeaderCtx;
 use super::icons::Network;
-use crate::components::{ChatPanel, DocumentsPanel};
+use crate::components::{ChatPanel, DocumentViewer, DocumentsPanel};
 
 /// The canned chat message the Easy Mode "Scan" button sends. It instructs the
 /// server-side agent to enumerate local interfaces, scan the local subnet, and
@@ -42,6 +44,8 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     // Track the selected agent ID and refresh nonce for the DocumentsPanel.
     let agent_id = use_signal(|| None::<String>);
     let refresh_nonce = use_signal(|| 0u32);
+    // The report currently open in the full-screen viewer (None = normal shell).
+    let mut viewing = use_signal(|| None::<DocumentSummary>);
 
     // The Matrix auth token arrives asynchronously: the connector registers, the
     // browser-OAuth callback writes it into the session store, and this
@@ -65,6 +69,21 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
             }
         }
     });
+
+    // A report open in the viewer replaces the whole Easy Mode screen so it's
+    // genuinely full-screen (matches the app's signal-driven navigation).
+    if let Some(doc) = viewing() {
+        return rsx! {
+            div { class: "easy-mode",
+                DocumentViewer {
+                    api_url: props.api_url.clone(),
+                    auth_token: auth_token(),
+                    doc: doc,
+                    on_back: move |_| viewing.set(None),
+                }
+            }
+        };
+    }
 
     rsx! {
         div { class: "easy-mode",
@@ -94,6 +113,7 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                 auth_token: auth_token(),
                 agent_id: agent_id,
                 refresh_nonce: refresh_nonce,
+                on_open: move |doc: DocumentSummary| viewing.set(Some(doc)),
             }
         }
     }

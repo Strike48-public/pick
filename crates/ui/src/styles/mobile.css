@@ -450,19 +450,38 @@
 .easy-docs-empty, .easy-docs-error { opacity: 0.7; font-size: 14px; padding: 8px 0; }
 .easy-docs-error { color: #ff6b6b; }
 .easy-docs-toast { background: #1e3a2f; color: #b6f2c9; padding: 8px 10px; border-radius: 8px; font-size: 13px; }
-.easy-docs-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.08); }
-.easy-docs-title { flex: 1; cursor: pointer; text-decoration: underline; }
-.easy-docs-share { padding: 6px 14px; border-radius: 8px; border: none; background: #3b82f6; color: #fff; font-size: 14px; }
-.easy-docs-secondary { padding: 6px 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.25); background: transparent; color: #fff; font-size: 14px; }
+.easy-docs-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.easy-docs-row-tappable { cursor: pointer; }
+.easy-docs-title { flex: 1; font-weight: 500; }
+.easy-docs-chevron { opacity: 0.4; font-size: 20px; padding-right: 2px; }
 .easy-docs-prev-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-top: 4px; }
 
-/* In-app report viewer */
+/* Full-screen in-app report viewer (replaces the Easy Mode screen). */
 .easy-doc-viewer { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.easy-doc-viewer-bar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid rgba(255,255,255,0.1); }
-.easy-doc-back { background: none; border: none; color: #3b82f6; font-size: 16px; padding: 4px 4px; }
-.easy-doc-viewer-title { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.easy-doc-viewer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; }
-.easy-doc-viewer-actions { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.1); }
-.easy-doc-social { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 16px 14px; }
-.easy-doc-social-label { font-size: 12px; opacity: 0.5; }
-.easy-doc-social-btn { padding: 6px 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.06); color: #fff; font-size: 13px; }
+.easy-doc-viewer-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.1);
+    /* clear the status bar / Dynamic Island, matching .easy-mode */
+    padding-top: max(env(safe-area-inset-top, 0px), 59px);
+}
+.easy-doc-back { background: none; border: none; color: #3b82f6; font-size: 17px; padding: 4px; flex-shrink: 0; }
+.easy-doc-viewer-title { font-weight: 600; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.easy-doc-viewer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px; }
+
+/* Share sheet pinned below the report body. */
+.easy-doc-share-sheet {
+    border-top: 1px solid rgba(255,255,255,0.1);
+    padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+    background: rgba(255,255,255,0.02);
+    display: flex; flex-direction: column; gap: 10px;
+}
+.easy-doc-share-title { font-size: 13px; font-weight: 600; opacity: 0.7; }
+.easy-doc-share-primary { display: flex; gap: 8px; }
+.easy-doc-btn { flex: 1; padding: 11px 14px; border-radius: 10px; font-size: 15px; font-weight: 600; border: none; }
+.easy-doc-btn-primary { background: #3b82f6; color: #fff; }
+.easy-doc-btn-ghost { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,0.25); }
+.easy-doc-social-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.easy-doc-social-btn { padding: 10px 8px; border-radius: 10px; border: none; color: #fff; font-size: 14px; font-weight: 600; }
+.easy-doc-social-btn.social-x { background: #000; border: 1px solid rgba(255,255,255,0.35); }
+.easy-doc-social-btn.social-linkedin { background: #0a66c2; }
+.easy-doc-social-btn.social-facebook { background: #1877f2; }

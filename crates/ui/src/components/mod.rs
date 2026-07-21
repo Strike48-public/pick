@@ -54,7 +54,7 @@ pub use connecting_screen::*;
 pub use context_menu::{ContextMenu, ContextMenuItem};
 pub use cyberchef_page::CyberChefPage;
 pub use dashboard::*;
-pub use documents_panel::DocumentsPanel;
+pub use documents_panel::{DocumentViewer, DocumentsPanel};
 pub use easy_mode::{easy_mode_scan_prompt, EasyModeShell};
 pub use extension::{
     provide_view_registry, use_view_registry, ExtensionView, ViewCategory, ViewProvider,

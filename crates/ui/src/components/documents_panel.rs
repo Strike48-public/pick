@@ -1,10 +1,12 @@
-//! Easy Mode Documents: shows the latest scan report, opens it in an in-app
-//! markdown viewer (or the browser), and creates public shareable links.
+//! Easy Mode Documents: a compact list showing the latest scan report, plus a
+//! full-screen [`DocumentViewer`] that renders a report's markdown in-app and
+//! offers share actions.
 //!
-//! Tapping a report renders its markdown inside the app (no browser, no login).
-//! The viewer also offers "Open in browser" (the public `/s/:token?preview=1`
-//! page) and "Share" (copies the public URL + OS share sheet). External sharing
-//! always uses the public share URL so recipients without an account can view.
+//! The list only *opens* reports (tap a row). All sharing lives in the viewer.
+//! `EasyModeShell` owns which document is open and swaps the whole screen to the
+//! viewer, so the report is genuinely full-screen rather than nested in the
+//! list's slot. External sharing always uses the public `/s/:token` link so
+//! recipients without an account can view.
 //!
 //! On launch the most recent *existing* report is shown under a muted "Previous
 //! report" label so it isn't mistaken for the current run's output; once a newer
@@ -32,15 +34,9 @@ fn preview_url(url: &str) -> String {
     format!("{url}{sep}preview=1")
 }
 
-/// The open document being viewed in-app: the report plus its rendered content.
-#[derive(Clone, PartialEq)]
-struct ViewerState {
-    title: String,
-    conversation_id: String,
-    document_id: String,
-    /// Pre-rendered HTML (from the document's markdown).
-    html: String,
-}
+// ---------------------------------------------------------------------------
+// DocumentsPanel — the compact list (open only; no sharing here)
+// ---------------------------------------------------------------------------
 
 #[derive(Props, Clone, PartialEq)]
 pub struct DocumentsPanelProps {
@@ -51,6 +47,8 @@ pub struct DocumentsPanelProps {
     pub agent_id: Signal<Option<String>>,
     /// Bump to force a refresh (e.g. after a scan completes).
     pub refresh_nonce: Signal<u32>,
+    /// Fired when the user taps a report; the parent opens the full-screen viewer.
+    pub on_open: EventHandler<DocumentSummary>,
 }
 
 #[component]
@@ -65,17 +63,12 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
     let mut latest = use_signal(|| None::<DocumentSummary>);
     let mut loading = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
-    let mut toast = use_signal(|| None::<String>);
     // Bumped by the in-panel Refresh button to force a reload on demand.
     let mut manual_nonce = use_signal(|| 0u32);
     // Timestamp of the report present at the first successful load this session.
-    // While the shown report still matches it, it's a *previous* report (label
-    // it as such); once a newer report replaces it the label clears.
+    // While the shown report still matches it, it's a *previous* report; once a
+    // newer report replaces it the label clears.
     let mut baseline_ts = use_signal(|| None::<String>);
-    // The document currently open in the in-app viewer.
-    let mut viewing = use_signal(|| None::<ViewerState>);
-    // Whether the viewer is busy fetching content.
-    let mut opening = use_signal(|| false);
 
     // (Re)load when token, agent, the external nonce, or the manual nonce changes.
     {
@@ -97,8 +90,6 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                 match client.list_documents(aid.as_deref()).await {
                     Ok(list) => {
                         let doc = pentest_core::matrix::latest_document(list);
-                        // Record the first-seen report as the session baseline so
-                        // it can be labeled "Previous report" until a newer one lands.
                         if baseline_ts.peek().is_none() {
                             if let Some(ref d) = doc {
                                 baseline_ts.set(Some(d.timestamp.clone()));
@@ -111,116 +102,6 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                 loading.set(false);
             });
         });
-    }
-
-    // In-app viewer overlay takes over the panel when a report is open.
-    if let Some(view) = viewing() {
-        let open_conv = view.conversation_id.clone();
-        let open_doc = view.document_id.clone();
-        let open_api = api_url.clone();
-        let open_tok = auth_token.clone();
-        let share_conv = view.conversation_id.clone();
-        let share_doc = view.document_id.clone();
-        let share_api = api_url.clone();
-        let share_tok = auth_token.clone();
-        return rsx! {
-            div { class: "easy-doc-viewer",
-                div { class: "easy-doc-viewer-bar",
-                    button {
-                        class: "easy-doc-back",
-                        onclick: move |_| viewing.set(None),
-                        "‹ Back"
-                    }
-                    span { class: "easy-doc-viewer-title", "{view.title}" }
-                }
-                if let Some(msg) = toast() {
-                    div { class: "easy-docs-toast", "{msg}" }
-                }
-                div {
-                    class: "markdown-body easy-doc-viewer-body",
-                    dangerous_inner_html: "{view.html}",
-                }
-                div { class: "easy-doc-viewer-actions",
-                    button {
-                        class: "easy-docs-secondary",
-                        onclick: move |_| {
-                            let (api_url, auth_token) = (open_api.clone(), open_tok.clone());
-                            let (conv, doc_id) = (open_conv.clone(), open_doc.clone());
-                            spawn(async move {
-                                let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
-                                match client.create_shared_link(&conv, &doc_id).await {
-                                    Ok(url) => {
-                                        if let Err(e) = pentest_core::matrix::open_url_in_browser(&preview_url(&url)) {
-                                            toast.set(Some(format!("Couldn't open report: {e}")));
-                                        }
-                                    }
-                                    Err(e) => toast.set(Some(format!("Couldn't open report: {e}"))),
-                                }
-                            });
-                        },
-                        "Open in browser"
-                    }
-                    button {
-                        class: "easy-docs-share",
-                        onclick: move |_| {
-                            let (api_url, auth_token) = (share_api.clone(), share_tok.clone());
-                            let (conv, doc_id) = (share_conv.clone(), share_doc.clone());
-                            spawn(async move {
-                                let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
-                                match client.create_shared_link(&conv, &doc_id).await {
-                                    Ok(url) => {
-                                        let _ = document::eval(&clipboard_js(&url));
-                                        let _ = pentest_core::share::share_text(&url);
-                                        toast.set(Some(format!("Link copied: {url}")));
-                                    }
-                                    Err(e) => toast.set(Some(format!("Sharing unavailable: {e}"))),
-                                }
-                            });
-                        },
-                        "Share"
-                    }
-                }
-                div { class: "easy-doc-social",
-                    span { class: "easy-doc-social-label", "Share to" }
-                    for network in SocialNetwork::all() {
-                        {
-                            let net_api = api_url.clone();
-                            let net_tok = auth_token.clone();
-                            let net_conv = view.conversation_id.clone();
-                            let net_doc = view.document_id.clone();
-                            let net_title = view.title.clone();
-                            rsx! {
-                                button {
-                                    class: "easy-doc-social-btn",
-                                    onclick: move |_| {
-                                        let (api_url, auth_token) = (net_api.clone(), net_tok.clone());
-                                        let (conv, doc_id) = (net_conv.clone(), net_doc.clone());
-                                        let title = net_title.clone();
-                                        spawn(async move {
-                                            let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
-                                            match client.create_shared_link(&conv, &doc_id).await {
-                                                Ok(url) => {
-                                                    match share_intent_url(network, &url, &title) {
-                                                        Ok(intent) => {
-                                                            if let Err(e) = pentest_core::matrix::open_url_in_browser(&intent) {
-                                                                toast.set(Some(format!("Couldn't open share: {e}")));
-                                                            }
-                                                        }
-                                                        Err(e) => toast.set(Some(format!("Couldn't build share link: {e}"))),
-                                                    }
-                                                }
-                                                Err(e) => toast.set(Some(format!("Sharing unavailable: {e}"))),
-                                            }
-                                        });
-                                    },
-                                    "{network.label()}"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        };
     }
 
     // Is the currently-shown report the pre-existing one from session start?
@@ -239,9 +120,6 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                     "Refresh"
                 }
             }
-            if let Some(msg) = toast() {
-                div { class: "easy-docs-toast", "{msg}" }
-            }
             if loading() {
                 div { class: "easy-docs-empty", "Loading reports..." }
             } else if let Some(err) = error() {
@@ -249,58 +127,111 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
             } else if let Some(doc) = latest() {
                 {
                     let title = doc.title.clone();
-                    // Tap title -> in-app viewer (fetch markdown, then render).
-                    let open_api_url = api_url.clone();
-                    let open_token = auth_token.clone();
-                    let open_conv = doc.conversation_id.clone();
-                    let open_doc = doc.id.clone();
-                    let open_title = doc.title.clone();
-                    // Share button -> public link + copy + OS share sheet.
-                    let share_api_url = api_url.clone();
-                    let share_token = auth_token.clone();
-                    let share_conv = doc.conversation_id.clone();
-                    let share_doc = doc.id.clone();
+                    let open_doc = doc.clone();
                     rsx! {
                         if is_previous {
                             div { class: "easy-docs-prev-label", "Previous report" }
                         }
-                        div { class: "easy-docs-row",
-                            span {
-                                class: "easy-docs-title",
-                                onclick: move |_| {
-                                    if opening() { return; }
-                                    let api_url = open_api_url.clone();
-                                    let auth_token = open_token.clone();
-                                    let conv = open_conv.clone();
-                                    let doc_id = open_doc.clone();
-                                    let title = open_title.clone();
-                                    opening.set(true);
-                                    spawn(async move {
-                                        let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
-                                        match client.get_document_content(&conv, &doc_id).await {
-                                            Ok(md) => viewing.set(Some(ViewerState {
-                                                title,
-                                                conversation_id: conv,
-                                                document_id: doc_id,
-                                                html: render_markdown_raw(&md),
-                                            })),
-                                            Err(e) => toast.set(Some(format!("Couldn't open report: {e}"))),
-                                        }
-                                        opening.set(false);
-                                    });
-                                },
-                                "{title}"
-                            }
+                        div {
+                            class: "easy-docs-row easy-docs-row-tappable",
+                            onclick: move |_| props.on_open.call(open_doc.clone()),
+                            span { class: "easy-docs-title", "{title}" }
+                            span { class: "easy-docs-chevron", "›" }
+                        }
+                    }
+                }
+            } else {
+                div { class: "easy-docs-empty", "Run a scan to generate your first report." }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DocumentViewer — full-screen report render + share actions
+// ---------------------------------------------------------------------------
+
+#[derive(Props, Clone, PartialEq)]
+pub struct DocumentViewerProps {
+    pub api_url: String,
+    pub auth_token: String,
+    pub doc: DocumentSummary,
+    /// Fired when the user leaves the viewer (back button).
+    pub on_back: EventHandler<()>,
+}
+
+#[component]
+pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
+    let api_url = props.api_url.clone();
+    let auth_token = props.auth_token.clone();
+    let doc = props.doc.clone();
+
+    let mut html = use_signal(String::new);
+    let mut load_error = use_signal(|| None::<String>);
+    let mut toast = use_signal(|| None::<String>);
+
+    // Fetch + render the document's markdown once on mount.
+    {
+        let api_url = api_url.clone();
+        let auth_token = auth_token.clone();
+        let conv = doc.conversation_id.clone();
+        let doc_id = doc.id.clone();
+        use_effect(move || {
+            let api_url = api_url.clone();
+            let auth_token = auth_token.clone();
+            let conv = conv.clone();
+            let doc_id = doc_id.clone();
+            spawn(async move {
+                let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
+                match client.get_document_content(&conv, &doc_id).await {
+                    Ok(md) => html.set(render_markdown_raw(&md)),
+                    Err(e) => load_error.set(Some(format!("Couldn't load report: {e}"))),
+                }
+            });
+        });
+    }
+
+    // Shared helper: create the public link then run `after(url)`.
+    let title = doc.title.clone();
+    let conv_id = doc.conversation_id.clone();
+    let document_id = doc.id.clone();
+
+    rsx! {
+        div { class: "easy-doc-viewer",
+            div { class: "easy-doc-viewer-bar",
+                button {
+                    class: "easy-doc-back",
+                    onclick: move |_| props.on_back.call(()),
+                    "‹ Back"
+                }
+                span { class: "easy-doc-viewer-title", "{title}" }
+            }
+            div {
+                class: "markdown-body easy-doc-viewer-body",
+                if let Some(err) = load_error() {
+                    div { class: "easy-docs-error", "{err}" }
+                } else if html().is_empty() {
+                    div { class: "easy-docs-empty", "Loading report..." }
+                } else {
+                    div { dangerous_inner_html: "{html}" }
+                }
+            }
+            div { class: "easy-doc-share-sheet",
+                if let Some(msg) = toast() {
+                    div { class: "easy-docs-toast", "{msg}" }
+                }
+                div { class: "easy-doc-share-title", "Share this report" }
+                div { class: "easy-doc-share-primary",
+                    {
+                        let (a, t, c, d) = (api_url.clone(), auth_token.clone(), conv_id.clone(), document_id.clone());
+                        rsx! {
                             button {
-                                class: "easy-docs-share",
+                                class: "easy-doc-btn easy-doc-btn-primary",
                                 onclick: move |_| {
-                                    let api_url = share_api_url.clone();
-                                    let auth_token = share_token.clone();
-                                    let conv = share_conv.clone();
-                                    let doc_id = share_doc.clone();
+                                    let (a, t, c, d) = (a.clone(), t.clone(), c.clone(), d.clone());
                                     spawn(async move {
-                                        let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
-                                        match client.create_shared_link(&conv, &doc_id).await {
+                                        let client = MatrixChatClient::new(a).with_auth_token(t);
+                                        match client.create_shared_link(&c, &d).await {
                                             Ok(url) => {
                                                 let _ = document::eval(&clipboard_js(&url));
                                                 let _ = pentest_core::share::share_text(&url);
@@ -310,13 +241,67 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                                         }
                                     });
                                 },
-                                "Share"
+                                "Share link"
+                            }
+                        }
+                    }
+                    {
+                        let (a, t, c, d) = (api_url.clone(), auth_token.clone(), conv_id.clone(), document_id.clone());
+                        rsx! {
+                            button {
+                                class: "easy-doc-btn easy-doc-btn-ghost",
+                                onclick: move |_| {
+                                    let (a, t, c, d) = (a.clone(), t.clone(), c.clone(), d.clone());
+                                    spawn(async move {
+                                        let client = MatrixChatClient::new(a).with_auth_token(t);
+                                        match client.create_shared_link(&c, &d).await {
+                                            Ok(url) => {
+                                                if let Err(e) = pentest_core::matrix::open_url_in_browser(&preview_url(&url)) {
+                                                    toast.set(Some(format!("Couldn't open report: {e}")));
+                                                }
+                                            }
+                                            Err(e) => toast.set(Some(format!("Couldn't open report: {e}"))),
+                                        }
+                                    });
+                                },
+                                "Open in browser"
                             }
                         }
                     }
                 }
-            } else {
-                div { class: "easy-docs-empty", "Run a scan to generate your first report." }
+                div { class: "easy-doc-social-grid",
+                    for network in SocialNetwork::all() {
+                        {
+                            let (a, t, c, d, ttl) = (
+                                api_url.clone(), auth_token.clone(),
+                                conv_id.clone(), document_id.clone(), title.clone(),
+                            );
+                            rsx! {
+                                button {
+                                    class: "easy-doc-social-btn social-{network.key()}",
+                                    onclick: move |_| {
+                                        let (a, t, c, d, ttl) = (a.clone(), t.clone(), c.clone(), d.clone(), ttl.clone());
+                                        spawn(async move {
+                                            let client = MatrixChatClient::new(a).with_auth_token(t);
+                                            match client.create_shared_link(&c, &d).await {
+                                                Ok(url) => match share_intent_url(network, &url, &ttl) {
+                                                    Ok(intent) => {
+                                                        if let Err(e) = pentest_core::matrix::open_url_in_browser(&intent) {
+                                                            toast.set(Some(format!("Couldn't open share: {e}")));
+                                                        }
+                                                    }
+                                                    Err(e) => toast.set(Some(format!("Couldn't build share link: {e}"))),
+                                                },
+                                                Err(e) => toast.set(Some(format!("Sharing unavailable: {e}"))),
+                                            }
+                                        });
+                                    },
+                                    "{network.label()}"
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
