@@ -2,6 +2,7 @@
 //! one-time registration token (OTT) and stage it for the SDK to register with.
 
 use serde::Deserialize;
+use std::path::PathBuf;
 
 use crate::error::{Error, Result};
 use reqwest;
@@ -34,6 +35,45 @@ pub(crate) fn parse_pre_approve_response(body: &str) -> Result<OttData> {
         keycloak_url: raw.keycloak_url,
         tenant_id: raw.tenant_id,
     })
+}
+
+/// Path Pick writes the staged OTT to. `$HOME` is the app sandbox container on
+/// iOS, so this lands in Pick's private, persisted storage.
+pub fn staged_ott_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".strike48").join("registration_token.json")
+}
+
+/// Write `ott` to [`staged_ott_path`] in the SDK's `{token, matrix_url,
+/// keycloak_url}` shape (mode 0600 on Unix). Returns the path so the caller can
+/// point `STRIKE48_REGISTRATION_TOKEN_FILE` at it.
+pub fn stage_ott_for_sdk(ott: &OttData) -> Result<PathBuf> {
+    let path = staged_ott_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::Matrix(format!("cannot create OTT dir: {e}")))?;
+    }
+    let json = serde_json::json!({
+        "token": ott.token,
+        "matrix_url": ott.matrix_url,
+        "keycloak_url": ott.keycloak_url,
+    })
+    .to_string();
+    std::fs::write(&path, json).map_err(|e| Error::Matrix(format!("cannot write OTT file: {e}")))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    Ok(path)
+}
+
+/// Remove the staged OTT file. OTTs are single-use, so this is called after a
+/// successful registration and on failure to avoid reusing a stale token.
+pub fn clear_staged_ott() {
+    let _ = std::fs::remove_file(staged_ott_path());
 }
 
 /// Exchange a user OAuth JWT for a tenant-scoped OTT via the PLG pre-approval
@@ -149,5 +189,47 @@ mod tests {
             Error::Matrix(msg) => assert!(msg.contains("403"), "msg should mention status: {msg}"),
             other => panic!("expected Error::Matrix, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn stage_writes_sdk_shaped_json_and_roundtrips() {
+        let ott = OttData {
+            token: "ott_xyz".to_string(),
+            matrix_url: "wss://host:4000/socket/connector".to_string(),
+            keycloak_url: "https://auth/realms/personal-abc".to_string(),
+            tenant_id: "tid".to_string(),
+        };
+
+        // Redirect HOME to a temp dir so the test does not touch the real ~/.strike48.
+        let tmp = std::env::temp_dir().join(format!("pick-ott-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let prev_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &tmp);
+
+        let path = stage_ott_for_sdk(&ott).expect("stage should succeed");
+        assert!(path.exists(), "staged file should exist");
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(v["token"], "ott_xyz");
+        assert_eq!(v["matrix_url"], "wss://host:4000/socket/connector");
+        assert_eq!(v["keycloak_url"], "https://auth/realms/personal-abc");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "staged OTT must be 0600");
+        }
+
+        clear_staged_ott();
+        assert!(!path.exists(), "clear_staged_ott should remove the file");
+
+        // Restore HOME.
+        match prev_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -13,7 +13,7 @@ pub use auth::*;
 pub use client::MatrixChatClient;
 pub use documents::{latest_document, DocumentSummary};
 pub use types::*;
-pub use pre_approval::{pre_approve, OttData};
+pub use pre_approval::{clear_staged_ott, pre_approve, stage_ott_for_sdk, staged_ott_path, OttData};
 
 /// Strip trailing slashes from a URL.
 pub(crate) fn normalize_url(url: &str) -> &str {
