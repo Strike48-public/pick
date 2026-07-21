@@ -10,6 +10,24 @@
    0. App Layout Container  (always active)
    ========================================================================== */
 
+/* Lock the document + root wrapper to the viewport so height:100% children
+   (e.g. .easy-mode) resolve against a fixed height instead of growing to
+   content and overflowing off-screen. 100dvh tracks the mobile dynamic
+   viewport (URL/nav bars); vh is the fallback for engines without dvh. */
+html,
+body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+}
+
+.app-container {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
 .app-layout {
     display: flex;
     flex-direction: row;
