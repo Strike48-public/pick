@@ -111,6 +111,9 @@ pub async fn run_event_loop(
                     if !api_url.is_empty() {
                         signals.matrix_api_url.set(api_url);
                     }
+                    // The OTT is single-use; once the SDK has persisted
+                    // connector credentials we no longer need the staged file.
+                    pentest_core::matrix::clear_staged_ott();
                 }
                 ConnectorEvent::MatrixTokenObtained {
                     auth_token,
