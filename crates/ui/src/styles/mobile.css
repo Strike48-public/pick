@@ -558,8 +558,10 @@
     overflow: hidden;
 }
 
-/* Easy Mode Documents Panel */
-.easy-docs { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; }
+/* Easy Mode Documents Panel — a fixed-height footer that never grows, so it
+   can't fight the chat for space and push the brand bar/scan card off the top.
+   Only the chat area (.easy-mode-chat, flex:1) is flexible. */
+.easy-docs { flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; }
 .easy-docs-header { display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 15px; opacity: 0.9; }
 .easy-docs-refresh { padding: 5px 14px; border-radius: var(--em-radius-pill); border: none; background: var(--em-surface-soft); color: var(--em-text); font-size: 13px; font-weight: 500; }
 .easy-docs-empty, .easy-docs-error { opacity: 0.7; font-size: 14px; padding: 8px 0; }

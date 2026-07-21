@@ -338,14 +338,6 @@ pub struct SuggestedActionsProps {
     pub easy_mode: bool,
 }
 
-/// Lay-friendly quick actions for Easy Mode — plain-language, no red-team jargon.
-/// The prominent "Scan My Network" card already covers the main scan, so these
-/// are lighter follow-ups.
-const EASY_SUGGESTED_ACTIONS: &[(&str, &str)] = &[
-    ("What's connected?", "List the devices connected to my network in plain language — what they are, not technical detail."),
-    ("Is my network safe?", "Check my network for common safety problems and explain anything I should fix, in simple terms."),
-];
-
 /// Grid of suggested quick-action buttons + recent conversations shown in the empty-chat state.
 #[component]
 pub fn SuggestedActions(props: SuggestedActionsProps) -> Element {
@@ -365,8 +357,10 @@ pub fn SuggestedActions(props: SuggestedActionsProps) -> Element {
                     p { class: "chat-greeting", "Start a conversation with {agent.name}" }
                 }
             }
+            // Easy Mode shows no quick-action chips — the prominent "Scan My
+            // Network" card is the only call to action; the chat is free-form.
             div { class: "chat-suggested-actions",
-                for (label, prompt) in if easy_mode { EASY_SUGGESTED_ACTIONS } else { SUGGESTED_ACTIONS }.iter() {
+                for (label, prompt) in if easy_mode { [].as_slice() } else { SUGGESTED_ACTIONS }.iter() {
                     {
                         let prompt_text = prompt.to_string();
                         let on_send = props.on_send;
