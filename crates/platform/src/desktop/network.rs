@@ -215,8 +215,14 @@ pub async fn mdns_discover(service_type: &str, timeout_ms: u64) -> Result<Vec<Md
 
     #[cfg(not(feature = "mdns-sd"))]
     {
-        tracing::warn!("mDNS discovery requires the 'desktop-mdns' feature");
-        Ok(Vec::new())
+        // Match the sibling ssdp_discover compiled-out arm: a silent empty Vec
+        // reads as "no services found", masking that discovery never ran. Fail
+        // loudly with a typed error instead (#202).
+        Err(Error::PlatformNotSupported(
+            "mDNS discovery requires the 'mdns-sd' feature (enabled by the default \
+             'desktop' feature)"
+                .into(),
+        ))
     }
 }
 
