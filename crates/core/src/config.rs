@@ -95,6 +95,26 @@ fn default_connector_name() -> String {
     "pentest-connector".to_string()
 }
 
+/// Whether the PLG easy-mode connect should sign in first or connect silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlgConnectStep {
+    /// Connect straight away (expert mode, or easy mode with saved creds).
+    Silent,
+    /// Run OAuth-first, then exchange for an OTT before connecting.
+    SignIn,
+}
+
+/// Decide the easy-mode connect path. Only easy mode with no saved connector
+/// credentials needs the OAuth-first flow; every other case connects silently
+/// (expert mode's own path is unaffected).
+pub fn plg_connect_decision(easy_mode: bool, creds_present: bool) -> PlgConnectStep {
+    if easy_mode && !creds_present {
+        PlgConnectStep::SignIn
+    } else {
+        PlgConnectStep::Silent
+    }
+}
+
 impl Default for ConnectorConfig {
     fn default() -> Self {
         Self {
@@ -476,6 +496,21 @@ impl ConnectorConfig {
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
+    }
+
+    /// True when the SDK has already persisted connector credentials for this
+    /// identity (i.e. a prior OTT registration succeeded), so we can connect
+    /// without signing in again.
+    pub fn credentials_present(connector_name: &str, instance_id: &str) -> bool {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        std::path::PathBuf::from(home)
+            .join(".strike48")
+            .join("credentials")
+            .join(format!("{connector_name}_{instance_id}.json"))
+            .exists()
     }
 
     /// Split a Strike48-style URL (accepts anything [`normalize_host`] produces
@@ -1226,5 +1261,15 @@ mod tests {
             ConnectorConfig::env_scoped_instance_id("dev-1", ""),
             "dev-1"
         );
+    }
+
+    #[test]
+    fn plg_connect_decision_matrix() {
+        use crate::config::{plg_connect_decision, PlgConnectStep};
+        assert_eq!(plg_connect_decision(true, true), PlgConnectStep::Silent);
+        assert_eq!(plg_connect_decision(true, false), PlgConnectStep::SignIn);
+        // Expert mode is handled by the existing path; decision is Silent.
+        assert_eq!(plg_connect_decision(false, false), PlgConnectStep::Silent);
+        assert_eq!(plg_connect_decision(false, true), PlgConnectStep::Silent);
     }
 }
