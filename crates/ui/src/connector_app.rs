@@ -881,8 +881,37 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         {css_block}
 
         div { class: "{container_class}",
-            match screen {
-                AppScreen::Connect => rsx! {
+            // Easy mode PLG sign-in retry override: when the OAuth flow fails,
+            // needs_sign_in is set but status is Disconnected (routes to Connect
+            // form). The friendly retry overlay lives in EasyModeShell, which is
+            // only rendered under Connected. Short-circuit early so the overlay
+            // is reachable. Does not affect expert mode.
+            if cfg.easy_mode && *needs_sign_in.read() {
+                {
+                    let host = config.read().host.clone();
+                    let chat_api_url = {
+                        let sig = matrix_api_url.read().clone();
+                        if !sig.is_empty() {
+                            sig
+                        } else if !host.is_empty() {
+                            derive_api_url(&host, config.read().use_tls)
+                        } else {
+                            String::new()
+                        }
+                    };
+                    rsx! {
+                        EasyModeShell {
+                            api_url: chat_api_url,
+                            auth_token: matrix_auth_token.read().clone(),
+                            tenant_id: config.read().tenant_id.clone(),
+                            chat_mailbox,
+                            conversation_mailbox,
+                        }
+                    }
+                }
+            } else {
+                match screen {
+                    AppScreen::Connect => rsx! {
                     div { class: "connect-screen",
                         span {
                             class: "header-logo mb-8",
@@ -1063,6 +1092,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                         }
                     }
                 },
+                }
             }
         }
     }
