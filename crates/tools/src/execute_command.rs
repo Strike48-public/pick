@@ -276,11 +276,13 @@ mod tests {
         // (binary may be absent, etc.), so we assert on the reproducibility
         // metadata itself, not the payload.
         //
-        // Run host-direct (sandbox disabled): CI has no BlackArch sandbox
-        // backend, and since #256 an enabled-but-unavailable sandbox fails
-        // closed (Err, no provenance) instead of silently falling back to the
-        // host. Disabling the sandbox is the explicit host path these unit
-        // tests want — same precedent as the pentest-core integration tests.
+        // Run host-direct (sandbox disabled). With the sandbox enabled and no
+        // system proot, execute_command now DOWNLOADS the pinned proot binary
+        // and sets up the BlackArch rootfs — on a CI runner that path hangs
+        // (multi-GB rootfs / stalled fetch), timing the job out after hours.
+        // Since #256 an enabled-but-unavailable sandbox also fails closed (Err,
+        // no provenance). Disabling the sandbox takes the explicit host path,
+        // matching the pentest-core integration tests (connector_execute.rs).
         pentest_platform::set_use_sandbox(false);
         let tool = ExecuteCommandTool;
         let ctx = ToolContext::default();
@@ -303,8 +305,9 @@ mod tests {
     #[tokio::test]
     async fn execute_redacts_secrets_in_effective_command() {
         // Host-direct: same rationale as execute_emits_provenance_structure —
-        // CI has no sandbox backend, and since #256 that fails closed with no
-        // provenance rather than falling back to the host.
+        // with the sandbox enabled and no system proot, execute_command would
+        // download proot + set up the rootfs and hang on a CI runner (and since
+        // #256 an unavailable sandbox also fails closed with no provenance).
         pentest_platform::set_use_sandbox(false);
         let tool = ExecuteCommandTool;
         let ctx = ToolContext::default();
