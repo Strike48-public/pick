@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use pentest_core::matrix::DocumentSummary;
 
 use super::chat_panel::ChatHeaderCtx;
-use super::icons::Network;
+use super::icons::{Network, STRIKE48_S_BADGE_SVG};
 use crate::components::{ChatPanel, DocumentViewer, DocumentsPanel};
 
 /// The canned chat message the Easy Mode "Scan" button sends. It instructs the
@@ -87,6 +87,14 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
 
     rsx! {
         div { class: "easy-mode",
+            // Co-brand top bar: Strike48 "S" badge + lowercase "pick" wordmark,
+            // with a "STRIKE48" tag on the right. Positions Pick as a Strike48
+            // product per the brand identity.
+            div { class: "easy-brandbar",
+                span { class: "easy-brand-badge", dangerous_inner_html: STRIKE48_S_BADGE_SVG }
+                span { class: "easy-brand-word", "pick" }
+                span { class: "easy-brand-by", "Strike48" }
+            }
             div { class: "action-grid",
                 div {
                     class: "action-card",

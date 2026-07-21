@@ -405,6 +405,49 @@
     padding-top: max(env(safe-area-inset-top, 0px), 59px);
     box-sizing: border-box;
 }
+/* Co-brand top bar: Strike48 "S" badge + lowercase "pick" wordmark. */
+.easy-brandbar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 4px 20px 12px;
+}
+.easy-brand-badge {
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+    flex-shrink: 0;
+    /* Strike48 core brand gradient — "most tightly bound to the family". */
+    background: linear-gradient(135deg, #3978d5, #1d4ed8);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 8px rgba(57, 120, 213, 0.4);
+}
+.easy-brand-badge svg {
+    width: 20px;
+    height: 20px;
+    display: block;
+}
+.easy-brand-word {
+    /* lowercase "pick" in IBM Plex Mono 600 per the Pick brand identity. */
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: 20px;
+    letter-spacing: -0.01em;
+    color: var(--color-base-content, #eef0f7);
+}
+.easy-brand-by {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    opacity: 0.5;
+}
+
 .easy-mode .action-grid {
     padding: 16px;
     flex: 0 0 auto;

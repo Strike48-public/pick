@@ -14,3 +14,9 @@ pub use lucide_dioxus::{
 // ---------------------------------------------------------------------------
 
 pub const STRIKE48_SIDEBAR_LOGO_SVG: &str = include_str!("../assets/icons/strike48-logo.svg");
+
+/// Square Strike48 "S" monogram for the Easy Mode co-brand badge. The full
+/// logo (`STRIKE48_SIDEBAR_LOGO_SVG`) is a wide wordmark; this is a compact
+/// glyph sized for a ~30px rounded badge. Uses `stroke="currentColor"` so the
+/// badge can paint it white.
+pub const STRIKE48_S_BADGE_SVG: &str = include_str!("../assets/icons/strike48-s-badge.svg");
