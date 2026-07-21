@@ -106,11 +106,20 @@
                     el.dataset.userScrolledUp = 'true';
                 }
             }, { passive: true });
-            el.addEventListener('scroll', function() {
+            // Touch scroll-up detection: wheel never fires on iOS, so mark
+            // "scrolled up" the moment a touch drag moves upward.
+            el.addEventListener('touchmove', function() {
                 var atBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < threshold;
-                if (atBottom) {
-                    el.dataset.userScrolledUp = 'false';
+                if (!atBottom) {
+                    el.dataset.userScrolledUp = 'true';
                 }
+            }, { passive: true });
+            el.addEventListener('scroll', function() {
+                // The scroll position is the source of truth on every platform:
+                // away from the bottom means the user is reading history (don't
+                // auto-scroll); back at the bottom re-enables follow-along.
+                var atBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < threshold;
+                el.dataset.userScrolledUp = atBottom ? 'false' : 'true';
             }, { passive: true });
         }
         install();

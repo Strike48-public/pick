@@ -503,6 +503,21 @@ body {
     padding: 3px 10px;
     text-transform: lowercase;
 }
+/* Match the Sage mockup: assistant messages are bare prose (no dark box); only
+   the user's own messages keep a tinted bubble. */
+.easy-mode .chat-bubble-agent {
+    background: transparent;
+    border: none;
+    padding-left: 0;
+    padding-right: 0;
+    max-width: 100%;
+    color: var(--em-text);
+}
+.easy-mode .chat-bubble-user {
+    background: var(--em-brand);
+    color: var(--em-on-primary);
+    border-radius: var(--em-radius-card);
+}
 
 /* Easy Mode: full-height column — scan card on top, chat fills the rest. */
 .easy-mode {

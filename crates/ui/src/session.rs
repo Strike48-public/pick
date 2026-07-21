@@ -107,11 +107,14 @@ pub fn persist_matrix_token(token: &str, api_url: &str) {
 }
 
 /// Restore a previously-persisted Matrix chat token on startup, if the secure
-/// store holds one, it isn't expired, and it was minted for `current_api_url`.
-/// Returns the token so the caller can seed the chat client and skip re-auth.
-pub fn restore_matrix_token(current_api_url: &str) -> Option<String> {
+/// store holds one and it isn't expired. Returns `(token, api_url)` — the saved
+/// API URL the token was minted for — so the caller can seed both the session
+/// and the chat client's URL and skip re-auth. The URL comes from settings (it
+/// isn't known from the live signal at startup), so the caller need not know it
+/// in advance.
+pub fn restore_matrix_token() -> Option<(String, String)> {
     let saved_url = pentest_core::settings::load_settings().matrix_api_url;
-    if saved_url.is_empty() || saved_url != current_api_url {
+    if saved_url.is_empty() {
         return None;
     }
     let token = match pentest_core::secure_store::load_token() {
@@ -122,7 +125,7 @@ pub fn restore_matrix_token(current_api_url: &str) -> Option<String> {
     match pentest_core::jwt_validator::is_jwt_expired(&token) {
         Ok(false) => {
             set_auth_token(&token);
-            Some(token)
+            Some((token, saved_url))
         }
         _ => {
             let _ = pentest_core::secure_store::clear_token();

@@ -359,7 +359,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // chat state
     let mut chat_mailbox: Signal<Option<String>> = use_signal(|| None);
     let mut conversation_mailbox: Signal<Option<String>> = use_signal(|| None);
-    let matrix_api_url = use_signal(|| {
+    let mut matrix_api_url = use_signal(|| {
         std::env::var("MATRIX_API_URL")
             .or_else(|_| std::env::var("MATRIX_URL"))
             .unwrap_or_default()
@@ -367,23 +367,17 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     let mut matrix_auth_token = use_signal(|| std::env::var("MATRIX_AUTH_TOKEN").unwrap_or_default());
 
     // Restore a previously-persisted chat token (OS secure store) on startup so
-    // relaunching the app doesn't force a fresh browser sign-in. Only restores
-    // an unexpired token that was minted for the same API URL. Seeds both the
-    // session store (what ChatPanel reads) and the local signal.
+    // relaunching the app doesn't force a fresh browser sign-in. The API URL the
+    // token was minted for comes from settings (it isn't known from the live
+    // signal yet at startup), so we seed BOTH the token and the API URL signal —
+    // otherwise ChatPanel mounts with an empty URL and re-triggers browser auth.
     use_hook(|| {
         if matrix_auth_token.peek().is_empty() {
-            let url = matrix_api_url.peek().clone();
-            let url = if url.is_empty() {
-                std::env::var("MATRIX_API_URL")
-                    .or_else(|_| std::env::var("MATRIX_URL"))
-                    .unwrap_or_default()
-            } else {
-                url
-            };
-            if !url.is_empty() {
-                if let Some(token) = crate::session::restore_matrix_token(&url) {
-                    tracing::info!("restored persisted chat token; skipping browser sign-in");
-                    matrix_auth_token.set(token);
+            if let Some((token, api_url)) = crate::session::restore_matrix_token() {
+                tracing::info!("restored persisted chat token; skipping browser sign-in");
+                matrix_auth_token.set(token);
+                if matrix_api_url.peek().is_empty() {
+                    matrix_api_url.set(api_url);
                 }
             }
         }
