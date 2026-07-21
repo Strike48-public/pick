@@ -868,7 +868,26 @@ impl ToolRegistry {
         ctx: &ToolContext,
     ) -> Result<ToolResult> {
         match self.get(name) {
-            Some(tool) => tool.execute(params, ctx).await,
+            Some(tool) => {
+                let result = tool.execute(params, ctx).await;
+                // Telemetry (#278): one event per tool run at the single
+                // choke point. Only the tool name and a coarse outcome leave
+                // the device — never arguments, targets, or output.
+                let outcome = if result.is_ok() { "ok" } else { "error" };
+                crate::telemetry::record(
+                    crate::telemetry::Activity::ToolRun,
+                    &[("tool", name), ("outcome", outcome)],
+                );
+                // Network-discovery tools also fire the network.check event so
+                // the "did they check their network" funnel is measurable.
+                if is_network_check_tool(name) {
+                    crate::telemetry::record(
+                        crate::telemetry::Activity::NetworkCheck,
+                        &[("tool", name), ("outcome", outcome)],
+                    );
+                }
+                result
+            }
             None => {
                 // Find similar tool names for suggestions
                 let suggestions = self.find_similar_tools(name);
@@ -928,6 +947,16 @@ impl ToolRegistry {
             .map(|(name, _)| name)
             .collect()
     }
+}
+
+/// Whether a tool name is a local-network discovery/check tool, for the
+/// `network.check` telemetry event (#278). Matches the tools the Easy Mode scan
+/// drives (interface/host/service discovery) — not every scanner.
+fn is_network_check_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "network_discover" | "ssdp_discover" | "arp_table" | "port_scan" | "device_info"
+    )
 }
 
 /// Calculate Levenshtein distance between two strings

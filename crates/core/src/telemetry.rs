@@ -51,6 +51,15 @@ fn channel(easy_mode: bool) -> &'static str {
     }
 }
 
+/// The app form-factor tag (`app.mode`): mobile vs desktop, from the build target.
+fn form_factor() -> &'static str {
+    if cfg!(any(target_os = "android", target_os = "ios")) {
+        "mobile"
+    } else {
+        "desktop"
+    }
+}
+
 /// Initialize telemetry once for the process. The client guard is retained
 /// internally (see [`GUARD`]). Safe to call once at startup; a second call is a
 /// no-op. Does nothing when the DSN is absent or the user has opted out.
@@ -98,10 +107,7 @@ pub fn init(enabled: bool, device_id: &str, easy_mode: bool) {
         }));
         scope.set_tag("app.platform", std::env::consts::OS);
         scope.set_tag("app.arch", std::env::consts::ARCH);
-        scope.set_tag(
-            "app.mode",
-            if easy_mode { "mobile-easy" } else { "desktop" },
-        );
+        scope.set_tag("app.mode", form_factor());
         scope.set_tag("app.channel", channel(easy_mode));
     });
 
@@ -197,6 +203,12 @@ mod tests {
     fn channel_reflects_mode() {
         assert_eq!(channel(true), "easy");
         assert_eq!(channel(false), "advanced");
+    }
+
+    #[test]
+    fn form_factor_is_desktop_in_host_tests() {
+        // The test suite runs on a desktop host target.
+        assert_eq!(form_factor(), "desktop");
     }
 
     #[test]
