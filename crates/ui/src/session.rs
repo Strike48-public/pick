@@ -86,6 +86,57 @@ pub fn set_auth_token(token: &str) {
     });
 }
 
+/// Persist the Matrix chat token for relaunch. The token goes to the OS secure
+/// store (Keychain on iOS / Keystore on Android); the API URL it was minted for
+/// goes to settings so startup only restores when pointing at the same host.
+/// Falls back to nothing if no secure store is registered (desktop dev) — the
+/// token simply isn't persisted rather than being written in plaintext.
+pub fn persist_matrix_token(token: &str, api_url: &str) {
+    match pentest_core::secure_store::store_token(token) {
+        Ok(()) => {
+            let mut s = pentest_core::settings::load_settings();
+            s.matrix_api_url = api_url.to_string();
+            if let Err(e) = pentest_core::settings::save_settings(&s) {
+                tracing::warn!("failed to save matrix_api_url for token restore: {e}");
+            }
+        }
+        Err(e) => {
+            tracing::info!("not persisting chat token (no secure store: {e})");
+        }
+    }
+}
+
+/// Restore a previously-persisted Matrix chat token on startup, if the secure
+/// store holds one, it isn't expired, and it was minted for `current_api_url`.
+/// Returns the token so the caller can seed the chat client and skip re-auth.
+pub fn restore_matrix_token(current_api_url: &str) -> Option<String> {
+    let saved_url = pentest_core::settings::load_settings().matrix_api_url;
+    if saved_url.is_empty() || saved_url != current_api_url {
+        return None;
+    }
+    let token = match pentest_core::secure_store::load_token() {
+        Ok(Some(t)) if !t.is_empty() => t,
+        _ => return None,
+    };
+    // Drop an expired token so we fall through to a fresh sign-in.
+    match pentest_core::jwt_validator::is_jwt_expired(&token) {
+        Ok(false) => {
+            set_auth_token(&token);
+            Some(token)
+        }
+        _ => {
+            let _ = pentest_core::secure_store::clear_token();
+            None
+        }
+    }
+}
+
+/// Clear the persisted chat token (sign-out): secure store + in-memory.
+pub fn clear_matrix_token() {
+    let _ = pentest_core::secure_store::clear_token();
+    set_auth_token("");
+}
+
 /// Reactive subscription to the session auth token. Returns a `watch::Receiver`
 /// whose `changed()` future resolves whenever the token is updated — lets a
 /// Dioxus `use_future` re-render when the token arrives asynchronously (e.g.

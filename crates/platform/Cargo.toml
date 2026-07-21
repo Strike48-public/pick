@@ -86,7 +86,7 @@ pcap = { version = "2", optional = true }
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSError", "NSDictionary"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSError", "NSDictionary", "NSData"] }
 objc2-ui-kit = { version = "0.3", features = ["UIApplication", "UIResponder", "UIWindow", "UIScene", "UIWindowScene"] }
 objc2-authentication-services = { version = "0.3", features = [
     "ASWebAuthenticationSession",

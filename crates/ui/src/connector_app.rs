@@ -364,7 +364,30 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             .or_else(|_| std::env::var("MATRIX_URL"))
             .unwrap_or_default()
     });
-    let matrix_auth_token = use_signal(|| std::env::var("MATRIX_AUTH_TOKEN").unwrap_or_default());
+    let mut matrix_auth_token = use_signal(|| std::env::var("MATRIX_AUTH_TOKEN").unwrap_or_default());
+
+    // Restore a previously-persisted chat token (OS secure store) on startup so
+    // relaunching the app doesn't force a fresh browser sign-in. Only restores
+    // an unexpired token that was minted for the same API URL. Seeds both the
+    // session store (what ChatPanel reads) and the local signal.
+    use_hook(|| {
+        if matrix_auth_token.peek().is_empty() {
+            let url = matrix_api_url.peek().clone();
+            let url = if url.is_empty() {
+                std::env::var("MATRIX_API_URL")
+                    .or_else(|_| std::env::var("MATRIX_URL"))
+                    .unwrap_or_default()
+            } else {
+                url
+            };
+            if !url.is_empty() {
+                if let Some(token) = crate::session::restore_matrix_token(&url) {
+                    tracing::info!("restored persisted chat token; skipping browser sign-in");
+                    matrix_auth_token.set(token);
+                }
+            }
+        }
+    });
 
     use_effect(move || {
         terminal_lines.write().push(TerminalLine::info(format!(

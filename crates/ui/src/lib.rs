@@ -120,11 +120,15 @@ pub async fn run_event_loop(
                         "Matrix access token obtained (chat only, not saving to config)"
                     );
                     if !auth_token.is_empty() && !api_url.is_empty() {
-                        signals.matrix_api_url.set(api_url);
+                        signals.matrix_api_url.set(api_url.clone());
                         signals.matrix_auth_token.set(auth_token.clone());
                         crate::session::set_auth_token(&auth_token);
                         crate::session::set_tenant_id(&signals.config.peek().tenant_id);
                         crate::session::set_connector_name(&signals.config.peek().connector_name);
+                        // Persist for relaunch: token → OS secure store (Keychain
+                        // on iOS); the API URL it was minted for → settings, so
+                        // startup can restore it without a fresh browser sign-in.
+                        crate::session::persist_matrix_token(&auth_token, &api_url);
                     }
                 }
                 ConnectorEvent::ToolStarted { tool_name, params } => {

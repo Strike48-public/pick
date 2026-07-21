@@ -60,6 +60,14 @@ fn main() {
             pentest_platform::ios::present_web_auth_session(url, scheme).map_err(|e| e.to_string())
         });
 
+        // Secure token storage via the iOS Keychain (so the chat token survives
+        // relaunch without any plaintext on disk).
+        pentest_core::secure_store::set_backend(
+            |k, v| pentest_platform::ios::keychain::set(k, v),
+            |k| pentest_platform::ios::keychain::get(k),
+            |k| pentest_platform::ios::keychain::delete(k),
+        );
+
         // Register iOS browser opener for opening report URLs
         pentest_core::matrix::set_browser_opener(|url| {
             pentest_platform::ios::open_url(url).map_err(|e| e.to_string())

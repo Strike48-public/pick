@@ -645,6 +645,13 @@ pub struct AppSettings {
     /// users can opt out. No PII or target/scan data is ever sent.
     #[serde(default = "default_telemetry_enabled")]
     pub telemetry_enabled: bool,
+
+    /// The Matrix API URL the cached chat token was minted for, so on startup we
+    /// only restore the token (from the secure store — see `secure_store`) when
+    /// still pointing at the same host. The token itself is NEVER stored here;
+    /// it lives in the OS secure store (iOS Keychain / Android Keystore).
+    #[serde(default)]
+    pub matrix_api_url: String,
 }
 
 /// Telemetry is opt-out: enabled by default so PLG usage analytics work, with a
@@ -668,6 +675,7 @@ impl Default for AppSettings {
             download_state: DownloadState::default(),
             wifi_adapter: None,
             telemetry_enabled: default_telemetry_enabled(),
+            matrix_api_url: String::new(),
         }
     }
 }

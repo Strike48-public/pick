@@ -1,6 +1,7 @@
 //! iOS platform implementation (stub)
 
 pub mod browser;
+pub mod keychain;
 pub mod oauth;
 pub mod pty_shell;
 pub mod share;

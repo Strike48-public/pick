@@ -19,6 +19,7 @@ pub mod provenance;
 pub mod rendering;
 pub mod seed;
 pub mod settings;
+pub mod secure_store;
 pub mod share;
 pub mod social_share;
 pub mod specialist_spawner;

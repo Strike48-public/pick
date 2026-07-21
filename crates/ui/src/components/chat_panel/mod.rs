@@ -310,6 +310,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     );
                     crate::liveview_server::set_matrix_credentials(&api_url_clone, &token);
                     crate::session::set_auth_token(&token);
+                    // Persist so relaunch skips sign-in (Keychain on iOS).
+                    crate::session::persist_matrix_token(&token, &api_url_clone);
                     crate::liveview_server::push_terminal_line(TerminalLine::success(
                         "[chat] Authentication successful — chat ready",
                     ));

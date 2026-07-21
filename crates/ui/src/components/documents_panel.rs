@@ -45,8 +45,6 @@ pub struct DocumentsPanelProps {
     /// The Easy Mode agent id, to filter the document list. May be None until
     /// the chat panel has selected an agent.
     pub agent_id: Signal<Option<String>>,
-    /// Bump to force a refresh (e.g. after a scan completes).
-    pub refresh_nonce: Signal<u32>,
     /// Fired when the user taps a report; the parent opens the full-screen viewer.
     pub on_open: EventHandler<DocumentSummary>,
 }
@@ -56,28 +54,26 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
     let api_url = props.api_url.clone();
     let auth_token = props.auth_token.clone();
     let agent_id = props.agent_id;
-    let refresh_nonce = props.refresh_nonce;
 
     // Easy Mode shows only the single most-recently-created report (repeated
     // scans each write a new document, so a full list accumulates duplicates).
     let mut latest = use_signal(|| None::<DocumentSummary>);
     let mut loading = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
-    // Bumped by the in-panel Refresh button to force a reload on demand.
-    let mut manual_nonce = use_signal(|| 0u32);
     // Timestamp of the report present at the first successful load this session.
     // While the shown report still matches it, it's a *previous* report; once a
     // newer report replaces it the label clears.
     let mut baseline_ts = use_signal(|| None::<String>);
 
-    // (Re)load when token, agent, the external nonce, or the manual nonce changes.
+    // Keep the report list current automatically: reload when token/agent change,
+    // then poll on an interval so a scan's new report appears on its own — no
+    // manual refresh. Polling stops implicitly when the component unmounts (the
+    // spawned future is dropped with the panel).
     {
         let api_url = api_url.clone();
         let auth_token = auth_token.clone();
         use_effect(move || {
-            let _ = refresh_nonce();          // subscribe (bumped after a scan)
-            let _ = manual_nonce();           // subscribe (Refresh button)
-            let aid = agent_id();              // subscribe
+            let aid = agent_id(); // subscribe: reload when the agent resolves
             let api_url = api_url.clone();
             let auth_token = auth_token.clone();
             if auth_token.is_empty() || api_url.is_empty() {
@@ -86,20 +82,27 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
             loading.set(true);
             error.set(None);
             spawn(async move {
-                let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
-                match client.list_documents(aid.as_deref()).await {
-                    Ok(list) => {
-                        let doc = pentest_core::matrix::latest_document(list);
-                        if baseline_ts.peek().is_none() {
-                            if let Some(ref d) = doc {
-                                baseline_ts.set(Some(d.timestamp.clone()));
+                // Poll every 5s. Each pass rebuilds a lightweight client and
+                // updates `latest`; the first pass clears the loading state.
+                loop {
+                    let client = MatrixChatClient::new(api_url.clone())
+                        .with_auth_token(auth_token.clone());
+                    match client.list_documents(aid.as_deref()).await {
+                        Ok(list) => {
+                            let doc = pentest_core::matrix::latest_document(list);
+                            if baseline_ts.peek().is_none() {
+                                if let Some(ref d) = doc {
+                                    baseline_ts.set(Some(d.timestamp.clone()));
+                                }
                             }
+                            latest.set(doc);
+                            error.set(None);
                         }
-                        latest.set(doc);
+                        Err(e) => error.set(Some(format!("Couldn't load reports: {e}"))),
                     }
-                    Err(e) => error.set(Some(format!("Couldn't load reports: {e}"))),
+                    loading.set(false);
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
-                loading.set(false);
             });
         });
     }
@@ -114,11 +117,6 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
         div { class: "easy-docs",
             div { class: "easy-docs-header",
                 span { "Reports" }
-                button {
-                    class: "easy-docs-refresh",
-                    onclick: move |_| { manual_nonce += 1; },
-                    "Refresh"
-                }
             }
             if loading() {
                 div { class: "easy-docs-empty", "Loading reports..." }

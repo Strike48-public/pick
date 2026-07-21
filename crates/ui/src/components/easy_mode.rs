@@ -41,9 +41,8 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     // into, so nothing reads the value -- it just needs to exist.
     use_context_provider(|| Signal::new(None::<ChatHeaderCtx>));
 
-    // Track the selected agent ID and refresh nonce for the DocumentsPanel.
+    // Track the selected agent ID for the DocumentsPanel (which self-refreshes).
     let agent_id = use_signal(|| None::<String>);
-    let refresh_nonce = use_signal(|| 0u32);
     // The report currently open in the full-screen viewer (None = normal shell).
     let mut viewing = use_signal(|| None::<DocumentSummary>);
 
@@ -126,7 +125,6 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                 api_url: props.api_url.clone(),
                 auth_token: auth_token(),
                 agent_id: agent_id,
-                refresh_nonce: refresh_nonce,
                 on_open: move |doc: DocumentSummary| viewing.set(Some(doc)),
             }
         }
