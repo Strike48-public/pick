@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use reqwest;
 
 /// A pre-approval OTT scoped to the user's personal tenant. `matrix_url` is the
-/// SDK-facing field name; the endpoint returns it as `matrix_wss_url`.
+/// HTTPS API base used by the SDK for connector registration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OttData {
     pub token: String,
@@ -23,15 +23,16 @@ struct PreApproveResponse {
     token: String,
     tenant_id: String,
     keycloak_url: String,
+    #[allow(dead_code)]
     matrix_wss_url: String,
 }
 
-pub(crate) fn parse_pre_approve_response(body: &str) -> Result<OttData> {
+pub(crate) fn parse_pre_approve_response(body: &str, api_base: &str) -> Result<OttData> {
     let raw: PreApproveResponse = serde_json::from_str(body)
         .map_err(|e| Error::Matrix(format!("pre-approve response parse error: {e}")))?;
     Ok(OttData {
         token: raw.token,
-        matrix_url: raw.matrix_wss_url,
+        matrix_url: api_base.to_string(),
         keycloak_url: raw.keycloak_url,
         tenant_id: raw.tenant_id,
     })
@@ -115,7 +116,7 @@ pub async fn pre_approve(api_url: &str, jwt: &str, connector_type: &str) -> Resu
         )));
     }
 
-    parse_pre_approve_response(&body)
+    parse_pre_approve_response(&body, base)
 }
 
 #[cfg(test)]
@@ -133,21 +134,22 @@ mod tests {
     }"#;
 
     #[test]
-    fn parses_all_fields_and_maps_wss_to_matrix_url() {
-        let ott = parse_pre_approve_response(SAMPLE_201).expect("should parse");
+    fn parses_token_tenant_keycloak_fields() {
+        let api_base = "https://plg.strike48.test";
+        let ott = parse_pre_approve_response(SAMPLE_201, api_base).expect("should parse");
         assert_eq!(ott.token, "ott_8Ucs8wG8RRMX-YEm2un24D4MrOiiF7tGaj5cArlwSN0");
         assert_eq!(ott.tenant_id, "019f86b4-d2bf-7f56-89cf-30485d8a956b");
         assert_eq!(
             ott.keycloak_url,
             "https://auth.strike48.test/realms/personal-f668ca45dbb0"
         );
-        assert_eq!(ott.matrix_url, "wss://localhost:4000/socket/connector");
+        assert_eq!(ott.matrix_url, api_base);
     }
 
     #[test]
     fn parse_error_on_missing_token() {
         let body = r#"{"tenant_id":"t","keycloak_url":"k","matrix_wss_url":"w"}"#;
-        assert!(parse_pre_approve_response(body).is_err());
+        assert!(parse_pre_approve_response(body, "https://api.test").is_err());
     }
 
     #[tokio::test]
@@ -163,11 +165,14 @@ mod tests {
             .mount(&server)
             .await;
 
-        let ott = pre_approve(&server.uri(), "jwt-abc", "pentest-connector")
+        let server_uri = server.uri();
+        let ott = pre_approve(&server_uri, "jwt-abc", "pentest-connector")
             .await
             .expect("pre_approve should succeed");
         assert_eq!(ott.tenant_id, "019f86b4-d2bf-7f56-89cf-30485d8a956b");
-        assert_eq!(ott.matrix_url, "wss://localhost:4000/socket/connector");
+        // matrix_url should be the normalized api_url we called, not the wss response value
+        let normalized = super::super::normalize_url(&server_uri);
+        assert_eq!(ott.matrix_url, normalized);
     }
 
     #[tokio::test]
@@ -195,7 +200,7 @@ mod tests {
     fn stage_writes_sdk_shaped_json_and_roundtrips() {
         let ott = OttData {
             token: "ott_xyz".to_string(),
-            matrix_url: "wss://host:4000/socket/connector".to_string(),
+            matrix_url: "https://api.strike48.test".to_string(),
             keycloak_url: "https://auth/realms/personal-abc".to_string(),
             tenant_id: "tid".to_string(),
         };
@@ -212,7 +217,7 @@ mod tests {
         let written = std::fs::read_to_string(&path).unwrap();
         let v: serde_json::Value = serde_json::from_str(&written).unwrap();
         assert_eq!(v["token"], "ott_xyz");
-        assert_eq!(v["matrix_url"], "wss://host:4000/socket/connector");
+        assert_eq!(v["matrix_url"], "https://api.strike48.test");
         assert_eq!(v["keycloak_url"], "https://auth/realms/personal-abc");
 
         #[cfg(unix)]
