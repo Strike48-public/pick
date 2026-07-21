@@ -7,6 +7,7 @@ use dioxus::prelude::*;
 /// so any frontend can render it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectingStep {
+    SigningIn,
     Connecting,
     Registering,
     WaitingForApproval,
@@ -20,7 +21,7 @@ const DISPLAY_STEPS: [&str; 3] = ["Connecting", "Approval", "Session"];
 /// Map a ConnectingStep to a 0–2 display-step index.
 fn display_index(step: ConnectingStep) -> u8 {
     match step {
-        ConnectingStep::Connecting | ConnectingStep::Registering => 0,
+        ConnectingStep::SigningIn | ConnectingStep::Connecting | ConnectingStep::Registering => 0,
         ConnectingStep::WaitingForApproval => 1,
         ConnectingStep::ExchangingToken | ConnectingStep::Finalizing => 2,
     }
@@ -36,6 +37,7 @@ pub fn ConnectingScreen(
     let active = display_index(step);
 
     let status_text = match step {
+        ConnectingStep::SigningIn => "Signing in to Strike48...",
         ConnectingStep::Connecting => "Opening connection...",
         ConnectingStep::Registering => "Registering connector...",
         ConnectingStep::WaitingForApproval => "Awaiting approval",
@@ -105,5 +107,15 @@ pub fn ConnectingScreen(
                 "Cancel"
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signing_in_maps_to_first_display_step() {
+        assert_eq!(display_index(ConnectingStep::SigningIn), 0);
     }
 }
