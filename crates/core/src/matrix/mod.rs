@@ -7,11 +7,13 @@ mod auth;
 mod client;
 pub mod documents;
 mod types;
+pub mod pre_approval;
 
 pub use auth::*;
 pub use client::MatrixChatClient;
 pub use documents::{latest_document, DocumentSummary};
 pub use types::*;
+pub use pre_approval::OttData;
 
 /// Strip trailing slashes from a URL.
 pub(crate) fn normalize_url(url: &str) -> &str {
