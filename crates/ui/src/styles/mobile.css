@@ -402,37 +402,51 @@
    =========================================================================== */
 .easy-mode,
 .easy-doc-viewer {
-    /* Brand */
-    --em-brand: #3978d5;                    /* Strike48 interactive blue */
-    --em-brand-strong: #1d4ed8;             /* gradient end / hover */
-    --em-brand-gradient: linear-gradient(135deg, var(--em-brand), var(--em-brand-strong));
-    --em-brand-glow: rgba(57, 120, 213, 0.4);
+    /* -----------------------------------------------------------------------
+       Sage theme (Strike48 Operator "Sage" DS · APPROVED Option 2B).
+       Muted sage-green pastel, Material-3 shapes (pill controls, 16px cards),
+       dark default. Swap this block for the light palette to flip themes.
+       ----------------------------------------------------------------------- */
 
-    /* Primary call-to-action (the Scan button) */
-    --em-scan-bg: var(--accent, #16a34a);   /* inherits app accent; green today */
-    --em-on-scan: #ffffff;
+    /* Brand — sage primary is a light pastel, so text ON it must be dark. */
+    --em-brand: #9cbfae;                     /* primary · sage */
+    --em-brand-strong: #7fa894;              /* deeper sage (hover/gradient end) */
+    --em-brand-gradient: var(--em-brand);    /* Sage badge is a solid fill, not a gradient */
+    --em-brand-glow: rgba(156, 191, 174, 0.35);
+    --em-on-primary: #17201b;                /* dark ink for text/glyphs on sage */
 
-    /* Foreground */
-    --em-text: #eef0f7;                      /* headings / emphasis */
-    --em-on-brand: #ffffff;
+    /* Primary call-to-action (the Scan button) — sage fill, dark label. */
+    --em-scan-bg: var(--em-brand);
+    --em-on-scan: var(--em-on-primary);
 
-    /* Interactive surfaces (buttons/rows on the dark shell) */
-    --em-surface-soft: rgba(255, 255, 255, 0.10);   /* subtle fill (refresh) */
-    --em-surface-faint: rgba(255, 255, 255, 0.02);  /* share-sheet wash */
-    --em-border: rgba(255, 255, 255, 0.10);         /* hairline dividers */
-    --em-border-strong: rgba(255, 255, 255, 0.25);  /* ghost-button outline */
-    --em-hairline: rgba(255, 255, 255, 0.08);       /* list row separator */
+    /* Surfaces / foreground (Sage dark) */
+    --em-surface: #242b27;                   /* card / elevated */
+    --em-text: #e9eeeb;                      /* headings / emphasis */
+    --em-on-brand: var(--em-on-primary);     /* text on brand-tinted fills */
+
+    /* Interactive surfaces on the dark shell (frosted-glass feel) */
+    --em-surface-soft: rgba(233, 238, 235, 0.08);   /* subtle fill (refresh) */
+    --em-surface-faint: rgba(233, 238, 235, 0.03);  /* share-sheet wash */
+    --em-border: rgba(233, 238, 235, 0.12);         /* hairline dividers */
+    --em-border-strong: rgba(233, 238, 235, 0.22);  /* ghost-button outline */
+    --em-hairline: rgba(233, 238, 235, 0.08);       /* list row separator */
     --em-shadow: rgba(0, 0, 0, 0.35);
 
-    /* Status / feedback */
-    --em-error: #ff6b6b;
-    --em-toast-bg: #1e3a2f;
-    --em-toast-fg: #b6f2c9;
+    /* Status / feedback (Sage) */
+    --em-error: #d99a9a;                     /* error */
+    --em-toast-bg: #2f3a34;                  /* tinted sage-surface toast */
+    --em-toast-fg: #8fc4ab;                  /* ok */
 
-    /* Social brand colors */
+    /* Shape scale (Material 3) */
+    --em-radius-pill: 999px;                 /* buttons / chips */
+    --em-radius-card: 16px;                  /* cards / rows */
+    --em-radius-control: 12px;               /* inputs / notes */
+
+    /* Social brand colors keep their own identity; text stays white. */
     --em-social-x: #000000;
     --em-social-linkedin: #0a66c2;
     --em-social-facebook: #1877f2;
+    --em-on-social: #ffffff;
 }
 
 /* Easy Mode: full-height column — scan card on top, chat fills the rest. */
@@ -460,15 +474,14 @@
 .easy-brand-badge {
     width: 30px;
     height: 30px;
-    border-radius: 7px;
+    border-radius: 9px;
     flex-shrink: 0;
-    /* Strike48 core brand gradient — "most tightly bound to the family". */
-    background: var(--em-brand-gradient);
-    color: var(--em-on-brand);
+    /* Sage: solid pastel badge with a dark glyph (not a blue gradient). */
+    background: var(--em-brand);
+    color: var(--em-on-primary);
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 2px 8px var(--em-brand-glow);
 }
 .easy-brand-badge svg {
     width: 20px;
@@ -505,13 +518,13 @@
     justify-content: center;
     gap: 12px;
     width: 100%;
-    min-height: 72px;
+    min-height: 64px;
     padding: 18px 20px;
-    border-radius: var(--radius, 12px);
+    /* Material 3 pill for the primary action. */
+    border-radius: var(--em-radius-pill);
     background: var(--em-scan-bg);
     color: var(--em-on-scan);
     cursor: pointer;
-    box-shadow: 0 2px 8px var(--em-shadow);
 }
 .easy-mode .action-card:active {
     filter: brightness(0.92);
@@ -533,10 +546,10 @@
 /* Easy Mode Documents Panel */
 .easy-docs { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; }
 .easy-docs-header { display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 15px; opacity: 0.9; }
-.easy-docs-refresh { padding: 4px 12px; border-radius: 8px; border: none; background: var(--em-surface-soft); color: var(--em-on-brand); font-size: 13px; font-weight: 500; }
+.easy-docs-refresh { padding: 5px 14px; border-radius: var(--em-radius-pill); border: none; background: var(--em-surface-soft); color: var(--em-text); font-size: 13px; font-weight: 500; }
 .easy-docs-empty, .easy-docs-error { opacity: 0.7; font-size: 14px; padding: 8px 0; }
 .easy-docs-error { color: var(--em-error); }
-.easy-docs-toast { background: var(--em-toast-bg); color: var(--em-toast-fg); padding: 8px 10px; border-radius: 8px; font-size: 13px; }
+.easy-docs-toast { background: var(--em-toast-bg); color: var(--em-toast-fg); padding: 8px 12px; border-radius: var(--em-radius-control); font-size: 13px; }
 .easy-docs-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--em-hairline); }
 .easy-docs-row-tappable { cursor: pointer; }
 .easy-docs-title { flex: 1; font-weight: 500; }
@@ -564,11 +577,11 @@
 }
 .easy-doc-share-title { font-size: 13px; font-weight: 600; opacity: 0.7; }
 .easy-doc-share-primary { display: flex; gap: 8px; }
-.easy-doc-btn { flex: 1; padding: 11px 14px; border-radius: 10px; font-size: 15px; font-weight: 600; border: none; }
-.easy-doc-btn-primary { background: var(--em-brand); color: var(--em-on-brand); }
-.easy-doc-btn-ghost { background: transparent; color: var(--em-on-brand); border: 1px solid var(--em-border-strong); }
+.easy-doc-btn { flex: 1; padding: 11px 14px; border-radius: var(--em-radius-pill); font-size: 15px; font-weight: 600; border: none; }
+.easy-doc-btn-primary { background: var(--em-brand); color: var(--em-on-primary); }
+.easy-doc-btn-ghost { background: transparent; color: var(--em-text); border: 1px solid var(--em-border-strong); }
 .easy-doc-social-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.easy-doc-social-btn { padding: 10px 8px; border-radius: 10px; border: none; color: var(--em-on-brand); font-size: 14px; font-weight: 600; }
+.easy-doc-social-btn { padding: 10px 8px; border-radius: var(--em-radius-pill); border: none; color: var(--em-on-social); font-size: 14px; font-weight: 600; }
 .easy-doc-social-btn.social-x { background: var(--em-social-x); border: 1px solid var(--em-border-strong); }
 .easy-doc-social-btn.social-linkedin { background: var(--em-social-linkedin); }
 .easy-doc-social-btn.social-facebook { background: var(--em-social-facebook); }
