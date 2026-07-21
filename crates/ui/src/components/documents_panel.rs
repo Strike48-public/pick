@@ -20,6 +20,14 @@ fn clipboard_js(url: &str) -> String {
     format!("navigator.clipboard && navigator.clipboard.writeText({literal})")
 }
 
+/// Add `preview=1` to a share URL. Without it, the `/s/:token` route redirects
+/// to the Studio SPA documents view; `preview=1` makes it render the report's
+/// markdown inline as a standalone page, which is what "open this report" wants.
+fn preview_url(url: &str) -> String {
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}preview=1")
+}
+
 #[derive(Props, Clone, PartialEq)]
 pub struct DocumentsPanelProps {
     pub api_url: String,
@@ -120,9 +128,12 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                                             // in the system browser via the registered opener.
                                             match client.create_shared_link(&conv, &doc_id).await {
                                                 Ok(url) => {
+                                                    // preview=1 renders the report markdown inline
+                                                    // (without it the /s/ route redirects to the SPA).
                                                     // open_url_in_browser uses the registered opener
                                                     // (mobile) and falls back to open::that (desktop/web).
-                                                    if let Err(e) = pentest_core::matrix::open_url_in_browser(&url) {
+                                                    let open = preview_url(&url);
+                                                    if let Err(e) = pentest_core::matrix::open_url_in_browser(&open) {
                                                         toast.set(Some(format!("Couldn't open report: {e}")));
                                                     }
                                                 }
@@ -182,6 +193,22 @@ mod tests {
         assert_eq!(
             js,
             r#"navigator.clipboard && navigator.clipboard.writeText("a\"b\\c")"#
+        );
+    }
+
+    #[test]
+    fn preview_url_appends_preview_param() {
+        assert_eq!(
+            preview_url("https://studio.example.test/s/tok"),
+            "https://studio.example.test/s/tok?preview=1"
+        );
+    }
+
+    #[test]
+    fn preview_url_uses_ampersand_when_query_present() {
+        assert_eq!(
+            preview_url("https://studio.example.test/s/tok?x=1"),
+            "https://studio.example.test/s/tok?x=1&preview=1"
         );
     }
 }
