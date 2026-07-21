@@ -3,6 +3,7 @@ name = "pentest-connector"
 default_platform = "android"
 
 [bundle]
+name = "Pick"
 identifier = "com.strike48.pentest_connector"
 publisher = "Strike48"
 
@@ -24,3 +25,5 @@ title = "Pentest Connector"
 # entries into the generated Info.plist on every build.
 [ios.plist]
 NSLocalNetworkUsageDescription = "Pick discovers and scans hosts on your local network during authorized security engagements."
+CFBundleDisplayName = "Pick"
+CFBundleName = "Pick"
