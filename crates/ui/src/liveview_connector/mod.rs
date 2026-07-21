@@ -198,6 +198,12 @@ pub struct LiveViewConnector {
     pub(crate) matrix_client: Arc<RwLock<Option<pentest_core::matrix::MatrixChatClient>>>,
     /// Total specialists spawned across reconnects (persists across ScanState resets)
     pub(crate) total_specialists_spawned: Arc<AtomicUsize>,
+    /// Shared handle to the SDK connector runner, populated in `connect_and_run`.
+    /// Created up front (empty) so the `/health` route — built in
+    /// `start_liveview_server`, BEFORE `connect_and_run` — can hold the SAME Arc and
+    /// observe the runner once it exists. `None` until connected (reported as
+    /// `status: "starting"`). See `api_routes::HealthState` (pick#295).
+    pub(crate) runner: Arc<RwLock<Option<Arc<strike48_connector::ConnectorRunner>>>>,
 }
 
 impl LiveViewConnector {
@@ -238,6 +244,7 @@ impl LiveViewConnector {
             active_scan: Arc::new(RwLock::new(None)),
             matrix_client: Arc::new(RwLock::new(None)),
             total_specialists_spawned: Arc::new(AtomicUsize::new(0)),
+            runner: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -606,6 +613,13 @@ impl LiveViewConnector {
         };
         let api_routes_router = api_routes::create_api_routes(api_state);
 
+        // Unauthenticated /health route (pick#295). Built here so it can hold the
+        // shared runner Arc; kept OFF the api router so it never inherits the
+        // Bearer-token auth middleware (a readiness probe must work uncredentialed).
+        let health_router = api_routes::create_health_route(api_routes::HealthState {
+            runner: self.runner.clone(),
+        });
+
         // Start LLM proxy on its own TCP port (webwright in proot needs TCP access).
         // Bind to port 0 to let the OS pick an available port, then store it.
         let llm_state = llm_proxy::LlmProxyState {
@@ -631,8 +645,8 @@ impl LiveViewConnector {
             tracing::warn!("Failed to start LLM proxy (could not bind TCP port)");
         }
 
-        // Merge API routes with extra routes
-        let combined_routes = extra_routes.merge(api_routes_router);
+        // Merge API routes + the health route with extra routes
+        let combined_routes = extra_routes.merge(api_routes_router).merge(health_router);
 
         let lv_config = LiveViewConfig {
             port: DEFAULT_LIVEVIEW_PORT,
@@ -729,7 +743,10 @@ impl LiveViewConnector {
             instance_id: self.config.instance_id.clone(),
             aggression_level: Arc::new(RwLock::new(self.config.aggression_level)),
             ipc_addr: ipc_addr.clone(),
-            runner: Arc::new(RwLock::new(None)),
+            // Share the SAME runner Arc the /health route holds (self.runner), so the
+            // write below populates it for both PickConnector's invoke_capability AND
+            // the health handler. Starts None → /health reports "starting" until set.
+            runner: self.runner.clone(),
             matrix_api_url: self.derive_matrix_api_url(),
         });
 
