@@ -187,15 +187,11 @@ impl PentestTool for NmapTool {
 
             // Port specification (skip for ping scan)
             if scan_type != "ping" {
-                match ports.as_str() {
-                    "top100" => builder = builder.arg("--top-ports", "100"),
-                    "top1000" => {} // Default, no flag needed
-                    "all" => builder = builder.flag("-p-"),
-                    _ => {
-                        // Validate custom port specification
-                        let validated_ports = validate_port_spec(&ports)?;
-                        builder = builder.arg("-p", &validated_ports);
-                    }
+                for (flag, value) in resolve_port_args(&ports)? {
+                    builder = match value {
+                        Some(v) => builder.arg(flag, &v),
+                        None => builder.flag(flag),
+                    };
                 }
             }
 
@@ -858,6 +854,33 @@ fn estimate_host_count(target: &str) -> usize {
     1
 }
 
+/// Resolve the `ports` param into nmap CLI arg(s).
+///
+/// Returns a list of `(flag, Option<value>)` the caller appends to the builder:
+/// a `Some(value)` becomes `arg(flag, value)` (e.g. `-p 80,443`), a `None`
+/// becomes a bare `flag` (e.g. `-p-`). Kept pure (no builder, no I/O) so the
+/// port-spec decision is unit-testable without executing nmap.
+///
+/// Full-port-range synonyms all map to `-p-` (#257): the structured `"all"`,
+/// the bare `"-"` that the legacy `-p-` normalizer produces (`-p` + spec `-`),
+/// and the explicit `"1-65535"`. Before this, only `"all"` hit the `-p-` arm;
+/// `"-"` fell through to `validate_port_spec("-")`, which split on `-` into
+/// `["",""]` and errored with "Invalid port number", so a model emitting `-p-`
+/// (which the tool description advertises) got a validation failure instead of
+/// a full scan.
+fn resolve_port_args(ports: &str) -> Result<Vec<(&'static str, Option<String>)>> {
+    match ports.trim() {
+        "top100" => Ok(vec![("--top-ports", Some("100".to_string()))]),
+        "top1000" => Ok(vec![]), // nmap default: no port flag
+        // Full-range synonyms -> -p- (scan all 65535 ports).
+        "all" | "-" | "1-65535" => Ok(vec![("-p-", None)]),
+        spec => {
+            let validated = validate_port_spec(spec)?;
+            Ok(vec![("-p", Some(validated))])
+        }
+    }
+}
+
 /// Parse port count from custom port specification
 fn parse_port_count(ports: &str) -> usize {
     let mut total = 0;
@@ -1042,6 +1065,84 @@ mod tests {
     #[test]
     fn port_range_capped_at_65535() {
         assert_eq!(parse_port_count("1-99999"), 65535);
+    }
+
+    // ========================================
+    // Tests for resolve_port_args() — #257 full-port-range synonyms
+    // ========================================
+
+    #[test]
+    fn resolve_ports_full_range_synonyms_map_to_dash_p_dash() {
+        // The bug (#257): a full-scan request expressed as `-p-` normalizes to
+        // ports="-", which used to hit validate_port_spec("-") and error. All
+        // three full-range spellings must now emit the bare `-p-` flag.
+        for spec in ["all", "-", "1-65535"] {
+            assert_eq!(
+                resolve_port_args(spec).unwrap(),
+                vec![("-p-", None)],
+                "ports={spec:?} should map to the -p- full-scan flag"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_ports_dash_does_not_error() {
+        // Direct regression on the reported failure: ports="-" must NOT return
+        // Err("Invalid port number").
+        assert!(
+            resolve_port_args("-").is_ok(),
+            "ports=\"-\" must resolve, not fail validation"
+        );
+    }
+
+    #[test]
+    fn resolve_ports_top_variants_and_default() {
+        assert_eq!(
+            resolve_port_args("top100").unwrap(),
+            vec![("--top-ports", Some("100".to_string()))]
+        );
+        // top1000 is nmap's default: no port flag emitted.
+        assert_eq!(resolve_port_args("top1000").unwrap(), vec![]);
+    }
+
+    #[test]
+    fn resolve_ports_custom_spec_is_validated_and_passed() {
+        assert_eq!(
+            resolve_port_args("80,443").unwrap(),
+            vec![("-p", Some("80,443".to_string()))]
+        );
+        assert_eq!(
+            resolve_port_args("1-1000").unwrap(),
+            vec![("-p", Some("1-1000".to_string()))]
+        );
+    }
+
+    #[test]
+    fn resolve_ports_still_rejects_genuinely_invalid() {
+        // The fix must not blanket-accept: a real bad spec still errors.
+        assert!(resolve_port_args("not-a-port").is_err());
+        assert!(resolve_port_args("99999").is_err());
+    }
+
+    #[test]
+    fn flags_dash_p_dash_folds_to_full_scan_end_to_end() {
+        // The end-to-end shapes from the issue: both the string and array
+        // `flags` forms must fold to ports="-", which resolve_port_args then
+        // turns into a full scan. This covers the whole chain the LLM triggers.
+        for flags in [json!("-p-"), json!(["-p-"])] {
+            let folded = fold_flags(json!({"target": "10.0.0.5", "flags": flags}));
+            assert_eq!(
+                folded["ports"],
+                json!("-"),
+                "flags={flags} should fold to ports=\"-\""
+            );
+            let ports = folded["ports"].as_str().unwrap();
+            assert_eq!(
+                resolve_port_args(ports).unwrap(),
+                vec![("-p-", None)],
+                "folded ports from flags={flags} should map to -p-"
+            );
+        }
     }
 
     // ========================================
