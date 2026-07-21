@@ -169,6 +169,10 @@ impl MatrixChatClient {
             "input": {
                 "resourceType": "conversation_document",
                 "resourceId": share_resource_id(conversation_id, document_id),
+                // Public scope so the /s/:token page opens without a Studio
+                // login — both for tapping "open" and for sharing the link with
+                // someone who has no account.
+                "accessScope": "public",
             }
         });
         let data: CreateSharedLinkData = self
