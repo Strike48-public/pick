@@ -68,8 +68,7 @@ pub fn share_intent_url(
         SocialNetwork::Facebook => "https://www.facebook.com/sharer/sharer.php",
     };
 
-    let mut url =
-        reqwest::Url::parse(base).map_err(|e| format!("invalid share base URL: {e}"))?;
+    let mut url = reqwest::Url::parse(base).map_err(|e| format!("invalid share base URL: {e}"))?;
 
     {
         let mut qp = url.query_pairs_mut();

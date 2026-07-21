@@ -228,7 +228,9 @@ impl MatrixChatClient {
         let data: GetDocumentData = self.execute_gql(GET_DOCUMENT_QUERY, variables).await?;
         match data.document {
             Some(doc) => Ok(doc.content.unwrap_or_default()),
-            None => Err(crate::error::Error::Matrix("document not found".to_string())),
+            None => Err(crate::error::Error::Matrix(
+                "document not found".to_string(),
+            )),
         }
     }
 }
