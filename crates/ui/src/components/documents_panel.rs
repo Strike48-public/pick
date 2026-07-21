@@ -46,7 +46,9 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
     let agent_id = props.agent_id;
     let refresh_nonce = props.refresh_nonce;
 
-    let mut docs = use_signal(Vec::<DocumentSummary>::new);
+    // Easy Mode shows only the single most-recently-created report (repeated
+    // scans each write a new document, so a full list accumulates duplicates).
+    let mut latest = use_signal(|| None::<DocumentSummary>);
     let mut loading = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
     let mut toast = use_signal(|| None::<String>);
@@ -71,7 +73,7 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
             spawn(async move {
                 let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
                 match client.list_documents(aid.as_deref()).await {
-                    Ok(list) => docs.set(list),
+                    Ok(list) => latest.set(pentest_core::matrix::latest_document(list)),
                     Err(e) => error.set(Some(format!("Couldn't load reports: {e}"))),
                 }
                 loading.set(false);
@@ -96,79 +98,77 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                 div { class: "easy-docs-empty", "Loading reports..." }
             } else if let Some(err) = error() {
                 div { class: "easy-docs-error", "{err}" }
-            } else if docs().is_empty() {
-                div { class: "easy-docs-empty", "Run a scan to generate your first report." }
-            } else {
-                for doc in docs() {
-                    {
-                        // Each closure below is `move`, so give each its own owned clones.
-                        let title = doc.title.clone();
-                        // For open-in-browser (tap title): create + open the share link.
-                        let open_api_url = api_url.clone();
-                        let open_token = auth_token.clone();
-                        let open_conv = doc.conversation_id.clone();
-                        let open_doc = doc.id.clone();
-                        // For share (button): create link + copy + OS share sheet.
-                        let share_api_url = api_url.clone();
-                        let share_token = auth_token.clone();
-                        let share_conv = doc.conversation_id.clone();
-                        let share_doc = doc.id.clone();
-                        rsx! {
-                            div { class: "easy-docs-row",
-                                span {
-                                    class: "easy-docs-title",
-                                    onclick: move |_| {
-                                        let api_url = open_api_url.clone();
-                                        let auth_token = open_token.clone();
-                                        let conv = open_conv.clone();
-                                        let doc_id = open_doc.clone();
-                                        spawn(async move {
-                                            let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
-                                            // The /s/:token page renders the report markdown; open it
-                                            // in the system browser via the registered opener.
-                                            match client.create_shared_link(&conv, &doc_id).await {
-                                                Ok(url) => {
-                                                    // preview=1 renders the report markdown inline
-                                                    // (without it the /s/ route redirects to the SPA).
-                                                    // open_url_in_browser uses the registered opener
-                                                    // (mobile) and falls back to open::that (desktop/web).
-                                                    let open = preview_url(&url);
-                                                    if let Err(e) = pentest_core::matrix::open_url_in_browser(&open) {
-                                                        toast.set(Some(format!("Couldn't open report: {e}")));
-                                                    }
+            } else if let Some(doc) = latest() {
+                {
+                    // Each closure below is `move`, so give each its own owned clones.
+                    let title = doc.title.clone();
+                    // For open-in-browser (tap title): create + open the share link.
+                    let open_api_url = api_url.clone();
+                    let open_token = auth_token.clone();
+                    let open_conv = doc.conversation_id.clone();
+                    let open_doc = doc.id.clone();
+                    // For share (button): create link + copy + OS share sheet.
+                    let share_api_url = api_url.clone();
+                    let share_token = auth_token.clone();
+                    let share_conv = doc.conversation_id.clone();
+                    let share_doc = doc.id.clone();
+                    rsx! {
+                        div { class: "easy-docs-row",
+                            span {
+                                class: "easy-docs-title",
+                                onclick: move |_| {
+                                    let api_url = open_api_url.clone();
+                                    let auth_token = open_token.clone();
+                                    let conv = open_conv.clone();
+                                    let doc_id = open_doc.clone();
+                                    spawn(async move {
+                                        let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
+                                        // The /s/:token page renders the report markdown; open it
+                                        // in the system browser via the registered opener.
+                                        match client.create_shared_link(&conv, &doc_id).await {
+                                            Ok(url) => {
+                                                // preview=1 renders the report markdown inline
+                                                // (without it the /s/ route redirects to the SPA).
+                                                // open_url_in_browser uses the registered opener
+                                                // (mobile) and falls back to open::that (desktop/web).
+                                                let open = preview_url(&url);
+                                                if let Err(e) = pentest_core::matrix::open_url_in_browser(&open) {
+                                                    toast.set(Some(format!("Couldn't open report: {e}")));
                                                 }
-                                                Err(e) => toast.set(Some(format!("Couldn't open report: {e}"))),
                                             }
-                                        });
-                                    },
-                                    "{title}"
-                                }
-                                button {
-                                    class: "easy-docs-share",
-                                    onclick: move |_| {
-                                        let api_url = share_api_url.clone();
-                                        let auth_token = share_token.clone();
-                                        let conv = share_conv.clone();
-                                        let doc_id = share_doc.clone();
-                                        spawn(async move {
-                                            let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
-                                            match client.create_shared_link(&conv, &doc_id).await {
-                                                Ok(url) => {
-                                                    // Copy to clipboard (WebView) + OS share sheet.
-                                                    let _ = document::eval(&clipboard_js(&url));
-                                                    let _ = pentest_core::share::share_text(&url);
-                                                    toast.set(Some(format!("Link copied: {url}")));
-                                                }
-                                                Err(e) => toast.set(Some(format!("Sharing unavailable: {e}"))),
+                                            Err(e) => toast.set(Some(format!("Couldn't open report: {e}"))),
+                                        }
+                                    });
+                                },
+                                "{title}"
+                            }
+                            button {
+                                class: "easy-docs-share",
+                                onclick: move |_| {
+                                    let api_url = share_api_url.clone();
+                                    let auth_token = share_token.clone();
+                                    let conv = share_conv.clone();
+                                    let doc_id = share_doc.clone();
+                                    spawn(async move {
+                                        let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
+                                        match client.create_shared_link(&conv, &doc_id).await {
+                                            Ok(url) => {
+                                                // Copy to clipboard (WebView) + OS share sheet.
+                                                let _ = document::eval(&clipboard_js(&url));
+                                                let _ = pentest_core::share::share_text(&url);
+                                                toast.set(Some(format!("Link copied: {url}")));
                                             }
-                                        });
-                                    },
-                                    "Share"
-                                }
+                                            Err(e) => toast.set(Some(format!("Sharing unavailable: {e}"))),
+                                        }
+                                    });
+                                },
+                                "Share"
                             }
                         }
                     }
                 }
+            } else {
+                div { class: "easy-docs-empty", "Run a scan to generate your first report." }
             }
         }
     }

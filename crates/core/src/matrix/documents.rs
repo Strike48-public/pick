@@ -16,31 +16,15 @@ pub struct DocumentSummary {
     pub doc_type: String,
     /// The conversation the document belongs to (used to build open/share refs).
     pub conversation_id: String,
+    /// ISO-8601 creation time — the document's `created_at` metadata (when Pick's
+    /// agent wrote it), surfaced by the GraphQL `timestamp` field. Used to pick
+    /// the most recently created report. Empty if the server didn't supply one.
+    pub timestamp: String,
 }
 
 /// Build the shared-link `resource_id` for a conversation document.
 pub fn share_resource_id(conversation_id: &str, document_id: &str) -> String {
     format!("{conversation_id}:{document_id}")
-}
-
-/// Derive the Studio browser base URL (scheme + host) from `MATRIX_API_URL`,
-/// dropping any `/api/...` path so we can build `/conversations/:id` links.
-pub fn studio_web_base(api_url: &str) -> String {
-    // `normalize_url` returns `&str`; pass it directly (no extra `&`).
-    let normalized = super::normalize_url(api_url);
-    match reqwest::Url::parse(normalized) {
-        Ok(u) => {
-            let scheme = u.scheme();
-            match u.host_str() {
-                Some(host) => match u.port() {
-                    Some(port) => format!("{scheme}://{host}:{port}"),
-                    None => format!("{scheme}://{host}"),
-                },
-                None => normalized.trim_end_matches('/').to_string(),
-            }
-        }
-        Err(_) => normalized.trim_end_matches('/').to_string(),
-    }
 }
 
 // -- GraphQL deserialize shapes --
@@ -69,6 +53,8 @@ struct DocumentNode {
     #[serde(rename = "type")]
     doc_type: String,
     conversation: Option<DocumentConversation>,
+    #[serde(default)]
+    timestamp: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -85,8 +71,21 @@ pub(crate) fn documents_from_data(data: ListDocumentsData) -> Vec<DocumentSummar
             title: e.node.title,
             doc_type: e.node.doc_type,
             conversation_id: e.node.conversation.map(|c| c.id).unwrap_or_default(),
+            timestamp: e.node.timestamp.unwrap_or_default(),
         })
         .collect()
+}
+
+/// Return the document Pick's agent created most recently, by its `created_at`
+/// metadata (the `timestamp` field), or `None` if there are none. The caller
+/// passes docs already filtered to this connector's agent, so this is "the
+/// latest report this connector produced." Easy Mode shows that single current
+/// report rather than an accumulating list of near-identical scan reports.
+pub fn latest_document(mut docs: Vec<DocumentSummary>) -> Option<DocumentSummary> {
+    // ISO-8601 timestamps sort lexicographically in chronological order, so the
+    // max by string compare is the most recently created.
+    docs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    docs.into_iter().next()
 }
 
 #[derive(Deserialize)]
@@ -119,6 +118,7 @@ const LIST_DOCUMENTS_QUERY: &str = r#"
                     id
                     title
                     type
+                    timestamp
                     conversation { id }
                 }
             }
@@ -198,18 +198,12 @@ mod tests {
     }
 
     #[test]
-    fn studio_web_base_strips_api_path() {
-        assert_eq!(studio_web_base("https://studio.example.test/api/v1alpha"), "https://studio.example.test");
-        assert_eq!(studio_web_base("https://studio.example.test"), "https://studio.example.test");
-        assert_eq!(studio_web_base("https://studio.example.test/"), "https://studio.example.test");
-    }
-
-    #[test]
-    fn documents_from_data_maps_edges_and_flattens_conversation_id() {
+    fn documents_from_data_maps_edges_flattens_conversation_and_timestamp() {
         let raw = serde_json::json!({
             "listDocuments": { "edges": [
                 { "node": { "id": "network-discovery-report", "title": "Local Network Discovery Report",
-                            "type": "markdown", "conversation": { "id": "conv-abc" } } },
+                            "type": "markdown", "timestamp": "2026-07-20T21:27:58Z",
+                            "conversation": { "id": "conv-abc" } } },
                 { "node": { "id": "d2", "title": "Other", "type": "markdown", "conversation": null } }
             ]}
         });
@@ -218,6 +212,33 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].id, "network-discovery-report");
         assert_eq!(out[0].conversation_id, "conv-abc");
+        assert_eq!(out[0].timestamp, "2026-07-20T21:27:58Z");
         assert_eq!(out[1].conversation_id, ""); // null conversation -> empty
+        assert_eq!(out[1].timestamp, ""); // missing timestamp -> empty
+    }
+
+    fn doc(id: &str, ts: &str) -> DocumentSummary {
+        DocumentSummary {
+            id: id.to_string(),
+            title: "Local Network Discovery Report".to_string(),
+            doc_type: "markdown".to_string(),
+            conversation_id: "c".to_string(),
+            timestamp: ts.to_string(),
+        }
+    }
+
+    #[test]
+    fn latest_document_picks_most_recent_by_timestamp() {
+        let docs = vec![
+            doc("old", "2026-07-20T10:00:00Z"),
+            doc("newest", "2026-07-20T21:27:58Z"),
+            doc("mid", "2026-07-20T15:00:00Z"),
+        ];
+        assert_eq!(latest_document(docs).unwrap().id, "newest");
+    }
+
+    #[test]
+    fn latest_document_none_when_empty() {
+        assert!(latest_document(vec![]).is_none());
     }
 }
