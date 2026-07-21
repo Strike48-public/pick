@@ -489,9 +489,9 @@
     display: block;
 }
 .easy-brand-word {
-    /* lowercase "pick" in IBM Plex Mono 600 per the Pick brand identity. */
-    font-family: var(--font-mono);
-    font-weight: 600;
+    /* "Pick" in IBM Plex Sans bold — matches how the Sage system sets "Fleet". */
+    font-family: var(--font-sans);
+    font-weight: 700;
     font-size: 20px;
     letter-spacing: -0.01em;
     color: var(--em-text);

@@ -92,7 +92,7 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
             // product per the brand identity.
             div { class: "easy-brandbar",
                 span { class: "easy-brand-badge", dangerous_inner_html: STRIKE48_S_BADGE_SVG }
-                span { class: "easy-brand-word", "pick" }
+                span { class: "easy-brand-word", "Pick" }
                 span { class: "easy-brand-by", "Strike48" }
             }
             div { class: "action-grid",
