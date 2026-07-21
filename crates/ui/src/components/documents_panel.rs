@@ -167,6 +167,8 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
     let mut html = use_signal(String::new);
     let mut load_error = use_signal(|| None::<String>);
     let mut toast = use_signal(|| None::<String>);
+    // Whether the top-right share menu is open.
+    let mut share_open = use_signal(|| false);
 
     // Fetch + render the document's markdown once on mount.
     {
@@ -194,6 +196,56 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
     let conv_id = doc.conversation_id.clone();
     let document_id = doc.id.clone();
 
+    // One place to build the public link then run an action with the URL.
+    let run_with_link = {
+        let api_url = api_url.clone();
+        let auth_token = auth_token.clone();
+        let conv_id = conv_id.clone();
+        let document_id = document_id.clone();
+        move |action: ShareAction, network: Option<SocialNetwork>, title: String| {
+            let (a, t, c, d) = (
+                api_url.clone(),
+                auth_token.clone(),
+                conv_id.clone(),
+                document_id.clone(),
+            );
+            share_open.set(false);
+            spawn(async move {
+                let client = MatrixChatClient::new(a).with_auth_token(t);
+                match client.create_shared_link(&c, &d).await {
+                    Ok(url) => match action {
+                        ShareAction::Copy => {
+                            let _ = document::eval(&clipboard_js(&url));
+                            toast.set(Some("Link copied".to_string()));
+                        }
+                        ShareAction::NativeSheet => {
+                            let _ = document::eval(&clipboard_js(&url));
+                            let _ = pentest_core::share::share_text(&url);
+                        }
+                        ShareAction::OpenBrowser => {
+                            if let Err(e) = pentest_core::matrix::open_url_in_browser(&preview_url(&url)) {
+                                toast.set(Some(format!("Couldn't open report: {e}")));
+                            }
+                        }
+                        ShareAction::Social => {
+                            if let Some(net) = network {
+                                match share_intent_url(net, &url, &title) {
+                                    Ok(intent) => {
+                                        if let Err(e) = pentest_core::matrix::open_url_in_browser(&intent) {
+                                            toast.set(Some(format!("Couldn't open share: {e}")));
+                                        }
+                                    }
+                                    Err(e) => toast.set(Some(format!("Couldn't build share link: {e}"))),
+                                }
+                            }
+                        }
+                    },
+                    Err(e) => toast.set(Some(format!("Sharing unavailable: {e}"))),
+                }
+            });
+        }
+    };
+
     rsx! {
         div { class: "easy-doc-viewer",
             div { class: "easy-doc-viewer-bar",
@@ -203,6 +255,13 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
                     "‹ Back"
                 }
                 span { class: "easy-doc-viewer-title", "{title}" }
+                // Top-right share icon → opens our share menu.
+                button {
+                    class: "easy-doc-share-btn",
+                    "aria-label": "Share report",
+                    onclick: move |_| { let v = share_open(); share_open.set(!v); },
+                    dangerous_inner_html: SHARE_ICON_SVG,
+                }
             }
             div {
                 class: "markdown-body easy-doc-viewer-body",
@@ -214,86 +273,56 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
                     div { dangerous_inner_html: "{html}" }
                 }
             }
-            div { class: "easy-doc-share-sheet",
-                if let Some(msg) = toast() {
-                    div { class: "easy-docs-toast", "{msg}" }
+            if let Some(msg) = toast() {
+                div { class: "easy-doc-toast-float", "{msg}" }
+            }
+            // Share menu: our actions incl. a native OS-sheet trigger. Tapping
+            // the scrim closes it.
+            if share_open() {
+                div {
+                    class: "easy-doc-share-scrim",
+                    onclick: move |_| share_open.set(false),
                 }
-                div { class: "easy-doc-share-title", "Share this report" }
-                div { class: "easy-doc-share-primary",
+                div { class: "easy-doc-share-menu",
                     {
-                        let (a, t, c, d) = (api_url.clone(), auth_token.clone(), conv_id.clone(), document_id.clone());
+                        let (r, ttl) = (run_with_link.clone(), title.clone());
                         rsx! {
                             button {
-                                class: "easy-doc-btn easy-doc-btn-primary",
-                                onclick: move |_| {
-                                    let (a, t, c, d) = (a.clone(), t.clone(), c.clone(), d.clone());
-                                    spawn(async move {
-                                        let client = MatrixChatClient::new(a).with_auth_token(t);
-                                        match client.create_shared_link(&c, &d).await {
-                                            Ok(url) => {
-                                                let _ = document::eval(&clipboard_js(&url));
-                                                let _ = pentest_core::share::share_text(&url);
-                                                toast.set(Some(format!("Link copied: {url}")));
-                                            }
-                                            Err(e) => toast.set(Some(format!("Sharing unavailable: {e}"))),
-                                        }
-                                    });
-                                },
-                                "Share link"
+                                class: "easy-doc-menu-item",
+                                onclick: move |_| r.clone()(ShareAction::NativeSheet, None, ttl.clone()),
+                                span { class: "easy-doc-menu-icon", dangerous_inner_html: SHARE_ICON_SVG }
+                                "Share…"
                             }
                         }
                     }
                     {
-                        let (a, t, c, d) = (api_url.clone(), auth_token.clone(), conv_id.clone(), document_id.clone());
+                        let (r, ttl) = (run_with_link.clone(), title.clone());
                         rsx! {
                             button {
-                                class: "easy-doc-btn easy-doc-btn-ghost",
-                                onclick: move |_| {
-                                    let (a, t, c, d) = (a.clone(), t.clone(), c.clone(), d.clone());
-                                    spawn(async move {
-                                        let client = MatrixChatClient::new(a).with_auth_token(t);
-                                        match client.create_shared_link(&c, &d).await {
-                                            Ok(url) => {
-                                                if let Err(e) = pentest_core::matrix::open_url_in_browser(&preview_url(&url)) {
-                                                    toast.set(Some(format!("Couldn't open report: {e}")));
-                                                }
-                                            }
-                                            Err(e) => toast.set(Some(format!("Couldn't open report: {e}"))),
-                                        }
-                                    });
-                                },
+                                class: "easy-doc-menu-item",
+                                onclick: move |_| r.clone()(ShareAction::Copy, None, ttl.clone()),
+                                "Copy link"
+                            }
+                        }
+                    }
+                    {
+                        let (r, ttl) = (run_with_link.clone(), title.clone());
+                        rsx! {
+                            button {
+                                class: "easy-doc-menu-item",
+                                onclick: move |_| r.clone()(ShareAction::OpenBrowser, None, ttl.clone()),
                                 "Open in browser"
                             }
                         }
                     }
-                }
-                div { class: "easy-doc-social-grid",
+                    div { class: "easy-doc-menu-sep" }
                     for network in SocialNetwork::all() {
                         {
-                            let (a, t, c, d, ttl) = (
-                                api_url.clone(), auth_token.clone(),
-                                conv_id.clone(), document_id.clone(), title.clone(),
-                            );
+                            let (r, ttl) = (run_with_link.clone(), title.clone());
                             rsx! {
                                 button {
-                                    class: "easy-doc-social-btn social-{network.key()}",
-                                    onclick: move |_| {
-                                        let (a, t, c, d, ttl) = (a.clone(), t.clone(), c.clone(), d.clone(), ttl.clone());
-                                        spawn(async move {
-                                            let client = MatrixChatClient::new(a).with_auth_token(t);
-                                            match client.create_shared_link(&c, &d).await {
-                                                Ok(url) => match share_intent_url(network, &url, &ttl) {
-                                                    Ok(intent) => {
-                                                        if let Err(e) = pentest_core::matrix::open_url_in_browser(&intent) {
-                                                            toast.set(Some(format!("Couldn't open share: {e}")));
-                                                        }
-                                                    }
-                                                    Err(e) => toast.set(Some(format!("Couldn't build share link: {e}"))),
-                                                },
-                                                Err(e) => toast.set(Some(format!("Sharing unavailable: {e}"))),
-                                            }
-                                        });
-                                    },
+                                    class: "easy-doc-menu-item",
+                                    onclick: move |_| r.clone()(ShareAction::Social, Some(network), ttl.clone()),
                                     "{network.label()}"
                                 }
                             }
@@ -304,6 +333,18 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
         }
     }
 }
+
+/// What a share-menu item does once the public link exists.
+#[derive(Clone, Copy)]
+enum ShareAction {
+    Copy,
+    NativeSheet,
+    OpenBrowser,
+    Social,
+}
+
+/// Share glyph (lucide "share-2") for the viewer titlebar + native-share item.
+const SHARE_ICON_SVG: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>"#;
 
 #[cfg(test)]
 mod tests {
