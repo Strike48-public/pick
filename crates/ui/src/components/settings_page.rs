@@ -31,6 +31,9 @@ pub fn SettingsPage(
     density: Density,
     on_density_change: EventHandler<Density>,
     #[props(default)] on_theme_imported: EventHandler<()>,
+    // Telemetry opt-out (#278). Defaults on; toggling saves the setting.
+    #[props(default = true)] telemetry_enabled: bool,
+    #[props(default)] on_telemetry_change: EventHandler<bool>,
 ) -> Element {
     // -----------------------------------------------------------------------
     // Auto-save on toggle with visual feedback
@@ -457,6 +460,38 @@ pub fn SettingsPage(
                                     },
                                     title: if !blackarch_downloaded { "Set up BlackArch environment first" } else { "" },
                                     "Proot"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Privacy / telemetry card (#278)
+            div { class: "settings-card dashboard-card",
+                div { class: "settings-card-header",
+                    span { class: "settings-card-icon", Settings { size: 16 } }
+                    h2 { "Usage Analytics" }
+                }
+                div { class: "settings-card-body",
+                    div { class: "setting-row",
+                        div { class: "setting-label",
+                            div { class: "setting-name", "Anonymous usage analytics" }
+                            div { class: "text-dim-xs",
+                                "Helps us understand which features are used. No personal data, targets, or scan results are ever sent."
+                            }
+                        }
+                        div { class: "setting-controls",
+                            div { class: "setting-toggle",
+                                button {
+                                    class: if telemetry_enabled { "toggle-btn active" } else { "toggle-btn" },
+                                    onclick: move |_| on_telemetry_change.call(true),
+                                    "On"
+                                }
+                                button {
+                                    class: if !telemetry_enabled { "toggle-btn active" } else { "toggle-btn" },
+                                    onclick: move |_| on_telemetry_change.call(false),
+                                    "Off"
                                 }
                             }
                         }

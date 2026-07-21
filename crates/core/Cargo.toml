@@ -29,6 +29,9 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+# Telemetry
+sentry = { workspace = true }
+
 # Utilities
 uuid = { workspace = true }
 dirs = { workspace = true }

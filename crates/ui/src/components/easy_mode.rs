@@ -90,7 +90,13 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
             div { class: "action-grid",
                 div {
                     class: "action-card",
-                    onclick: move |_| chat_mailbox.set(Some(easy_mode_scan_prompt())),
+                    onclick: move |_| {
+                        pentest_core::telemetry::record(
+                            pentest_core::telemetry::Activity::ScanStart,
+                            &[("channel", "easy")],
+                        );
+                        chat_mailbox.set(Some(easy_mode_scan_prompt()));
+                    },
                     span { class: "action-card-icon", Network { size: 24 } }
                     span { class: "action-card-label", "Scan My Network" }
                 }

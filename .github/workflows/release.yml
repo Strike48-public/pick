@@ -23,6 +23,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Baked into release builds via option_env!("SENTRY_DSN") for usage telemetry
+  # (#278). Absent/empty in forks and PRs -> telemetry compiles to a no-op.
+  SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
 jobs:
   # ===========================================

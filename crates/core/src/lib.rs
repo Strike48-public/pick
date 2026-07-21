@@ -23,6 +23,7 @@ pub mod share;
 pub mod social_share;
 pub mod specialist_spawner;
 pub mod state;
+pub mod telemetry;
 pub mod terminal;
 pub mod theme_loader;
 pub mod timeout;

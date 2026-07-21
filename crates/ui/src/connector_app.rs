@@ -114,6 +114,12 @@ pub struct ConnectorPagesProps {
     density: Density,
     /// Callback when the user changes the density.
     on_density_change: EventHandler<Density>,
+    /// Whether anonymous usage analytics are enabled (#278).
+    #[props(default = true)]
+    telemetry_enabled: bool,
+    /// Callback when the user toggles usage analytics.
+    #[props(default)]
+    on_telemetry_change: EventHandler<bool>,
     /// Matrix API URL for chat.
     api_url: String,
     /// Auth token for chat.
@@ -228,6 +234,8 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                     on_border_radius_change: move |r: BorderRadius| props.on_border_radius_change.call(r),
                     density: props.density,
                     on_density_change: move |d: Density| props.on_density_change.call(d),
+                    telemetry_enabled: props.telemetry_enabled,
+                    on_telemetry_change: move |v: bool| props.on_telemetry_change.call(v),
                     on_theme_imported: move |_| {
                         // Theme imported - could trigger UI refresh here if needed
                         tracing::info!("Custom theme imported successfully");
@@ -266,6 +274,14 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         s
     });
     let device_id = settings.peek().device_id.clone();
+
+    // ---- telemetry (#278) ----
+    // Initialize once for the app lifetime (the client guard is retained inside
+    // the telemetry module). No-op when the user opted out or no DSN was baked in.
+    use_hook(|| {
+        let enabled = settings.peek().telemetry_enabled;
+        pentest_core::telemetry::init(enabled, &device_id, cfg.easy_mode);
+    });
 
     // Easy-mode default PLG connection (#283): when there's no saved config,
     // easy mode seeds host/tenant from the environment (STRIKE48_HOST /
@@ -425,6 +441,9 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 new_config.tenant_id = canonical;
             }
         }
+        // Attach the (pseudonymous) PLG tenant to telemetry now that we know it.
+        pentest_core::telemetry::set_plg_identity(&new_config.tenant_id);
+
         config.set(new_config.clone());
         status.set(ConnectorStatus::Connecting);
         connecting_step.set(Some(ConnectingStep::Connecting));
@@ -858,6 +877,13 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                     },
                                     on_open_shell: move |_| {
                                         active_page.set(NavPage::Shell);
+                                    },
+                                    telemetry_enabled: settings.read().telemetry_enabled,
+                                    on_telemetry_change: move |v: bool| {
+                                        let mut s = settings.write();
+                                        s.telemetry_enabled = v;
+                                        let _ = save_settings(&s);
+                                        // Takes effect on next launch (Sentry inits once at startup).
                                     },
                                     on_disconnect: move |_| on_disconnect(()),
                                     on_start_download: on_start_download,

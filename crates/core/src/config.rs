@@ -640,6 +640,17 @@ pub struct AppSettings {
     /// Selected WiFi adapter for scanning (interface name, e.g., "wlan1")
     /// If None, will use first available adapter
     pub wifi_adapter: Option<String>,
+
+    /// Whether anonymous usage telemetry (Sentry) is enabled. On by default;
+    /// users can opt out. No PII or target/scan data is ever sent.
+    #[serde(default = "default_telemetry_enabled")]
+    pub telemetry_enabled: bool,
+}
+
+/// Telemetry is opt-out: enabled by default so PLG usage analytics work, with a
+/// settings toggle to disable it.
+fn default_telemetry_enabled() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -656,6 +667,7 @@ impl Default for AppSettings {
             shell_mode: ShellMode::default(),
             download_state: DownloadState::default(),
             wifi_adapter: None,
+            telemetry_enabled: default_telemetry_enabled(),
         }
     }
 }
