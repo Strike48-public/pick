@@ -476,6 +476,32 @@ body {
     --ring: var(--em-brand);
     --accent: var(--em-brand);
     --radius: var(--em-radius-pill);
+    /* Sage status colors so chat tool-call badges (success/error/pending) match
+       the Sage palette instead of the default bright green/red/amber. */
+    --success: var(--em-toast-fg);
+    --destructive: var(--em-error);
+    --warning: #d9b07c;
+}
+
+/* Soften the chat's tool-call rows to match the Sage mockup: rounded card,
+   sage-tinted surface header, pill status badge — scoped to Easy Mode so the
+   expert console keeps its denser look. */
+.easy-mode .chat-tool-call {
+    border-radius: var(--em-radius-card);
+    border-color: var(--em-border);
+    background: var(--em-surface);
+}
+.easy-mode .chat-tool-header {
+    background: transparent;
+    padding: 12px 14px;
+}
+.easy-mode .chat-tool-header:hover {
+    background: var(--em-surface-soft);
+}
+.easy-mode .chat-tool-status {
+    border-radius: var(--em-radius-pill);
+    padding: 3px 10px;
+    text-transform: lowercase;
 }
 
 /* Easy Mode: full-height column — scan card on top, chat fills the rest. */
