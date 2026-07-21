@@ -873,6 +873,16 @@ impl AppSettings {
 mod tests {
     use super::*;
 
+    /// Serialises the tenant-env-var tests. These mutate process-global env
+    /// vars (`TENANT_ENV_VARS`), so they must not run concurrently or one
+    /// test's `set_var` leaks into another's view. A SINGLE shared lock is
+    /// required: two separate per-test locks (the previous state) provide no
+    /// mutual exclusion between the tests and let them race — on a busy runner
+    /// `..._prefers_matrix_tenant_id` (which sets MATRIX_TENANT_ID to a UUID)
+    /// could interleave with `..._returns_none_when_only_slugs_present` and
+    /// flip its `got.is_none()` assertion (seen flaking on macOS CI).
+    static TENANT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn preserves_explicit_wss_with_port() {
         let n = ConnectorConfig::normalize_host("wss://studio.example.com:443").unwrap();
@@ -1018,10 +1028,9 @@ mod tests {
 
     #[test]
     fn tenant_uuid_from_env_prefers_matrix_tenant_id() {
-        // Serialise all tenant-env manipulation on a single lock so parallel
+        // Serialise all tenant-env manipulation on the shared lock so parallel
         // tests can't leak into each other's env-var view.
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TENANT_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let previous: Vec<(&str, Option<String>)> = ConnectorConfig::TENANT_ENV_VARS
             .iter()
@@ -1053,8 +1062,7 @@ mod tests {
 
     #[test]
     fn tenant_uuid_from_env_returns_none_when_only_slugs_present() {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = TENANT_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let previous: Vec<(&str, Option<String>)> = ConnectorConfig::TENANT_ENV_VARS
             .iter()
