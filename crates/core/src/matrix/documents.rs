@@ -139,6 +139,30 @@ const CREATE_SHARED_LINK_QUERY: &str = r#"
     }
 "#;
 
+const GET_DOCUMENT_QUERY: &str = r#"
+    query GetDocument($conversationId: ID!, $documentId: ID!) {
+        document(conversationId: $conversationId, documentId: $documentId) {
+            id
+            title
+            type
+            content
+        }
+    }
+"#;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GetDocumentData {
+    document: Option<DocumentContentNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentContentNode {
+    #[serde(default)]
+    content: Option<String>,
+}
+
 impl MatrixChatClient {
     /// List conversation documents visible to the authenticated user, optionally
     /// filtered to a single agent.
@@ -188,6 +212,23 @@ impl MatrixChatClient {
                 payload.errors.join("; ")
             };
             Err(crate::error::Error::Matrix(msg))
+        }
+    }
+
+    /// Fetch a single document's markdown content for in-app rendering.
+    pub async fn get_document_content(
+        &self,
+        conversation_id: &str,
+        document_id: &str,
+    ) -> crate::error::Result<String> {
+        let variables = serde_json::json!({
+            "conversationId": conversation_id,
+            "documentId": document_id,
+        });
+        let data: GetDocumentData = self.execute_gql(GET_DOCUMENT_QUERY, variables).await?;
+        match data.document {
+            Some(doc) => Ok(doc.content.unwrap_or_default()),
+            None => Err(crate::error::Error::Matrix("document not found".to_string())),
         }
     }
 }
