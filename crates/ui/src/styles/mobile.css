@@ -391,6 +391,50 @@
     border-color: color-mix(in srgb, var(--border) 100%, var(--muted-foreground) 20%);
 }
 
+/* ===========================================================================
+   Easy Mode design tokens
+   ---------------------------------------------------------------------------
+   All Easy Mode colors live here as semantic vars so the palette can be
+   retheme'd in one place (e.g. a lighter/warmer PLG look, or a light theme)
+   without touching component rules. Scoped to the Easy Mode roots — the shell
+   and the full-screen report viewer, which replaces the shell.
+   Brand values default to the Strike48 palette; override this block to reskin.
+   =========================================================================== */
+.easy-mode,
+.easy-doc-viewer {
+    /* Brand */
+    --em-brand: #3978d5;                    /* Strike48 interactive blue */
+    --em-brand-strong: #1d4ed8;             /* gradient end / hover */
+    --em-brand-gradient: linear-gradient(135deg, var(--em-brand), var(--em-brand-strong));
+    --em-brand-glow: rgba(57, 120, 213, 0.4);
+
+    /* Primary call-to-action (the Scan button) */
+    --em-scan-bg: var(--accent, #16a34a);   /* inherits app accent; green today */
+    --em-on-scan: #ffffff;
+
+    /* Foreground */
+    --em-text: #eef0f7;                      /* headings / emphasis */
+    --em-on-brand: #ffffff;
+
+    /* Interactive surfaces (buttons/rows on the dark shell) */
+    --em-surface-soft: rgba(255, 255, 255, 0.10);   /* subtle fill (refresh) */
+    --em-surface-faint: rgba(255, 255, 255, 0.02);  /* share-sheet wash */
+    --em-border: rgba(255, 255, 255, 0.10);         /* hairline dividers */
+    --em-border-strong: rgba(255, 255, 255, 0.25);  /* ghost-button outline */
+    --em-hairline: rgba(255, 255, 255, 0.08);       /* list row separator */
+    --em-shadow: rgba(0, 0, 0, 0.35);
+
+    /* Status / feedback */
+    --em-error: #ff6b6b;
+    --em-toast-bg: #1e3a2f;
+    --em-toast-fg: #b6f2c9;
+
+    /* Social brand colors */
+    --em-social-x: #000000;
+    --em-social-linkedin: #0a66c2;
+    --em-social-facebook: #1877f2;
+}
+
 /* Easy Mode: full-height column — scan card on top, chat fills the rest. */
 .easy-mode {
     display: flex;
@@ -419,12 +463,12 @@
     border-radius: 7px;
     flex-shrink: 0;
     /* Strike48 core brand gradient — "most tightly bound to the family". */
-    background: linear-gradient(135deg, #3978d5, #1d4ed8);
-    color: #fff;
+    background: var(--em-brand-gradient);
+    color: var(--em-on-brand);
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 2px 8px rgba(57, 120, 213, 0.4);
+    box-shadow: 0 2px 8px var(--em-brand-glow);
 }
 .easy-brand-badge svg {
     width: 20px;
@@ -437,7 +481,7 @@
     font-weight: 600;
     font-size: 20px;
     letter-spacing: -0.01em;
-    color: var(--color-base-content, #eef0f7);
+    color: var(--em-text);
 }
 .easy-brand-by {
     margin-left: auto;
@@ -464,10 +508,10 @@
     min-height: 72px;
     padding: 18px 20px;
     border-radius: var(--radius, 12px);
-    background: var(--accent, #16a34a);
-    color: #fff;
+    background: var(--em-scan-bg);
+    color: var(--em-on-scan);
     cursor: pointer;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 2px 8px var(--em-shadow);
 }
 .easy-mode .action-card:active {
     filter: brightness(0.92);
@@ -489,11 +533,11 @@
 /* Easy Mode Documents Panel */
 .easy-docs { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; }
 .easy-docs-header { display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 15px; opacity: 0.9; }
-.easy-docs-refresh { padding: 4px 12px; border-radius: 8px; border: none; background: rgba(255,255,255,0.1); color: #fff; font-size: 13px; font-weight: 500; }
+.easy-docs-refresh { padding: 4px 12px; border-radius: 8px; border: none; background: var(--em-surface-soft); color: var(--em-on-brand); font-size: 13px; font-weight: 500; }
 .easy-docs-empty, .easy-docs-error { opacity: 0.7; font-size: 14px; padding: 8px 0; }
-.easy-docs-error { color: #ff6b6b; }
-.easy-docs-toast { background: #1e3a2f; color: #b6f2c9; padding: 8px 10px; border-radius: 8px; font-size: 13px; }
-.easy-docs-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.easy-docs-error { color: var(--em-error); }
+.easy-docs-toast { background: var(--em-toast-bg); color: var(--em-toast-fg); padding: 8px 10px; border-radius: 8px; font-size: 13px; }
+.easy-docs-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--em-hairline); }
 .easy-docs-row-tappable { cursor: pointer; }
 .easy-docs-title { flex: 1; font-weight: 500; }
 .easy-docs-chevron { opacity: 0.4; font-size: 20px; padding-right: 2px; }
@@ -503,28 +547,28 @@
 .easy-doc-viewer { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .easy-doc-viewer-bar {
     display: flex; align-items: center; gap: 10px;
-    padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.1);
+    padding: 12px 16px; border-bottom: 1px solid var(--em-border);
     /* clear the status bar / Dynamic Island, matching .easy-mode */
     padding-top: max(env(safe-area-inset-top, 0px), 59px);
 }
-.easy-doc-back { background: none; border: none; color: #3b82f6; font-size: 17px; padding: 4px; flex-shrink: 0; }
+.easy-doc-back { background: none; border: none; color: var(--em-brand); font-size: 17px; padding: 4px; flex-shrink: 0; }
 .easy-doc-viewer-title { font-weight: 600; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .easy-doc-viewer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px; }
 
 /* Share sheet pinned below the report body. */
 .easy-doc-share-sheet {
-    border-top: 1px solid rgba(255,255,255,0.1);
+    border-top: 1px solid var(--em-border);
     padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
-    background: rgba(255,255,255,0.02);
+    background: var(--em-surface-faint);
     display: flex; flex-direction: column; gap: 10px;
 }
 .easy-doc-share-title { font-size: 13px; font-weight: 600; opacity: 0.7; }
 .easy-doc-share-primary { display: flex; gap: 8px; }
 .easy-doc-btn { flex: 1; padding: 11px 14px; border-radius: 10px; font-size: 15px; font-weight: 600; border: none; }
-.easy-doc-btn-primary { background: #3b82f6; color: #fff; }
-.easy-doc-btn-ghost { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,0.25); }
+.easy-doc-btn-primary { background: var(--em-brand); color: var(--em-on-brand); }
+.easy-doc-btn-ghost { background: transparent; color: var(--em-on-brand); border: 1px solid var(--em-border-strong); }
 .easy-doc-social-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.easy-doc-social-btn { padding: 10px 8px; border-radius: 10px; border: none; color: #fff; font-size: 14px; font-weight: 600; }
-.easy-doc-social-btn.social-x { background: #000; border: 1px solid rgba(255,255,255,0.35); }
-.easy-doc-social-btn.social-linkedin { background: #0a66c2; }
-.easy-doc-social-btn.social-facebook { background: #1877f2; }
+.easy-doc-social-btn { padding: 10px 8px; border-radius: 10px; border: none; color: var(--em-on-brand); font-size: 14px; font-weight: 600; }
+.easy-doc-social-btn.social-x { background: var(--em-social-x); border: 1px solid var(--em-border-strong); }
+.easy-doc-social-btn.social-linkedin { background: var(--em-social-linkedin); }
+.easy-doc-social-btn.social-facebook { background: var(--em-social-facebook); }
