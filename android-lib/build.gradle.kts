@@ -19,4 +19,6 @@ android {
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
+    // Keystore-backed encrypted key/value store for the chat auth token.
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 }

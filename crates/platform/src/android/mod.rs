@@ -65,6 +65,17 @@ pub fn share_text(text: &str) -> Result<()> {
     jni_bridge::share_text(text)
 }
 
+/// Secure storage (EncryptedSharedPreferences / Keystore-backed).
+pub fn secure_set(key: &str, value: &str) -> Result<()> {
+    jni_bridge::secure_set(key, value)
+}
+pub fn secure_get(key: &str) -> Result<Option<String>> {
+    jni_bridge::secure_get(key)
+}
+pub fn secure_delete(key: &str) -> Result<()> {
+    jni_bridge::secure_delete(key)
+}
+
 /// Tell the Android OAuthCallbackActivity which port the local callback server is on.
 pub fn set_oauth_callback_port(port: u16) -> Result<()> {
     jni_bridge::set_oauth_callback_port(port)

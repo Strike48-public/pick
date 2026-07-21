@@ -308,3 +308,83 @@ pub fn share_text(text: &str) -> Result<()> {
         Ok(())
     })
 }
+
+/// Call `ConnectorBridge.invoke(context, method, paramsJson)` and return the raw
+/// JSON result string. Shared by the secure-store ops below.
+fn invoke_bridge(method: &str, params: &str) -> Result<String> {
+    let method = method.to_string();
+    let params = params.to_string();
+    with_activity(move |env, activity| {
+        let ctx = env
+            .call_method(
+                activity,
+                "getApplicationContext",
+                "()Landroid/content/Context;",
+                &[],
+            )
+            .and_then(|v| v.l())
+            .map_err(|e| Error::ToolExecution(format!("getApplicationContext: {e}")))?;
+        let bridge_cls = find_app_class(env, "com/strike48/pentest_connector/ConnectorBridge")?;
+        let method_str = env
+            .new_string(&method)
+            .map_err(|e| Error::ToolExecution(format!("JNI string: {e}")))?;
+        let params_str = env
+            .new_string(&params)
+            .map_err(|e| Error::ToolExecution(format!("JNI string: {e}")))?;
+        let result = env
+            .call_static_method(
+                &bridge_cls,
+                "invoke",
+                "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                &[
+                    JValue::Object(&ctx),
+                    JValue::Object(&method_str.into()),
+                    JValue::Object(&params_str.into()),
+                ],
+            )
+            .and_then(|v| v.l())
+            .map_err(|e| Error::ToolExecution(format!("ConnectorBridge.invoke: {e}")))?;
+        Ok(jstring_to_string(env, &result))
+    })
+}
+
+/// Store a secret in Android's EncryptedSharedPreferences (Keystore-backed).
+/// Uses `ConnectorBridge.invoke(ctx, "secure_set", {"key","value"})`.
+pub fn secure_set(key: &str, value: &str) -> Result<()> {
+    let params = serde_json::json!({ "key": key, "value": value }).to_string();
+    let result = invoke_bridge("secure_set", &params)?;
+    if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&result) {
+        if let Some(err) = obj.get("error").and_then(|e| e.as_str()) {
+            return Err(Error::ToolExecution(format!("secure_set error: {err}")));
+        }
+    }
+    Ok(())
+}
+
+/// Read a secret, or `None` if absent. Result JSON: `{"value": "..."}` or
+/// `{"value": null}`.
+pub fn secure_get(key: &str) -> Result<Option<String>> {
+    let params = serde_json::json!({ "key": key }).to_string();
+    let result = invoke_bridge("secure_get", &params)?;
+    let obj: serde_json::Value = serde_json::from_str(&result)
+        .map_err(|e| Error::ToolExecution(format!("secure_get bad json: {e}")))?;
+    if let Some(err) = obj.get("error").and_then(|e| e.as_str()) {
+        return Err(Error::ToolExecution(format!("secure_get error: {err}")));
+    }
+    Ok(obj
+        .get("value")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string()))
+}
+
+/// Delete a secret. Idempotent.
+pub fn secure_delete(key: &str) -> Result<()> {
+    let params = serde_json::json!({ "key": key }).to_string();
+    let result = invoke_bridge("secure_delete", &params)?;
+    if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&result) {
+        if let Some(err) = obj.get("error").and_then(|e| e.as_str()) {
+            return Err(Error::ToolExecution(format!("secure_delete error: {err}")));
+        }
+    }
+    Ok(())
+}

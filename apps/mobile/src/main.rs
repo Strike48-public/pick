@@ -39,6 +39,13 @@ fn main() {
             pentest_platform::android::share_text(text).map_err(|e| e.to_string())
         });
 
+        // Secure token storage via Android EncryptedSharedPreferences (Keystore).
+        pentest_core::secure_store::set_backend(
+            |k, v| pentest_platform::android::secure_set(k, v).map_err(|e| e.to_string()),
+            |k| pentest_platform::android::secure_get(k).map_err(|e| e.to_string()),
+            |k| pentest_platform::android::secure_delete(k).map_err(|e| e.to_string()),
+        );
+
         // Register OAuth callback port setter — tells OAuthCallbackActivity
         // which port the local Axum server is listening on.
         pentest_core::matrix::set_oauth_port_setter(|port| {
