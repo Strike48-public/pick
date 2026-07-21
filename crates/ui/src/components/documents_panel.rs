@@ -14,6 +14,7 @@ use dioxus::document;
 use dioxus::prelude::*;
 use pentest_core::matrix::{DocumentSummary, MatrixChatClient};
 use pentest_core::rendering::render_markdown_raw;
+use pentest_core::social_share::{share_intent_url, SocialNetwork};
 
 /// Build the JS snippet that copies `url` to the clipboard. `serde_json`
 /// produces a spec-valid JS string literal (safe for any input), unlike
@@ -177,6 +178,45 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                             });
                         },
                         "Share"
+                    }
+                }
+                div { class: "easy-doc-social",
+                    span { class: "easy-doc-social-label", "Share to" }
+                    for network in SocialNetwork::all() {
+                        {
+                            let net_api = api_url.clone();
+                            let net_tok = auth_token.clone();
+                            let net_conv = view.conversation_id.clone();
+                            let net_doc = view.document_id.clone();
+                            let net_title = view.title.clone();
+                            rsx! {
+                                button {
+                                    class: "easy-doc-social-btn",
+                                    onclick: move |_| {
+                                        let (api_url, auth_token) = (net_api.clone(), net_tok.clone());
+                                        let (conv, doc_id) = (net_conv.clone(), net_doc.clone());
+                                        let title = net_title.clone();
+                                        spawn(async move {
+                                            let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
+                                            match client.create_shared_link(&conv, &doc_id).await {
+                                                Ok(url) => {
+                                                    match share_intent_url(network, &url, &title) {
+                                                        Ok(intent) => {
+                                                            if let Err(e) = pentest_core::matrix::open_url_in_browser(&intent) {
+                                                                toast.set(Some(format!("Couldn't open share: {e}")));
+                                                            }
+                                                        }
+                                                        Err(e) => toast.set(Some(format!("Couldn't build share link: {e}"))),
+                                                    }
+                                                }
+                                                Err(e) => toast.set(Some(format!("Sharing unavailable: {e}"))),
+                                            }
+                                        });
+                                    },
+                                    "{network.label()}"
+                                }
+                            }
+                        }
                     }
                 }
             }
