@@ -272,10 +272,16 @@ mod tests {
     #[tokio::test]
     async fn execute_emits_provenance_structure() {
         // Verifies the provenance contract: structure is always present when
-        // the tool runs, regardless of whether the underlying sandbox lets
-        // the command succeed. Output content is inherently environment-
-        // dependent (sandbox may reject, binary may be absent, etc.), so we
-        // assert on the reproducibility metadata itself, not the payload.
+        // the tool runs. Output content is inherently environment-dependent
+        // (binary may be absent, etc.), so we assert on the reproducibility
+        // metadata itself, not the payload.
+        //
+        // Run host-direct (sandbox disabled): CI has no BlackArch sandbox
+        // backend, and since #256 an enabled-but-unavailable sandbox fails
+        // closed (Err, no provenance) instead of silently falling back to the
+        // host. Disabling the sandbox is the explicit host path these unit
+        // tests want — same precedent as the pentest-core integration tests.
+        pentest_platform::set_use_sandbox(false);
         let tool = ExecuteCommandTool;
         let ctx = ToolContext::default();
         let params = json!({ "command": "echo", "args": ["hello-provenance"] });
@@ -296,6 +302,10 @@ mod tests {
 
     #[tokio::test]
     async fn execute_redacts_secrets_in_effective_command() {
+        // Host-direct: same rationale as execute_emits_provenance_structure —
+        // CI has no sandbox backend, and since #256 that fails closed with no
+        // provenance rather than falling back to the host.
+        pentest_platform::set_use_sandbox(false);
         let tool = ExecuteCommandTool;
         let ctx = ToolContext::default();
         let params = json!({
