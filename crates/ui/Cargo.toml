@@ -89,4 +89,8 @@ strike48-proto = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Server-side render used by ErrorBoundary containment tests (#288). Declared
+# here (not gated behind `liveview`) so the render tests run in the required CI
+# job, which does NOT enable the `liveview` feature.
+dioxus-ssr = { workspace = true }
 

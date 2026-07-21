@@ -191,11 +191,18 @@ fn check_errors(errors: Option<Vec<GqlError>>) -> crate::error::Result<()> {
 }
 
 fn truncate_body(body: &str) -> String {
-    if body.len() <= 200 {
-        body.to_string()
-    } else {
-        format!("{}…({} bytes total)", &body[..200], body.len())
+    const MAX_PREVIEW_BYTES: usize = 200;
+    if body.len() <= MAX_PREVIEW_BYTES {
+        return body.to_string();
     }
+    // Walk down to the nearest UTF-8 char boundary at or below the byte budget.
+    // A bare `&body[..200]` panics if byte 200 falls inside a multi-byte char,
+    // which a hostile/compromised server could trigger via the error path (#287).
+    let mut end = MAX_PREVIEW_BYTES;
+    while end > 0 && !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…({} bytes total)", &body[..end], body.len())
 }
 
 // ---------------------------------------------------------------------------
@@ -841,5 +848,47 @@ impl MatrixChatClient {
         }
 
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_body;
+
+    #[test]
+    fn returns_short_body_unchanged() {
+        let body = "small error body";
+        assert_eq!(truncate_body(body), body);
+    }
+
+    #[test]
+    fn truncates_long_ascii_body_with_byte_count() {
+        let body = "a".repeat(500);
+        let out = truncate_body(&body);
+        assert!(out.starts_with(&"a".repeat(200)));
+        assert!(out.ends_with("(500 bytes total)"));
+    }
+
+    #[test]
+    fn does_not_panic_when_multibyte_char_straddles_byte_cutoff() {
+        // Place a 2-byte 'é' straddling byte 200: bytes 0..199 are ASCII, then
+        // 'é' occupies bytes 199-200, so a bare `&body[..200]` would panic with
+        // "byte index 200 is not a char boundary" (#287). truncate_body must not.
+        let body = format!("{}\u{e9}{}", "a".repeat(199), "b".repeat(400));
+        assert!(
+            !body.is_char_boundary(200),
+            "precondition: 200 splits a char"
+        );
+
+        let out = truncate_body(&body);
+
+        // It backs off to byte 199 (the last boundary <= 200) and still reports
+        // the true byte total.
+        assert!(out.starts_with(&"a".repeat(199)));
+        assert!(out.contains("bytes total)"));
+        assert_eq!(
+            out,
+            format!("{}…({} bytes total)", "a".repeat(199), body.len())
+        );
     }
 }
