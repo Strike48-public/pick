@@ -250,6 +250,25 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
 // Shared component
 // ---------------------------------------------------------------------------
 
+/// Derive the HTTPS(S) Matrix API URL from a connector host string.
+/// Strips transport scheme prefixes and a leading `connectors-` host label,
+/// then applies the TLS choice.
+fn derive_api_url(host: &str, use_tls: bool) -> String {
+    let scheme = if use_tls { "https" } else { "http" };
+    let schemes = ["grpc://", "grpcs://", "http://", "https://", "ws://", "wss://"];
+    let host_lower = host.to_lowercase();
+    let mut bare_host = host;
+    for prefix in &schemes {
+        if host_lower.starts_with(prefix) {
+            bare_host = &host[prefix.len()..];
+            break;
+        }
+    }
+    let api_host = bare_host.strip_prefix("connectors-").unwrap_or(bare_host);
+    let api_host = api_host.trim_end_matches('/');
+    format!("{scheme}://{api_host}")
+}
+
 /// Shared connector app component.
 ///
 /// Call this from a thin platform-specific wrapper component, e.g.:
@@ -330,6 +349,12 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // button "did nothing" instead of finding it logged into a terminal that
     // is only rendered after a successful connection.
     let mut connect_error: Signal<Option<String>> = use_signal(|| None);
+
+    // PLG easy mode: set when OAuth-first / OTT exchange fails so EasyModeShell
+    // can show a friendly "sign in to continue" retry overlay. Never triggers a
+    // tokenless connect.
+    let needs_sign_in = use_context_provider(|| Signal::new(false));
+    let retry_tick = use_context_provider(|| Signal::new(0u32));
 
     // download state
     let mut download_progress: Signal<Option<f64>> =
@@ -611,27 +636,131 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         });
     };
 
+    // PLG easy-mode OAuth-first connect: obtain the user JWT, exchange it for a
+    // tenant-scoped OTT, stage the OTT for the SDK, then connect. On any failure
+    // set needs_sign_in and stop — never fall back to a tokenless connect.
+    let plg_sign_in_and_connect = {
+        let mut on_connect_clone = on_connect;
+        move |base_config: ConnectorConfig| {
+            let mut connecting_step = connecting_step;
+            let mut status = status;
+            let mut terminal_lines = terminal_lines;
+            let mut needs_sign_in = needs_sign_in;
+            let mut config = config;
+            spawn(async move {
+                needs_sign_in.set(false);
+                status.set(ConnectorStatus::Connecting);
+                connecting_step.set(Some(ConnectingStep::SigningIn));
+
+                // Derive the HTTPS API URL from the connector host using the
+                // same logic as the chat_api_url derivation below (connector_app.rs
+                // ~801-826). `matrix::normalize_url` is pub(crate) and not
+                // reachable from this crate, so use the shared helper added in
+                // Step 1b instead.
+                let api_url = derive_api_url(&base_config.host, base_config.use_tls);
+
+                let jwt = match pentest_core::matrix::fetch_matrix_token_browser(&api_url).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        terminal_lines
+                            .write()
+                            .push(TerminalLine::error(format!("Sign-in failed: {e}")));
+                        status.set(ConnectorStatus::Disconnected);
+                        connecting_step.set(None);
+                        needs_sign_in.set(true);
+                        return;
+                    }
+                };
+
+                let ott = match pentest_core::matrix::pre_approve(
+                    &api_url,
+                    &jwt,
+                    &base_config.connector_name,
+                )
+                .await
+                {
+                    Ok(o) => o,
+                    Err(e) => {
+                        terminal_lines
+                            .write()
+                            .push(TerminalLine::error(format!("Pre-approval failed: {e}")));
+                        status.set(ConnectorStatus::Disconnected);
+                        connecting_step.set(None);
+                        needs_sign_in.set(true);
+                        return;
+                    }
+                };
+
+                let staged = match pentest_core::matrix::stage_ott_for_sdk(&ott) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        terminal_lines
+                            .write()
+                            .push(TerminalLine::error(format!("Could not stage OTT: {e}")));
+                        status.set(ConnectorStatus::Disconnected);
+                        connecting_step.set(None);
+                        needs_sign_in.set(true);
+                        return;
+                    }
+                };
+
+                // Point the SDK at the staged OTT and adopt the authoritative
+                // tenant so the connector registers under the personal tenant.
+                std::env::set_var("STRIKE48_REGISTRATION_TOKEN_FILE", &staged);
+                let mut c = base_config;
+                c.tenant_id = ott.tenant_id.clone();
+                config.set(c.clone());
+
+                terminal_lines.write().push(TerminalLine::info(
+                    "Signed in. Registering connector for your workspace...",
+                ));
+                connecting_step.set(Some(ConnectingStep::Connecting));
+                on_connect_clone((c, true));
+            });
+        }
+    };
+
     // ---- auto-connect ----
     let easy_mode_autoconnect_config = easy_mode_env_config.clone();
+    let easy_mode_flag = cfg.easy_mode;
     use_effect(move || {
+        let _ = retry_tick();
         if !initial_auto_connect {
             return;
         }
-        if let Some(saved_config) = settings.read().last_config.clone() {
-            terminal_lines
-                .write()
-                .push(TerminalLine::info("Auto-connecting with saved settings..."));
-            on_connect((saved_config, true));
-        } else if let Some(plg_config) = easy_mode_autoconnect_config.clone() {
-            // Easy mode with no saved config but a PLG host from the env (#283).
-            // remember=false: don't persist a build-time default as the user's
-            // saved config, so an env change on next launch still takes effect.
-            let mut c = plg_config;
-            c.instance_id = device_id.clone();
-            terminal_lines.write().push(TerminalLine::info(
-                "Easy mode: connecting to your Strike48 tenant...",
-            ));
-            on_connect((c, false));
+        // Pick the config we would connect with (saved config wins, else PLG env).
+        let candidate = settings
+            .read()
+            .last_config
+            .clone()
+            .or_else(|| {
+                easy_mode_autoconnect_config.clone().map(|mut c| {
+                    c.instance_id = device_id.clone();
+                    c
+                })
+            });
+        let Some(candidate) = candidate else { return };
+
+        let creds = pentest_core::config::ConnectorConfig::credentials_present(
+            &candidate.connector_name,
+            &candidate.instance_id,
+        );
+        match pentest_core::config::plg_connect_decision(easy_mode_flag, creds) {
+            pentest_core::config::PlgConnectStep::SignIn => {
+                terminal_lines.write().push(TerminalLine::info(
+                    "Easy mode: signing in to your Strike48 workspace...",
+                ));
+                plg_sign_in_and_connect(candidate);
+            }
+            pentest_core::config::PlgConnectStep::Silent => {
+                terminal_lines
+                    .write()
+                    .push(TerminalLine::info("Auto-connecting..."));
+                // remember=true when it came from saved config, false for a
+                // build-time PLG env default (mirrors prior behaviour).
+                let remember = settings.read().last_config.is_some();
+                on_connect((candidate, remember));
+            }
         }
     });
 
@@ -803,23 +932,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                         if !sig.is_empty() {
                             sig
                         } else if !host.is_empty() {
-                            let use_tls = config.read().use_tls;
-                            let scheme = if use_tls { "https" } else { "http" };
-
-                            // Strip URL scheme prefixes (grpc://, grpcs://, etc.) first (case-insensitive)
-                            let schemes = ["grpc://", "grpcs://", "http://", "https://", "ws://", "wss://"];
-                            let host_lower = host.to_lowercase();
-                            let mut bare_host = host.as_str();
-                            for prefix in &schemes {
-                                if host_lower.starts_with(prefix) {
-                                    bare_host = &host[prefix.len()..];
-                                    break;
-                                }
-                            }
-
-                            let api_host = bare_host.strip_prefix("connectors-")
-                                .unwrap_or(bare_host);
-                            format!("{}://{}", scheme, api_host)
+                            derive_api_url(&host, config.read().use_tls)
                         } else {
                             String::new()
                         }

@@ -41,6 +41,9 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     let chat_header_ctx: Signal<Option<ChatHeaderCtx>> =
         use_context_provider(|| Signal::new(None::<ChatHeaderCtx>));
 
+    let needs_sign_in = use_context::<Signal<bool>>();
+    let retry_tick = use_context::<Signal<u32>>();
+
     // Track the selected agent ID for the DocumentsPanel (which self-refreshes).
     let agent_id = use_signal(|| None::<String>);
     // The report currently open in the full-screen viewer (None = normal shell).
@@ -112,6 +115,27 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                             show_docs.set(false);
                             viewing.set(Some(doc));
                         },
+                    }
+                }
+            }
+        };
+    }
+
+    if needs_sign_in() {
+        let mut needs_sign_in = needs_sign_in;
+        let mut retry_tick = retry_tick;
+        return rsx! {
+            div { class: "easy-doc-screen",
+                div { class: "easy-signin",
+                    p { class: "easy-signin-title", "Sign in to connect to Strike48" }
+                    p { class: "easy-signin-sub", "We could not complete sign-in. Tap retry to try again." }
+                    button {
+                        class: "action-card",
+                        onclick: move |_| {
+                            needs_sign_in.set(false);
+                            retry_tick.set(retry_tick() + 1);
+                        },
+                        span { class: "action-card-label", "Retry sign-in" }
                     }
                 }
             }
