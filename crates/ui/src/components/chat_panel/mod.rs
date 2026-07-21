@@ -1364,6 +1364,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 on_send: send_message.clone(),
                 conversation_list: conversation_list,
                 on_select_conversation: on_select_conversation,
+                easy_mode: props.full_page,
             }
 
             // Inline notice — quieter than `chat-error`, sits above the input.

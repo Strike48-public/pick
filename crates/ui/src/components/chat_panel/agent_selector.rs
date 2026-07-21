@@ -333,17 +333,32 @@ pub struct SuggestedActionsProps {
     pub conversation_list: Signal<Vec<ConversationInfo>>,
     /// Called when the user clicks a recent conversation.
     pub on_select_conversation: EventHandler<String>,
+    /// Easy Mode: lay-friendly prompts + greeting instead of the expert set.
+    #[props(default)]
+    pub easy_mode: bool,
 }
+
+/// Lay-friendly quick actions for Easy Mode — plain-language, no red-team jargon.
+/// The prominent "Scan My Network" card already covers the main scan, so these
+/// are lighter follow-ups.
+const EASY_SUGGESTED_ACTIONS: &[(&str, &str)] = &[
+    ("What's connected?", "List the devices connected to my network in plain language — what they are, not technical detail."),
+    ("Is my network safe?", "Check my network for common safety problems and explain anything I should fix, in simple terms."),
+];
 
 /// Grid of suggested quick-action buttons + recent conversations shown in the empty-chat state.
 #[component]
 pub fn SuggestedActions(props: SuggestedActionsProps) -> Element {
     let selected_agent = props.selected_agent;
     let conversation_list = props.conversation_list;
+    let easy_mode = props.easy_mode;
 
     rsx! {
         div { class: "chat-empty",
-            if let Some(agent) = selected_agent.read().as_ref() {
+            if easy_mode {
+                // Lay-friendly greeting; the scan card is the primary action.
+                p { class: "chat-greeting", "Hi! Tap Scan My Network above, or ask me anything about your network." }
+            } else if let Some(agent) = selected_agent.read().as_ref() {
                 if let Some(greeting) = &agent.greeting {
                     p { class: "chat-greeting", "{greeting}" }
                 } else {
@@ -351,7 +366,7 @@ pub fn SuggestedActions(props: SuggestedActionsProps) -> Element {
                 }
             }
             div { class: "chat-suggested-actions",
-                for (label, prompt) in SUGGESTED_ACTIONS.iter() {
+                for (label, prompt) in if easy_mode { EASY_SUGGESTED_ACTIONS } else { SUGGESTED_ACTIONS }.iter() {
                     {
                         let prompt_text = prompt.to_string();
                         let on_send = props.on_send;

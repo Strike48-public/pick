@@ -447,6 +447,17 @@
     --em-social-linkedin: #0a66c2;
     --em-social-facebook: #1877f2;
     --em-on-social: #ffffff;
+
+    /* -----------------------------------------------------------------------
+       Remap the shared theme tokens the embedded ChatPanel reads, so the chat
+       (suggested chips, Send button, input focus) picks up Sage instead of the
+       app's default blue — without touching ChatPanel's own CSS.
+       ----------------------------------------------------------------------- */
+    --primary: var(--em-brand);
+    --primary-foreground: var(--em-on-primary);
+    --ring: var(--em-brand);
+    --accent: var(--em-brand);
+    --radius: var(--em-radius-pill);
 }
 
 /* Easy Mode: full-height column — scan card on top, chat fills the rest. */
@@ -455,6 +466,9 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
+    /* Clip children so a tall chat can't push the brand bar / scan card off the
+       top of the screen — the chat area scrolls internally instead. */
+    overflow: hidden;
     /* Keep the scan card clear of the status bar / Dynamic Island. The dx
        WebView doesn't set viewport-fit=cover, so env(safe-area-inset-top) is 0
        on iOS; max() floors it at 59px to clear the iPhone Pro Dynamic Island
@@ -541,6 +555,7 @@
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
+    overflow: hidden;
 }
 
 /* Easy Mode Documents Panel */

@@ -31,6 +31,10 @@ pub struct MessageListProps {
     pub conversation_list: Signal<Vec<ConversationInfo>>,
     /// Called when the user clicks a recent conversation in the empty state.
     pub on_select_conversation: EventHandler<String>,
+    /// Easy Mode: show lay-friendly empty-state prompts instead of the expert
+    /// red-team suggestions (the big "Scan My Network" card is the primary action).
+    #[props(default)]
+    pub easy_mode: bool,
 }
 
 /// Scrollable message list, thinking indicator, and scroll-to-bottom FAB.
@@ -100,6 +104,7 @@ pub fn MessageList(props: MessageListProps) -> Element {
                         on_send: props.on_send,
                         conversation_list: props.conversation_list,
                         on_select_conversation: props.on_select_conversation,
+                        easy_mode: props.easy_mode,
                     }
                 } else if selected_agent.read().is_none() {
                     div { class: "chat-empty",
