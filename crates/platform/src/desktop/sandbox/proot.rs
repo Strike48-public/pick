@@ -161,8 +161,20 @@ impl ProotExecutor {
                 PROOT_RELEASE_TAG
             );
 
-            // Download using reqwest
-            let response = reqwest::get(download.url)
+            // Download using reqwest with explicit timeouts. A bare
+            // `reqwest::get` has no timeout, so a stalled connect or read hangs
+            // the caller forever (fail-hang) — it manifested as a 6-hour CI
+            // hang once the pins were filled and this path actually ran. Bound
+            // both the connect and the whole request so a stall fails closed
+            // (SandboxError::Download) instead of blocking indefinitely (#294).
+            let client = reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(15))
+                .timeout(Duration::from_secs(120))
+                .build()
+                .map_err(|e| SandboxError::Download(e.to_string()))?;
+            let response = client
+                .get(download.url)
+                .send()
                 .await
                 .map_err(|e| SandboxError::Download(e.to_string()))?;
 
