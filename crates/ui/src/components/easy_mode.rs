@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use pentest_core::matrix::DocumentSummary;
 
 use super::chat_panel::ChatHeaderCtx;
-use super::icons::{Network, STRIKE48_S_BADGE_SVG};
+use super::icons::{FileText, History, Network, Plus, STRIKE48_S_BADGE_SVG};
 use crate::components::{ChatPanel, DocumentViewer, DocumentsPanel};
 
 /// The canned chat message the Easy Mode "Scan" button sends. It instructs the
@@ -35,16 +35,20 @@ pub struct EasyModeShellProps {
 #[component]
 pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     let mut chat_mailbox = props.chat_mailbox;
-    // ChatPanel consumes this context via `use_context` (and panics if absent).
-    // In the standard shell `AppLayout` provides it; Easy Mode has no AppLayout,
-    // so we provide it here. Easy Mode has no header bar to render the actions
-    // into, so nothing reads the value -- it just needs to exist.
-    use_context_provider(|| Signal::new(None::<ChatHeaderCtx>));
+    // ChatPanel publishes its header actions (new chat, history toggle, agent
+    // select) into this context; AppLayout does the same in the standard shell.
+    // Easy Mode consumes it below to drive the top-bar icons.
+    let chat_header_ctx: Signal<Option<ChatHeaderCtx>> =
+        use_context_provider(|| Signal::new(None::<ChatHeaderCtx>));
 
     // Track the selected agent ID for the DocumentsPanel (which self-refreshes).
     let agent_id = use_signal(|| None::<String>);
     // The report currently open in the full-screen viewer (None = normal shell).
     let mut viewing = use_signal(|| None::<DocumentSummary>);
+    // True once a conversation has messages — hides the Scan card.
+    let conversation_active = use_signal(|| false);
+    // Whether the full-screen Reports list overlay is open (Docs icon).
+    let mut show_docs = use_signal(|| false);
 
     // The Matrix auth token arrives asynchronously: the connector registers, the
     // browser-OAuth callback writes it into the session store, and this
@@ -87,28 +91,93 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
         };
     }
 
+    // Docs overlay: a full-screen Reports list opened by the top-bar Docs icon.
+    if show_docs() {
+        return rsx! {
+            div { class: "easy-doc-screen",
+                div { class: "easy-doc-viewer-bar",
+                    button {
+                        class: "easy-doc-back",
+                        onclick: move |_| show_docs.set(false),
+                        "‹ Back"
+                    }
+                    span { class: "easy-doc-viewer-title", "Reports" }
+                }
+                div { class: "easy-docs-list-body",
+                    DocumentsPanel {
+                        api_url: props.api_url.clone(),
+                        auth_token: auth_token(),
+                        agent_id: agent_id,
+                        on_open: move |doc: DocumentSummary| {
+                            show_docs.set(false);
+                            viewing.set(Some(doc));
+                        },
+                    }
+                }
+            }
+        };
+    }
+
+    let ctx = chat_header_ctx.read().clone();
+    let has_ctx = ctx.is_some();
+
     rsx! {
         div { class: "easy-mode",
-            // Co-brand top bar: Strike48 "S" badge + lowercase "pick" wordmark,
-            // with a "STRIKE48" tag on the right. Positions Pick as a Strike48
-            // product per the brand identity.
+            // Co-brand top bar: Strike48 "S" badge + "Pick" + action icons.
             div { class: "easy-brandbar",
                 span { class: "easy-brand-badge", dangerous_inner_html: STRIKE48_S_BADGE_SVG }
                 span { class: "easy-brand-word", "Pick" }
-                span { class: "easy-brand-by", "Strike48" }
+                // Action icons (right): new chat, history, docs. Wired to the
+                // ChatPanel header actions it publishes via context.
+                div { class: "easy-brand-actions",
+                    if has_ctx {
+                        {
+                            let ctx_nc = ctx.clone();
+                            let ctx_hi = ctx.clone();
+                            rsx! {
+                                button {
+                                    class: "easy-icon-btn",
+                                    "aria-label": "New chat",
+                                    onclick: move |_| {
+                                        if let Some(c) = ctx_nc.as_ref() { c.on_new_chat.call(()); }
+                                    },
+                                    Plus { size: 20 }
+                                }
+                                button {
+                                    class: "easy-icon-btn",
+                                    "aria-label": "Chat history",
+                                    onclick: move |_| {
+                                        if let Some(c) = ctx_hi.as_ref() { c.on_toggle_history.call(()); }
+                                    },
+                                    History { size: 20 }
+                                }
+                            }
+                        }
+                    }
+                    button {
+                        class: "easy-icon-btn",
+                        "aria-label": "Reports",
+                        onclick: move |_| show_docs.set(true),
+                        FileText { size: 20 }
+                    }
+                }
             }
-            div { class: "action-grid",
-                div {
-                    class: "action-card",
-                    onclick: move |_| {
-                        pentest_core::telemetry::record(
-                            pentest_core::telemetry::Activity::ScanStart,
-                            &[("channel", "easy")],
-                        );
-                        chat_mailbox.set(Some(easy_mode_scan_prompt()));
-                    },
-                    span { class: "action-card-icon", Network { size: 24 } }
-                    span { class: "action-card-label", "Scan My Network" }
+            // Scan card: only shown on an empty chat; once a conversation starts
+            // it hides, and New Chat brings it back.
+            if !conversation_active() {
+                div { class: "action-grid",
+                    div {
+                        class: "action-card",
+                        onclick: move |_| {
+                            pentest_core::telemetry::record(
+                                pentest_core::telemetry::Activity::ScanStart,
+                                &[("channel", "easy")],
+                            );
+                            chat_mailbox.set(Some(easy_mode_scan_prompt()));
+                        },
+                        span { class: "action-card-icon", Network { size: 24 } }
+                        span { class: "action-card-label", "Scan My Network" }
+                    }
                 }
             }
             div { class: "easy-mode-chat",
@@ -122,13 +191,8 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                     full_page: true,
                     open_conversation_id: props.conversation_mailbox,
                     selected_agent_out: Some(agent_id),
+                    conversation_active_out: Some(conversation_active),
                 }
-            }
-            DocumentsPanel {
-                api_url: props.api_url.clone(),
-                auth_token: auth_token(),
-                agent_id: agent_id,
-                on_open: move |doc: DocumentSummary| viewing.set(Some(doc)),
             }
         }
     }

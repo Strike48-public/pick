@@ -140,6 +140,10 @@ pub struct ChatPanelProps {
     /// Output signal: writes the selected agent ID whenever it changes (for Easy Mode documents list).
     #[props(default)]
     pub selected_agent_out: Option<Signal<Option<String>>>,
+    /// Output signal: true when a conversation is active (has messages). Easy
+    /// Mode uses this to hide the Scan card once a chat has started.
+    #[props(default)]
+    pub conversation_active_out: Option<Signal<bool>>,
 }
 
 #[component]
@@ -159,6 +163,17 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // Conversation state
     let mut conversation_id = use_signal(|| None::<String>);
     let mut messages = use_signal(Vec::<ChatMessage>::new);
+
+    // Mirror "conversation active" (has messages) to the optional out-signal so
+    // Easy Mode can hide the Scan card once a chat has started.
+    if let Some(mut out) = props.conversation_active_out {
+        use_effect(move || {
+            let active = !messages.read().is_empty();
+            if *out.peek() != active {
+                out.set(active);
+            }
+        });
+    }
     let mut is_sending = use_signal(|| false);
     let mut agent_thinking = use_signal(|| false);
     let mut agent_status_text = use_signal(String::new);

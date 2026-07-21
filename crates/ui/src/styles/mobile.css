@@ -633,6 +633,27 @@ body {
     letter-spacing: 0.14em;
     opacity: 0.5;
 }
+/* Top-bar action icons (new chat / history / docs), pushed to the right. */
+.easy-brand-actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: var(--em-space-1);
+}
+.easy-icon-btn {
+    background: none;
+    border: none;
+    color: var(--em-text);
+    padding: var(--em-space-2);
+    border-radius: var(--em-radius-control);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+.easy-icon-btn:active { background: var(--em-surface-soft); }
+/* Reports-list overlay body (Docs icon). */
+.easy-docs-list-body { flex: 1; min-height: 0; overflow-y: auto; }
 
 .easy-mode .action-grid {
     padding: 16px;
