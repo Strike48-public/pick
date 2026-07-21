@@ -873,6 +873,17 @@ impl AppSettings {
 mod tests {
     use super::*;
 
+    /// Serialises every test that mutates a process-global env var — the
+    /// tenant vars (`TENANT_ENV_VARS`) AND `HOME` (the credential-file tests set
+    /// it to a tempdir). All must share ONE lock: env vars are process-global,
+    /// so a `HOME`-mutating test racing a tenant test (or the two `HOME` tests
+    /// racing each other) lets one test's `set_var`/`remove_var` leak into
+    /// another's view. Per-test locks provide no mutual exclusion. Symptoms seen
+    /// on CI: `..._prefers_matrix_tenant_id` flipping `..._returns_none...`'s
+    /// assertion, and `read_credentials_tenant_id_extracts_uuid`'s `HOME` being
+    /// cleared mid-read by a sibling's restore (its `assert_eq!` on the UUID).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn preserves_explicit_wss_with_port() {
         let n = ConnectorConfig::normalize_host("wss://studio.example.com:443").unwrap();
@@ -1018,10 +1029,9 @@ mod tests {
 
     #[test]
     fn tenant_uuid_from_env_prefers_matrix_tenant_id() {
-        // Serialise all tenant-env manipulation on a single lock so parallel
+        // Serialise all tenant-env manipulation on the shared lock so parallel
         // tests can't leak into each other's env-var view.
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let previous: Vec<(&str, Option<String>)> = ConnectorConfig::TENANT_ENV_VARS
             .iter()
@@ -1053,8 +1063,7 @@ mod tests {
 
     #[test]
     fn tenant_uuid_from_env_returns_none_when_only_slugs_present() {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let previous: Vec<(&str, Option<String>)> = ConnectorConfig::TENANT_ENV_VARS
             .iter()
@@ -1082,6 +1091,10 @@ mod tests {
 
     #[test]
     fn read_credentials_tenant_id_extracts_uuid() {
+        // Serialise with every other env-mutating config test: this test sets
+        // HOME (process-global), and a concurrent test's set/remove of HOME (or
+        // the tenant tests) would otherwise flip the read below. See ENV_LOCK.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Isolate HOME so the test doesn't touch the real credentials dir.
         let tmp = tempfile::tempdir().expect("tempdir");
         let creds_dir = tmp.path().join(".strike48").join("credentials");
@@ -1107,6 +1120,8 @@ mod tests {
 
     #[test]
     fn read_credentials_tenant_id_returns_none_when_missing() {
+        // Serialise with every other env-mutating config test (sets HOME). See ENV_LOCK.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         let prev = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", tmp.path()) };

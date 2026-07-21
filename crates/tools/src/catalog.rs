@@ -802,6 +802,12 @@ mod tests {
 
     #[tokio::test]
     async fn build_catalog_produces_entries_with_used_by() {
+        // Probe install-state on the host, not the sandbox. build_catalog runs
+        // `command -v` per tool via execute_command; with the sandbox enabled
+        // and no system proot, that triggers a proot download + rootfs setup
+        // that hangs on a CI runner (no backend, no rootfs). The host probe is
+        // equally valid for the catalog-shape assertions here.
+        pentest_platform::set_use_sandbox(false);
         let catalog = build_catalog().await;
         assert!(!catalog.is_empty());
         let nmap = catalog.iter().find(|e| e.binary_name == "nmap");
@@ -961,6 +967,9 @@ mod tests {
         // python3 / playwright are install prerequisites, not operator-facing
         // tools; they must not appear as catalog entries even though tools
         // (webwright) declare them as dependencies.
+        // Host probe: avoid the sandbox proot-download hang on CI (see
+        // build_catalog_produces_entries_with_used_by).
+        pentest_platform::set_use_sandbox(false);
         let catalog = build_catalog().await;
         for hidden in HIDDEN_CATALOG_BINARIES {
             assert!(
@@ -979,6 +988,9 @@ mod tests {
         // install. The set can legitimately be empty (e.g. everything already
         // installed, or nothing auto-installable in native mode), so we assert
         // the scoping property, not a fixed count.
+        // Host probe: avoid the sandbox proot-download hang on CI (see
+        // build_catalog_produces_entries_with_used_by).
+        pentest_platform::set_use_sandbox(false);
         let full = build_catalog().await;
         let pending = pending_installs_in_category("network").await;
         for (bin, _secs) in &pending {
@@ -1116,6 +1128,9 @@ mod tests {
     async fn ad_suite_is_not_in_recommended_default_set() {
         // Specialized AD-engagement tooling must not be swept in by the bulk
         // "install all recommended" action (the operator installs it on demand).
+        // Host probe: avoid the sandbox proot-download hang on CI (see
+        // build_catalog_produces_entries_with_used_by).
+        pentest_platform::set_use_sandbox(false);
         let catalog = build_catalog().await;
         for bin in ["bloodhound-python", "certipy", "kerbrute", "nxc"] {
             // Assert the entry EXISTS before checking its flag: without this the
@@ -1134,6 +1149,9 @@ mod tests {
 
     #[tokio::test]
     async fn build_catalog_items_is_sorted_and_nonempty() {
+        // Host probe: avoid the sandbox proot-download hang on CI (see
+        // build_catalog_produces_entries_with_used_by).
+        pentest_platform::set_use_sandbox(false);
         let items = build_catalog_items().await;
         assert!(!items.is_empty());
         // Sorted by (category, display_name).

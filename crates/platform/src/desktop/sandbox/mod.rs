@@ -421,7 +421,15 @@ impl SandboxManager {
 mod tests {
     use super::*;
 
+    // Ignored: this touches the network. On a host without bwrap/proot (e.g. a
+    // CI runner), `detect_backend` falls through to `download_proot`, which now
+    // that the SHA pins are populated actually fetches the binary over HTTP.
+    // The test has no assertions (it only prints the detected backend), so it
+    // provides no regression value in CI while risking a slow/stalled download.
+    // Run explicitly (`--ignored`) on a machine where a real backend probe is
+    // wanted. The timeout added to `download_proot` bounds the stall regardless.
     #[tokio::test]
+    #[ignore = "hits the network via download_proot; no assertions — run with --ignored"]
     async fn test_sandbox_backend_detection() {
         let config = SandboxConfig::default();
         let result = SandboxManager::detect_backend(&config).await;
