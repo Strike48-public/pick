@@ -142,13 +142,14 @@ impl App for PickApp {
             },
             messages: model.messages.clone(),
             scan_in_progress: model.scan_active,
-            show_scan_card: model.messages.is_empty(),
+            show_scan_card: !model.scan_active && model.messages.is_empty() && model.conversation_id.is_none(),
             conversation_docs: model.conversation_docs.clone(),
             all_documents: model.all_documents.clone(),
             history: model.history.clone(),
             open_document: model.open_document.clone(),
             needs_sign_in: matches!(model.phase, model::Phase::NeedsSignIn),
             error: model.error.clone(),
+            tool_calls: model.tool_calls.clone(),
         }
     }
 }

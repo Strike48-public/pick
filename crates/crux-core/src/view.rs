@@ -98,6 +98,7 @@ pub struct ViewModel {
     pub open_document: Option<DocView>,
     pub needs_sign_in: bool,
     pub error: Option<String>,
+    pub tool_calls: Vec<ToolCallView>,
 }
 
 impl Default for ConnectionView {

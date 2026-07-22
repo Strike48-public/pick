@@ -16,6 +16,8 @@ pub struct Model {
     pub scan_active: bool,
     pub history_open: bool,
     pub error: Option<String>,
+    pub opening_document_id: Option<String>,
+    pub tool_calls: Vec<crate::view::ToolCallView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]

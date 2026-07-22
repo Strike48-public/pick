@@ -70,7 +70,7 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         Event::Delta(outcome) => {
             if let Some(delta) = outcome.delta {
                 model.messages.extend(delta.messages);
-                // tool_calls are folded into messages by the middleware; kept separate here for future use
+                model.tool_calls.extend(delta.tool_calls);
                 if delta.done {
                     model.scan_active = false;
                     let agent = None; // agent id resolved by middleware/session
@@ -239,6 +239,7 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
             }
         }
         Event::OpenDocument(id) => {
+            model.opening_document_id = Some(id.clone());
             let conv = model.conversation_id.clone().unwrap_or_default();
             Command::request_from_shell(PentestOperation::GetDocumentContent {
                 document_id: id.clone(),
@@ -265,9 +266,17 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         }
         Event::DocumentContentResult(outcome) => {
             if let Some(markdown) = outcome.content {
+                let doc_id = model.opening_document_id.clone().unwrap_or_default();
+                let title = model
+                    .conversation_docs
+                    .iter()
+                    .chain(model.all_documents.iter())
+                    .find(|d| d.id == doc_id)
+                    .map(|d| d.title.clone())
+                    .unwrap_or_else(|| "Report".into());
                 model.open_document = Some(crate::view::DocView {
-                    id: String::new(),
-                    title: "Report".into(),
+                    id: doc_id,
+                    title,
                     markdown_body: markdown,
                     share_url: None,
                 });
@@ -352,9 +361,10 @@ mod tests {
     fn start_scan_emits_send_scan_and_hides_card() {
         let app = PickApp;
         let mut model = Model::default();
+        assert!(app.view(&model).show_scan_card, "fresh model shows card");
         let mut cmd = app.update(Event::StartScan, &mut model);
         assert!(model.scan_active);
-        // ViewModel hides the scan card once scan active + messages arrive
+        assert!(!app.view(&model).show_scan_card, "card hidden after StartScan");
         let req = cmd.effects().next().expect("an effect");
         let op = match req {
             Effect::Pentest(op) => op.operation,
@@ -457,5 +467,118 @@ mod tests {
         );
         assert_eq!(model.phase, crate::model::Phase::NeedsSignIn);
         assert!(app.view(&model).needs_sign_in);
+    }
+
+    #[test]
+    fn open_document_requests_content_and_share() {
+        let app = PickApp;
+        let mut model = Model {
+            conversation_id: Some("conv-1".into()),
+            conversation_docs: vec![crate::view::DocRef {
+                id: "doc-1".into(),
+                title: "Test Report".into(),
+                conversation_id: "conv-1".into(),
+            }],
+            ..Default::default()
+        };
+        let mut cmd = app.update(Event::OpenDocument("doc-1".into()), &mut model);
+        assert_eq!(model.opening_document_id.as_deref(), Some("doc-1"));
+        let op = match cmd.effects().next().unwrap() {
+            Effect::Pentest(op) => op.operation,
+            _ => panic!("expected Pentest effect"),
+        };
+        assert!(
+            matches!(op, PentestOperation::GetDocumentContent { document_id, conversation_id }
+                if document_id == "doc-1" && conversation_id == "conv-1")
+        );
+        let _ = app.update(
+            Event::DocumentContentResult(crate::DocumentContentOutcome {
+                content: Some("# Test\nContent".into()),
+                error: None,
+            }),
+            &mut model,
+        );
+        let vm = app.view(&model);
+        assert!(vm.open_document.is_some());
+        let doc = vm.open_document.unwrap();
+        assert_eq!(doc.id, "doc-1");
+        assert_eq!(doc.title, "Test Report");
+        let mut cmd = app.update(Event::CreateShareLink("doc-1".into()), &mut model);
+        let op = match cmd.effects().next().unwrap() {
+            Effect::Pentest(op) => op.operation,
+            _ => panic!("expected Pentest effect"),
+        };
+        assert!(
+            matches!(op, PentestOperation::CreateSharedLink { document_id, conversation_id }
+                if document_id == "doc-1" && conversation_id == "conv-1")
+        );
+        let _ = app.update(
+            Event::ShareLinkResult(crate::ShareLinkOutcome {
+                url: Some("https://share.example/abc".into()),
+                error: None,
+            }),
+            &mut model,
+        );
+        let vm = app.view(&model);
+        assert_eq!(
+            vm.open_document.unwrap().share_url.as_deref(),
+            Some("https://share.example/abc")
+        );
+    }
+
+    #[test]
+    fn tool_call_delta_exposes_tool_rows() {
+        let app = PickApp;
+        let mut model = Model {
+            conversation_id: Some("conv-1".into()),
+            ..Default::default()
+        };
+        let delta = ConversationDelta {
+            messages: vec![],
+            tool_calls: vec![crate::view::ToolCallView {
+                name: "nmap".into(),
+                status: crate::view::ToolStatus::Running,
+            }],
+            done: false,
+        };
+        let _ = app.update(
+            Event::Delta(crate::DeltaOutcome {
+                delta: Some(delta),
+                error: None,
+            }),
+            &mut model,
+        );
+        let vm = app.view(&model);
+        assert_eq!(vm.tool_calls.len(), 1);
+        assert_eq!(vm.tool_calls[0].name, "nmap");
+        assert_eq!(vm.tool_calls[0].status, crate::view::ToolStatus::Running);
+    }
+
+    #[test]
+    fn view_is_pure_function_of_model() {
+        let app = PickApp;
+        let m1 = Model::default();
+        let m2 = Model {
+            phase: crate::model::Phase::NeedsSignIn,
+            messages: vec![MessageView {
+                sender: "user".into(),
+                kind: crate::view::MessageKind::User,
+                markdown: "test".into(),
+                tool: None,
+            }],
+            ..Default::default()
+        };
+        let vm1a = app.view(&m1);
+        let vm1b = app.view(&m1);
+        assert_eq!(vm1a, vm1b, "view() called twice on same model should be equal");
+        let vm2 = app.view(&m2);
+        assert_ne!(
+            vm1a.screen, vm2.screen,
+            "different models should produce different screens"
+        );
+        assert_ne!(
+            vm1a.needs_sign_in, vm2.needs_sign_in,
+            "different models should produce different needs_sign_in"
+        );
     }
 }
