@@ -741,9 +741,18 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             });
         let Some(candidate) = candidate else { return };
 
+        // `on_connect` registers under the ENV-SCOPED instance id
+        // (`env_scoped_instance_id(device_id, host)`), and the SDK persists
+        // credentials under that same id. Check for existing creds with the
+        // scoped id too, otherwise the check looks at the wrong filename, never
+        // finds creds, and forces a fresh OAuth sign-in on every launch.
+        let scoped_instance_id = pentest_core::config::ConnectorConfig::env_scoped_instance_id(
+            &device_id,
+            &candidate.host,
+        );
         let creds = pentest_core::config::ConnectorConfig::credentials_present(
             &candidate.connector_name,
-            &candidate.instance_id,
+            &scoped_instance_id,
         );
         match pentest_core::config::plg_connect_decision(easy_mode_flag, creds) {
             pentest_core::config::PlgConnectStep::SignIn => {

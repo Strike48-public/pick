@@ -255,12 +255,64 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
                     "‹ Back"
                 }
                 span { class: "easy-doc-viewer-title", "{title}" }
-                // Top-right share icon → opens our share menu.
+                // Top-right share icon → opens our share menu, anchored to the
+                // bar's bottom edge (top:100%) so it never overlaps the bar and
+                // needs no guessed pixel offset.
                 button {
                     class: "easy-doc-share-btn",
                     "aria-label": "Share report",
                     onclick: move |_| { let v = share_open(); share_open.set(!v); },
                     dangerous_inner_html: SHARE_ICON_SVG,
+                }
+                // Share menu nested in the bar so it anchors to the bar's bottom
+                // edge (CSS top:100%) — no guessed pixel offset.
+                if share_open() {
+                    div { class: "easy-doc-share-menu",
+                        {
+                            let (r, ttl) = (run_with_link.clone(), title.clone());
+                            rsx! {
+                                button {
+                                    class: "easy-doc-menu-item",
+                                    onclick: move |_| r.clone()(ShareAction::NativeSheet, None, ttl.clone()),
+                                    span { class: "easy-doc-menu-icon", dangerous_inner_html: SHARE_ICON_SVG }
+                                    "Share…"
+                                }
+                            }
+                        }
+                        {
+                            let (r, ttl) = (run_with_link.clone(), title.clone());
+                            rsx! {
+                                button {
+                                    class: "easy-doc-menu-item",
+                                    onclick: move |_| r.clone()(ShareAction::Copy, None, ttl.clone()),
+                                    "Copy link"
+                                }
+                            }
+                        }
+                        {
+                            let (r, ttl) = (run_with_link.clone(), title.clone());
+                            rsx! {
+                                button {
+                                    class: "easy-doc-menu-item",
+                                    onclick: move |_| r.clone()(ShareAction::OpenBrowser, None, ttl.clone()),
+                                    "Open in browser"
+                                }
+                            }
+                        }
+                        div { class: "easy-doc-menu-sep" }
+                        for network in SocialNetwork::all() {
+                            {
+                                let (r, ttl) = (run_with_link.clone(), title.clone());
+                                rsx! {
+                                    button {
+                                        class: "easy-doc-menu-item",
+                                        onclick: move |_| r.clone()(ShareAction::Social, Some(network), ttl.clone()),
+                                        "{network.label()}"
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             div {
@@ -276,58 +328,11 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
             if let Some(msg) = toast() {
                 div { class: "easy-doc-toast-float", "{msg}" }
             }
-            // Share menu: our actions incl. a native OS-sheet trigger. Tapping
-            // the scrim closes it.
+            // Full-screen scrim to catch taps outside the menu (closes it).
             if share_open() {
                 div {
                     class: "easy-doc-share-scrim",
                     onclick: move |_| share_open.set(false),
-                }
-                div { class: "easy-doc-share-menu",
-                    {
-                        let (r, ttl) = (run_with_link.clone(), title.clone());
-                        rsx! {
-                            button {
-                                class: "easy-doc-menu-item",
-                                onclick: move |_| r.clone()(ShareAction::NativeSheet, None, ttl.clone()),
-                                span { class: "easy-doc-menu-icon", dangerous_inner_html: SHARE_ICON_SVG }
-                                "Share…"
-                            }
-                        }
-                    }
-                    {
-                        let (r, ttl) = (run_with_link.clone(), title.clone());
-                        rsx! {
-                            button {
-                                class: "easy-doc-menu-item",
-                                onclick: move |_| r.clone()(ShareAction::Copy, None, ttl.clone()),
-                                "Copy link"
-                            }
-                        }
-                    }
-                    {
-                        let (r, ttl) = (run_with_link.clone(), title.clone());
-                        rsx! {
-                            button {
-                                class: "easy-doc-menu-item",
-                                onclick: move |_| r.clone()(ShareAction::OpenBrowser, None, ttl.clone()),
-                                "Open in browser"
-                            }
-                        }
-                    }
-                    div { class: "easy-doc-menu-sep" }
-                    for network in SocialNetwork::all() {
-                        {
-                            let (r, ttl) = (run_with_link.clone(), title.clone());
-                            rsx! {
-                                button {
-                                    class: "easy-doc-menu-item",
-                                    onclick: move |_| r.clone()(ShareAction::Social, Some(network), ttl.clone()),
-                                    "{network.label()}"
-                                }
-                            }
-                        }
-                    }
                 }
             }
         }

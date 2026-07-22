@@ -584,12 +584,15 @@ body {
     /* Clip children so a tall chat can't push the brand bar / scan card off the
        top of the screen — the chat area scrolls internally instead. */
     overflow: hidden;
-    /* Keep the scan card clear of the status bar / Dynamic Island. The dx
-       WebView doesn't set viewport-fit=cover, so env(safe-area-inset-top) is 0
-       on iOS; max() floors it at 59px to clear the iPhone Pro Dynamic Island
-       (and still grows if a real inset is ever reported). ~24px covers a plain
-       Android status bar. */
-    padding-top: max(env(safe-area-inset-top, 0px), 59px);
+    /* Top breathing room only. Measured (iPhone 17 Pro sim, innerH=778 vs a
+       full-bleed ~874) the dx WebView is ALREADY inset below the status bar /
+       Dynamic Island — the OS lays it out inside the safe area, so
+       env(safe-area-inset-top) is 0 here and there is no notch to clear
+       ourselves. A hardcoded 59px floor (previous value) therefore double-gapped
+       the bar to top=59. Use the real inset (0 on this WebView) plus a small
+       fixed pad; if a future build enables viewport-fit=cover the env() term
+       picks up the true inset automatically. */
+    padding-top: calc(env(safe-area-inset-top, 0px) + var(--em-space-2));
     box-sizing: border-box;
 }
 /* Co-brand top bar: Strike48 "S" badge + lowercase "pick" wordmark. */
@@ -764,8 +767,13 @@ body {
 .easy-doc-viewer-bar {
     display: flex; align-items: center; gap: 10px;
     padding: 12px 16px; border-bottom: 1px solid var(--em-border);
-    /* clear the status bar / Dynamic Island, matching .easy-mode */
-    padding-top: max(env(safe-area-inset-top, 0px), 59px);
+    /* Trust the OS inset (the dx WebView is already laid out inside the safe
+       area — see .easy-mode), plus small breathing room. No hardcoded notch
+       floor. */
+    padding-top: calc(env(safe-area-inset-top, 0px) + 12px);
+    /* Positioning context for the share menu, which anchors to this bar's
+       bottom edge (top:100%) instead of a guessed pixel offset. */
+    position: relative;
 }
 .easy-doc-back { background: none; border: none; color: var(--em-brand); font-size: 17px; padding: 4px; flex-shrink: 0; }
 .easy-doc-viewer-title { flex: 1; font-weight: 600; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -795,8 +803,10 @@ body {
     position: absolute; inset: 0; z-index: 25;
 }
 .easy-doc-share-menu {
+    /* Anchored to the bar's bottom edge (bar is position:relative) — opens
+       just below the titlebar with no guessed offset. */
     position: absolute; z-index: 26;
-    top: max(env(safe-area-inset-top, 0px), 59px);
+    top: 100%;
     right: 12px;
     min-width: 200px;
     background: var(--em-surface);
