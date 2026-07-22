@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,6 +44,8 @@ fun TopBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(PickColors.Background)
+            // Clear the system status bar so the badge/wordmark aren't drawn under the clock.
+            .statusBarsPadding()
             .padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 12.dp),
     ) {
         Row(
