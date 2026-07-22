@@ -2,7 +2,9 @@ package com.strike48.pickcrux.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,6 +23,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.strike48.pick.shared.MessageKind
+import com.strike48.pick.shared.MessagePartView
 import com.strike48.pick.shared.MessageView
 import com.strike48.pick.shared.ToolCallView
 import com.strike48.pick.shared.ToolStatus
@@ -29,10 +32,10 @@ import com.strike48.pick.shared.ToolStatus
 fun MessageRow(message: MessageView) {
     when (message.kind) {
         MessageKind.USER -> UserBubble(message.markdown)
-        MessageKind.AGENTTEXT -> MarkdownText(
-            blocks = message.blocks,
-            modifier = Modifier.fillMaxWidth(),
-        )
+        // Render the ordered parts (text/thinking/tool) so an agent message
+        // reads exactly as it does in the Dioxus app. Falls back to the legacy
+        // flattened markdown when a message carries no parts.
+        MessageKind.AGENTTEXT -> AgentMessage(message)
         MessageKind.TOOLCALL -> {
             val tool = message.tool
             if (tool != null) {
@@ -40,6 +43,51 @@ fun MessageRow(message: MessageView) {
             } else {
                 Text(message.markdown, color = PickColors.Muted, fontSize = 14.sp)
             }
+        }
+    }
+}
+
+@Composable
+private fun AgentMessage(message: MessageView) {
+    if (message.parts.isEmpty()) {
+        MarkdownText(blocks = message.blocks, modifier = Modifier.fillMaxWidth())
+        return
+    }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        message.parts.forEach { part ->
+            when (part) {
+                is MessagePartView.Text -> MarkdownText(
+                    blocks = part.blocks,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                is MessagePartView.Thinking -> ThinkingBlock(part.text)
+                is MessagePartView.Tool -> ToolCallRow(part.tool)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThinkingBlock(text: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(PickColors.SubtleFill)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Column {
+            Text(
+                text = "Thinking",
+                color = PickColors.Muted,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+            )
+            Spacer(Modifier.width(0.dp))
+            Text(text = text, color = PickColors.Muted, fontSize = 13.sp)
         }
     }
 }

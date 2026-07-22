@@ -1017,17 +1017,89 @@ indirect public enum MessageKind: Hashable, Equatable {
     }
 }
 
+/// One ordered part of an agent message. The shells render these IN ORDER so a
+/// message reads exactly as it does in the Dioxus app: interleaved prose,
+/// thinking blocks, and tool cards.
+indirect public enum MessagePartView: Hashable, Equatable {
+    /// A run of prose, pre-parsed into render-ready markdown blocks.
+    case text(blocks: [MarkdownBlock])
+    /// A collapsible "thinking" block (raw text, not markdown-styled).
+    case thinking(text: String)
+    /// A tool-call card.
+    case tool(tool: ToolCallView)
+
+    public func serialize<S: Serializer>(serializer: S) throws {
+        try serializer.increase_container_depth()
+        switch self {
+        case .text(let blocks):
+            try serializer.serialize_variant_index(value: 0)
+            try serializeArray(value: blocks, serializer: serializer) { item, serializer in
+                try item.serialize(serializer: serializer)
+            }
+        case .thinking(let text):
+            try serializer.serialize_variant_index(value: 1)
+            try serializer.serialize_str(value: text)
+        case .tool(let tool):
+            try serializer.serialize_variant_index(value: 2)
+            try tool.serialize(serializer: serializer)
+        }
+        try serializer.decrease_container_depth()
+    }
+
+    public func bincodeSerialize() throws -> [UInt8] {
+        let serializer = BincodeSerializer.init();
+        try self.serialize(serializer: serializer)
+        return serializer.get_bytes()
+    }
+
+    public static func deserialize<D: Deserializer>(deserializer: D) throws -> MessagePartView {
+        let index = try deserializer.deserialize_variant_index()
+        try deserializer.increase_container_depth()
+        switch index {
+        case 0:
+            let blocks = try deserializeArray(deserializer: deserializer) { deserializer in
+                try MarkdownBlock.deserialize(deserializer: deserializer)
+            }
+            try deserializer.decrease_container_depth()
+            return .text(blocks: blocks)
+        case 1:
+            let text = try deserializer.deserialize_str()
+            try deserializer.decrease_container_depth()
+            return .thinking(text: text)
+        case 2:
+            let tool = try ToolCallView.deserialize(deserializer: deserializer)
+            try deserializer.decrease_container_depth()
+            return .tool(tool: tool)
+        default: throw DeserializationError.invalidInput(issue: "Unknown variant index for MessagePartView: \(index)")
+        }
+    }
+
+    public static func bincodeDeserialize(input: [UInt8]) throws -> MessagePartView {
+        let deserializer = BincodeDeserializer.init(input: input);
+        let obj = try deserialize(deserializer: deserializer)
+        if deserializer.get_buffer_offset() < input.count {
+            throw DeserializationError.invalidInput(issue: "Some input bytes were not read")
+        }
+        return obj
+    }
+}
+
 public struct MessageView: Hashable, Equatable {
     public var sender: String
     public var kind: MessageKind
+    /// Ordered parts (text/thinking/tool). Shells prefer this over the legacy
+    /// flattened `markdown`/`blocks`/`tool` fields, which are kept for a smooth
+    /// migration and are derived from the same source message.
+    public var parts: [MessagePartView]
     public var markdown: String
     /// Pre-parsed markdown blocks for native rendering. Derived from `markdown`.
     public var blocks: [MarkdownBlock]
     public var tool: ToolCallView?
 
-    public init(sender: String, kind: MessageKind, markdown: String, blocks: [MarkdownBlock], tool: ToolCallView?) {
+    public init(sender: String, kind: MessageKind, parts: [MessagePartView], markdown: String, blocks: [MarkdownBlock], tool: ToolCallView?) {
         self.sender = sender
         self.kind = kind
+        self.parts = parts
         self.markdown = markdown
         self.blocks = blocks
         self.tool = tool
@@ -1037,6 +1109,9 @@ public struct MessageView: Hashable, Equatable {
         try serializer.increase_container_depth()
         try serializer.serialize_str(value: self.sender)
         try self.kind.serialize(serializer: serializer)
+        try serializeArray(value: self.parts, serializer: serializer) { item, serializer in
+            try item.serialize(serializer: serializer)
+        }
         try serializer.serialize_str(value: self.markdown)
         try serializeArray(value: self.blocks, serializer: serializer) { item, serializer in
             try item.serialize(serializer: serializer)
@@ -1057,6 +1132,9 @@ public struct MessageView: Hashable, Equatable {
         try deserializer.increase_container_depth()
         let sender = try deserializer.deserialize_str()
         let kind = try MessageKind.deserialize(deserializer: deserializer)
+        let parts = try deserializeArray(deserializer: deserializer) { deserializer in
+            try MessagePartView.deserialize(deserializer: deserializer)
+        }
         let markdown = try deserializer.deserialize_str()
         let blocks = try deserializeArray(deserializer: deserializer) { deserializer in
             try MarkdownBlock.deserialize(deserializer: deserializer)
@@ -1065,7 +1143,7 @@ public struct MessageView: Hashable, Equatable {
             try ToolCallView.deserialize(deserializer: deserializer)
         }
         try deserializer.decrease_container_depth()
-        return MessageView(sender: sender, kind: kind, markdown: markdown, blocks: blocks, tool: tool)
+        return MessageView(sender: sender, kind: kind, parts: parts, markdown: markdown, blocks: blocks, tool: tool)
     }
 
     public static func bincodeDeserialize(input: [UInt8]) throws -> MessageView {
@@ -1773,16 +1851,34 @@ indirect public enum SpanStyle: Hashable, Equatable {
 public struct ToolCallView: Hashable, Equatable {
     public var name: String
     public var status: ToolStatus
+    /// Raw JSON arguments the agent invoked the tool with, when available.
+    public var arguments: String?
+    /// Raw tool result payload, when the call has completed.
+    public var result: String?
+    /// Error text, when the call failed.
+    public var error: String?
 
-    public init(name: String, status: ToolStatus) {
+    public init(name: String, status: ToolStatus, arguments: String?, result: String?, error: String?) {
         self.name = name
         self.status = status
+        self.arguments = arguments
+        self.result = result
+        self.error = error
     }
 
     public func serialize<S: Serializer>(serializer: S) throws {
         try serializer.increase_container_depth()
         try serializer.serialize_str(value: self.name)
         try self.status.serialize(serializer: serializer)
+        try serializeOption(value: self.arguments, serializer: serializer) { value, serializer in
+            try serializer.serialize_str(value: value)
+        }
+        try serializeOption(value: self.result, serializer: serializer) { value, serializer in
+            try serializer.serialize_str(value: value)
+        }
+        try serializeOption(value: self.error, serializer: serializer) { value, serializer in
+            try serializer.serialize_str(value: value)
+        }
         try serializer.decrease_container_depth()
     }
 
@@ -1796,8 +1892,17 @@ public struct ToolCallView: Hashable, Equatable {
         try deserializer.increase_container_depth()
         let name = try deserializer.deserialize_str()
         let status = try ToolStatus.deserialize(deserializer: deserializer)
+        let arguments = try deserializeOption(deserializer: deserializer) { deserializer in
+            try deserializer.deserialize_str()
+        }
+        let result = try deserializeOption(deserializer: deserializer) { deserializer in
+            try deserializer.deserialize_str()
+        }
+        let error = try deserializeOption(deserializer: deserializer) { deserializer in
+            try deserializer.deserialize_str()
+        }
         try deserializer.decrease_container_depth()
-        return ToolCallView(name: name, status: status)
+        return ToolCallView(name: name, status: status, arguments: arguments, result: result, error: error)
     }
 
     public static func bincodeDeserialize(input: [UInt8]) throws -> ToolCallView {

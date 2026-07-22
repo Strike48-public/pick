@@ -419,6 +419,7 @@ mod tests {
             messages: vec![MessageView {
                 sender: "pentest-connector".into(),
                 kind: crate::view::MessageKind::AgentText,
+                parts: vec![],
                 markdown: "scanning...".into(),
                 blocks: vec![],
                 tool: None,
@@ -559,6 +560,9 @@ mod tests {
             tool_calls: vec![crate::view::ToolCallView {
                 name: "nmap".into(),
                 status: crate::view::ToolStatus::Running,
+                arguments: None,
+                result: None,
+                error: None,
             }],
             done: false,
         };
@@ -584,6 +588,7 @@ mod tests {
             messages: vec![MessageView {
                 sender: "user".into(),
                 kind: crate::view::MessageKind::User,
+                parts: vec![],
                 markdown: "test".into(),
                 blocks: vec![],
                 tool: None,

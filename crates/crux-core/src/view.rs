@@ -55,12 +55,36 @@ pub enum ToolStatus {
 pub struct ToolCallView {
     pub name: String,
     pub status: ToolStatus,
+    /// Raw JSON arguments the agent invoked the tool with, when available.
+    pub arguments: Option<String>,
+    /// Raw tool result payload, when the call has completed.
+    pub result: Option<String>,
+    /// Error text, when the call failed.
+    pub error: Option<String>,
+}
+
+/// One ordered part of an agent message. The shells render these IN ORDER so a
+/// message reads exactly as it does in the Dioxus app: interleaved prose,
+/// thinking blocks, and tool cards.
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[repr(C)]
+pub enum MessagePartView {
+    /// A run of prose, pre-parsed into render-ready markdown blocks.
+    Text { blocks: Vec<MarkdownBlock> },
+    /// A collapsible "thinking" block (raw text, not markdown-styled).
+    Thinking { text: String },
+    /// A tool-call card.
+    Tool { tool: ToolCallView },
 }
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct MessageView {
     pub sender: String,
     pub kind: MessageKind,
+    /// Ordered parts (text/thinking/tool). Shells prefer this over the legacy
+    /// flattened `markdown`/`blocks`/`tool` fields, which are kept for a smooth
+    /// migration and are derived from the same source message.
+    pub parts: Vec<MessagePartView>,
     pub markdown: String,
     /// Pre-parsed markdown blocks for native rendering. Derived from `markdown`.
     pub blocks: Vec<MarkdownBlock>,

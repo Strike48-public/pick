@@ -5,7 +5,7 @@ use crux_core::middleware::{EffectMiddleware, EffectResolver};
 use pentest_core::matrix::{ChatClient, ChatMessage, ConversationState, MessagePart, ToolCallStatus};
 use pick_crux_core::effect::{ConversationDelta, PentestOperation, PentestOutcome};
 use pick_crux_core::view::{
-    ConversationRef, DocRef, MessageKind, MessageView, ToolCallView, ToolStatus,
+    ConversationRef, DocRef, MessageKind, MessagePartView, MessageView, ToolCallView, ToolStatus,
 };
 
 #[cfg(test)]
@@ -108,15 +108,24 @@ fn map_tool_status(status: ToolCallStatus) -> ToolStatus {
     }
 }
 
+/// Map a pentest-core ToolCallInfo to a crux ToolCallView, carrying the detail
+/// fields (args/result/error) so a shell can render a tool card with detail.
+fn tool_call_view(tc: &pentest_core::matrix::ToolCallInfo) -> ToolCallView {
+    ToolCallView {
+        name: tc.name.clone(),
+        status: map_tool_status(tc.status),
+        arguments: tc.arguments.clone(),
+        result: tc.result.clone(),
+        error: tc.error.clone(),
+    }
+}
+
 /// Extract all tool calls from a message's parts.
 fn extract_tool_calls(parts: &[MessagePart]) -> Vec<ToolCallView> {
     parts
         .iter()
         .filter_map(|p| match p {
-            MessagePart::ToolCall(tc) => Some(ToolCallView {
-                name: tc.name.clone(),
-                status: map_tool_status(tc.status),
-            }),
+            MessagePart::ToolCall(tc) => Some(tool_call_view(tc)),
             _ => None,
         })
         .collect()
@@ -125,12 +134,27 @@ fn extract_tool_calls(parts: &[MessagePart]) -> Vec<ToolCallView> {
 /// Find the first tool call in a message's parts, if any.
 fn first_tool_call(parts: &[MessagePart]) -> Option<ToolCallView> {
     parts.iter().find_map(|p| match p {
-        MessagePart::ToolCall(tc) => Some(ToolCallView {
-            name: tc.name.clone(),
-            status: map_tool_status(tc.status),
-        }),
+        MessagePart::ToolCall(tc) => Some(tool_call_view(tc)),
         _ => None,
     })
+}
+
+/// Map a message's ordered parts to ordered view parts, mirroring how the
+/// Dioxus app renders `msg.parts` (text -> markdown, thinking -> block,
+/// tool -> card) so native shells render the same structure.
+fn parts_to_views(parts: &[MessagePart]) -> Vec<MessagePartView> {
+    parts
+        .iter()
+        .map(|p| match p {
+            MessagePart::Text(s) => MessagePartView::Text {
+                blocks: pick_crux_core::markdown::parse_markdown(s),
+            },
+            MessagePart::Thinking(s) => MessagePartView::Thinking { text: s.clone() },
+            MessagePart::ToolCall(tc) => MessagePartView::Tool {
+                tool: tool_call_view(tc),
+            },
+        })
+        .collect()
 }
 
 /// Map a single ChatMessage to a MessageView.
@@ -143,6 +167,7 @@ fn message_to_view(msg: &ChatMessage) -> MessageView {
     MessageView {
         sender: msg.sender_name.clone(),
         kind,
+        parts: parts_to_views(&msg.parts),
         markdown: msg.text.clone(),
         blocks: pick_crux_core::markdown::parse_markdown(&msg.text),
         tool: first_tool_call(&msg.parts),
@@ -599,6 +624,65 @@ mod tests {
         let tool = view.tool.unwrap();
         assert_eq!(tool.name, "nmap");
         assert_eq!(tool.status, ToolStatus::Running);
+    }
+
+    #[test]
+    fn parts_map_in_order_with_thinking_and_multiple_tools() {
+        let msg = ChatMessage {
+            id: "m3".into(),
+            sender_type: "AGENT".into(),
+            sender_name: "Bot".into(),
+            text: "intro final".into(),
+            parts: vec![
+                MessagePart::Text("intro".into()),
+                MessagePart::Thinking("pondering".into()),
+                MessagePart::ToolCall(ToolCallInfo {
+                    id: "tc1".into(),
+                    name: "nmap".into(),
+                    arguments: Some("{\"target\":\"x\"}".into()),
+                    result: Some("open".into()),
+                    error: None,
+                    status: ToolCallStatus::Success,
+                }),
+                MessagePart::ToolCall(ToolCallInfo {
+                    id: "tc2".into(),
+                    name: "nikto".into(),
+                    arguments: None,
+                    result: None,
+                    error: Some("boom".into()),
+                    status: ToolCallStatus::Failed,
+                }),
+                MessagePart::Text("final".into()),
+            ],
+        };
+        let view = message_to_view(&msg);
+        assert_eq!(view.parts.len(), 5);
+        assert!(matches!(view.parts[0], MessagePartView::Text { .. }));
+        match &view.parts[1] {
+            MessagePartView::Thinking { text } => assert_eq!(text, "pondering"),
+            other => panic!("expected thinking, got {other:?}"),
+        }
+        match &view.parts[2] {
+            MessagePartView::Tool { tool } => {
+                assert_eq!(tool.name, "nmap");
+                assert_eq!(tool.status, ToolStatus::Success);
+                assert_eq!(tool.arguments.as_deref(), Some("{\"target\":\"x\"}"));
+                assert_eq!(tool.result.as_deref(), Some("open"));
+            }
+            other => panic!("expected tool, got {other:?}"),
+        }
+        match &view.parts[3] {
+            MessagePartView::Tool { tool } => {
+                assert_eq!(tool.name, "nikto");
+                assert_eq!(tool.status, ToolStatus::Error);
+                assert_eq!(tool.error.as_deref(), Some("boom"));
+            }
+            other => panic!("expected tool, got {other:?}"),
+        }
+        assert!(matches!(view.parts[4], MessagePartView::Text { .. }));
+        // Legacy fields still populated: first tool + flattened text.
+        assert_eq!(view.tool.as_ref().unwrap().name, "nmap");
+        assert_eq!(view.markdown, "intro final");
     }
 
     #[test]

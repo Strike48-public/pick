@@ -1320,9 +1320,120 @@ enum class MessageKind {
     }
 }
 
+/// One ordered part of an agent message. The shells render these IN ORDER so a
+/// message reads exactly as it does in the Dioxus app: interleaved prose,
+/// thinking blocks, and tool cards.
+sealed interface MessagePartView {
+    fun serialize(serializer: Serializer)
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    /// A run of prose, pre-parsed into render-ready markdown blocks.
+    data class Text(
+        val blocks: List<com.strike48.pick.shared.MarkdownBlock>,
+    ) : MessagePartView {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(0)
+            blocks.serialize(serializer) {
+                it.serialize(serializer)
+            }
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): Text {
+                deserializer.increase_container_depth()
+                val blocks =
+                    deserializer.deserializeListOf {
+                        com.strike48.pick.shared.MarkdownBlock.deserialize(deserializer)
+                    }
+                deserializer.decrease_container_depth()
+                return Text(blocks)
+            }
+        }
+    }
+
+    /// A collapsible "thinking" block (raw text, not markdown-styled).
+    data class Thinking(
+        val text: String,
+    ) : MessagePartView {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(1)
+            serializer.serialize_str(text)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): Thinking {
+                deserializer.increase_container_depth()
+                val text = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return Thinking(text)
+            }
+        }
+    }
+
+    /// A tool-call card.
+    data class Tool(
+        val tool: com.strike48.pick.shared.ToolCallView,
+    ) : MessagePartView {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(2)
+            tool.serialize(serializer)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): Tool {
+                deserializer.increase_container_depth()
+                val tool = com.strike48.pick.shared.ToolCallView.deserialize(deserializer)
+                deserializer.decrease_container_depth()
+                return Tool(tool)
+            }
+        }
+    }
+
+    companion object {
+        @Throws(DeserializationError::class)
+        fun deserialize(deserializer: Deserializer): MessagePartView {
+            val index = deserializer.deserialize_variant_index()
+            return when (index) {
+                0 -> Text.deserialize(deserializer)
+                1 -> Thinking.deserialize(deserializer)
+                2 -> Tool.deserialize(deserializer)
+                else -> throw DeserializationError("Unknown variant index for MessagePartView: $index")
+            }
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): MessagePartView {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
 data class MessageView(
     val sender: String,
     val kind: com.strike48.pick.shared.MessageKind,
+    /// Ordered parts (text/thinking/tool). Shells prefer this over the legacy
+    /// flattened `markdown`/`blocks`/`tool` fields, which are kept for a smooth
+    /// migration and are derived from the same source message.
+    val parts: List<com.strike48.pick.shared.MessagePartView>,
     val markdown: String,
     /// Pre-parsed markdown blocks for native rendering. Derived from `markdown`.
     val blocks: List<com.strike48.pick.shared.MarkdownBlock>,
@@ -1332,6 +1443,9 @@ data class MessageView(
         serializer.increase_container_depth()
         serializer.serialize_str(sender)
         kind.serialize(serializer)
+        parts.serialize(serializer) {
+            it.serialize(serializer)
+        }
         serializer.serialize_str(markdown)
         blocks.serialize(serializer) {
             it.serialize(serializer)
@@ -1353,6 +1467,10 @@ data class MessageView(
             deserializer.increase_container_depth()
             val sender = deserializer.deserialize_str()
             val kind = com.strike48.pick.shared.MessageKind.deserialize(deserializer)
+            val parts =
+                deserializer.deserializeListOf {
+                    com.strike48.pick.shared.MessagePartView.deserialize(deserializer)
+                }
             val markdown = deserializer.deserialize_str()
             val blocks =
                 deserializer.deserializeListOf {
@@ -1363,7 +1481,7 @@ data class MessageView(
                     com.strike48.pick.shared.ToolCallView.deserialize(deserializer)
                 }
             deserializer.decrease_container_depth()
-            return MessageView(sender, kind, markdown, blocks, tool)
+            return MessageView(sender, kind, parts, markdown, blocks, tool)
         }
 
         @Throws(DeserializationError::class)
@@ -2324,11 +2442,26 @@ enum class SpanStyle {
 data class ToolCallView(
     val name: String,
     val status: com.strike48.pick.shared.ToolStatus,
+    /// Raw JSON arguments the agent invoked the tool with, when available.
+    val arguments: String? = null,
+    /// Raw tool result payload, when the call has completed.
+    val result: String? = null,
+    /// Error text, when the call failed.
+    val error: String? = null,
 ) {
     fun serialize(serializer: Serializer) {
         serializer.increase_container_depth()
         serializer.serialize_str(name)
         status.serialize(serializer)
+        arguments.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        result.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        error.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
         serializer.decrease_container_depth()
     }
 
@@ -2343,8 +2476,20 @@ data class ToolCallView(
             deserializer.increase_container_depth()
             val name = deserializer.deserialize_str()
             val status = com.strike48.pick.shared.ToolStatus.deserialize(deserializer)
+            val arguments =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            val result =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            val error =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
             deserializer.decrease_container_depth()
-            return ToolCallView(name, status)
+            return ToolCallView(name, status, arguments, result, error)
         }
 
         @Throws(DeserializationError::class)
