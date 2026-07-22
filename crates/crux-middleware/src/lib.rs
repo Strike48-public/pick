@@ -198,7 +198,7 @@ const SCAN_CONNECTOR_NAME: &str = "pentest-connector";
 /// (`https://<host>/realms/<realm>` -> `<realm>`). The realm is the tenant scope
 /// the agent's connector key is built from. Returns None when the token is not a
 /// decodable JWT (then the caller has no session-derived tenant).
-fn realm_from_token(token: &str) -> Option<String> {
+pub fn realm_from_token(token: &str) -> Option<String> {
     use base64::Engine;
     let payload_b64 = token.split('.').nth(1)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD

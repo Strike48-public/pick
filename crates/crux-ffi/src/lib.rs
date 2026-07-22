@@ -33,8 +33,7 @@ use pick_crux_middleware::{CoreMatrixApi, MatrixApi, PentestMiddleware};
 
 /// The concrete middleware-wrapped layer the bridge sits on:
 /// `Core<PickApp>` with `PentestMiddleware` handling `Pentest` effects.
-type PickLayer =
-    crux_core::middleware::HandleEffectLayer<Core<PickApp>, PentestMiddleware>;
+type PickLayer = crux_core::middleware::HandleEffectLayer<Core<PickApp>, PentestMiddleware>;
 type PickBridge = Bridge<PickLayer, crux_core::bridge::BincodeFfiFormat>;
 
 /// A C callback the shell registers to be pinged whenever the view may have
@@ -112,25 +111,41 @@ fn init_tracing() {
     });
 }
 
-
 /// Opaque handle owning the middleware bridge, the effect-resolving runtime,
 /// and the `MatrixApi` the middleware fulfills `Pentest` effects with.
 pub struct PickCore {
     bridge: PickBridge,
-    /// Kept alive for the core's lifetime: the middleware spawns onto it.
-    _rt: tokio::runtime::Runtime,
+    /// Kept alive for the core's lifetime: the middleware spawns onto it, and
+    /// the tool-only connector background task runs on it too.
+    rt: tokio::runtime::Runtime,
     /// Shared with `PentestMiddleware` so the shell can swap the auth token.
     api: Arc<dyn MatrixApi>,
     /// The shell callback; swappable via `pick_set_notify`.
     notifier: NotifierSlot,
+    /// Strike48 API URL this core was built for. Used to build the tool-only
+    /// connector's config (host + derived Matrix API URL).
+    api_url: String,
+    /// Stable per-core instance id for the tool-only connector registration.
+    /// Generated once at build so re-adopting a token reuses the same identity
+    /// (connector approval + saved credentials are keyed by instance id).
+    instance_id: String,
+    /// Set once the tool-only connector has been spawned so re-adopting a token
+    /// never starts a second connector (one connector per instance, per the
+    /// project's "one connector per tenant" rule).
+    connector_started: std::sync::atomic::AtomicBool,
 }
 
 impl PickCore {
     /// Build a core over `api`, pinging the shell (via the notifier slot)
     /// whenever an async effect resolves so it re-reads the view. `notifier`
     /// may be `None` initially and set later with [`Self::set_notifier`].
+    /// `api_url` is retained so the tool-only connector can be built later.
     /// Returns `None` if the tokio runtime can't be created.
-    fn build(api: Arc<dyn MatrixApi>, notifier: Option<ShellNotifier>) -> Option<Self> {
+    fn build(
+        api: Arc<dyn MatrixApi>,
+        api_url: String,
+        notifier: Option<ShellNotifier>,
+    ) -> Option<Self> {
         let rt = tokio::runtime::Runtime::new().ok()?;
         let middleware = PentestMiddleware::new(rt.handle().clone(), api.clone());
 
@@ -144,19 +159,79 @@ impl PickCore {
         let bridge = Core::<PickApp>::new()
             .handle_effects_using(middleware)
             .bridge::<crux_core::bridge::BincodeFfiFormat>(move |_result| {
-                if let Ok(guard) = slot_for_cb.read() {
-                    if let Some(n) = guard.as_ref() {
-                        n.ping();
-                    }
+            if let Ok(guard) = slot_for_cb.read() {
+                if let Some(n) = guard.as_ref() {
+                    n.ping();
                 }
-            });
+            }
+        });
 
         Some(Self {
             bridge,
-            _rt: rt,
+            rt,
             api,
             notifier: slot,
+            api_url,
+            instance_id: uuid::Uuid::new_v4().to_string(),
+            connector_started: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// Spawn the Tool-only Strike48 connector on the core's tokio runtime, once.
+    ///
+    /// The crux shells only do chat GraphQL; without a registered connector the
+    /// agent has no device tools to run (scan reports say "Tools Not Available").
+    /// This registers Pick's tool set (nmap, etc.) as a Tool-behavior connector
+    /// so the agent can actually execute them during a scan.
+    ///
+    /// Guarded by `connector_started` so re-adopting a token never starts a
+    /// second connector (one connector per instance). The connector is spawned
+    /// as a detached background task and this returns immediately, so it never
+    /// blocks the token-adoption path.
+    fn spawn_tool_connector(&self, token: String) {
+        use std::sync::atomic::Ordering;
+
+        // One connector per instance: bail if we already started one.
+        if self.connector_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        // Derive the tenant from the session token's realm; without it the
+        // connector cannot register against the right scope. Skip (and reset the
+        // guard) if the token is not a decodable JWT so a later, valid token can
+        // still start the connector.
+        let Some(tenant) = pick_crux_middleware::realm_from_token(&token) else {
+            tracing::warn!(
+                "tool connector not started: session token has no realm (cannot derive tenant)"
+            );
+            self.connector_started.store(false, Ordering::SeqCst);
+            return;
+        };
+
+        let config = pentest_core::config::ConnectorConfig {
+            host: self.api_url.clone(),
+            tenant_id: tenant,
+            auth_token: token,
+            instance_id: self.instance_id.clone(),
+            connector_name: "pentest-connector".to_string(),
+            ..Default::default()
+        };
+
+        let tools = Arc::new(tokio::sync::RwLock::new(
+            pentest_tools::create_tool_registry(),
+        ));
+
+        tracing::info!(
+            instance_id = self.instance_id.as_str(),
+            host = self.api_url.as_str(),
+            "spawning tool-only connector"
+        );
+
+        self.rt.spawn(async move {
+            if let Err(e) = pentest_core::tool_connector::run_tool_connector(config, tools).await {
+                tracing::error!("tool connector exited with error: {}", e);
+            }
+        });
     }
 
     /// Register/replace the shell notify callback (`pick_set_notify`).
@@ -270,9 +345,9 @@ pub extern "C" fn pick_core_new(
         std::env::set_var("MATRIX_TLS_INSECURE", "true");
     }
 
-    let api: Arc<dyn MatrixApi> = Arc::new(CoreMatrixApi::new(api_url, token, None));
+    let api: Arc<dyn MatrixApi> = Arc::new(CoreMatrixApi::new(api_url.clone(), token, None));
     let notifier = ShellNotifier { notify, user_data };
-    match PickCore::build(api, Some(notifier)) {
+    match PickCore::build(api, api_url, Some(notifier)) {
         Some(core) => Box::into_raw(Box::new(core)),
         None => std::ptr::null_mut(),
     }
@@ -327,6 +402,10 @@ pub extern "C" fn pick_set_token(core: *mut PickCore, token_ptr: *const u8, toke
         if let Ok(bytes) = bincode::serialize(&event) {
             let _ = core.update_bytes(&bytes);
         }
+        // Register the device's tools with Strike48 so the agent can execute
+        // them during a scan. Spawns a background task and returns immediately;
+        // guarded so re-adopting a token never starts a second connector.
+        core.spawn_tool_connector(token.to_owned());
     }
 }
 
@@ -458,7 +537,8 @@ mod tests {
             user_data: std::ptr::null_mut(),
         };
         Box::into_raw(Box::new(
-            PickCore::build(Arc::new(FakeApi), Some(notifier)).expect("test runtime"),
+            PickCore::build(Arc::new(FakeApi), String::new(), Some(notifier))
+                .expect("test runtime"),
         ))
     }
 
@@ -516,7 +596,10 @@ mod tests {
     #[test]
     fn start_scan_streams_and_notifies() {
         let core = fake_core();
-        assert!(view_of(core).show_scan_card, "fresh core shows the scan card");
+        assert!(
+            view_of(core).show_scan_card,
+            "fresh core shows the scan card"
+        );
 
         // Feed StartScan; pick_update returns IMMEDIATELY (non-blocking). The
         // Pentest chain (SendScan -> Poll -> ListDocuments) resolves on the

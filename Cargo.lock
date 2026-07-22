@@ -7536,12 +7536,15 @@ dependencies = [
  "log",
  "openssl",
  "pentest-core",
+ "pentest-tools",
  "pick-crux-core",
  "pick-crux-middleware",
  "tokio",
+ "tracing",
  "tracing-log",
  "tracing-oslog",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
