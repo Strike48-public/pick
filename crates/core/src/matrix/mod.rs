@@ -3,12 +3,14 @@
 //! Provides a trait-based abstraction (`ChatClient`) so the backend
 //! can be swapped without touching UI code.
 
+mod agent_defaults;
 mod auth;
 mod client;
 pub mod documents;
 pub mod pre_approval;
 mod types;
 
+pub use agent_defaults::default_pentest_agent_input;
 pub use auth::*;
 pub use client::MatrixChatClient;
 pub use documents::{latest_document, DocumentSummary};
