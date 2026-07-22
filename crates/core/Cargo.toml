@@ -54,7 +54,7 @@ open = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 
 [dev-dependencies]
-pentest-tools = { path = "../tools" }
+pentest-tools = { path = "../tools", default-features = false }
 pentest-platform = { path = "../platform", features = ["desktop"] }
 tempfile = "3"
 wiremock = "0.6"
