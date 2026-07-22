@@ -25,6 +25,7 @@
 		CC0000000000000000000012 /* DocViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000012 /* DocViewer.swift */; };
 		CC0000000000000000000013 /* SignInView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000013 /* SignInView.swift */; };
 		CC0000000000000000000014 /* ErrorCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000014 /* ErrorCard.swift */; };
+		CC0000000000000000000018 /* NoticeCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000018 /* NoticeCard.swift */; };
 		CC0000000000000000000015 /* OAuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000015 /* OAuthManager.swift */; };
 		CC0000000000000000000016 /* MarkdownText.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000016 /* MarkdownText.swift */; };
 		CC0000000000000000000017 /* TypingIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000017 /* TypingIndicator.swift */; };
@@ -50,6 +51,7 @@
 		BB0000000000000000000012 /* DocViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocViewer.swift; sourceTree = "<group>"; };
 		BB0000000000000000000013 /* SignInView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignInView.swift; sourceTree = "<group>"; };
 		BB0000000000000000000014 /* ErrorCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorCard.swift; sourceTree = "<group>"; };
+		BB0000000000000000000018 /* NoticeCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoticeCard.swift; sourceTree = "<group>"; };
 		BB0000000000000000000015 /* OAuthManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthManager.swift; sourceTree = "<group>"; };
 		BB0000000000000000000016 /* MarkdownText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownText.swift; sourceTree = "<group>"; };
 		BB0000000000000000000017 /* TypingIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingIndicator.swift; sourceTree = "<group>"; };
@@ -104,6 +106,7 @@
 				BB0000000000000000000012 /* DocViewer.swift */,
 				BB0000000000000000000013 /* SignInView.swift */,
 				BB0000000000000000000014 /* ErrorCard.swift */,
+				BB0000000000000000000018 /* NoticeCard.swift */,
 				BB0000000000000000000015 /* OAuthManager.swift */,
 				BB0000000000000000000016 /* MarkdownText.swift */,
 				BB0000000000000000000017 /* TypingIndicator.swift */,
@@ -204,6 +207,7 @@
 				CC0000000000000000000012 /* DocViewer.swift in Sources */,
 				CC0000000000000000000013 /* SignInView.swift in Sources */,
 				CC0000000000000000000014 /* ErrorCard.swift in Sources */,
+				CC0000000000000000000018 /* NoticeCard.swift in Sources */,
 				CC0000000000000000000015 /* OAuthManager.swift in Sources */,
 				CC0000000000000000000016 /* MarkdownText.swift in Sources */,
 				CC0000000000000000000017 /* TypingIndicator.swift in Sources */,

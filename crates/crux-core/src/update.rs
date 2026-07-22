@@ -8,6 +8,7 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         Event::StartScan => {
             model.scan_active = true;
             model.error = None;
+            model.notice = None;
             let conv = model.conversation_id.clone();
             Command::request_from_shell(PentestOperation::SendScan {
                 conversation_id: conv,
@@ -32,6 +33,7 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         }
         Event::SendMessage(text) => {
             model.error = None;
+            model.notice = None;
             let conv = model.conversation_id.clone();
             Command::request_from_shell(PentestOperation::SendMessage {
                 conversation_id: conv,
@@ -75,6 +77,18 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
                 // poll/update, rendering the same message dozens of times.
                 model.messages = delta.messages;
                 model.tool_calls = delta.tool_calls;
+                // The agent backend errored (incl. token/rate-limit exhaustion):
+                // the middleware built a notice from tokenUsageStats. Surface it,
+                // stop the scan, and stop polling — this is terminal, but unlike
+                // a plain `done` we DON'T fetch documents (there is no report).
+                if let Some(notice) = delta.notice {
+                    model.notice = Some(notice);
+                    model.scan_active = false;
+                    model.activity = crate::view::AgentActivity::Idle;
+                    return render();
+                }
+                // A successful delta clears any stale notice.
+                model.notice = None;
                 // Reflect what the agent is doing (Thinking/RunningTools/...) so
                 // the shell shows an animated status line; clear it once done.
                 model.activity = if delta.done {
@@ -184,6 +198,7 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
             model.messages.clear();
             model.conversation_docs.clear();
             model.scan_active = false;
+            model.notice = None;
             render()
         }
         Event::OpenDocuments => {
@@ -407,7 +422,10 @@ mod tests {
         assert!(app.view(&model).show_scan_card, "fresh model shows card");
         let mut cmd = app.update(Event::StartScan, &mut model);
         assert!(model.scan_active);
-        assert!(!app.view(&model).show_scan_card, "card hidden after StartScan");
+        assert!(
+            !app.view(&model).show_scan_card,
+            "card hidden after StartScan"
+        );
         let req = cmd.effects().next().expect("an effect");
         let op = match req {
             Effect::Pentest(op) => op.operation,
@@ -457,6 +475,7 @@ mod tests {
             tool_calls: vec![],
             done: false,
             activity: Default::default(),
+            notice: None,
         };
         let mut cmd = app.update(
             Event::Delta(crate::DeltaOutcome {
@@ -492,6 +511,7 @@ mod tests {
             tool_calls: vec![],
             done: true,
             activity: Default::default(),
+            notice: None,
         };
         let mut cmd = app.update(
             Event::Delta(crate::DeltaOutcome {
@@ -506,6 +526,50 @@ mod tests {
             _ => panic!("expected Pentest effect"),
         };
         assert!(matches!(op, PentestOperation::ListDocuments { .. }));
+    }
+
+    #[test]
+    fn error_delta_surfaces_notice_and_stops_without_documents() {
+        let app = PickApp;
+        let mut model = Model {
+            conversation_id: Some("conv-1".into()),
+            scan_active: true,
+            ..Default::default()
+        };
+        let notice = crate::view::NoticeView {
+            kind: crate::view::NoticeKind::TokenLimit,
+            title: "Token limit reached".into(),
+            detail: "Daily token limit reached.".into(),
+            studio_url: Some("https://s/studio/#/".into()),
+        };
+        let delta = ConversationDelta {
+            messages: vec![],
+            tool_calls: vec![],
+            // Even a `done=true` error delta must NOT fetch documents; the notice
+            // is what makes it terminal-with-explanation.
+            done: true,
+            activity: Default::default(),
+            notice: Some(notice.clone()),
+        };
+        let mut cmd = app.update(
+            Event::Delta(crate::DeltaOutcome {
+                delta: Some(delta),
+                error: None,
+            }),
+            &mut model,
+        );
+        assert!(!model.scan_active, "error stops the scan");
+        assert_eq!(model.notice, Some(notice));
+        // The App should render, NOT request documents (there is no report).
+        let requested_docs = cmd.effects().any(|e| {
+            matches!(
+                e,
+                Effect::Pentest(op) if matches!(op.operation, PentestOperation::ListDocuments { .. })
+            )
+        });
+        assert!(!requested_docs, "error delta must not fetch documents");
+        // The surfaced notice projects into the ViewModel.
+        assert!(app.view(&model).notice.is_some());
     }
 
     #[test]
@@ -598,6 +662,7 @@ mod tests {
             }],
             done: false,
             activity: Default::default(),
+            notice: None,
         };
         let _ = app.update(
             Event::Delta(crate::DeltaOutcome {
@@ -630,7 +695,10 @@ mod tests {
         };
         let vm1a = app.view(&m1);
         let vm1b = app.view(&m1);
-        assert_eq!(vm1a, vm1b, "view() called twice on same model should be equal");
+        assert_eq!(
+            vm1a, vm1b,
+            "view() called twice on same model should be equal"
+        );
         let vm2 = app.view(&m2);
         assert_ne!(
             vm1a.screen, vm2.screen,

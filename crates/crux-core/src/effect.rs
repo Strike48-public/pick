@@ -5,7 +5,7 @@ use crux_core::capability::Operation;
 use facet::Facet;
 use serde::{Deserialize, Serialize};
 
-use crate::view::{ConversationRef, DocRef, MessageView, ToolCallView};
+use crate::view::{ConversationRef, DocRef, MessageView, NoticeView, ToolCallView};
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[repr(C)]
@@ -55,6 +55,11 @@ pub struct ConversationDelta {
     /// What the agent is doing right now (Thinking/Responding/RunningTools/...),
     /// projected from the server's AgentStatus. Drives the animated status line.
     pub activity: crate::view::AgentActivity,
+    /// Set when the poll observed `AgentStatus::Error`: an inline notice built
+    /// from `tokenUsageStats` distinguishing a token-limit hit from a generic
+    /// upstream failure. `None` on a normal (success) delta. When present the
+    /// App treats the delta as terminal and surfaces the notice.
+    pub notice: Option<NoticeView>,
 }
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]

@@ -39,6 +39,13 @@ struct ContentView: View {
                             .padding(.bottom, 8)
                     }
 
+                    // Surfaced when the agent backend errored (token limit or a
+                    // generic upstream failure) instead of ending silently.
+                    if let notice = core.vm.notice {
+                        NoticeCard(notice: notice)
+                            .padding(.bottom, 8)
+                    }
+
                     mainContent
                 }
             }

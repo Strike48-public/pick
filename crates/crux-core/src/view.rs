@@ -81,6 +81,28 @@ impl AgentActivity {
     }
 }
 
+/// Severity for an inline notice surfaced when the agent backend errors.
+/// Mirrors pentest-core's `ChatNoticeKind`; drives styling, not behaviour.
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[repr(C)]
+pub enum NoticeKind {
+    /// The server hit a hard limit (token/rate). User action required.
+    TokenLimit,
+    /// Some other upstream failure — usually transient.
+    UpstreamError,
+}
+
+/// A render-ready notice describing why a scan/chat stopped without a reply.
+/// Mirrors pentest-core's `ChatNotice` across the ViewModel boundary.
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct NoticeView {
+    pub kind: NoticeKind,
+    pub title: String,
+    pub detail: String,
+    /// Optional URL to the Studio session (e.g. for checking token usage).
+    pub studio_url: Option<String>,
+}
+
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ToolCallView {
     pub name: String,
@@ -164,6 +186,9 @@ pub struct ViewModel {
     pub agent_activity: AgentActivity,
     /// Pre-formatted human label for `agent_activity` (empty when Idle).
     pub activity_label: String,
+    /// Inline notice surfaced when the agent backend errored (token limit or a
+    /// generic upstream failure) instead of producing a reply. `None` normally.
+    pub notice: Option<NoticeView>,
 }
 
 impl Default for ConnectionView {

@@ -147,7 +147,9 @@ impl App for PickApp {
             },
             messages: model.messages.clone(),
             scan_in_progress: model.scan_active,
-            show_scan_card: !model.scan_active && model.messages.is_empty() && model.conversation_id.is_none(),
+            show_scan_card: !model.scan_active
+                && model.messages.is_empty()
+                && model.conversation_id.is_none(),
             conversation_docs: model.conversation_docs.clone(),
             all_documents: model.all_documents.clone(),
             history: model.history.clone(),
@@ -157,6 +159,7 @@ impl App for PickApp {
             tool_calls: model.tool_calls.clone(),
             agent_activity: model.activity.clone(),
             activity_label: model.activity.label().to_string(),
+            notice: model.notice.clone(),
         }
     }
 }

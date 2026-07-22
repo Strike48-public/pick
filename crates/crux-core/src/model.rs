@@ -1,7 +1,7 @@
 //! Private App state. Never crosses the FFI boundary; `view()` projects it into
 //! the ViewModel.
 
-use crate::view::{ConnectionPhase, ConversationRef, DocRef, DocView, MessageView};
+use crate::view::{ConnectionPhase, ConversationRef, DocRef, DocView, MessageView, NoticeView};
 
 #[derive(Default)]
 pub struct Model {
@@ -20,6 +20,9 @@ pub struct Model {
     pub tool_calls: Vec<crate::view::ToolCallView>,
     /// What the agent is doing right now — drives the animated status line.
     pub activity: crate::view::AgentActivity,
+    /// Inline notice set when the agent backend errored (token limit / upstream
+    /// failure) instead of producing a reply. Cleared on new scan/message/chat.
+    pub notice: Option<NoticeView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]

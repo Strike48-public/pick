@@ -272,12 +272,18 @@ public struct ConversationDelta: Hashable, Equatable {
     /// What the agent is doing right now (Thinking/Responding/RunningTools/...),
     /// projected from the server's AgentStatus. Drives the animated status line.
     public var activity: AgentActivity
+    /// Set when the poll observed `AgentStatus::Error`: an inline notice built
+    /// from `tokenUsageStats` distinguishing a token-limit hit from a generic
+    /// upstream failure. `None` on a normal (success) delta. When present the
+    /// App treats the delta as terminal and surfaces the notice.
+    public var notice: NoticeView?
 
-    public init(messages: [MessageView], toolCalls: [ToolCallView], done: Bool, activity: AgentActivity) {
+    public init(messages: [MessageView], toolCalls: [ToolCallView], done: Bool, activity: AgentActivity, notice: NoticeView?) {
         self.messages = messages
         self.toolCalls = toolCalls
         self.done = done
         self.activity = activity
+        self.notice = notice
     }
 
     public func serialize<S: Serializer>(serializer: S) throws {
@@ -290,6 +296,9 @@ public struct ConversationDelta: Hashable, Equatable {
         }
         try serializer.serialize_bool(value: self.done)
         try self.activity.serialize(serializer: serializer)
+        try serializeOption(value: self.notice, serializer: serializer) { value, serializer in
+            try value.serialize(serializer: serializer)
+        }
         try serializer.decrease_container_depth()
     }
 
@@ -309,8 +318,11 @@ public struct ConversationDelta: Hashable, Equatable {
         }
         let done = try deserializer.deserialize_bool()
         let activity = try AgentActivity.deserialize(deserializer: deserializer)
+        let notice = try deserializeOption(deserializer: deserializer) { deserializer in
+            try NoticeView.deserialize(deserializer: deserializer)
+        }
         try deserializer.decrease_container_depth()
-        return ConversationDelta(messages: messages, toolCalls: toolCalls, done: done, activity: activity)
+        return ConversationDelta(messages: messages, toolCalls: toolCalls, done: done, activity: activity, notice: notice)
     }
 
     public static func bincodeDeserialize(input: [UInt8]) throws -> ConversationDelta {
@@ -1236,6 +1248,110 @@ public struct MessageView: Hashable, Equatable {
     }
 }
 
+/// Severity for an inline notice surfaced when the agent backend errors.
+/// Mirrors pentest-core's `ChatNoticeKind`; drives styling, not behaviour.
+indirect public enum NoticeKind: Hashable, Equatable {
+    /// The server hit a hard limit (token/rate). User action required.
+    case tokenLimit
+    /// Some other upstream failure — usually transient.
+    case upstreamError
+
+    public func serialize<S: Serializer>(serializer: S) throws {
+        try serializer.increase_container_depth()
+        switch self {
+        case .tokenLimit:
+            try serializer.serialize_variant_index(value: 0)
+        case .upstreamError:
+            try serializer.serialize_variant_index(value: 1)
+        }
+        try serializer.decrease_container_depth()
+    }
+
+    public func bincodeSerialize() throws -> [UInt8] {
+        let serializer = BincodeSerializer.init();
+        try self.serialize(serializer: serializer)
+        return serializer.get_bytes()
+    }
+
+    public static func deserialize<D: Deserializer>(deserializer: D) throws -> NoticeKind {
+        let index = try deserializer.deserialize_variant_index()
+        try deserializer.increase_container_depth()
+        switch index {
+        case 0:
+            try deserializer.decrease_container_depth()
+            return .tokenLimit
+        case 1:
+            try deserializer.decrease_container_depth()
+            return .upstreamError
+        default: throw DeserializationError.invalidInput(issue: "Unknown variant index for NoticeKind: \(index)")
+        }
+    }
+
+    public static func bincodeDeserialize(input: [UInt8]) throws -> NoticeKind {
+        let deserializer = BincodeDeserializer.init(input: input);
+        let obj = try deserialize(deserializer: deserializer)
+        if deserializer.get_buffer_offset() < input.count {
+            throw DeserializationError.invalidInput(issue: "Some input bytes were not read")
+        }
+        return obj
+    }
+}
+
+/// A render-ready notice describing why a scan/chat stopped without a reply.
+/// Mirrors pentest-core's `ChatNotice` across the ViewModel boundary.
+public struct NoticeView: Hashable, Equatable {
+    public var kind: NoticeKind
+    public var title: String
+    public var detail: String
+    /// Optional URL to the Studio session (e.g. for checking token usage).
+    public var studioUrl: String?
+
+    public init(kind: NoticeKind, title: String, detail: String, studioUrl: String?) {
+        self.kind = kind
+        self.title = title
+        self.detail = detail
+        self.studioUrl = studioUrl
+    }
+
+    public func serialize<S: Serializer>(serializer: S) throws {
+        try serializer.increase_container_depth()
+        try self.kind.serialize(serializer: serializer)
+        try serializer.serialize_str(value: self.title)
+        try serializer.serialize_str(value: self.detail)
+        try serializeOption(value: self.studioUrl, serializer: serializer) { value, serializer in
+            try serializer.serialize_str(value: value)
+        }
+        try serializer.decrease_container_depth()
+    }
+
+    public func bincodeSerialize() throws -> [UInt8] {
+        let serializer = BincodeSerializer.init();
+        try self.serialize(serializer: serializer)
+        return serializer.get_bytes()
+    }
+
+    public static func deserialize<D: Deserializer>(deserializer: D) throws -> NoticeView {
+        try deserializer.increase_container_depth()
+        let kind = try NoticeKind.deserialize(deserializer: deserializer)
+        let title = try deserializer.deserialize_str()
+        let detail = try deserializer.deserialize_str()
+        let studioUrl = try deserializeOption(deserializer: deserializer) { deserializer in
+            try deserializer.deserialize_str()
+        }
+        try deserializer.decrease_container_depth()
+        return NoticeView(kind: kind, title: title, detail: detail, studioUrl: studioUrl)
+    }
+
+    public static func bincodeDeserialize(input: [UInt8]) throws -> NoticeView {
+        let deserializer = BincodeDeserializer.init(input: input);
+        let obj = try deserialize(deserializer: deserializer)
+        if deserializer.get_buffer_offset() < input.count {
+            throw DeserializationError.invalidInput(issue: "Some input bytes were not read")
+        }
+        return obj
+    }
+}
+
 indirect public enum PentestOperation: Hashable, Equatable {
     case signIn(apiUrl: String)
     case connect(apiUrl: String, tenant: String, token: String)
@@ -2064,8 +2180,11 @@ public struct ViewModel: Hashable, Equatable {
     public var agentActivity: AgentActivity
     /// Pre-formatted human label for `agent_activity` (empty when Idle).
     public var activityLabel: String
+    /// Inline notice surfaced when the agent backend errored (token limit or a
+    /// generic upstream failure) instead of producing a reply. `None` normally.
+    public var notice: NoticeView?
 
-    public init(screen: Screen, connection: ConnectionView, messages: [MessageView], scanInProgress: Bool, showScanCard: Bool, conversationDocs: [DocRef], allDocuments: [DocRef], history: [ConversationRef], openDocument: DocView?, needsSignIn: Bool, error: String?, toolCalls: [ToolCallView], agentActivity: AgentActivity, activityLabel: String) {
+    public init(screen: Screen, connection: ConnectionView, messages: [MessageView], scanInProgress: Bool, showScanCard: Bool, conversationDocs: [DocRef], allDocuments: [DocRef], history: [ConversationRef], openDocument: DocView?, needsSignIn: Bool, error: String?, toolCalls: [ToolCallView], agentActivity: AgentActivity, activityLabel: String, notice: NoticeView?) {
         self.screen = screen
         self.connection = connection
         self.messages = messages
@@ -2080,6 +2199,7 @@ public struct ViewModel: Hashable, Equatable {
         self.toolCalls = toolCalls
         self.agentActivity = agentActivity
         self.activityLabel = activityLabel
+        self.notice = notice
     }
 
     public func serialize<S: Serializer>(serializer: S) throws {
@@ -2112,6 +2232,9 @@ public struct ViewModel: Hashable, Equatable {
         }
         try self.agentActivity.serialize(serializer: serializer)
         try serializer.serialize_str(value: self.activityLabel)
+        try serializeOption(value: self.notice, serializer: serializer) { value, serializer in
+            try value.serialize(serializer: serializer)
+        }
         try serializer.decrease_container_depth()
     }
 
@@ -2151,8 +2274,11 @@ public struct ViewModel: Hashable, Equatable {
         }
         let agentActivity = try AgentActivity.deserialize(deserializer: deserializer)
         let activityLabel = try deserializer.deserialize_str()
+        let notice = try deserializeOption(deserializer: deserializer) { deserializer in
+            try NoticeView.deserialize(deserializer: deserializer)
+        }
         try deserializer.decrease_container_depth()
-        return ViewModel(screen: screen, connection: connection, messages: messages, scanInProgress: scanInProgress, showScanCard: showScanCard, conversationDocs: conversationDocs, allDocuments: allDocuments, history: history, openDocument: openDocument, needsSignIn: needsSignIn, error: error, toolCalls: toolCalls, agentActivity: agentActivity, activityLabel: activityLabel)
+        return ViewModel(screen: screen, connection: connection, messages: messages, scanInProgress: scanInProgress, showScanCard: showScanCard, conversationDocs: conversationDocs, allDocuments: allDocuments, history: history, openDocument: openDocument, needsSignIn: needsSignIn, error: error, toolCalls: toolCalls, agentActivity: agentActivity, activityLabel: activityLabel, notice: notice)
     }
 
     public static func bincodeDeserialize(input: [UInt8]) throws -> ViewModel {

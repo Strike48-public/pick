@@ -248,6 +248,11 @@ data class ConversationDelta(
     /// What the agent is doing right now (Thinking/Responding/RunningTools/...),
     /// projected from the server's AgentStatus. Drives the animated status line.
     val activity: com.strike48.pick.shared.AgentActivity,
+    /// Set when the poll observed `AgentStatus::Error`: an inline notice built
+    /// from `tokenUsageStats` distinguishing a token-limit hit from a generic
+    /// upstream failure. `None` on a normal (success) delta. When present the
+    /// App treats the delta as terminal and surfaces the notice.
+    val notice: com.strike48.pick.shared.NoticeView? = null,
 ) {
     fun serialize(serializer: Serializer) {
         serializer.increase_container_depth()
@@ -259,6 +264,9 @@ data class ConversationDelta(
         }
         serializer.serialize_bool(done)
         activity.serialize(serializer)
+        notice.serializeOptionOf(serializer) {
+            it.serialize(serializer)
+        }
         serializer.decrease_container_depth()
     }
 
@@ -281,8 +289,12 @@ data class ConversationDelta(
                 }
             val done = deserializer.deserialize_bool()
             val activity = com.strike48.pick.shared.AgentActivity.deserialize(deserializer)
+            val notice =
+                deserializer.deserializeOptionOf {
+                    com.strike48.pick.shared.NoticeView.deserialize(deserializer)
+                }
             deserializer.decrease_container_depth()
-            return ConversationDelta(messages, toolCalls, done, activity)
+            return ConversationDelta(messages, toolCalls, done, activity, notice)
         }
 
         @Throws(DeserializationError::class)
@@ -1572,6 +1584,109 @@ data class MessageView(
     }
 }
 
+/// Severity for an inline notice surfaced when the agent backend errors.
+/// Mirrors pentest-core's `ChatNoticeKind`; drives styling, not behaviour.
+enum class NoticeKind {
+    /// The server hit a hard limit (token/rate). User action required.
+    TOKENLIMIT,
+    /// Some other upstream failure — usually transient.
+    UPSTREAMERROR;
+
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_variant_index(ordinal)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        @Throws(DeserializationError::class)
+        fun deserialize(deserializer: Deserializer): NoticeKind {
+            deserializer.increase_container_depth()
+            val index = deserializer.deserialize_variant_index()
+            deserializer.decrease_container_depth()
+            return when (index) {
+                0 -> TOKENLIMIT
+                1 -> UPSTREAMERROR
+                else -> throw DeserializationError("Unknown variant index for NoticeKind: $index")
+            }
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): NoticeKind {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+/// A render-ready notice describing why a scan/chat stopped without a reply.
+/// Mirrors pentest-core's `ChatNotice` across the ViewModel boundary.
+data class NoticeView(
+    val kind: com.strike48.pick.shared.NoticeKind,
+    val title: String,
+    val detail: String,
+    /// Optional URL to the Studio session (e.g. for checking token usage).
+    val studioUrl: String? = null,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        kind.serialize(serializer)
+        serializer.serialize_str(title)
+        serializer.serialize_str(detail)
+        studioUrl.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): NoticeView {
+            deserializer.increase_container_depth()
+            val kind = com.strike48.pick.shared.NoticeKind.deserialize(deserializer)
+            val title = deserializer.deserialize_str()
+            val detail = deserializer.deserialize_str()
+            val studioUrl =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            deserializer.decrease_container_depth()
+            return NoticeView(kind, title, detail, studioUrl)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): NoticeView {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
 sealed interface PentestOperation {
     fun serialize(serializer: Serializer)
 
@@ -2644,6 +2759,9 @@ data class ViewModel(
     val agentActivity: com.strike48.pick.shared.AgentActivity,
     /// Pre-formatted human label for `agent_activity` (empty when Idle).
     val activityLabel: String,
+    /// Inline notice surfaced when the agent backend errored (token limit or a
+    /// generic upstream failure) instead of producing a reply. `None` normally.
+    val notice: com.strike48.pick.shared.NoticeView? = null,
 ) {
     fun serialize(serializer: Serializer) {
         serializer.increase_container_depth()
@@ -2675,6 +2793,9 @@ data class ViewModel(
         }
         agentActivity.serialize(serializer)
         serializer.serialize_str(activityLabel)
+        notice.serializeOptionOf(serializer) {
+            it.serialize(serializer)
+        }
         serializer.decrease_container_depth()
     }
 
@@ -2722,8 +2843,12 @@ data class ViewModel(
                 }
             val agentActivity = com.strike48.pick.shared.AgentActivity.deserialize(deserializer)
             val activityLabel = deserializer.deserialize_str()
+            val notice =
+                deserializer.deserializeOptionOf {
+                    com.strike48.pick.shared.NoticeView.deserialize(deserializer)
+                }
             deserializer.decrease_container_depth()
-            return ViewModel(screen, connection, messages, scanInProgress, showScanCard, conversationDocs, allDocuments, history, openDocument, needsSignIn, error, toolCalls, agentActivity, activityLabel)
+            return ViewModel(screen, connection, messages, scanInProgress, showScanCard, conversationDocs, allDocuments, history, openDocument, needsSignIn, error, toolCalls, agentActivity, activityLabel, notice)
         }
 
         @Throws(DeserializationError::class)

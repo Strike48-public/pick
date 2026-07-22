@@ -32,6 +32,8 @@ import androidx.compose.ui.unit.sp
 import com.strike48.pick.shared.ConversationRef
 import com.strike48.pick.shared.DocRef
 import com.strike48.pick.shared.DocView
+import com.strike48.pick.shared.NoticeKind
+import com.strike48.pick.shared.NoticeView
 
 /** History overlay: list of conversations. Tap a row -> SelectConversation. */
 @Composable
@@ -204,6 +206,52 @@ fun ErrorCard(message: String, onDismiss: () -> Unit) {
             }
             Spacer(Modifier.height(6.dp))
             Text(text = message, color = PickColors.Text, fontSize = 14.sp)
+        }
+    }
+}
+
+/**
+ * Inline notice surfaced when the agent backend errored (token/rate-limit
+ * exhaustion or a generic upstream failure) instead of producing a reply.
+ * Distinct from [ErrorCard]: it carries a specific title/detail built from
+ * `tokenUsageStats` and, when present, a tappable "Open Studio" link that opens
+ * the Studio session via an ACTION_VIEW intent.
+ */
+@Composable
+fun NoticeCard(notice: NoticeView, onOpenStudio: (String) -> Unit) {
+    // Token-limit warns (amber); a generic upstream blip uses the error accent.
+    val accent = when (notice.kind) {
+        NoticeKind.TOKENLIMIT -> PickColors.StatusWarning
+        else -> PickColors.Error
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(PickColors.Surface)
+            .border(1.dp, accent.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
+            .padding(16.dp),
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            Text(
+                text = notice.title,
+                color = accent,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 15.sp,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(text = notice.detail, color = PickColors.Text, fontSize = 14.sp)
+            notice.studioUrl?.let { url ->
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Open Studio",
+                    color = PickColors.Brand,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    modifier = Modifier.clickable { onOpenStudio(url) }.padding(vertical = 2.dp),
+                )
+            }
         }
     }
 }

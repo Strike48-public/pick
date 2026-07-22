@@ -28,6 +28,7 @@ import com.strike48.pickcrux.ui.DocumentsList
 import com.strike48.pickcrux.ui.ErrorCard
 import com.strike48.pickcrux.ui.HistorySheet
 import com.strike48.pickcrux.ui.InputRow
+import com.strike48.pickcrux.ui.NoticeCard
 import com.strike48.pickcrux.ui.PickColors
 import com.strike48.pickcrux.ui.PickTheme
 import com.strike48.pickcrux.ui.ScanCard
@@ -207,6 +208,17 @@ fun PickApp(
 
         model.error?.let { err ->
             ErrorCard(message = err, onDismiss = { send(Event.DismissError) })
+        }
+
+        // Surfaced when the agent backend errored (token limit or a generic
+        // upstream failure) instead of ending the scan silently.
+        model.notice?.let { notice ->
+            NoticeCard(
+                notice = notice,
+                onOpenStudio = { url ->
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                },
+            )
         }
 
         when {

@@ -7,8 +7,8 @@ use pentest_core::matrix::{
 };
 use pick_crux_core::effect::{ConversationDelta, PentestOperation, PentestOutcome};
 use pick_crux_core::view::{
-    AgentActivity, ConversationRef, DocRef, MessageKind, MessagePartView, MessageView, ToolCallView,
-    ToolStatus,
+    AgentActivity, ConversationRef, DocRef, MessageKind, MessagePartView, MessageView, NoticeKind,
+    NoticeView, ToolCallView, ToolStatus,
 };
 
 #[cfg(test)]
@@ -193,28 +193,51 @@ fn map_activity(status: AgentStatus) -> AgentActivity {
             AgentActivity::AwaitingConsent
         }
         // Terminal / unknown -> not actively working.
-        AgentStatus::Idle
-        | AgentStatus::StreamEnd
-        | AgentStatus::Error
-        | AgentStatus::Unknown => AgentActivity::Idle,
+        AgentStatus::Idle | AgentStatus::StreamEnd | AgentStatus::Error | AgentStatus::Unknown => {
+            AgentActivity::Idle
+        }
     }
 }
 
 /// Map ConversationState to ConversationDelta (for poll).
-fn state_to_delta(state: ConversationState) -> ConversationDelta {
+///
+/// `notice` is `Some` only when the poll observed `AgentStatus::Error` and the
+/// caller built an error notice from `tokenUsageStats` (it needs the client, so
+/// it can't be built here). When a notice is present the delta is terminal and
+/// carries it; the App surfaces it instead of silently ending the scan. A
+/// non-error terminal status (Idle/StreamEnd) yields `done=true, notice=None`.
+fn state_to_delta(state: ConversationState, notice: Option<NoticeView>) -> ConversationDelta {
     let messages = messages_to_views(&state.messages);
     let tool_calls: Vec<ToolCallView> = state
         .messages
         .iter()
         .flat_map(|m| extract_tool_calls(&m.parts))
         .collect();
-    let done = state.agent_status.is_terminal();
+    // An error is terminal even though `is_terminal()` also returns true for it:
+    // we distinguish via the notice so the App knows to surface it, not fetch a
+    // (non-existent) report.
+    let done = state.agent_status.is_terminal() || notice.is_some();
     let activity = map_activity(state.agent_status);
     ConversationDelta {
         messages,
         tool_calls,
         done,
         activity,
+        notice,
+    }
+}
+
+/// Map a pentest-core `ChatNotice` to the crux `NoticeView` carried on the delta.
+fn notice_to_view(notice: pentest_core::matrix::ChatNotice) -> NoticeView {
+    let kind = match notice.kind {
+        pentest_core::matrix::ChatNoticeKind::TokenLimit => NoticeKind::TokenLimit,
+        pentest_core::matrix::ChatNoticeKind::UpstreamError => NoticeKind::UpstreamError,
+    };
+    NoticeView {
+        kind,
+        title: notice.title,
+        detail: notice.detail,
+        studio_url: notice.studio_url,
     }
 }
 
@@ -369,12 +392,22 @@ impl MatrixApi for CoreMatrixApi {
         // with a tight re-emit loop; also gives the agent time to produce
         // incremental output between polls.
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-        let state = self
-            .client()
+        let client = self.client();
+        let state = client
             .get_conversation(&conversation_id)
             .await
             .map_err(|e| e.to_string())?;
-        let delta = state_to_delta(state);
+        // On an agent error, cross-reference tokenUsageStats (same data Studio
+        // uses) to build a specific notice — token-limit vs generic upstream —
+        // instead of silently ending the scan with no report and no error.
+        let notice = if matches!(state.agent_status, AgentStatus::Error) {
+            Some(notice_to_view(
+                pentest_core::matrix::build_error_notice(&client).await,
+            ))
+        } else {
+            None
+        };
+        let delta = state_to_delta(state, notice);
         tracing::info!(
             "[poll] conv={} msgs={} tool_calls={} done={}",
             conversation_id,
@@ -454,10 +487,7 @@ impl MatrixApi for CoreMatrixApi {
             .collect())
     }
 
-    async fn load_conversation(
-        &self,
-        conversation_id: String,
-    ) -> Result<Vec<MessageView>, String> {
+    async fn load_conversation(&self, conversation_id: String) -> Result<Vec<MessageView>, String> {
         let state = self
             .client()
             .get_conversation(&conversation_id)
@@ -513,6 +543,7 @@ mod tests {
                 tool_calls: vec![],
                 done: true,
                 activity: Default::default(),
+                notice: None,
             })
         }
         async fn list_documents(
@@ -715,7 +746,7 @@ mod tests {
             messages: vec![],
             agent_status: AgentStatus::StreamEnd,
         };
-        let delta = state_to_delta(state);
+        let delta = state_to_delta(state, None);
         assert!(delta.done);
     }
 
@@ -725,8 +756,43 @@ mod tests {
             messages: vec![],
             agent_status: AgentStatus::Processing,
         };
-        let delta = state_to_delta(state);
+        let delta = state_to_delta(state, None);
         assert!(!delta.done);
+    }
+
+    #[test]
+    fn error_notice_makes_delta_terminal_and_carries_notice() {
+        // A notice is only built for AgentStatus::Error; when present the delta
+        // is terminal (done=true) and carries the notice so the App surfaces it
+        // instead of silently ending the scan.
+        let notice = NoticeView {
+            kind: NoticeKind::UpstreamError,
+            title: "Agent error".into(),
+            detail: "boom".into(),
+            studio_url: Some("https://s/studio/#/".into()),
+        };
+        let state = ConversationState {
+            messages: vec![],
+            agent_status: AgentStatus::Error,
+        };
+        let delta = state_to_delta(state, Some(notice.clone()));
+        assert!(delta.done, "error notice forces a terminal delta");
+        assert_eq!(delta.notice, Some(notice));
+    }
+
+    #[test]
+    fn notice_to_view_maps_kind_and_fields() {
+        let n = pentest_core::matrix::ChatNotice {
+            kind: pentest_core::matrix::ChatNoticeKind::TokenLimit,
+            title: "Token limit reached".into(),
+            detail: "Daily token limit reached (10 / 20).".into(),
+            studio_url: Some("https://s/studio/#/".into()),
+        };
+        let v = notice_to_view(n);
+        assert_eq!(v.kind, NoticeKind::TokenLimit);
+        assert_eq!(v.title, "Token limit reached");
+        assert_eq!(v.detail, "Daily token limit reached (10 / 20).");
+        assert_eq!(v.studio_url.as_deref(), Some("https://s/studio/#/"));
     }
 
     #[test]
@@ -764,7 +830,7 @@ mod tests {
             ],
             agent_status: AgentStatus::ExecutingTools,
         };
-        let delta = state_to_delta(state);
+        let delta = state_to_delta(state, None);
         assert_eq!(delta.tool_calls.len(), 2);
         assert_eq!(delta.tool_calls[0].name, "nmap");
         assert_eq!(delta.tool_calls[0].status, ToolStatus::Success);
@@ -774,7 +840,10 @@ mod tests {
 
     #[test]
     fn tool_status_mapping() {
-        assert_eq!(map_tool_status(ToolCallStatus::Running), ToolStatus::Running);
+        assert_eq!(
+            map_tool_status(ToolCallStatus::Running),
+            ToolStatus::Running
+        );
         assert_eq!(
             map_tool_status(ToolCallStatus::Pending),
             ToolStatus::Running
