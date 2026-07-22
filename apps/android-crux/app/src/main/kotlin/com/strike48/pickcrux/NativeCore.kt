@@ -48,6 +48,12 @@ class NativeCore private constructor(private val handle: Long) {
             System.loadLibrary("pickcrux_jni")
         }
 
+        /**
+         * Build a core against [apiUrl] with an optional bootstrap [token]. The
+         * tenant scope for a scan is derived in-core from the session token's
+         * realm once OAuth provides it via [setToken], so the shell passes no
+         * tenant here.
+         */
         fun create(apiUrl: String, token: String): NativeCore {
             val handle = nativeNew(
                 apiUrl.toByteArray(Charsets.UTF_8),

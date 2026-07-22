@@ -186,6 +186,28 @@ pub struct CoreMatrixApi {
     agent_id: std::sync::RwLock<Option<String>>,
 }
 
+/// The connector identity the auto-created scan agent binds to. This is the
+/// connector's real name (matches how the shipping app registers), not a
+/// placeholder — the tenant it pairs with is derived from the session token.
+const SCAN_CONNECTOR_NAME: &str = "pentest-connector";
+
+/// Extract the Keycloak realm from a session token's `iss` claim
+/// (`https://<host>/realms/<realm>` -> `<realm>`). The realm is the tenant scope
+/// the agent's connector key is built from. Returns None when the token is not a
+/// decodable JWT (then the caller has no session-derived tenant).
+fn realm_from_token(token: &str) -> Option<String> {
+    use base64::Engine;
+    let payload_b64 = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let iss = claims.get("iss")?.as_str()?;
+    iss.rsplit_once("/realms/")
+        .map(|(_, realm)| realm.to_string())
+        .filter(|r| !r.is_empty())
+}
+
 impl CoreMatrixApi {
     pub fn new(api_url: String, token: String, agent_id: Option<String>) -> Self {
         Self {
@@ -236,23 +258,26 @@ impl CoreMatrixApi {
         {
             Some(a) => a.id.clone(),
             // Empty workspace: create the operational scan agent so a scan can
-            // proceed. The connector normally seeds a richer agent (tools/system
-            // prompt) from crates/ui; here we create a minimal one the server
-            // fills with defaults, so Easy Mode is never dead-ended.
-            None => client
-                .create_agent(pentest_core::matrix::CreateAgentInput {
-                    name: "pentest-connector".to_string(),
-                    description: Some(
-                        "Red team operational agent for penetration testing".to_string(),
-                    ),
-                    system_message: None,
-                    agent_greeting: None,
-                    context: None,
-                    tools: None,
-                })
-                .await
-                .map_err(|e| e.to_string())?
-                .id,
+            // proceed, reusing the SHARED pentest-agent builder (the same one the
+            // Dioxus app uses). The tenant is derived from the session token's
+            // realm (never hardcoded); the connector name is the real connector
+            // identity. tool_names is empty because this shell is a viewer, not
+            // the registered connector — the connector's own registration seeds
+            // the live tool set platform-side.
+            None => {
+                let tenant = realm_from_token(&self.token()).ok_or_else(|| {
+                    "cannot derive tenant: session token has no realm (sign in first)".to_string()
+                })?;
+                client
+                    .create_agent(pentest_core::matrix::default_pentest_agent_input(
+                        &tenant,
+                        SCAN_CONNECTOR_NAME,
+                        &[],
+                    ))
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .id
+            }
         };
         if let Ok(mut g) = self.agent_id.write() {
             *g = Some(id.clone());
@@ -450,6 +475,29 @@ mod tests {
         ) -> Result<Vec<pick_crux_core::view::MessageView>, String> {
             Ok(vec![])
         }
+    }
+
+    #[test]
+    fn realm_from_token_extracts_realm_from_iss() {
+        use base64::Engine;
+        // Build a minimal JWT (header.payload.sig) whose payload iss carries a realm.
+        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(br#"{"iss":"https://auth.strike48.test/realms/plg","sub":"x"}"#);
+        let token = format!("{header}.{payload}.sig");
+        assert_eq!(realm_from_token(&token).as_deref(), Some("plg"));
+
+        // A personal-workspace realm slug round-trips too.
+        let payload2 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(br#"{"iss":"https://auth.strike48.test/realms/personal-abc123"}"#);
+        assert_eq!(
+            realm_from_token(&format!("{header}.{payload2}.s")).as_deref(),
+            Some("personal-abc123")
+        );
+
+        // Non-JWT / no-realm tokens yield None (caller then errors, not scans wrong tenant).
+        assert_eq!(realm_from_token("placeholder-token"), None);
+        assert_eq!(realm_from_token(""), None);
     }
 
     #[tokio::test]

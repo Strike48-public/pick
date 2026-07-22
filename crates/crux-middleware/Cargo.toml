@@ -9,6 +9,9 @@ pick-crux-core = { path = "../crux-core" }
 pentest-core = { path = "../core" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 async-trait = "0.1"
+# Decode the session token's realm (iss claim) to derive the tenant scope.
+base64 = "0.22"
+serde_json = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
