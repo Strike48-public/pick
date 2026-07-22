@@ -1,38 +1,66 @@
-//! Stable C ABI over the crux `Bridge`, with in-core effect resolution.
+//! Stable C ABI over the crux **middleware** `Bridge` — push-based, non-blocking.
 //!
-//! # Effect routing (Design A: in-FFI middleware loop)
+//! # Effect routing (middleware bridge, async)
 //!
-//! crux 0.19 ships two `Bridge` types:
+//! We wrap `Core<PickApp>` with the [`PentestMiddleware`] via
+//! [`Layer::handle_effects_using`], then terminate the stack with
+//! [`Layer::bridge`], which yields a [`crux_core::middleware::Bridge`]. The
+//! middleware resolves every `Effect::Pentest(op)` **asynchronously on a
+//! background tokio thread** (see [`PentestMiddleware::try_process_effect`]);
+//! `Effect::Render` stays inside the bridge (it tracks the latest view model).
 //!
-//!  * [`crux_core::bridge::Bridge`] — the *synchronous* top-level bridge. Its
-//!    `update`/`resolve` return the complete `Vec<Request<EffectFfi>>` batch
-//!    (bincode bytes) right away.
-//!  * [`crux_core::middleware::Bridge`] — a middleware-aware bridge whose
-//!    `EffectMiddleware` resolves effects on a background thread and hands
-//!    follow-up effects back through an *async callback* (`process_tasks`).
+//! Flow:
+//!  * `pick_update(event)` calls `bridge.update(..)` and returns **immediately**
+//!    — it never blocks on network I/O. The middleware spawns the `Pentest`
+//!    work off-thread.
+//!  * When an effect resolves (including each `PollConversation` the App
+//!    re-emits while streaming a conversation), the bridge invokes the
+//!    construction-time `effect_callback`. We forward that as a single
+//!    `notify()` ping across the C ABI so the shell re-reads `pick_view` and
+//!    re-renders. This is the streaming path — driven by the App re-emitting
+//!    poll effects, not a shell-side timer or a synchronous drain loop.
 //!
-//! We use the **synchronous** top-level bridge and resolve `Pentest` effects
-//! ourselves in a loop: after each `update`/`resolve` we deserialize the
-//! returned `Requests` batch, run every `Effect::Pentest(op)` through
-//! `pick_crux_middleware::map_operation` on an owned tokio runtime, feed the
-//! outcome back via `bridge.resolve(id, ..)`, and keep looping until only
-//! `Effect::Render` requests remain. Those Render-only bytes are returned to
-//! the shell (which just re-reads `pick_view`). The shell therefore never sees
-//! a `Pentest` effect — network I/O and auth stay in Rust.
-//!
-//! This is preferred over the middleware bridge because the async-callback
-//! delivery of follow-up effects is a poor fit for a synchronous C ABI (the
-//! `EffectResolver` even *panics* if resolved on the calling thread). The
-//! synchronous bridge's `EffectFfi` enum is `pub` + `Serialize`/`Deserialize`
-//! and carries the operation directly, so routing by effect-kind from outside
-//! the core is straightforward.
+//! The shell therefore never sees a `Pentest` effect (network I/O and auth stay
+//! in Rust), the UI thread is never blocked, and a scan streams incrementally.
 
+use std::os::raw::c_void;
 use std::sync::Arc;
 
-use crux_core::bridge::{Bridge, EffectId, Request};
+use crux_core::middleware::{Bridge, Layer};
 use crux_core::Core;
-use pick_crux_core::{EffectFfi, PickApp};
-use pick_crux_middleware::{map_operation, CoreMatrixApi, MatrixApi};
+use pick_crux_core::PickApp;
+use pick_crux_middleware::{CoreMatrixApi, MatrixApi, PentestMiddleware};
+
+/// The concrete middleware-wrapped layer the bridge sits on:
+/// `Core<PickApp>` with `PentestMiddleware` handling `Pentest` effects.
+type PickLayer =
+    crux_core::middleware::HandleEffectLayer<Core<PickApp>, PentestMiddleware>;
+type PickBridge = Bridge<PickLayer, crux_core::bridge::BincodeFfiFormat>;
+
+/// A C callback the shell registers to be pinged whenever the view may have
+/// changed (an async effect resolved). The shell responds by calling
+/// `pick_view` on its side and re-rendering. `user_data` is passed back
+/// verbatim. Must be `Send`-safe: it is invoked from the middleware's
+/// background thread.
+pub type NotifyFn = extern "C" fn(user_data: *mut c_void);
+
+/// Wraps the shell callback + its opaque user-data so it can cross threads.
+/// Safety: the shell guarantees `user_data` outlives the core and that
+/// `notify` is safe to call from any thread (the shell hops to its UI thread).
+struct ShellNotifier {
+    notify: NotifyFn,
+    user_data: *mut c_void,
+}
+// SAFETY: the pointer is only ever passed back to the shell-provided `notify`;
+// we never dereference it in Rust. The shell owns its thread-safety.
+unsafe impl Send for ShellNotifier {}
+unsafe impl Sync for ShellNotifier {}
+
+impl ShellNotifier {
+    fn ping(&self) {
+        (self.notify)(self.user_data);
+    }
+}
 
 /// Install a `tracing` subscriber once so the core's events (e.g. the gql send
 /// error chain) actually surface. iOS writes to stderr (captured by the
@@ -80,23 +108,37 @@ fn init_tracing() {
 }
 
 
-/// Opaque handle owning the bridge, the effect-resolving runtime, and the
-/// `MatrixApi` implementation that fulfills `Pentest` effects.
+/// Opaque handle owning the middleware bridge, the effect-resolving runtime,
+/// and the `MatrixApi` the middleware fulfills `Pentest` effects with.
 pub struct PickCore {
-    bridge: Bridge<PickApp>,
-    rt: tokio::runtime::Runtime,
+    bridge: PickBridge,
+    /// Kept alive for the core's lifetime: the middleware spawns onto it.
+    _rt: tokio::runtime::Runtime,
+    /// Shared with `PentestMiddleware` so the shell can swap the auth token.
     api: Arc<dyn MatrixApi>,
 }
 
 impl PickCore {
-    /// Rust-only constructor used by host tests to inject a fake `MatrixApi`.
-    /// The extern `pick_core_new` builds the real [`CoreMatrixApi`] and calls
-    /// through here. Returns `None` if runtime creation fails.
-    pub fn with_api(api: Arc<dyn MatrixApi>) -> Option<Self> {
+    /// Build a core over `api`, pinging `notifier` whenever an async effect
+    /// resolves (so the shell re-reads the view). Returns `None` if the tokio
+    /// runtime can't be created.
+    fn build(api: Arc<dyn MatrixApi>, notifier: ShellNotifier) -> Option<Self> {
         let rt = tokio::runtime::Runtime::new().ok()?;
+        let middleware = PentestMiddleware::new(rt.handle().clone(), api.clone());
+
+        // The bridge invokes this callback when effects resolve out-of-band
+        // (on the middleware's background thread). We don't need the request
+        // bytes here — the shell re-reads `pick_view` — so any Ok/Err just
+        // pings the shell to refresh. This is the streaming signal.
+        let bridge = Core::<PickApp>::new()
+            .handle_effects_using(middleware)
+            .bridge::<crux_core::bridge::BincodeFfiFormat>(move |_result| {
+                notifier.ping();
+            });
+
         Some(Self {
-            bridge: Bridge::new(Core::<PickApp>::new()),
-            rt,
+            bridge,
+            _rt: rt,
             api,
         })
     }
@@ -108,63 +150,14 @@ impl PickCore {
         Some(out)
     }
 
-    /// Feed a bincode `Event`, then run the in-core effect loop. Returns the
-    /// serialized `Requests` batch containing only `Render` requests (may be
-    /// empty). `None` on any (de)serialization or resolve failure.
+    /// Feed a bincode `Event`. Returns immediately; `Pentest` effects resolve
+    /// asynchronously and ping the shell via the notifier as they complete.
+    /// The returned request bytes (Render-only, produced synchronously) are
+    /// ignored by the shell, which re-reads `pick_view`.
     fn update_bytes(&self, event: &[u8]) -> Option<Vec<u8>> {
         let mut out = Vec::new();
         self.bridge.update(event, &mut out).ok()?;
-        self.drain_pentest(out)
-    }
-
-    /// Resolve a single effect the shell handled (rarely needed under Design A,
-    /// kept minimal), then drain any resulting `Pentest` effects in-core.
-    fn resolve_bytes(&self, id: EffectId, response: &[u8]) -> Option<Vec<u8>> {
-        let mut out = Vec::new();
-        self.bridge.resolve(id, response, &mut out).ok()?;
-        self.drain_pentest(out)
-    }
-
-    /// Repeatedly resolve `Pentest` requests in-core until only `Render`
-    /// requests remain; return the serialized Render-only batch.
-    /// Bounded by MAX_EFFECT_ITERATIONS to prevent unbounded poll loops from
-    /// hanging the FFI call (Task 6 streaming contract is a separate concern).
-    fn drain_pentest(&self, first: Vec<u8>) -> Option<Vec<u8>> {
-        /// Safety backstop: prevents a non-terminating poll from spinning forever
-        /// inside a single `pick_update` call.
-        const MAX_EFFECT_ITERATIONS: usize = 1000;
-
-        let mut render_reqs: Vec<Request<EffectFfi>> = Vec::new();
-        let mut pending: Vec<Request<EffectFfi>> = bincode::deserialize(&first).ok()?;
-        let mut iterations = 0;
-
-        while let Some(req) = pending.pop() {
-            iterations += 1;
-            if iterations > MAX_EFFECT_ITERATIONS {
-                // Cap reached; return whatever Render requests we accumulated.
-                break;
-            }
-
-            let Request { id, effect } = req;
-            match effect {
-                EffectFfi::Render(op) => {
-                    render_reqs.push(Request {
-                        id,
-                        effect: EffectFfi::Render(op),
-                    });
-                }
-                EffectFfi::Pentest(op) => {
-                    let outcome = self.rt.block_on(map_operation(self.api.as_ref(), op));
-                    let outcome_bytes = bincode::serialize(&outcome).ok()?;
-                    let mut more = Vec::new();
-                    self.bridge.resolve(id, &outcome_bytes, &mut more).ok()?;
-                    let more_reqs: Vec<Request<EffectFfi>> = bincode::deserialize(&more).ok()?;
-                    pending.extend(more_reqs);
-                }
-            }
-        }
-
-        bincode::serialize(&render_reqs).ok()
+        Some(out)
     }
 }
 
@@ -204,12 +197,17 @@ fn buf_from_vec(v: Option<Vec<u8>>) -> PickBuf {
 
 /// Build a real [`PickCore`] from a Strike48 API url + auth token.
 ///
+/// `notify` is called (with `user_data`) whenever an async effect resolves and
+/// the view may have changed; the shell responds by calling `pick_view` and
+/// re-rendering. `notify` may be invoked from a background thread, so the shell
+/// must hop to its UI thread. `user_data` must outlive the core.
+///
 /// The url/token are read as nul-free UTF-8 byte slices. Returns a null pointer
-/// if a pointer is null or the bytes are not valid UTF-8.
+/// if a required pointer is null or the bytes are not valid UTF-8.
 ///
 /// # Safety
-/// `api_url_ptr`/`token_ptr` must either be null or point to at least
-/// `api_url_len`/`token_len` initialized bytes.
+/// `api_url_ptr`/`token_ptr` must be null or point to at least the given number
+/// of initialized bytes. `notify` must be a valid function pointer.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)] // FFI entrypoint; pointers are null-checked and read via from_raw_parts.
 pub extern "C" fn pick_core_new(
@@ -217,6 +215,8 @@ pub extern "C" fn pick_core_new(
     api_url_len: usize,
     token_ptr: *const u8,
     token_len: usize,
+    notify: NotifyFn,
+    user_data: *mut c_void,
 ) -> *mut PickCore {
     let read = |ptr: *const u8, len: usize| -> Option<String> {
         if ptr.is_null() {
@@ -248,7 +248,8 @@ pub extern "C" fn pick_core_new(
     }
 
     let api: Arc<dyn MatrixApi> = Arc::new(CoreMatrixApi::new(api_url, token, None));
-    match PickCore::with_api(api) {
+    let notifier = ShellNotifier { notify, user_data };
+    match PickCore::build(api, notifier) {
         Some(core) => Box::into_raw(Box::new(core)),
         None => std::ptr::null_mut(),
     }
@@ -353,30 +354,11 @@ pub extern "C" fn pick_update(
     buf_from_vec(core.update_bytes(event))
 }
 
-/// Resolve a shell-handled effect by its `EffectId` (a bincode-agnostic `u32`),
-/// then drain any resulting Pentest effects in-core. Kept minimal for Task 1;
-/// under Design A the shell should not normally need this.
-///
-/// # Safety
-/// `core` must be null or valid; `resp_ptr` must be null or point to
-/// `resp_len` initialized bytes.
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // FFI entrypoint; pointers are null-checked and read via from_raw_parts.
-pub extern "C" fn pick_resolve(
-    core: *mut PickCore,
-    effect_id: u32,
-    resp_ptr: *const u8,
-    resp_len: usize,
-) -> PickBuf {
-    let Some(core) = (unsafe { core.as_ref() }) else {
-        return PickBuf::empty();
-    };
-    if resp_ptr.is_null() {
-        return PickBuf::empty();
-    }
-    let resp = unsafe { std::slice::from_raw_parts(resp_ptr, resp_len) };
-    buf_from_vec(core.resolve_bytes(EffectId(effect_id), resp))
-}
+// Note: there is no `pick_resolve` under the middleware-bridge design. All
+// `Pentest` effects resolve inside the core (on the middleware's background
+// thread); the shell only feeds events (`pick_update`), adopts tokens
+// (`pick_set_token`), and reads the view (`pick_view`). Render effects are
+// handled by the bridge itself.
 
 #[cfg(test)]
 mod tests {
@@ -421,20 +403,53 @@ mod tests {
         }
     }
 
+    /// A ping counter the notifier increments, so tests can wait for async
+    /// effect resolution instead of sleeping blindly.
+    static PING_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    extern "C" fn counting_notify(_user_data: *mut c_void) {
+        PING_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
     fn fake_core() -> *mut PickCore {
-        Box::into_raw(Box::new(PickCore::with_api(Arc::new(FakeApi)).expect("test runtime")))
+        PING_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+        let notifier = ShellNotifier {
+            notify: counting_notify,
+            user_data: std::ptr::null_mut(),
+        };
+        Box::into_raw(Box::new(
+            PickCore::build(Arc::new(FakeApi), notifier).expect("test runtime"),
+        ))
+    }
+
+    /// Decode the current view of `core`.
+    fn view_of(core: *mut PickCore) -> ViewModel {
+        let b = pick_view(core);
+        let v = bincode::deserialize(unsafe { std::slice::from_raw_parts(b.ptr, b.len) })
+            .expect("decode ViewModel");
+        pick_buf_free(b);
+        v
+    }
+
+    /// Poll the view until `pred` holds or the deadline passes. Async effects
+    /// resolve on the middleware's background thread, so tests wait on the
+    /// resulting state rather than assuming synchronous completion.
+    fn wait_for(core: *mut PickCore, pred: impl Fn(&ViewModel) -> bool) -> ViewModel {
+        for _ in 0..200 {
+            let vm = view_of(core);
+            if pred(&vm) {
+                return vm;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("condition not met within timeout");
     }
 
     #[test]
     fn view_round_trips() {
         let core = fake_core();
-        let buf = pick_view(core);
-        assert!(!buf.ptr.is_null(), "view produced bytes");
-        let bytes = unsafe { std::slice::from_raw_parts(buf.ptr, buf.len) };
-        let vm: ViewModel = bincode::deserialize(bytes).expect("decode ViewModel");
+        let vm = view_of(core);
         assert!(vm.show_scan_card, "fresh core shows the scan card");
         assert!(!vm.scan_in_progress);
-        pick_buf_free(buf);
         pick_core_free(core);
     }
 
@@ -444,78 +459,43 @@ mod tests {
         let core = fake_core();
 
         // Fresh core is Connecting (default phase), not yet Connected.
-        let vm0: ViewModel = {
-            let b = pick_view(core);
-            let v = bincode::deserialize(unsafe {
-                std::slice::from_raw_parts(b.ptr, b.len)
-            })
-            .unwrap();
-            pick_buf_free(b);
-            v
-        };
-        assert_eq!(vm0.connection.phase, ConnectionPhase::Connecting);
+        assert_eq!(view_of(core).connection.phase, ConnectionPhase::Connecting);
 
         // Adopting a shell-obtained token drives the model to Connected so the
         // UI leaves "Connecting..." even though the in-core SignIn never ran.
         let token = b"shell-oauth-token";
         pick_set_token(core, token.as_ptr(), token.len());
 
-        let vm1: ViewModel = {
-            let b = pick_view(core);
-            let v = bincode::deserialize(unsafe {
-                std::slice::from_raw_parts(b.ptr, b.len)
-            })
-            .unwrap();
-            pick_buf_free(b);
-            v
-        };
+        let vm1 = view_of(core);
         assert_eq!(vm1.connection.phase, ConnectionPhase::Connected);
         assert!(!vm1.needs_sign_in);
         pick_core_free(core);
     }
 
     #[test]
-    fn start_scan_resolves_in_core() {
+    fn start_scan_streams_and_notifies() {
         let core = fake_core();
+        assert!(view_of(core).show_scan_card, "fresh core shows the scan card");
 
-        // Fresh core shows the scan card.
-        let v0 = pick_view(core);
-        let vm0: ViewModel =
-            bincode::deserialize(unsafe { std::slice::from_raw_parts(v0.ptr, v0.len) }).unwrap();
-        assert!(vm0.show_scan_card);
-        pick_buf_free(v0);
-
-        // Feed StartScan; the in-core loop must resolve the whole Pentest chain
-        // (SendScan -> Poll -> ListDocuments) via the fake api, ending in Render.
+        // Feed StartScan; pick_update returns IMMEDIATELY (non-blocking). The
+        // Pentest chain (SendScan -> Poll -> ListDocuments) resolves on the
+        // middleware's background thread and pings the notifier as it goes.
         let event = bincode::serialize(&Event::StartScan).expect("serialize event");
         let reqs = pick_update(core, event.as_ptr(), event.len());
-        // A Render-only batch (possibly empty) comes back; never a Pentest one.
-        let req_bytes = if reqs.ptr.is_null() {
-            Vec::new()
-        } else {
-            unsafe { std::slice::from_raw_parts(reqs.ptr, reqs.len) }.to_vec()
-        };
-        let remaining: Vec<Request<EffectFfi>> = bincode::deserialize(&req_bytes).unwrap();
-        assert!(
-            remaining
-                .iter()
-                .all(|r| matches!(r.effect, EffectFfi::Render(_))),
-            "no Pentest effects should reach the shell"
-        );
         pick_buf_free(reqs);
 
-        // The view now reflects a started scan: conversation_id is set, so the
-        // scan card is gone and the scan is no longer in progress (done delta).
-        let v1 = pick_view(core);
-        let vm1: ViewModel =
-            bincode::deserialize(unsafe { std::slice::from_raw_parts(v1.ptr, v1.len) }).unwrap();
-        assert!(
-            !vm1.show_scan_card,
-            "scan card hidden once the in-core loop set the conversation id"
-        );
-        assert!(!vm1.scan_in_progress, "done delta ends the scan in-core");
-        pick_buf_free(v1);
+        // Eventually the async resolution advances the view: the conversation id
+        // is set so the scan card is gone, and the done delta ends the scan.
+        let vm = wait_for(core, |vm| !vm.show_scan_card && !vm.scan_in_progress);
+        assert!(!vm.show_scan_card);
+        assert!(!vm.scan_in_progress);
 
+        // The notifier must have fired at least once (the streaming signal that
+        // tells the shell to re-read the view) — proving push, not poll.
+        assert!(
+            PING_COUNT.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "effect resolution should have pinged the shell notifier"
+        );
         pick_core_free(core);
     }
 
