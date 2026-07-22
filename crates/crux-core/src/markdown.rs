@@ -20,7 +20,12 @@ pub enum MarkdownBlock {
         spans: Vec<Span>,
     },
     /// A fenced/indented code block. Its text is verbatim, never styled inline.
-    CodeBlock { text: String },
+    /// `lang` is the fence info-string lowercased (empty for indented blocks or
+    /// bare fences); shells key on it (e.g. `"mermaid"`) to pick a renderer.
+    CodeBlock { text: String, lang: String },
+    /// A Mermaid diagram (```mermaid fenced block). `code` is the verbatim
+    /// diagram source; shells render it via an embedded Mermaid runtime.
+    Mermaid { code: String },
 }
 
 /// The inline style applied to a span of text. Bold+italic collapses to Bold.
@@ -44,7 +49,7 @@ pub struct Span {
 /// Parse markdown into render-ready blocks. Pure and total (never panics);
 /// unknown constructs degrade to their text content as Plain spans.
 pub fn parse_markdown(src: &str) -> Vec<MarkdownBlock> {
-    use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+    use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
@@ -63,6 +68,8 @@ pub fn parse_markdown(src: &str) -> Vec<MarkdownBlock> {
     let mut open = Open::None;
     let mut spans: Vec<Span> = Vec::new();
     let mut code_text = String::new();
+    // Fence info-string (lowercased) for the open code block, e.g. "mermaid".
+    let mut code_lang = String::new();
 
     // Inline style stack; the top wins, with Bold preferred over Italic.
     let mut bold_depth: u32 = 0;
@@ -168,8 +175,18 @@ pub fn parse_markdown(src: &str) -> Vec<MarkdownBlock> {
                 }
                 open = Open::None;
             }
-            Event::Start(Tag::CodeBlock(_)) => {
+            Event::Start(Tag::CodeBlock(kind)) => {
                 code_text = String::new();
+                code_lang = match kind {
+                    // Info-string may carry extra words ("mermaid theme=dark");
+                    // key off the first token, lowercased.
+                    CodeBlockKind::Fenced(info) => info
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .to_ascii_lowercase(),
+                    CodeBlockKind::Indented => String::new(),
+                };
                 open = Open::Code;
             }
             Event::End(TagEnd::CodeBlock) => {
@@ -178,7 +195,12 @@ pub fn parse_markdown(src: &str) -> Vec<MarkdownBlock> {
                 if text.ends_with('\n') {
                     text.pop();
                 }
-                blocks.push(MarkdownBlock::CodeBlock { text });
+                let lang = std::mem::take(&mut code_lang);
+                if lang == "mermaid" {
+                    blocks.push(MarkdownBlock::Mermaid { code: text });
+                } else {
+                    blocks.push(MarkdownBlock::CodeBlock { text, lang });
+                }
                 open = Open::None;
             }
             Event::Start(Tag::Strong) => bold_depth += 1,
@@ -263,8 +285,34 @@ mod tests {
         let blocks = parse_markdown(src);
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
-            MarkdownBlock::CodeBlock { text } => {
+            MarkdownBlock::CodeBlock { text, lang } => {
                 assert_eq!(text, "let **x** = `y`");
+                assert_eq!(lang, "");
+            }
+            other => panic!("expected code block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mermaid_fence_becomes_mermaid_block() {
+        let src = "```mermaid\nflowchart TD\n  A --> B\n```";
+        let blocks = parse_markdown(src);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            MarkdownBlock::Mermaid { code } => {
+                assert_eq!(code, "flowchart TD\n  A --> B");
+            }
+            other => panic!("expected mermaid block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fenced_block_captures_language() {
+        let blocks = parse_markdown("```rust\nlet x = 1;\n```");
+        match &blocks[0] {
+            MarkdownBlock::CodeBlock { text, lang } => {
+                assert_eq!(text, "let x = 1;");
+                assert_eq!(lang, "rust");
             }
             other => panic!("expected code block, got {other:?}"),
         }

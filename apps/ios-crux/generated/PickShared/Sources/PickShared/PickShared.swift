@@ -1018,7 +1018,12 @@ indirect public enum MarkdownBlock: Hashable, Equatable {
     /// A list item. `number` is 0 for unordered items.
     case listItem(ordered: Bool, number: UInt32, spans: [Span])
     /// A fenced/indented code block. Its text is verbatim, never styled inline.
-    case codeBlock(text: String)
+    /// `lang` is the fence info-string lowercased (empty for indented blocks or
+    /// bare fences); shells key on it (e.g. `"mermaid"`) to pick a renderer.
+    case codeBlock(text: String, lang: String)
+    /// A Mermaid diagram (```mermaid fenced block). `code` is the verbatim
+    /// diagram source; shells render it via an embedded Mermaid runtime.
+    case mermaid(code: String)
 
     public func serialize<S: Serializer>(serializer: S) throws {
         try serializer.increase_container_depth()
@@ -1041,9 +1046,13 @@ indirect public enum MarkdownBlock: Hashable, Equatable {
             try serializeArray(value: spans, serializer: serializer) { item, serializer in
                 try item.serialize(serializer: serializer)
             }
-        case .codeBlock(let text):
+        case .codeBlock(let text, let lang):
             try serializer.serialize_variant_index(value: 3)
             try serializer.serialize_str(value: text)
+            try serializer.serialize_str(value: lang)
+        case .mermaid(let code):
+            try serializer.serialize_variant_index(value: 4)
+            try serializer.serialize_str(value: code)
         }
         try serializer.decrease_container_depth()
     }
@@ -1081,8 +1090,13 @@ indirect public enum MarkdownBlock: Hashable, Equatable {
             return .listItem(ordered: ordered, number: number, spans: spans)
         case 3:
             let text = try deserializer.deserialize_str()
+            let lang = try deserializer.deserialize_str()
             try deserializer.decrease_container_depth()
-            return .codeBlock(text: text)
+            return .codeBlock(text: text, lang: lang)
+        case 4:
+            let code = try deserializer.deserialize_str()
+            try deserializer.decrease_container_depth()
+            return .mermaid(code: code)
         default: throw DeserializationError.invalidInput(issue: "Unknown variant index for MarkdownBlock: \(index)")
         }
     }

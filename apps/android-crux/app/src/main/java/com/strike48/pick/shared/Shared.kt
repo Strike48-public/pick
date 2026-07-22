@@ -1349,13 +1349,17 @@ sealed interface MarkdownBlock {
     }
 
     /// A fenced/indented code block. Its text is verbatim, never styled inline.
+    /// `lang` is the fence info-string lowercased (empty for indented blocks or
+    /// bare fences); shells key on it (e.g. `"mermaid"`) to pick a renderer.
     data class CodeBlock(
         val text: String,
+        val lang: String,
     ) : MarkdownBlock {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
             serializer.serialize_variant_index(3)
             serializer.serialize_str(text)
+            serializer.serialize_str(lang)
             serializer.decrease_container_depth()
         }
 
@@ -1363,8 +1367,31 @@ sealed interface MarkdownBlock {
             fun deserialize(deserializer: Deserializer): CodeBlock {
                 deserializer.increase_container_depth()
                 val text = deserializer.deserialize_str()
+                val lang = deserializer.deserialize_str()
                 deserializer.decrease_container_depth()
-                return CodeBlock(text)
+                return CodeBlock(text, lang)
+            }
+        }
+    }
+
+    /// A Mermaid diagram (```mermaid fenced block). `code` is the verbatim
+    /// diagram source; shells render it via an embedded Mermaid runtime.
+    data class Mermaid(
+        val code: String,
+    ) : MarkdownBlock {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(4)
+            serializer.serialize_str(code)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): Mermaid {
+                deserializer.increase_container_depth()
+                val code = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return Mermaid(code)
             }
         }
     }
@@ -1378,6 +1405,7 @@ sealed interface MarkdownBlock {
                 1 -> Paragraph.deserialize(deserializer)
                 2 -> ListItem.deserialize(deserializer)
                 3 -> CodeBlock.deserialize(deserializer)
+                4 -> Mermaid.deserialize(deserializer)
                 else -> throw DeserializationError("Unknown variant index for MarkdownBlock: $index")
             }
         }
