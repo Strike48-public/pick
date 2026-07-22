@@ -131,8 +131,10 @@ pub struct PickCore {
     instance_id: String,
     /// Set once the tool-only connector has been spawned so re-adopting a token
     /// never starts a second connector (one connector per instance, per the
-    /// project's "one connector per tenant" rule).
-    connector_started: std::sync::atomic::AtomicBool,
+    /// project's "one connector per tenant" rule). `Arc` so the detached spawn
+    /// task can reset it if async registration prep fails, letting a later valid
+    /// token retry.
+    connector_started: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl PickCore {
@@ -173,7 +175,7 @@ impl PickCore {
             notifier: slot,
             api_url,
             instance_id: uuid::Uuid::new_v4().to_string(),
-            connector_started: std::sync::atomic::AtomicBool::new(false),
+            connector_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -196,38 +198,60 @@ impl PickCore {
             return;
         }
 
-        // Derive the tenant from the session token's realm; without it the
-        // connector cannot register against the right scope. Skip (and reset the
-        // guard) if the token is not a decodable JWT so a later, valid token can
-        // still start the connector.
-        let Some(tenant) = pick_crux_middleware::realm_from_token(&token) else {
-            tracing::warn!(
-                "tool connector not started: session token has no realm (cannot derive tenant)"
-            );
-            self.connector_started.store(false, Ordering::SeqCst);
-            return;
-        };
-
-        let config = pentest_core::config::ConnectorConfig {
-            host: self.api_url.clone(),
-            tenant_id: tenant,
-            auth_token: token,
-            instance_id: self.instance_id.clone(),
-            connector_name: "pentest-connector".to_string(),
-            ..Default::default()
-        };
+        let api_url = self.api_url.clone();
+        let instance_id = self.instance_id.clone();
+        // Clone the guard handle so the detached task can reset it if async
+        // registration prep fails (letting a later, valid token retry).
+        let connector_started = self.connector_started.clone();
 
         let tools = Arc::new(tokio::sync::RwLock::new(
             pentest_tools::create_tool_registry(),
         ));
 
         tracing::info!(
-            instance_id = self.instance_id.as_str(),
-            host = self.api_url.as_str(),
+            instance_id = instance_id.as_str(),
+            host = api_url.as_str(),
             "spawning tool-only connector"
         );
 
         self.rt.spawn(async move {
+            // crux always talks to the HTTPS API; self.api_url is already an
+            // https:// base, so derive_api_url just normalizes it.
+            let derived_api_url =
+                pentest_core::connector_registration::derive_api_url(&api_url, true);
+
+            // Exchange the adopted OAuth token for a tenant-scoped OTT, stage it,
+            // and point the SDK at it (STRIKE48_REGISTRATION_TOKEN_FILE). This is
+            // the SAME orchestration the shipping Dioxus app uses; the returned
+            // tenant id is authoritative (NOT the token realm name).
+            let ott = match pentest_core::connector_registration::prepare_connector_registration(
+                &derived_api_url,
+                &token,
+                "pentest-connector",
+            )
+            .await
+            {
+                Ok(o) => o,
+                Err(e) => {
+                    tracing::error!("tool connector registration prep failed: {}", e);
+                    // Reset the guard so a later, valid token can retry.
+                    connector_started.store(false, Ordering::SeqCst);
+                    return;
+                }
+            };
+
+            let config = pentest_core::config::ConnectorConfig {
+                host: api_url,
+                // Authoritative tenant UUID from the OTT, not the token realm.
+                tenant_id: ott.tenant_id,
+                // The SDK registers via the staged OTT file; keep the token set
+                // so other calls that want a bearer credential have one.
+                auth_token: token,
+                instance_id,
+                connector_name: "pentest-connector".to_string(),
+                ..Default::default()
+            };
+
             if let Err(e) = pentest_core::tool_connector::run_tool_connector(config, tools).await {
                 tracing::error!("tool connector exited with error: {}", e);
             }
