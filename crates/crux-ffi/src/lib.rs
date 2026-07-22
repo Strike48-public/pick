@@ -45,14 +45,14 @@ pub struct PickCore {
 impl PickCore {
     /// Rust-only constructor used by host tests to inject a fake `MatrixApi`.
     /// The extern `pick_core_new` builds the real [`CoreMatrixApi`] and calls
-    /// through here.
-    pub fn with_api(api: Arc<dyn MatrixApi>) -> Self {
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        Self {
+    /// through here. Returns `None` if runtime creation fails.
+    pub fn with_api(api: Arc<dyn MatrixApi>) -> Option<Self> {
+        let rt = tokio::runtime::Runtime::new().ok()?;
+        Some(Self {
             bridge: Bridge::new(Core::<PickApp>::new()),
             rt,
             api,
-        }
+        })
     }
 
     /// Serialize the current ViewModel. `None` on serialization failure.
@@ -81,11 +81,24 @@ impl PickCore {
 
     /// Repeatedly resolve `Pentest` requests in-core until only `Render`
     /// requests remain; return the serialized Render-only batch.
+    /// Bounded by MAX_EFFECT_ITERATIONS to prevent unbounded poll loops from
+    /// hanging the FFI call (Task 6 streaming contract is a separate concern).
     fn drain_pentest(&self, first: Vec<u8>) -> Option<Vec<u8>> {
+        /// Safety backstop: prevents a non-terminating poll from spinning forever
+        /// inside a single `pick_update` call.
+        const MAX_EFFECT_ITERATIONS: usize = 1000;
+
         let mut render_reqs: Vec<Request<EffectFfi>> = Vec::new();
         let mut pending: Vec<Request<EffectFfi>> = bincode::deserialize(&first).ok()?;
+        let mut iterations = 0;
 
         while let Some(req) = pending.pop() {
+            iterations += 1;
+            if iterations > MAX_EFFECT_ITERATIONS {
+                // Cap reached; return whatever Render requests we accumulated.
+                break;
+            }
+
             let Request { id, effect } = req;
             match effect {
                 EffectFfi::Render(op) => {
@@ -178,7 +191,10 @@ pub extern "C" fn pick_core_new(
         token,
         agent_id: None,
     });
-    Box::into_raw(Box::new(PickCore::with_api(api)))
+    match PickCore::with_api(api) {
+        Some(core) => Box::into_raw(Box::new(core)),
+        None => std::ptr::null_mut(),
+    }
 }
 
 /// Free a [`PickCore`] previously returned by `pick_core_new`.
@@ -315,7 +331,7 @@ mod tests {
     }
 
     fn fake_core() -> *mut PickCore {
-        Box::into_raw(Box::new(PickCore::with_api(Arc::new(FakeApi))))
+        Box::into_raw(Box::new(PickCore::with_api(Arc::new(FakeApi)).expect("test runtime")))
     }
 
     #[test]
