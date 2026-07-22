@@ -44,6 +44,49 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     let needs_sign_in = use_context::<Signal<bool>>();
     let retry_tick = use_context::<Signal<u32>>();
 
+    // TEMP DIAGNOSTIC (top-bar shift): log the resolved safe-area inset and the
+    // brand bar's top offset on every change, to confirm whether env(safe-area
+    // -inset-top) is unstable across paints (0 at first, real inset later) —
+    // which would make calc(env()+8px) grow and drop the bar. Remove after fix.
+    use_hook(|| {
+        spawn(async move {
+            let mut eval = document::eval(
+                r#"
+                function readInset() {
+                    var p = document.createElement('div');
+                    p.style.cssText = 'position:fixed;top:0;height:env(safe-area-inset-top);';
+                    document.body.appendChild(p);
+                    var h = p.getBoundingClientRect().height;
+                    p.remove();
+                    return h;
+                }
+                var last = null;
+                function check(tag) {
+                    var el = document.querySelector('.easy-brandbar');
+                    if (!el) return;
+                    var top = Math.round(el.getBoundingClientRect().top);
+                    var cs = getComputedStyle(el.parentElement);
+                    var key = top + '/' + cs.paddingTop;
+                    if (key !== last) {
+                        last = key;
+                        dioxus.send('[' + tag + '] barTop=' + top +
+                            ' easyPadTop=' + cs.paddingTop +
+                            ' insetPx=' + readInset() +
+                            ' innerH=' + window.innerHeight);
+                    }
+                }
+                var n = 0;
+                var iv = setInterval(function(){ check('poll'); if (++n > 60) clearInterval(iv); }, 250);
+                check('init');
+                await new Promise(function(){});
+                "#,
+            );
+            while let Ok(line) = eval.recv::<String>().await {
+                tracing::warn!("[TOPBAR-SHIFT] {line}");
+            }
+        });
+    });
+
     // Track the selected agent ID for the DocumentsPanel (which self-refreshes).
     let agent_id = use_signal(|| None::<String>);
     // The report currently open in the full-screen viewer (None = normal shell).
