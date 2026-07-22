@@ -7524,6 +7524,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pick-crux-middleware"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "crux_core",
+ "pentest-core",
+ "pick-crux-core",
+ "tokio",
+]
+
+[[package]]
 name = "pin-project"
 version = "1.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"

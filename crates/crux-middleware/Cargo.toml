@@ -1,0 +1,15 @@
+[package]
+name = "pick-crux-middleware"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+crux_core = "0.19"
+pick-crux-core = { path = "../crux-core" }
+pentest-core = { path = "../core" }
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
+async-trait = "0.1"
