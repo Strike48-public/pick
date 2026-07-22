@@ -45,6 +45,7 @@ impl PentestTool for ArpTableTool {
             Platform::Desktop,
             Platform::Web,
             Platform::Android,
+            Platform::Ios,
             Platform::Tui,
         ]
     }

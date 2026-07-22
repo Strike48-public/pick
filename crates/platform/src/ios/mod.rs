@@ -2,6 +2,7 @@
 
 pub mod browser;
 pub mod keychain;
+pub mod network;
 pub mod oauth;
 pub mod pty_shell;
 pub mod share;
@@ -79,25 +80,19 @@ impl NetworkOps for IosPlatform {
     }
 
     async fn get_arp_table(&self) -> Result<Vec<ArpEntry>> {
-        Err(Error::PlatformNotSupported(
-            "get_arp_table not available on iOS".into(),
-        ))
+        network::get_arp_table().await
     }
 
-    async fn ssdp_discover(&self, _timeout_ms: u64) -> Result<Vec<SsdpDevice>> {
-        Err(Error::PlatformNotSupported(
-            "ssdp_discover not available on iOS".into(),
-        ))
+    async fn ssdp_discover(&self, timeout_ms: u64) -> Result<Vec<SsdpDevice>> {
+        network::ssdp_discover(timeout_ms).await
     }
 
     async fn mdns_discover(
         &self,
-        _service_type: &str,
-        _timeout_ms: u64,
+        service_type: &str,
+        timeout_ms: u64,
     ) -> Result<Vec<MdnsService>> {
-        Err(Error::PlatformNotSupported(
-            "mdns_discover not available on iOS (requires Bonjour framework)".into(),
-        ))
+        network::mdns_discover(service_type, timeout_ms).await
     }
 }
 

@@ -3,7 +3,8 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, ToolContext, ToolParam, ToolResult, ToolSchema,
+    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult,
+    ToolSchema,
 };
 use pentest_platform::{get_platform, NetworkOps};
 use serde_json::{json, Value};
@@ -37,6 +38,18 @@ impl PentestTool for NetworkDiscoverTool {
                 "Discovery timeout in milliseconds",
                 json!(10000),
             ))
+    }
+
+    fn supported_platforms(&self) -> Vec<Platform> {
+        // mDNS/DNS-SD discovery is pure outbound UDP multicast, permitted in
+        // the iOS app sandbox with the local-network entitlement. Mirrors the
+        // default set (Desktop/Android/Tui) plus iOS.
+        vec![
+            Platform::Desktop,
+            Platform::Android,
+            Platform::Ios,
+            Platform::Tui,
+        ]
     }
 
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {

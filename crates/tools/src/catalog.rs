@@ -690,7 +690,9 @@ mod tests {
         let desktop = tools_overview_for(Platform::Desktop);
         let names: Vec<&str> = ios.iter().map(|t| t.name.as_str()).collect();
 
-        // Native / in-process tools survive on iOS.
+        // Native / in-process tools survive on iOS. ARP, SSDP and mDNS
+        // discovery are native on iOS (BSD route-socket sysctl + outbound UDP
+        // multicast with the local-network entitlement).
         for t in [
             "port_scan",
             "cyberchef",
@@ -699,6 +701,9 @@ mod tests {
             "write_file",
             "list_files",
             "safety_check",
+            "arp_table",
+            "ssdp_discover",
+            "network_discover",
         ] {
             assert!(names.contains(&t), "iOS overview should include {t}");
         }
@@ -709,7 +714,6 @@ mod tests {
             "execute_command",
             "traffic_capture",
             "screenshot",
-            "arp_table",
         ] {
             assert!(!names.contains(&t), "iOS overview must not include {t}");
         }

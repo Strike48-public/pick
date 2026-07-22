@@ -3,6 +3,12 @@
 //! This module extracts duplicated port-scanning and ARP-parsing code that was
 //! previously copy-pasted across android, desktop, and iOS implementations.
 
+/// Platform-agnostic SSDP/UPnP discovery (pure-std UDP M-SEARCH).
+pub mod ssdp;
+
+/// Platform-agnostic mDNS/DNS-SD discovery (pure-std UDP multicast).
+pub mod mdns;
+
 use crate::traits::{port_to_service, ArpEntry, ScannedPort};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;

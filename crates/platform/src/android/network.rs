@@ -67,77 +67,10 @@ async fn arp_from_ip_neigh() -> Vec<ArpEntry> {
     crate::common::parse_ip_neigh(&stdout)
 }
 
-/// Discover SSDP devices
+/// Discover SSDP devices.
+///
+/// Delegates to the shared, platform-agnostic implementation in
+/// [`crate::common::ssdp`] (behavior-identical to the previous inline copy).
 pub async fn ssdp_discover(timeout_ms: u64) -> Result<Vec<SsdpDevice>> {
-    use std::net::UdpSocket;
-
-    let socket = match UdpSocket::bind("0.0.0.0:0") {
-        Ok(s) => s,
-        Err(_) => return Ok(vec![]),
-    };
-
-    let _ = socket.set_read_timeout(Some(Duration::from_millis(timeout_ms)));
-    let _ = socket.set_broadcast(true);
-
-    let search_request = "M-SEARCH * HTTP/1.1\r\n\
-        HOST: 239.255.255.250:1900\r\n\
-        MAN: \"ssdp:discover\"\r\n\
-        MX: 2\r\n\
-        ST: ssdp:all\r\n\r\n";
-
-    let multicast_addr = "239.255.255.250:1900";
-    if socket
-        .send_to(search_request.as_bytes(), multicast_addr)
-        .is_err()
-    {
-        return Ok(vec![]);
-    }
-
-    let mut devices = Vec::new();
-    let mut buf = [0u8; 2048];
-
-    while let Ok((len, _)) = socket.recv_from(&mut buf) {
-        let response = String::from_utf8_lossy(&buf[..len]);
-        if let Some(device) = parse_ssdp_response(&response) {
-            devices.push(device);
-        }
-    }
-
-    Ok(devices)
-}
-
-fn parse_ssdp_response(response: &str) -> Option<SsdpDevice> {
-    let mut location = None;
-    let mut server = None;
-    let mut usn = None;
-    let mut st = None;
-
-    for line in response.lines() {
-        let line = line.trim();
-        if let Some(value) = line
-            .strip_prefix("LOCATION:")
-            .or_else(|| line.strip_prefix("Location:"))
-        {
-            location = Some(value.trim().to_string());
-        } else if let Some(value) = line
-            .strip_prefix("SERVER:")
-            .or_else(|| line.strip_prefix("Server:"))
-        {
-            server = Some(value.trim().to_string());
-        } else if let Some(value) = line.strip_prefix("USN:") {
-            usn = Some(value.trim().to_string());
-        } else if let Some(value) = line.strip_prefix("ST:") {
-            st = Some(value.trim().to_string());
-        }
-    }
-
-    location.map(|loc| SsdpDevice {
-        location: loc,
-        server,
-        usn,
-        st,
-        friendly_name: None,
-        manufacturer: None,
-        model: None,
-    })
+    crate::common::ssdp::discover(timeout_ms).await
 }
