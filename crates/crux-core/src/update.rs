@@ -69,8 +69,12 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         }
         Event::Delta(outcome) => {
             if let Some(delta) = outcome.delta {
-                model.messages.extend(delta.messages);
-                model.tool_calls.extend(delta.tool_calls);
+                // A delta carries the FULL current message/tool-call snapshot
+                // (the server returns the whole conversation), so REPLACE rather
+                // than extend — extending re-appended every message on every
+                // poll/update, rendering the same message dozens of times.
+                model.messages = delta.messages;
+                model.tool_calls = delta.tool_calls;
                 if delta.done {
                     model.scan_active = false;
                     let agent = None; // agent id resolved by middleware/session
