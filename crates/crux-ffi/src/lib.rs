@@ -187,6 +187,19 @@ pub extern "C" fn pick_core_new(
         return std::ptr::null_mut();
     };
 
+    // Dev-only: trust the local cluster's mkcert-signed TLS so debug builds can
+    // reach https://*.strike48.test. reqwest here uses rustls-tls-native-roots,
+    // and rustls-native-certs does not reliably read the iOS simulator trust
+    // store (adding the CA via `simctl keychain add-root-cert` isn't picked up),
+    // so we relax verification instead. Release builds (debug_assertions off)
+    // keep strict TLS — this never ships. The proper prod path is bundling the
+    // CA or webpki roots + a real cert. The matrix client reads this env when it
+    // builds its client.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("MATRIX_TLS_INSECURE").is_none() {
+        std::env::set_var("MATRIX_TLS_INSECURE", "true");
+    }
+
     let api: Arc<dyn MatrixApi> = Arc::new(CoreMatrixApi::new(api_url, token, None));
     match PickCore::with_api(api) {
         Some(core) => Box::into_raw(Box::new(core)),
