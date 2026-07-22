@@ -21,6 +21,70 @@ pub enum Effect {
     Pentest(PentestOperation),
 }
 
+// FFI-friendly outcome types (Result<T,E> is not Facet-serializable for typegen)
+#[derive(Facet, Serialize, Deserialize, Clone, Debug)]
+#[repr(C)]
+pub struct SignInOutcome {
+    pub token: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Facet, Serialize, Deserialize, Clone, Debug)]
+#[repr(C)]
+pub struct ConnectOutcome {
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Facet, Serialize, Deserialize, Clone, Debug)]
+#[repr(C)]
+pub struct ScanOutcome {
+    pub conversation_id: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Facet, Serialize, Deserialize, Clone, Debug)]
+#[repr(C)]
+pub struct DeltaOutcome {
+    pub delta: Option<ConversationDelta>,
+    pub error: Option<String>,
+}
+
+#[derive(Facet, Serialize, Deserialize, Clone, Debug)]
+#[repr(C)]
+pub struct ConversationsOutcome {
+    pub conversations: Option<Vec<view::ConversationRef>>,
+    pub error: Option<String>,
+}
+
+#[derive(Facet, Serialize, Deserialize, Clone, Debug)]
+#[repr(C)]
+pub struct LoadConversationOutcome {
+    pub messages: Option<Vec<view::MessageView>>,
+    pub error: Option<String>,
+}
+
+#[derive(Facet, Serialize, Deserialize, Clone, Debug)]
+#[repr(C)]
+pub struct DocumentsOutcome {
+    pub documents: Option<Vec<view::DocRef>>,
+    pub error: Option<String>,
+}
+
+#[derive(Facet, Serialize, Deserialize, Clone, Debug)]
+#[repr(C)]
+pub struct DocumentContentOutcome {
+    pub content: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Facet, Serialize, Deserialize, Clone, Debug)]
+#[repr(C)]
+pub struct ShareLinkOutcome {
+    pub url: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Facet, Serialize, Deserialize, Clone, Debug)]
 #[repr(C)]
 pub enum Event {
@@ -37,15 +101,15 @@ pub enum Event {
     RetrySignIn,
     DismissError,
     // effect results
-    SignInResult(Result<String, String>),
-    ConnectResult(Result<(), String>),
-    ScanResult(Result<String, String>),
-    Delta(Result<ConversationDelta, String>),
-    ConversationsResult(Result<Vec<view::ConversationRef>, String>),
-    LoadConversationResult(Result<Vec<view::MessageView>, String>),
-    DocumentsResult(Result<Vec<view::DocRef>, String>),
-    DocumentContentResult(Result<String, String>),
-    ShareLinkResult(Result<String, String>),
+    SignInResult(SignInOutcome),
+    ConnectResult(ConnectOutcome),
+    ScanResult(ScanOutcome),
+    Delta(DeltaOutcome),
+    ConversationsResult(ConversationsOutcome),
+    LoadConversationResult(LoadConversationOutcome),
+    DocumentsResult(DocumentsOutcome),
+    DocumentContentResult(DocumentContentOutcome),
+    ShareLinkResult(ShareLinkOutcome),
 }
 
 #[derive(Default)]
