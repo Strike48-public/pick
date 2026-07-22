@@ -214,6 +214,17 @@ pub extern "C" fn pick_set_token(core: *mut PickCore, token_ptr: *const u8, toke
     let slice = unsafe { std::slice::from_raw_parts(token_ptr, token_len) };
     if let Ok(token) = std::str::from_utf8(slice) {
         core.api.set_token(token.to_owned());
+        // The shell authenticated out-of-band (native OAuth), so the in-core
+        // SignIn effect never ran. Drive the model to Connected by feeding a
+        // successful SignInResult, so the ViewModel's connection phase/label
+        // reflect the adopted token (otherwise it stays "Connecting...").
+        let event = pick_crux_core::Event::SignInResult(pick_crux_core::SignInOutcome {
+            token: Some(token.to_owned()),
+            error: None,
+        });
+        if let Ok(bytes) = bincode::serialize(&event) {
+            let _ = core.update_bytes(&bytes);
+        }
     }
 }
 
@@ -364,6 +375,42 @@ mod tests {
         assert!(vm.show_scan_card, "fresh core shows the scan card");
         assert!(!vm.scan_in_progress);
         pick_buf_free(buf);
+        pick_core_free(core);
+    }
+
+    #[test]
+    fn set_token_marks_connected() {
+        use pick_crux_core::view::ConnectionPhase;
+        let core = fake_core();
+
+        // Fresh core is Connecting (default phase), not yet Connected.
+        let vm0: ViewModel = {
+            let b = pick_view(core);
+            let v = bincode::deserialize(unsafe {
+                std::slice::from_raw_parts(b.ptr, b.len)
+            })
+            .unwrap();
+            pick_buf_free(b);
+            v
+        };
+        assert_eq!(vm0.connection.phase, ConnectionPhase::Connecting);
+
+        // Adopting a shell-obtained token drives the model to Connected so the
+        // UI leaves "Connecting..." even though the in-core SignIn never ran.
+        let token = b"shell-oauth-token";
+        pick_set_token(core, token.as_ptr(), token.len());
+
+        let vm1: ViewModel = {
+            let b = pick_view(core);
+            let v = bincode::deserialize(unsafe {
+                std::slice::from_raw_parts(b.ptr, b.len)
+            })
+            .unwrap();
+            pick_buf_free(b);
+            v
+        };
+        assert_eq!(vm1.connection.phase, ConnectionPhase::Connected);
+        assert!(!vm1.needs_sign_in);
         pick_core_free(core);
     }
 
