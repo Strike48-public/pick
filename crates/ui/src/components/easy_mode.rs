@@ -44,6 +44,42 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     let needs_sign_in = use_context::<Signal<bool>>();
     let retry_tick = use_context::<Signal<u32>>();
 
+    // TEMP DIAGNOSTIC (top-bar layout): once mounted, walk from .easy-brandbar
+    // up its parent chain and report each ancestor's tag/class + bounding box +
+    // key computed styles, so we can see exactly which element introduces the
+    // gap above the bar instead of guessing at CSS. Remove after the fix.
+    use_hook(|| {
+        spawn(async move {
+            let mut eval = document::eval(
+                r#"
+                await new Promise(function(r){ setTimeout(r, 800); });
+                var el = document.querySelector('.easy-brandbar');
+                var out = [];
+                out.push('VIEWPORT innerH=' + window.innerHeight + ' visualViewport=' + (window.visualViewport ? window.visualViewport.height : 'na'));
+                var node = el;
+                while (node && node !== document.documentElement.parentNode) {
+                    var r = node.getBoundingClientRect ? node.getBoundingClientRect() : {top:0,height:0};
+                    var cs = window.getComputedStyle(node);
+                    out.push(
+                        (node.tagName||'?') + '.' + (node.className||'') +
+                        ' | top=' + Math.round(r.top) + ' h=' + Math.round(r.height) +
+                        ' | disp=' + cs.display + ' pos=' + cs.position +
+                        ' justify=' + cs.justifyContent + ' align=' + cs.alignItems +
+                        ' height=' + cs.height + ' minH=' + cs.minHeight +
+                        ' padT=' + cs.paddingTop + ' marT=' + cs.marginTop
+                    );
+                    node = node.parentElement;
+                }
+                dioxus.send(out.join('\n'));
+                await new Promise(function(){});
+                "#,
+            );
+            if let Ok(report) = eval.recv::<String>().await {
+                tracing::warn!("[TOPBAR-DIAG]\n{report}");
+            }
+        });
+    });
+
     // Track the selected agent ID for the DocumentsPanel (which self-refreshes).
     let agent_id = use_signal(|| None::<String>);
     // The report currently open in the full-screen viewer (None = normal shell).
