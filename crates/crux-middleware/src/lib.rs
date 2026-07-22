@@ -386,11 +386,11 @@ impl MatrixApi for CoreMatrixApi {
     }
 
     async fn list_documents(&self, agent_id: Option<String>) -> Result<Vec<DocRef>, String> {
-        // Default to the resolved scan agent so the docs match the conversation.
-        let agent = match agent_id {
-            Some(a) if !a.is_empty() => Some(a),
-            _ => self.resolve_agent().await.ok().map(|(id, _name)| id),
-        };
+        // `None` means workspace-wide (matches the pentest-core client + the
+        // Dioxus Reports list): do NOT auto-scope to the scan agent, or the
+        // Reports list would hide docs created by other agents. Conversation
+        // scoping happens in the App (DocumentsResult filters by conversation).
+        let agent = agent_id.filter(|a| !a.is_empty());
         let docs = self
             .client()
             .list_documents(agent.as_deref())

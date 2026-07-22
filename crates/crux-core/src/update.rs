@@ -186,6 +186,29 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
             model.scan_active = false;
             render()
         }
+        Event::OpenDocuments => {
+            // Fetch all documents on demand (no agent filter -> workspace-wide),
+            // so the Reports list is populated even without a just-finished scan.
+            Command::request_from_shell(PentestOperation::ListDocuments { agent_id: None })
+                .then_send(|out| match out {
+                    PentestOutcome::Documents { list } => {
+                        Event::DocumentsResult(crate::DocumentsOutcome {
+                            documents: Some(list),
+                            error: None,
+                        })
+                    }
+                    PentestOutcome::Error { message } => {
+                        Event::DocumentsResult(crate::DocumentsOutcome {
+                            documents: None,
+                            error: Some(message),
+                        })
+                    }
+                    _ => Event::DocumentsResult(crate::DocumentsOutcome {
+                        documents: None,
+                        error: Some("unexpected outcome".into()),
+                    }),
+                })
+        }
         Event::OpenHistory => {
             model.history_open = true;
             Command::request_from_shell(PentestOperation::ListConversations).then_send(|out| {

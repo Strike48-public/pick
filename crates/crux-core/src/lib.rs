@@ -97,6 +97,9 @@ pub enum Event {
     OpenHistory,
     CloseHistory,
     SelectConversation(String),
+    /// User opened the Reports list — (re)fetch all documents on demand, so the
+    /// list is populated even without a just-completed scan.
+    OpenDocuments,
     OpenDocument(String),
     CloseDocument,
     CreateShareLink(String),

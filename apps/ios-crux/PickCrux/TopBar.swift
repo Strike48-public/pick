@@ -24,7 +24,10 @@ struct TopBar: View {
                     core.send(.openHistory)
                     showHistory = true
                 }
-                iconButton(system: "doc.text") { showDocuments = true }
+                iconButton(system: "doc.text") {
+                    core.send(.openDocuments)
+                    showDocuments = true
+                }
             }
 
             Text(core.vm.connection.label)

@@ -202,7 +202,7 @@ fun PickApp(
             connectionLabel = if (signedIn) model.connection.label else "Sign in to connect",
             onNewChat = { send(Event.NewChat) },
             onHistory = { send(Event.OpenHistory); showHistory = true },
-            onReports = { showReports = true },
+            onReports = { send(Event.OpenDocuments); showReports = true },
         )
 
         model.error?.let { err ->

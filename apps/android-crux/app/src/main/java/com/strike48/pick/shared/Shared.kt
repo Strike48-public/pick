@@ -833,12 +833,26 @@ sealed interface Event {
         }
     }
 
+    /// User opened the Reports list — (re)fetch all documents on demand, so the
+    /// list is populated even without a just-completed scan.
+    data object OpenDocuments: Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(6)
+            serializer.decrease_container_depth()
+        }
+
+        fun deserialize(deserializer: Deserializer): OpenDocuments {
+            return OpenDocuments
+        }
+    }
+
     data class OpenDocument(
         val value: String,
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(6)
+            serializer.serialize_variant_index(7)
             serializer.serialize_str(value)
             serializer.decrease_container_depth()
         }
@@ -856,7 +870,7 @@ sealed interface Event {
     data object CloseDocument: Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(7)
+            serializer.serialize_variant_index(8)
             serializer.decrease_container_depth()
         }
 
@@ -870,7 +884,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(8)
+            serializer.serialize_variant_index(9)
             serializer.serialize_str(value)
             serializer.decrease_container_depth()
         }
@@ -888,7 +902,7 @@ sealed interface Event {
     data object RetrySignIn: Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(9)
+            serializer.serialize_variant_index(10)
             serializer.decrease_container_depth()
         }
 
@@ -900,7 +914,7 @@ sealed interface Event {
     data object DismissError: Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(10)
+            serializer.serialize_variant_index(11)
             serializer.decrease_container_depth()
         }
 
@@ -914,7 +928,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(11)
+            serializer.serialize_variant_index(12)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -934,7 +948,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(12)
+            serializer.serialize_variant_index(13)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -954,7 +968,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(13)
+            serializer.serialize_variant_index(14)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -974,7 +988,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(14)
+            serializer.serialize_variant_index(15)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -994,7 +1008,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(15)
+            serializer.serialize_variant_index(16)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -1014,7 +1028,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(16)
+            serializer.serialize_variant_index(17)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -1034,7 +1048,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(17)
+            serializer.serialize_variant_index(18)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -1054,7 +1068,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(18)
+            serializer.serialize_variant_index(19)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -1074,7 +1088,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(19)
+            serializer.serialize_variant_index(20)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -1100,20 +1114,21 @@ sealed interface Event {
                 3 -> OpenHistory.deserialize(deserializer)
                 4 -> CloseHistory.deserialize(deserializer)
                 5 -> SelectConversation.deserialize(deserializer)
-                6 -> OpenDocument.deserialize(deserializer)
-                7 -> CloseDocument.deserialize(deserializer)
-                8 -> CreateShareLink.deserialize(deserializer)
-                9 -> RetrySignIn.deserialize(deserializer)
-                10 -> DismissError.deserialize(deserializer)
-                11 -> SignInResult.deserialize(deserializer)
-                12 -> ConnectResult.deserialize(deserializer)
-                13 -> ScanResult.deserialize(deserializer)
-                14 -> Delta.deserialize(deserializer)
-                15 -> ConversationsResult.deserialize(deserializer)
-                16 -> LoadConversationResult.deserialize(deserializer)
-                17 -> DocumentsResult.deserialize(deserializer)
-                18 -> DocumentContentResult.deserialize(deserializer)
-                19 -> ShareLinkResult.deserialize(deserializer)
+                6 -> OpenDocuments.deserialize(deserializer)
+                7 -> OpenDocument.deserialize(deserializer)
+                8 -> CloseDocument.deserialize(deserializer)
+                9 -> CreateShareLink.deserialize(deserializer)
+                10 -> RetrySignIn.deserialize(deserializer)
+                11 -> DismissError.deserialize(deserializer)
+                12 -> SignInResult.deserialize(deserializer)
+                13 -> ConnectResult.deserialize(deserializer)
+                14 -> ScanResult.deserialize(deserializer)
+                15 -> Delta.deserialize(deserializer)
+                16 -> ConversationsResult.deserialize(deserializer)
+                17 -> LoadConversationResult.deserialize(deserializer)
+                18 -> DocumentsResult.deserialize(deserializer)
+                19 -> DocumentContentResult.deserialize(deserializer)
+                20 -> ShareLinkResult.deserialize(deserializer)
                 else -> throw DeserializationError("Unknown variant index for Event: $index")
             }
         }

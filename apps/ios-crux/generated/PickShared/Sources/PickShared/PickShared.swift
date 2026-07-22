@@ -728,6 +728,9 @@ indirect public enum Event {
     case openHistory
     case closeHistory
     case selectConversation(String)
+    /// User opened the Reports list — (re)fetch all documents on demand, so the
+    /// list is populated even without a just-completed scan.
+    case openDocuments
     case openDocument(String)
     case closeDocument
     case createShareLink(String)
@@ -760,44 +763,46 @@ indirect public enum Event {
         case .selectConversation(let x):
             try serializer.serialize_variant_index(value: 5)
             try serializer.serialize_str(value: x)
-        case .openDocument(let x):
+        case .openDocuments:
             try serializer.serialize_variant_index(value: 6)
+        case .openDocument(let x):
+            try serializer.serialize_variant_index(value: 7)
             try serializer.serialize_str(value: x)
         case .closeDocument:
-            try serializer.serialize_variant_index(value: 7)
-        case .createShareLink(let x):
             try serializer.serialize_variant_index(value: 8)
+        case .createShareLink(let x):
+            try serializer.serialize_variant_index(value: 9)
             try serializer.serialize_str(value: x)
         case .retrySignIn:
-            try serializer.serialize_variant_index(value: 9)
-        case .dismissError:
             try serializer.serialize_variant_index(value: 10)
-        case .signInResult(let x):
+        case .dismissError:
             try serializer.serialize_variant_index(value: 11)
-            try x.serialize(serializer: serializer)
-        case .connectResult(let x):
+        case .signInResult(let x):
             try serializer.serialize_variant_index(value: 12)
             try x.serialize(serializer: serializer)
-        case .scanResult(let x):
+        case .connectResult(let x):
             try serializer.serialize_variant_index(value: 13)
             try x.serialize(serializer: serializer)
-        case .delta(let x):
+        case .scanResult(let x):
             try serializer.serialize_variant_index(value: 14)
             try x.serialize(serializer: serializer)
-        case .conversationsResult(let x):
+        case .delta(let x):
             try serializer.serialize_variant_index(value: 15)
             try x.serialize(serializer: serializer)
-        case .loadConversationResult(let x):
+        case .conversationsResult(let x):
             try serializer.serialize_variant_index(value: 16)
             try x.serialize(serializer: serializer)
-        case .documentsResult(let x):
+        case .loadConversationResult(let x):
             try serializer.serialize_variant_index(value: 17)
             try x.serialize(serializer: serializer)
-        case .documentContentResult(let x):
+        case .documentsResult(let x):
             try serializer.serialize_variant_index(value: 18)
             try x.serialize(serializer: serializer)
-        case .shareLinkResult(let x):
+        case .documentContentResult(let x):
             try serializer.serialize_variant_index(value: 19)
+            try x.serialize(serializer: serializer)
+        case .shareLinkResult(let x):
+            try serializer.serialize_variant_index(value: 20)
             try x.serialize(serializer: serializer)
         }
         try serializer.decrease_container_depth()
@@ -834,55 +839,58 @@ indirect public enum Event {
             try deserializer.decrease_container_depth()
             return .selectConversation(x)
         case 6:
+            try deserializer.decrease_container_depth()
+            return .openDocuments
+        case 7:
             let x = try deserializer.deserialize_str()
             try deserializer.decrease_container_depth()
             return .openDocument(x)
-        case 7:
+        case 8:
             try deserializer.decrease_container_depth()
             return .closeDocument
-        case 8:
+        case 9:
             let x = try deserializer.deserialize_str()
             try deserializer.decrease_container_depth()
             return .createShareLink(x)
-        case 9:
-            try deserializer.decrease_container_depth()
-            return .retrySignIn
         case 10:
             try deserializer.decrease_container_depth()
-            return .dismissError
+            return .retrySignIn
         case 11:
+            try deserializer.decrease_container_depth()
+            return .dismissError
+        case 12:
             let x = try SignInOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .signInResult(x)
-        case 12:
+        case 13:
             let x = try ConnectOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .connectResult(x)
-        case 13:
+        case 14:
             let x = try ScanOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .scanResult(x)
-        case 14:
+        case 15:
             let x = try DeltaOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .delta(x)
-        case 15:
+        case 16:
             let x = try ConversationsOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .conversationsResult(x)
-        case 16:
+        case 17:
             let x = try LoadConversationOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .loadConversationResult(x)
-        case 17:
+        case 18:
             let x = try DocumentsOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .documentsResult(x)
-        case 18:
+        case 19:
             let x = try DocumentContentOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .documentContentResult(x)
-        case 19:
+        case 20:
             let x = try ShareLinkOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .shareLinkResult(x)
