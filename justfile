@@ -642,5 +642,5 @@ crux-ffi-ios-sim:
 
 # Regenerate the Swift + Kotlin foreign types from the crux core surface.
 crux-typegen out="crates/crux-core/generated":
-    cargo run -p pick-crux-core --features codegen --bin codegen -- --language swift --output-dir {{out}}
-    cargo run -p pick-crux-core --features codegen --bin codegen -- --language kotlin --output-dir {{out}}
+    cargo run -p pick-crux-core --features codegen --bin codegen -- swift {{out}}
+    cargo run -p pick-crux-core --features codegen --bin codegen -- kotlin {{out}}
