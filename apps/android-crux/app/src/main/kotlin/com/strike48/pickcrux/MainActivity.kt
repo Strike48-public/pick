@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -147,6 +148,13 @@ fun PickApp(
     var showHistory by remember { mutableStateOf(false) }
     var showReports by remember { mutableStateOf(false) }
     val context = LocalContext.current
+
+    // Streaming: the core pushes a view update (on the main thread) whenever an
+    // async effect resolves. Re-render as the scan streams in — no polling.
+    DisposableEffect(core) {
+        core.onViewChanged = { model = it }
+        onDispose { core.onViewChanged = null }
+    }
 
     fun send(event: Event) {
         model = core.update(event)

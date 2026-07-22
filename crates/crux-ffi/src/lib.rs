@@ -62,6 +62,11 @@ impl ShellNotifier {
     }
 }
 
+/// A swappable notifier slot shared between the core and the bridge callback,
+/// so the shell can register/replace the callback after construction
+/// (`pick_set_notify`). `None` = no shell listening yet (pings are dropped).
+type NotifierSlot = Arc<std::sync::RwLock<Option<ShellNotifier>>>;
+
 /// Install a `tracing` subscriber once so the core's events (e.g. the gql send
 /// error chain) actually surface. iOS writes to stderr (captured by the
 /// simulator console / Xcode); Android bridges `tracing` -> `log` -> logcat.
@@ -116,15 +121,21 @@ pub struct PickCore {
     _rt: tokio::runtime::Runtime,
     /// Shared with `PentestMiddleware` so the shell can swap the auth token.
     api: Arc<dyn MatrixApi>,
+    /// The shell callback; swappable via `pick_set_notify`.
+    notifier: NotifierSlot,
 }
 
 impl PickCore {
-    /// Build a core over `api`, pinging `notifier` whenever an async effect
-    /// resolves (so the shell re-reads the view). Returns `None` if the tokio
-    /// runtime can't be created.
-    fn build(api: Arc<dyn MatrixApi>, notifier: ShellNotifier) -> Option<Self> {
+    /// Build a core over `api`, pinging the shell (via the notifier slot)
+    /// whenever an async effect resolves so it re-reads the view. `notifier`
+    /// may be `None` initially and set later with [`Self::set_notifier`].
+    /// Returns `None` if the tokio runtime can't be created.
+    fn build(api: Arc<dyn MatrixApi>, notifier: Option<ShellNotifier>) -> Option<Self> {
         let rt = tokio::runtime::Runtime::new().ok()?;
         let middleware = PentestMiddleware::new(rt.handle().clone(), api.clone());
+
+        let slot: NotifierSlot = Arc::new(std::sync::RwLock::new(notifier));
+        let slot_for_cb = slot.clone();
 
         // The bridge invokes this callback when effects resolve out-of-band
         // (on the middleware's background thread). We don't need the request
@@ -133,14 +144,26 @@ impl PickCore {
         let bridge = Core::<PickApp>::new()
             .handle_effects_using(middleware)
             .bridge::<crux_core::bridge::BincodeFfiFormat>(move |_result| {
-                notifier.ping();
+                if let Ok(guard) = slot_for_cb.read() {
+                    if let Some(n) = guard.as_ref() {
+                        n.ping();
+                    }
+                }
             });
 
         Some(Self {
             bridge,
             _rt: rt,
             api,
+            notifier: slot,
         })
+    }
+
+    /// Register/replace the shell notify callback (`pick_set_notify`).
+    fn set_notifier(&self, notifier: ShellNotifier) {
+        if let Ok(mut guard) = self.notifier.write() {
+            *guard = Some(notifier);
+        }
     }
 
     /// Serialize the current ViewModel. `None` on serialization failure.
@@ -249,10 +272,28 @@ pub extern "C" fn pick_core_new(
 
     let api: Arc<dyn MatrixApi> = Arc::new(CoreMatrixApi::new(api_url, token, None));
     let notifier = ShellNotifier { notify, user_data };
-    match PickCore::build(api, notifier) {
+    match PickCore::build(api, Some(notifier)) {
         Some(core) => Box::into_raw(Box::new(core)),
         None => std::ptr::null_mut(),
     }
+}
+
+/// Update the notify callback + user-data after construction.
+///
+/// Shells whose object model can't produce a stable `self` pointer until after
+/// init (e.g. Swift classes) pass a null `user_data` to `pick_core_new`, then
+/// call this once fully constructed. No-op on a null handle.
+///
+/// # Safety
+/// `core` must be a pointer from `pick_core_new` (or null). `notify` must be a
+/// valid function pointer; `user_data` must outlive the core.
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // FFI entrypoint; handle is null-checked.
+pub extern "C" fn pick_set_notify(core: *mut PickCore, notify: NotifyFn, user_data: *mut c_void) {
+    let Some(core) = (unsafe { core.as_ref() }) else {
+        return;
+    };
+    core.set_notifier(ShellNotifier { notify, user_data });
 }
 
 /// Adopt an auth token the shell obtained via native OAuth (the `__st` Studio
@@ -417,7 +458,7 @@ mod tests {
             user_data: std::ptr::null_mut(),
         };
         Box::into_raw(Box::new(
-            PickCore::build(Arc::new(FakeApi), notifier).expect("test runtime"),
+            PickCore::build(Arc::new(FakeApi), Some(notifier)).expect("test runtime"),
         ))
     }
 

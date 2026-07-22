@@ -16,13 +16,59 @@ typedef struct PickBuf {
     uintptr_t cap;
 } PickBuf;
 
+// The Rust notify callback type: extern "C" fn(user_data: *mut c_void).
+typedef void (*NotifyFn)(void *user_data);
+
 extern PickCore *pick_core_new(const uint8_t *api_url_ptr, uintptr_t api_url_len,
-                               const uint8_t *token_ptr, uintptr_t token_len);
+                               const uint8_t *token_ptr, uintptr_t token_len,
+                               NotifyFn notify, void *user_data);
+extern void pick_set_notify(PickCore *core, NotifyFn notify, void *user_data);
 extern void pick_set_token(PickCore *core, const uint8_t *token_ptr, uintptr_t token_len);
 extern void pick_core_free(PickCore *core);
 extern void pick_buf_free(PickBuf buf);
 extern PickBuf pick_view(PickCore *core);
 extern PickBuf pick_update(PickCore *core, const uint8_t *event_ptr, uintptr_t event_len);
+
+// ---- Notify bridge: Rust (bg thread) -> JVM -> Kotlin NativeCore.onNotify ----
+// Cached JavaVM (from JNI_OnLoad) so the notify callback, which fires on Rust's
+// background thread, can attach and call back into Kotlin.
+static JavaVM *g_vm = NULL;
+static jclass g_native_core_cls = NULL;   // global ref to NativeCore
+static jmethodID g_on_notify = NULL;      // static void onNotify(long handle)
+
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
+    (void)reserved;
+    g_vm = vm;
+    JNIEnv *env = NULL;
+    if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+        return JNI_ERR;
+    }
+    jclass local = (*env)->FindClass(env, "com/strike48/pickcrux/NativeCore");
+    if (local != NULL) {
+        g_native_core_cls = (jclass)(*env)->NewGlobalRef(env, local);
+        g_on_notify = (*env)->GetStaticMethodID(env, g_native_core_cls, "onNotify", "(J)V");
+        (*env)->DeleteLocalRef(env, local);
+    }
+    return JNI_VERSION_1_6;
+}
+
+// Invoked by the crux bridge on a Rust background thread when an async effect
+// resolves. user_data is the PickCore* handle (as void*). Attaches to the JVM
+// and calls NativeCore.onNotify(handle), which hops to the UI thread.
+static void notify_thunk(void *user_data) {
+    if (g_vm == NULL || g_native_core_cls == NULL || g_on_notify == NULL) return;
+    JNIEnv *env = NULL;
+    int attached = 0;
+    jint st = (*g_vm)->GetEnv(g_vm, (void **)&env, JNI_VERSION_1_6);
+    if (st == JNI_EDETACHED) {
+        if ((*g_vm)->AttachCurrentThread(g_vm, &env, NULL) != JNI_OK) return;
+        attached = 1;
+    } else if (st != JNI_OK) {
+        return;
+    }
+    (*env)->CallStaticVoidMethod(env, g_native_core_cls, g_on_notify, (jlong)(uintptr_t)user_data);
+    if (attached) (*g_vm)->DetachCurrentThread(g_vm);
+}
 
 // Copy a PickBuf into a freshly-allocated jbyteArray, then free the PickBuf.
 static jbyteArray buf_to_java(JNIEnv *env, PickBuf buf) {
@@ -42,11 +88,20 @@ Java_com_strike48_pickcrux_NativeCore_nativeNew(JNIEnv *env, jclass clazz,
     jbyte *url_bytes = (*env)->GetByteArrayElements(env, apiUrl, NULL);
     jbyte *tok_bytes = (*env)->GetByteArrayElements(env, token, NULL);
 
+    // Build with a null user_data first, then set user_data = the handle itself
+    // so notify_thunk can pass it to NativeCore.onNotify (which maps handle ->
+    // the live instance and refreshes on the UI thread).
     PickCore *core = pick_core_new((const uint8_t *)url_bytes, (uintptr_t)url_len,
-                                   (const uint8_t *)tok_bytes, (uintptr_t)tok_len);
+                                   (const uint8_t *)tok_bytes, (uintptr_t)tok_len,
+                                   notify_thunk, NULL);
 
     (*env)->ReleaseByteArrayElements(env, apiUrl, url_bytes, JNI_ABORT);
     (*env)->ReleaseByteArrayElements(env, token, tok_bytes, JNI_ABORT);
+
+    // user_data = the handle, delivered back to onNotify(long).
+    if (core != NULL) {
+        pick_set_notify(core, notify_thunk, (void *)core);
+    }
     return (jlong)(uintptr_t)core;
 }
 

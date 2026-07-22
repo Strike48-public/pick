@@ -52,6 +52,19 @@ struct PickCore *pick_core_new(const uint8_t *api_url_ptr,
                                void *user_data);
 
 /**
+ * Update the notify callback + user-data after construction.
+ *
+ * Shells whose object model can't produce a stable `self` pointer until after
+ * init (e.g. Swift classes) pass a null `user_data` to `pick_core_new`, then
+ * call this once fully constructed. No-op on a null handle.
+ *
+ * # Safety
+ * `core` must be a pointer from `pick_core_new` (or null). `notify` must be a
+ * valid function pointer; `user_data` must outlive the core.
+ */
+void pick_set_notify(struct PickCore *core, NotifyFn notify, void *user_data);
+
+/**
  * Adopt an auth token the shell obtained via native OAuth (the `__st` Studio
  * session token). All subsequent core calls use it. No-op on a null handle or
  * non-UTF-8 bytes. The shell should call `pick_view`/`pick_update` afterwards

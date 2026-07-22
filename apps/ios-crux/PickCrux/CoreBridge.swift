@@ -9,7 +9,7 @@ import PickShared
 /// placeholder token; the shell performs native OAuth and adopts the
 /// workspace-scoped session token via `setToken` before scanning.
 final class CoreBridge: ObservableObject {
-    private let handle: OpaquePointer
+    private var handle: OpaquePointer!
 
     @Published var vm: ViewModel
 
@@ -17,35 +17,60 @@ final class CoreBridge: ObservableObject {
         let apiUrlBytes = Array(apiUrl.utf8)
         let tokenBytes = Array(token.utf8)
 
+        // Build with a null notify user-data; we register the real callback via
+        // pick_set_notify once `self` is fully initialized (Swift forbids
+        // capturing `self` before all stored properties are set).
         let handle: OpaquePointer? = apiUrlBytes.withUnsafeBufferPointer { urlBuf in
             tokenBytes.withUnsafeBufferPointer { tokBuf in
-                pick_core_new(urlBuf.baseAddress, UInt(urlBuf.count), tokBuf.baseAddress, UInt(tokBuf.count))
+                pick_core_new(
+                    urlBuf.baseAddress, UInt(urlBuf.count),
+                    tokBuf.baseAddress, UInt(tokBuf.count),
+                    CoreBridge.notifyThunk,
+                    nil
+                )
             }
         }
-        guard let handle else { return nil }
+        guard let handle, let initial = CoreBridge.decodeView(handle) else { return nil }
         self.handle = handle
-
-        // Initial view. If decoding fails we cannot proceed.
-        guard let initial = CoreBridge.decodeView(handle) else { return nil }
         self.vm = initial
+
+        // Now `self` is fully initialized: register it as the notify user-data.
+        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+        pick_set_notify(handle, CoreBridge.notifyThunk, selfPtr)
+    }
+
+    /// C notify thunk: called (possibly off-main) when an async effect resolves
+    /// and the view may have changed. Hops to main and re-reads the view — the
+    /// streaming path. `userData` is the `CoreBridge` pointer registered above.
+    private static let notifyThunk: NotifyFn = { userData in
+        guard let userData else { return }
+        let bridge = Unmanaged<CoreBridge>.fromOpaque(userData).takeUnretainedValue()
+        DispatchQueue.main.async { bridge.refresh() }
     }
 
     deinit {
-        pick_core_free(handle)
+        if let handle { pick_core_free(handle) }
     }
 
-    /// Feed an `Event`, drain in-core Pentest effects, then refresh the view.
-    /// The update return (remaining Render request bytes) is ignored here; a
-    /// fresh view reflects the new state.
+    /// Re-read the current view from the core and publish it. Called from the
+    /// notify callback (on the main thread) as async effects resolve.
+    func refresh() {
+        if let next = CoreBridge.decodeView(handle) {
+            vm = next
+        }
+    }
+
+    /// Feed an `Event`. Returns immediately — `Pentest` effects resolve on a
+    /// background thread in the core and stream back via the notify callback,
+    /// which calls `refresh()`. We refresh once here for any synchronous
+    /// (Render) state change too.
     func send(_ event: Event) {
         guard let eventBytes = try? event.bincodeSerialize() else { return }
         eventBytes.withUnsafeBufferPointer { buf in
             let out = pick_update(handle, buf.baseAddress, UInt(buf.count))
             pick_buf_free(out)
         }
-        if let next = CoreBridge.decodeView(handle) {
-            vm = next
-        }
+        refresh()
     }
 
     /// Adopt a token obtained via native OAuth (`ASWebAuthenticationSession`).
