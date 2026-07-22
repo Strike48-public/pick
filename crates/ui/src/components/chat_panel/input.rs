@@ -14,7 +14,14 @@
 //!   converter panic class. Auto-resize also happens inside the JS listener,
 //!   so we don't pay a WebSocket round trip per keystroke.
 //!
-//! * **Everywhere else** (Windows, Android, iOS, …) — native Dioxus events.
+//! * **iOS** — the same JS bridge as macOS/Linux. iOS runs in a WKWebView on
+//!   the identical dioxus-liveview transport, and native `oninput` there hits
+//!   the very same `convert_form_data` `None`-unwrap abort — it crashes the
+//!   app on the first keystroke in the message box. The `document::eval`
+//!   reverse channel used everywhere else in the iOS build (send bridge,
+//!   auto-scroll, focus) delivers fine, so iOS takes the bridge path too.
+//!
+//! * **Everywhere else** (Windows, Android, …) — native Dioxus events.
 //!   The reverse channel does not deliver in the WebView2 + LiveView + iframe
 //!   combination StrikeHub uses on Windows (#189), so the JS-bridge send path
 //!   would silently break chat there. Native `oninput` works on Windows both
@@ -42,7 +49,7 @@ pub struct ChatInputProps {
 /// stays callable. Each Enter-press or Send-button click flushes the textarea
 /// text back to Rust via the reverse channel; no `oninput` handler is bound
 /// on the textarea, so dioxus-liveview never invokes `convert_form_data`.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "ios"))]
 #[component]
 pub fn ChatInput(props: ChatInputProps) -> Element {
     let is_sending = props.is_sending;
@@ -114,7 +121,7 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
 /// Auto-resizing textarea + Send button — native-events variant (Windows and
 /// other non-desktop-Unix targets). Kept intentionally as the pattern #191
 /// restored to unbreak StrikeHub-hosted Pick on Windows/WebView2.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "ios")))]
 #[component]
 pub fn ChatInput(props: ChatInputProps) -> Element {
     let is_sending = props.is_sending;
