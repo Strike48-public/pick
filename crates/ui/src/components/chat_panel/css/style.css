@@ -374,6 +374,11 @@
     scrollbar-width: thin;
     scrollbar-color: var(--border) transparent;
     min-height: 0;
+    /* Disable browser scroll anchoring: without this, expanding a tool call
+       lets the browser keep a lower element visually fixed, which shoves the
+       clicked header up out of view. With anchoring off, scrollTop stays put
+       and the details "open down" below the header the user tapped. */
+    overflow-anchor: none;
 }
 
 .chat-messages::-webkit-scrollbar {
