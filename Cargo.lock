@@ -7525,6 +7525,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pick-crux-ffi"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bincode",
+ "crux_core",
+ "pentest-core",
+ "pick-crux-core",
+ "pick-crux-middleware",
+ "tokio",
+]
+
+[[package]]
 name = "pick-crux-middleware"
 version = "0.1.0"
 dependencies = [

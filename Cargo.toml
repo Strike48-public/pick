@@ -7,6 +7,7 @@ members = [
     "crates/tools",
     "crates/cyberchef",
     "crates/crux-core",
+    "crates/crux-ffi",
     "crates/crux-middleware",
     "apps/desktop",
     "apps/web",
@@ -31,7 +32,6 @@ openssl = { version = "0.10", features = ["vendored"] }
 
 # Web server (for liveview - dioxus-liveview 0.7 requires axum 0.8)
 axum = { version = "0.8", features = ["ws"] }
-tower = "0.5"
 dioxus-liveview = { version = "0.7", features = ["axum"] }
 
 # WebSocket
@@ -78,7 +78,6 @@ dns-lookup = "2"
 base64 = "0.22"
 tar = "0.4"
 xz2 = "0.1"
-rand = "0.8"
 open = "5"
 sha2 = "0.10"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
