@@ -269,6 +269,40 @@ fn derive_api_url(host: &str, use_tls: bool) -> String {
     format!("{scheme}://{api_host}")
 }
 
+#[cfg(test)]
+mod derive_api_url_tests {
+    use super::derive_api_url;
+
+    #[test]
+    fn strips_ws_scheme_and_applies_tls() {
+        assert_eq!(
+            derive_api_url("wss://plg.strike48.test", true),
+            "https://plg.strike48.test"
+        );
+    }
+
+    #[test]
+    fn strips_connectors_label() {
+        assert_eq!(
+            derive_api_url("wss://connectors-studio.strike48.test", true),
+            "https://studio.strike48.test"
+        );
+    }
+
+    #[test]
+    fn no_tls_uses_http_and_trims_trailing_slash() {
+        assert_eq!(
+            derive_api_url("ws://localhost:3030/", false),
+            "http://localhost:3030"
+        );
+    }
+
+    #[test]
+    fn bare_host_gets_scheme() {
+        assert_eq!(derive_api_url("example.com", true), "https://example.com");
+    }
+}
+
 /// Shared connector app component.
 ///
 /// Call this from a thin platform-specific wrapper component, e.g.:
