@@ -13,10 +13,20 @@ pentest-core = { path = "../core" }
 crux_core = "0.19"
 bincode = "=1.3.3"
 tokio = { version = "1", features = ["rt-multi-thread"] }
+# Route the core's `tracing` events somewhere visible (stderr -> captured by the
+# iOS simulator console; Android bridges to logcat via the log adapter below).
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Force a statically-linked, vendored OpenSSL so the Android cdylib does not
 # dynamically require libssl.so.3 / libcrypto.so.3 (absent on Android). Unifies
 # the openssl feature pulled transitively via reqwest/tungstenite native-tls.
 openssl = { version = "0.10", features = ["vendored"] }
+
+# Android: bridge `tracing` -> `log` -> logcat so the core's events show in
+# `adb logcat`. iOS uses the plain stderr fmt layer (captured by simctl console).
+[target.'cfg(target_os = "android")'.dependencies]
+tracing-log = "0.2"
+android_logger = "0.14"
+log = "0.4"
 
 [dev-dependencies]
 bincode = "=1.3.3"

@@ -7528,14 +7528,18 @@ dependencies = [
 name = "pick-crux-ffi"
 version = "0.1.0"
 dependencies = [
+ "android_logger",
  "async-trait",
  "bincode",
  "crux_core",
+ "log",
  "openssl",
  "pentest-core",
  "pick-crux-core",
  "pick-crux-middleware",
  "tokio",
+ "tracing-log",
+ "tracing-subscriber",
 ]
 
 [[package]]

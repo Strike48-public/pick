@@ -34,6 +34,39 @@ use crux_core::Core;
 use pick_crux_core::{EffectFfi, PickApp};
 use pick_crux_middleware::{map_operation, CoreMatrixApi, MatrixApi};
 
+/// Install a `tracing` subscriber once so the core's events (e.g. the gql send
+/// error chain) actually surface. iOS writes to stderr (captured by the
+/// simulator console / Xcode); Android bridges `tracing` -> `log` -> logcat.
+/// Level defaults to `pentest=debug` and honors `RUST_LOG`.
+fn init_tracing() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        use tracing_subscriber::{prelude::*, EnvFilter};
+        let filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("pentest=debug,pick_crux_middleware=debug,info"));
+
+        #[cfg(target_os = "android")]
+        {
+            android_logger::init_once(
+                android_logger::Config::default()
+                    .with_max_level(log::LevelFilter::Debug)
+                    .with_tag("PickCrux"),
+            );
+            // Route tracing events into the `log` facade that android_logger drains.
+            let _ = tracing_log::LogTracer::init();
+            let _ = tracing_subscriber::registry().with(filter).try_init();
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let _ = tracing_subscriber::registry()
+                .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+                .with(filter)
+                .try_init();
+        }
+    });
+}
+
 
 /// Opaque handle owning the bridge, the effect-resolving runtime, and the
 /// `MatrixApi` implementation that fulfills `Pentest` effects.
@@ -181,6 +214,8 @@ pub extern "C" fn pick_core_new(
         let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
         std::str::from_utf8(slice).ok().map(str::to_owned)
     };
+
+    init_tracing();
 
     let (Some(api_url), Some(token)) = (read(api_url_ptr, api_url_len), read(token_ptr, token_len))
     else {
