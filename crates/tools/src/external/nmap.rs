@@ -868,14 +868,21 @@ fn estimate_host_count(target: &str) -> usize {
 /// `["",""]` and errored with "Invalid port number", so a model emitting `-p-`
 /// (which the tool description advertises) got a validation failure instead of
 /// a full scan.
+///
+/// The keyword synonyms (`top100` / `top1000` / `all`) are matched
+/// case-insensitively: the schema advertises them lowercase, but the LLM emits
+/// case variants (`"ALL"`, `"Top100"`), which would otherwise fall through to
+/// `validate_port_spec` and error. A custom numeric spec is left verbatim for
+/// `validate_port_spec` (digits/commas/dashes have no case to fold).
 fn resolve_port_args(ports: &str) -> Result<Vec<(&'static str, Option<String>)>> {
-    match ports.trim() {
+    let trimmed = ports.trim();
+    match trimmed.to_ascii_lowercase().as_str() {
         "top100" => Ok(vec![("--top-ports", Some("100".to_string()))]),
         "top1000" => Ok(vec![]), // nmap default: no port flag
         // Full-range synonyms -> -p- (scan all 65535 ports).
         "all" | "-" | "1-65535" => Ok(vec![("-p-", None)]),
-        spec => {
-            let validated = validate_port_spec(spec)?;
+        _ => {
+            let validated = validate_port_spec(trimmed)?;
             Ok(vec![("-p", Some(validated))])
         }
     }
@@ -1122,6 +1129,22 @@ mod tests {
         // The fix must not blanket-accept: a real bad spec still errors.
         assert!(resolve_port_args("not-a-port").is_err());
         assert!(resolve_port_args("99999").is_err());
+    }
+
+    #[test]
+    fn resolve_ports_keyword_synonyms_are_case_insensitive() {
+        // The schema advertises lowercase keywords, but the LLM emits case
+        // variants; they must resolve, not fall through to validate_port_spec
+        // and error (adversarial-review finding on #257).
+        assert_eq!(resolve_port_args("ALL").unwrap(), vec![("-p-", None)]);
+        assert_eq!(resolve_port_args("All").unwrap(), vec![("-p-", None)]);
+        assert_eq!(
+            resolve_port_args("TOP100").unwrap(),
+            vec![("--top-ports", Some("100".to_string()))]
+        );
+        assert_eq!(resolve_port_args("Top1000").unwrap(), vec![]);
+        // Whitespace around a keyword is also tolerated (trim happens first).
+        assert_eq!(resolve_port_args("  all  ").unwrap(), vec![("-p-", None)]);
     }
 
     #[test]
