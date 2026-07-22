@@ -7543,9 +7543,11 @@ name = "pick-crux-middleware"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "crux_core",
  "pentest-core",
  "pick-crux-core",
+ "serde_json",
  "tokio",
 ]
 
