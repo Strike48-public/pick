@@ -119,3 +119,9 @@ strip = true
 [profile.release-ffi]
 inherits = "release"
 strip = false
+# Fat LTO dead-code-eliminates the `#[no_mangle]` extern "C" entry points from a
+# *static* archive on macOS/iOS (nothing inside the crate references them, and a
+# staticlib has no export list to root them — unlike the Android cdylib). Turning
+# LTO off keeps them. The FFI shim is tiny, so losing cross-crate LTO here costs
+# almost nothing in size/speed.
+lto = false
