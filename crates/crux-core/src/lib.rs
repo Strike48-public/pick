@@ -5,9 +5,11 @@ use crux_core::{macros::effect, render::RenderOperation, App, Command};
 use facet::Facet;
 use serde::{Deserialize, Serialize};
 
+pub mod effect;
 pub mod model;
 pub mod view;
 
+pub use effect::{ConversationDelta, PentestOperation};
 pub use model::Model;
 pub use view::ViewModel;
 
@@ -15,12 +17,34 @@ pub use view::ViewModel;
 #[derive(Debug)]
 pub enum Effect {
     Render(RenderOperation),
+    Pentest(PentestOperation),
 }
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug)]
 #[repr(C)]
 pub enum Event {
-    NoOp,
+    // user intents
+    StartScan,
+    SendMessage(String),
+    NewChat,
+    OpenHistory,
+    CloseHistory,
+    SelectConversation(String),
+    OpenDocument(String),
+    CloseDocument,
+    CreateShareLink(String),
+    RetrySignIn,
+    DismissError,
+    // effect results
+    SignInResult(Result<String, String>),
+    ConnectResult(Result<(), String>),
+    ScanResult(Result<String, String>),
+    Delta(Result<ConversationDelta, String>),
+    ConversationsResult(Result<Vec<view::ConversationRef>, String>),
+    LoadConversationResult(Result<Vec<view::MessageView>, String>),
+    DocumentsResult(Result<Vec<view::DocRef>, String>),
+    DocumentContentResult(Result<String, String>),
+    ShareLinkResult(Result<String, String>),
 }
 
 #[derive(Default)]
@@ -34,7 +58,28 @@ impl App for PickApp {
 
     fn update(&self, event: Event, _model: &mut Model) -> Command<Effect, Event> {
         match event {
-            Event::NoOp => crux_core::render::render(),
+            // user intents
+            Event::StartScan => crux_core::render::render(),
+            Event::SendMessage(_) => crux_core::render::render(),
+            Event::NewChat => crux_core::render::render(),
+            Event::OpenHistory => crux_core::render::render(),
+            Event::CloseHistory => crux_core::render::render(),
+            Event::SelectConversation(_) => crux_core::render::render(),
+            Event::OpenDocument(_) => crux_core::render::render(),
+            Event::CloseDocument => crux_core::render::render(),
+            Event::CreateShareLink(_) => crux_core::render::render(),
+            Event::RetrySignIn => crux_core::render::render(),
+            Event::DismissError => crux_core::render::render(),
+            // effect results
+            Event::SignInResult(_) => crux_core::render::render(),
+            Event::ConnectResult(_) => crux_core::render::render(),
+            Event::ScanResult(_) => crux_core::render::render(),
+            Event::Delta(_) => crux_core::render::render(),
+            Event::ConversationsResult(_) => crux_core::render::render(),
+            Event::LoadConversationResult(_) => crux_core::render::render(),
+            Event::DocumentsResult(_) => crux_core::render::render(),
+            Event::DocumentContentResult(_) => crux_core::render::render(),
+            Event::ShareLinkResult(_) => crux_core::render::render(),
         }
     }
 
