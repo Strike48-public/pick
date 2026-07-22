@@ -6,11 +6,13 @@ use facet::Facet;
 use serde::{Deserialize, Serialize};
 
 pub mod effect;
+pub mod markdown;
 pub mod model;
 pub mod update;
 pub mod view;
 
 pub use effect::{ConversationDelta, PentestOperation};
+pub use markdown::{MarkdownBlock, Span, SpanStyle};
 pub use model::Model;
 pub use view::ViewModel;
 

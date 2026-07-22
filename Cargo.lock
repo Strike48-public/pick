@@ -7521,6 +7521,7 @@ dependencies = [
  "log",
  "pentest-core",
  "pretty_env_logger",
+ "pulldown-cmark",
  "serde",
 ]
 

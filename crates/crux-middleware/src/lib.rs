@@ -144,6 +144,7 @@ fn message_to_view(msg: &ChatMessage) -> MessageView {
         sender: msg.sender_name.clone(),
         kind,
         markdown: msg.text.clone(),
+        blocks: pick_crux_core::markdown::parse_markdown(&msg.text),
         tool: first_tool_call(&msg.parts),
     }
 }

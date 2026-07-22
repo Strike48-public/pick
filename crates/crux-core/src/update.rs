@@ -278,10 +278,12 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
                     .find(|d| d.id == doc_id)
                     .map(|d| d.title.clone())
                     .unwrap_or_else(|| "Report".into());
+                let blocks = crate::markdown::parse_markdown(&markdown);
                 model.open_document = Some(crate::view::DocView {
                     id: doc_id,
                     title,
                     markdown_body: markdown,
+                    blocks,
                     share_url: None,
                 });
                 render()
@@ -411,6 +413,7 @@ mod tests {
                 sender: "pentest-connector".into(),
                 kind: crate::view::MessageKind::AgentText,
                 markdown: "scanning...".into(),
+                blocks: vec![],
                 tool: None,
             }],
             tool_calls: vec![],
@@ -568,6 +571,7 @@ mod tests {
                 sender: "user".into(),
                 kind: crate::view::MessageKind::User,
                 markdown: "test".into(),
+                blocks: vec![],
                 tool: None,
             }],
             ..Default::default()

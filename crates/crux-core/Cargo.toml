@@ -20,6 +20,7 @@ crux_http = "0.19"
 serde = { version = "1", features = ["derive"] }
 facet = { version = "=0.44", features = ["chrono"] }
 pentest-core = { path = "../core" }
+pulldown-cmark = { workspace = true }
 
 anyhow = { version = "1", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }

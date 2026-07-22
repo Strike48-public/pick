@@ -35,7 +35,7 @@ struct DocViewer: View {
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(Theme.hairline), alignment: .bottom)
 
                 ScrollView {
-                    MarkdownText(markdown: doc.markdownBody)
+                    MarkdownText(blocks: doc.blocks)
                         .padding(16)
                 }
             }

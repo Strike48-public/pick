@@ -443,12 +443,15 @@ public struct DocView: Hashable, Equatable {
     public var id: String
     public var title: String
     public var markdownBody: String
+    /// Pre-parsed markdown blocks for native rendering. Derived from `markdown_body`.
+    public var blocks: [MarkdownBlock]
     public var shareUrl: String?
 
-    public init(id: String, title: String, markdownBody: String, shareUrl: String?) {
+    public init(id: String, title: String, markdownBody: String, blocks: [MarkdownBlock], shareUrl: String?) {
         self.id = id
         self.title = title
         self.markdownBody = markdownBody
+        self.blocks = blocks
         self.shareUrl = shareUrl
     }
 
@@ -457,6 +460,9 @@ public struct DocView: Hashable, Equatable {
         try serializer.serialize_str(value: self.id)
         try serializer.serialize_str(value: self.title)
         try serializer.serialize_str(value: self.markdownBody)
+        try serializeArray(value: self.blocks, serializer: serializer) { item, serializer in
+            try item.serialize(serializer: serializer)
+        }
         try serializeOption(value: self.shareUrl, serializer: serializer) { value, serializer in
             try serializer.serialize_str(value: value)
         }
@@ -474,11 +480,14 @@ public struct DocView: Hashable, Equatable {
         let id = try deserializer.deserialize_str()
         let title = try deserializer.deserialize_str()
         let markdownBody = try deserializer.deserialize_str()
+        let blocks = try deserializeArray(deserializer: deserializer) { deserializer in
+            try MarkdownBlock.deserialize(deserializer: deserializer)
+        }
         let shareUrl = try deserializeOption(deserializer: deserializer) { deserializer in
             try deserializer.deserialize_str()
         }
         try deserializer.decrease_container_depth()
-        return DocView(id: id, title: title, markdownBody: markdownBody, shareUrl: shareUrl)
+        return DocView(id: id, title: title, markdownBody: markdownBody, blocks: blocks, shareUrl: shareUrl)
     }
 
     public static func bincodeDeserialize(input: [UInt8]) throws -> DocView {
@@ -871,6 +880,92 @@ public struct LoadConversationOutcome: Hashable, Equatable {
     }
 }
 
+/// A top-level rendered block. Nested lists are flattened to top-level items.
+indirect public enum MarkdownBlock: Hashable, Equatable {
+    case heading(level: UInt8, spans: [Span])
+    case paragraph(spans: [Span])
+    /// A list item. `number` is 0 for unordered items.
+    case listItem(ordered: Bool, number: UInt32, spans: [Span])
+    /// A fenced/indented code block. Its text is verbatim, never styled inline.
+    case codeBlock(text: String)
+
+    public func serialize<S: Serializer>(serializer: S) throws {
+        try serializer.increase_container_depth()
+        switch self {
+        case .heading(let level, let spans):
+            try serializer.serialize_variant_index(value: 0)
+            try serializer.serialize_u8(value: level)
+            try serializeArray(value: spans, serializer: serializer) { item, serializer in
+                try item.serialize(serializer: serializer)
+            }
+        case .paragraph(let spans):
+            try serializer.serialize_variant_index(value: 1)
+            try serializeArray(value: spans, serializer: serializer) { item, serializer in
+                try item.serialize(serializer: serializer)
+            }
+        case .listItem(let ordered, let number, let spans):
+            try serializer.serialize_variant_index(value: 2)
+            try serializer.serialize_bool(value: ordered)
+            try serializer.serialize_u32(value: number)
+            try serializeArray(value: spans, serializer: serializer) { item, serializer in
+                try item.serialize(serializer: serializer)
+            }
+        case .codeBlock(let text):
+            try serializer.serialize_variant_index(value: 3)
+            try serializer.serialize_str(value: text)
+        }
+        try serializer.decrease_container_depth()
+    }
+
+    public func bincodeSerialize() throws -> [UInt8] {
+        let serializer = BincodeSerializer.init();
+        try self.serialize(serializer: serializer)
+        return serializer.get_bytes()
+    }
+
+    public static func deserialize<D: Deserializer>(deserializer: D) throws -> MarkdownBlock {
+        let index = try deserializer.deserialize_variant_index()
+        try deserializer.increase_container_depth()
+        switch index {
+        case 0:
+            let level = try deserializer.deserialize_u8()
+            let spans = try deserializeArray(deserializer: deserializer) { deserializer in
+                try Span.deserialize(deserializer: deserializer)
+            }
+            try deserializer.decrease_container_depth()
+            return .heading(level: level, spans: spans)
+        case 1:
+            let spans = try deserializeArray(deserializer: deserializer) { deserializer in
+                try Span.deserialize(deserializer: deserializer)
+            }
+            try deserializer.decrease_container_depth()
+            return .paragraph(spans: spans)
+        case 2:
+            let ordered = try deserializer.deserialize_bool()
+            let number = try deserializer.deserialize_u32()
+            let spans = try deserializeArray(deserializer: deserializer) { deserializer in
+                try Span.deserialize(deserializer: deserializer)
+            }
+            try deserializer.decrease_container_depth()
+            return .listItem(ordered: ordered, number: number, spans: spans)
+        case 3:
+            let text = try deserializer.deserialize_str()
+            try deserializer.decrease_container_depth()
+            return .codeBlock(text: text)
+        default: throw DeserializationError.invalidInput(issue: "Unknown variant index for MarkdownBlock: \(index)")
+        }
+    }
+
+    public static func bincodeDeserialize(input: [UInt8]) throws -> MarkdownBlock {
+        let deserializer = BincodeDeserializer.init(input: input);
+        let obj = try deserialize(deserializer: deserializer)
+        if deserializer.get_buffer_offset() < input.count {
+            throw DeserializationError.invalidInput(issue: "Some input bytes were not read")
+        }
+        return obj
+    }
+}
+
 indirect public enum MessageKind: Hashable, Equatable {
     case user
     case agentText
@@ -926,12 +1021,15 @@ public struct MessageView: Hashable, Equatable {
     public var sender: String
     public var kind: MessageKind
     public var markdown: String
+    /// Pre-parsed markdown blocks for native rendering. Derived from `markdown`.
+    public var blocks: [MarkdownBlock]
     public var tool: ToolCallView?
 
-    public init(sender: String, kind: MessageKind, markdown: String, tool: ToolCallView?) {
+    public init(sender: String, kind: MessageKind, markdown: String, blocks: [MarkdownBlock], tool: ToolCallView?) {
         self.sender = sender
         self.kind = kind
         self.markdown = markdown
+        self.blocks = blocks
         self.tool = tool
     }
 
@@ -940,6 +1038,9 @@ public struct MessageView: Hashable, Equatable {
         try serializer.serialize_str(value: self.sender)
         try self.kind.serialize(serializer: serializer)
         try serializer.serialize_str(value: self.markdown)
+        try serializeArray(value: self.blocks, serializer: serializer) { item, serializer in
+            try item.serialize(serializer: serializer)
+        }
         try serializeOption(value: self.tool, serializer: serializer) { value, serializer in
             try value.serialize(serializer: serializer)
         }
@@ -957,11 +1058,14 @@ public struct MessageView: Hashable, Equatable {
         let sender = try deserializer.deserialize_str()
         let kind = try MessageKind.deserialize(deserializer: deserializer)
         let markdown = try deserializer.deserialize_str()
+        let blocks = try deserializeArray(deserializer: deserializer) { deserializer in
+            try MarkdownBlock.deserialize(deserializer: deserializer)
+        }
         let tool = try deserializeOption(deserializer: deserializer) { deserializer in
             try ToolCallView.deserialize(deserializer: deserializer)
         }
         try deserializer.decrease_container_depth()
-        return MessageView(sender: sender, kind: kind, markdown: markdown, tool: tool)
+        return MessageView(sender: sender, kind: kind, markdown: markdown, blocks: blocks, tool: tool)
     }
 
     public static func bincodeDeserialize(input: [UInt8]) throws -> MessageView {
@@ -1558,6 +1662,105 @@ public struct SignInOutcome: Hashable, Equatable {
     }
 
     public static func bincodeDeserialize(input: [UInt8]) throws -> SignInOutcome {
+        let deserializer = BincodeDeserializer.init(input: input);
+        let obj = try deserialize(deserializer: deserializer)
+        if deserializer.get_buffer_offset() < input.count {
+            throw DeserializationError.invalidInput(issue: "Some input bytes were not read")
+        }
+        return obj
+    }
+}
+
+/// A run of text with a single inline style.
+public struct Span: Hashable, Equatable {
+    public var text: String
+    public var style: SpanStyle
+
+    public init(text: String, style: SpanStyle) {
+        self.text = text
+        self.style = style
+    }
+
+    public func serialize<S: Serializer>(serializer: S) throws {
+        try serializer.increase_container_depth()
+        try serializer.serialize_str(value: self.text)
+        try self.style.serialize(serializer: serializer)
+        try serializer.decrease_container_depth()
+    }
+
+    public func bincodeSerialize() throws -> [UInt8] {
+        let serializer = BincodeSerializer.init();
+        try self.serialize(serializer: serializer)
+        return serializer.get_bytes()
+    }
+
+    public static func deserialize<D: Deserializer>(deserializer: D) throws -> Span {
+        try deserializer.increase_container_depth()
+        let text = try deserializer.deserialize_str()
+        let style = try SpanStyle.deserialize(deserializer: deserializer)
+        try deserializer.decrease_container_depth()
+        return Span(text: text, style: style)
+    }
+
+    public static func bincodeDeserialize(input: [UInt8]) throws -> Span {
+        let deserializer = BincodeDeserializer.init(input: input);
+        let obj = try deserialize(deserializer: deserializer)
+        if deserializer.get_buffer_offset() < input.count {
+            throw DeserializationError.invalidInput(issue: "Some input bytes were not read")
+        }
+        return obj
+    }
+}
+
+/// The inline style applied to a span of text. Bold+italic collapses to Bold.
+indirect public enum SpanStyle: Hashable, Equatable {
+    case plain
+    case bold
+    case italic
+    case code
+
+    public func serialize<S: Serializer>(serializer: S) throws {
+        try serializer.increase_container_depth()
+        switch self {
+        case .plain:
+            try serializer.serialize_variant_index(value: 0)
+        case .bold:
+            try serializer.serialize_variant_index(value: 1)
+        case .italic:
+            try serializer.serialize_variant_index(value: 2)
+        case .code:
+            try serializer.serialize_variant_index(value: 3)
+        }
+        try serializer.decrease_container_depth()
+    }
+
+    public func bincodeSerialize() throws -> [UInt8] {
+        let serializer = BincodeSerializer.init();
+        try self.serialize(serializer: serializer)
+        return serializer.get_bytes()
+    }
+
+    public static func deserialize<D: Deserializer>(deserializer: D) throws -> SpanStyle {
+        let index = try deserializer.deserialize_variant_index()
+        try deserializer.increase_container_depth()
+        switch index {
+        case 0:
+            try deserializer.decrease_container_depth()
+            return .plain
+        case 1:
+            try deserializer.decrease_container_depth()
+            return .bold
+        case 2:
+            try deserializer.decrease_container_depth()
+            return .italic
+        case 3:
+            try deserializer.decrease_container_depth()
+            return .code
+        default: throw DeserializationError.invalidInput(issue: "Unknown variant index for SpanStyle: \(index)")
+        }
+    }
+
+    public static func bincodeDeserialize(input: [UInt8]) throws -> SpanStyle {
         let deserializer = BincodeDeserializer.init(input: input);
         let obj = try deserialize(deserializer: deserializer)
         if deserializer.get_buffer_offset() < input.count {

@@ -5,6 +5,8 @@
 use facet::Facet;
 use serde::{Deserialize, Serialize};
 
+use crate::markdown::MarkdownBlock;
+
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[repr(C)]
 pub enum Screen {
@@ -60,6 +62,8 @@ pub struct MessageView {
     pub sender: String,
     pub kind: MessageKind,
     pub markdown: String,
+    /// Pre-parsed markdown blocks for native rendering. Derived from `markdown`.
+    pub blocks: Vec<MarkdownBlock>,
     pub tool: Option<ToolCallView>,
 }
 
@@ -82,6 +86,8 @@ pub struct DocView {
     pub id: String,
     pub title: String,
     pub markdown_body: String,
+    /// Pre-parsed markdown blocks for native rendering. Derived from `markdown_body`.
+    pub blocks: Vec<MarkdownBlock>,
     pub share_url: Option<String>,
 }
 

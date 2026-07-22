@@ -440,6 +440,8 @@ data class DocView(
     val id: String,
     val title: String,
     val markdownBody: String,
+    /// Pre-parsed markdown blocks for native rendering. Derived from `markdown_body`.
+    val blocks: List<com.strike48.pick.shared.MarkdownBlock>,
     val shareUrl: String? = null,
 ) {
     fun serialize(serializer: Serializer) {
@@ -447,6 +449,9 @@ data class DocView(
         serializer.serialize_str(id)
         serializer.serialize_str(title)
         serializer.serialize_str(markdownBody)
+        blocks.serialize(serializer) {
+            it.serialize(serializer)
+        }
         shareUrl.serializeOptionOf(serializer) {
             serializer.serialize_str(it)
         }
@@ -465,12 +470,16 @@ data class DocView(
             val id = deserializer.deserialize_str()
             val title = deserializer.deserialize_str()
             val markdownBody = deserializer.deserialize_str()
+            val blocks =
+                deserializer.deserializeListOf {
+                    com.strike48.pick.shared.MarkdownBlock.deserialize(deserializer)
+                }
             val shareUrl =
                 deserializer.deserializeOptionOf {
                     deserializer.deserialize_str()
                 }
             deserializer.decrease_container_depth()
-            return DocView(id, title, markdownBody, shareUrl)
+            return DocView(id, title, markdownBody, blocks, shareUrl)
         }
 
         @Throws(DeserializationError::class)
@@ -1121,6 +1130,150 @@ data class LoadConversationOutcome(
     }
 }
 
+/// A top-level rendered block. Nested lists are flattened to top-level items.
+sealed interface MarkdownBlock {
+    fun serialize(serializer: Serializer)
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    data class Heading(
+        val level: UByte,
+        val spans: List<com.strike48.pick.shared.Span>,
+    ) : MarkdownBlock {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(0)
+            serializer.serialize_u8(level)
+            spans.serialize(serializer) {
+                it.serialize(serializer)
+            }
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): Heading {
+                deserializer.increase_container_depth()
+                val level = deserializer.deserialize_u8()
+                val spans =
+                    deserializer.deserializeListOf {
+                        com.strike48.pick.shared.Span.deserialize(deserializer)
+                    }
+                deserializer.decrease_container_depth()
+                return Heading(level, spans)
+            }
+        }
+    }
+
+    data class Paragraph(
+        val spans: List<com.strike48.pick.shared.Span>,
+    ) : MarkdownBlock {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(1)
+            spans.serialize(serializer) {
+                it.serialize(serializer)
+            }
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): Paragraph {
+                deserializer.increase_container_depth()
+                val spans =
+                    deserializer.deserializeListOf {
+                        com.strike48.pick.shared.Span.deserialize(deserializer)
+                    }
+                deserializer.decrease_container_depth()
+                return Paragraph(spans)
+            }
+        }
+    }
+
+    /// A list item. `number` is 0 for unordered items.
+    data class ListItem(
+        val ordered: Boolean,
+        val number: UInt,
+        val spans: List<com.strike48.pick.shared.Span>,
+    ) : MarkdownBlock {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(2)
+            serializer.serialize_bool(ordered)
+            serializer.serialize_u32(number)
+            spans.serialize(serializer) {
+                it.serialize(serializer)
+            }
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): ListItem {
+                deserializer.increase_container_depth()
+                val ordered = deserializer.deserialize_bool()
+                val number = deserializer.deserialize_u32()
+                val spans =
+                    deserializer.deserializeListOf {
+                        com.strike48.pick.shared.Span.deserialize(deserializer)
+                    }
+                deserializer.decrease_container_depth()
+                return ListItem(ordered, number, spans)
+            }
+        }
+    }
+
+    /// A fenced/indented code block. Its text is verbatim, never styled inline.
+    data class CodeBlock(
+        val text: String,
+    ) : MarkdownBlock {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(3)
+            serializer.serialize_str(text)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): CodeBlock {
+                deserializer.increase_container_depth()
+                val text = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return CodeBlock(text)
+            }
+        }
+    }
+
+    companion object {
+        @Throws(DeserializationError::class)
+        fun deserialize(deserializer: Deserializer): MarkdownBlock {
+            val index = deserializer.deserialize_variant_index()
+            return when (index) {
+                0 -> Heading.deserialize(deserializer)
+                1 -> Paragraph.deserialize(deserializer)
+                2 -> ListItem.deserialize(deserializer)
+                3 -> CodeBlock.deserialize(deserializer)
+                else -> throw DeserializationError("Unknown variant index for MarkdownBlock: $index")
+            }
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): MarkdownBlock {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
 enum class MessageKind {
     USER,
     AGENTTEXT,
@@ -1171,6 +1324,8 @@ data class MessageView(
     val sender: String,
     val kind: com.strike48.pick.shared.MessageKind,
     val markdown: String,
+    /// Pre-parsed markdown blocks for native rendering. Derived from `markdown`.
+    val blocks: List<com.strike48.pick.shared.MarkdownBlock>,
     val tool: com.strike48.pick.shared.ToolCallView? = null,
 ) {
     fun serialize(serializer: Serializer) {
@@ -1178,6 +1333,9 @@ data class MessageView(
         serializer.serialize_str(sender)
         kind.serialize(serializer)
         serializer.serialize_str(markdown)
+        blocks.serialize(serializer) {
+            it.serialize(serializer)
+        }
         tool.serializeOptionOf(serializer) {
             it.serialize(serializer)
         }
@@ -1196,12 +1354,16 @@ data class MessageView(
             val sender = deserializer.deserialize_str()
             val kind = com.strike48.pick.shared.MessageKind.deserialize(deserializer)
             val markdown = deserializer.deserialize_str()
+            val blocks =
+                deserializer.deserializeListOf {
+                    com.strike48.pick.shared.MarkdownBlock.deserialize(deserializer)
+                }
             val tool =
                 deserializer.deserializeOptionOf {
                     com.strike48.pick.shared.ToolCallView.deserialize(deserializer)
                 }
             deserializer.decrease_container_depth()
-            return MessageView(sender, kind, markdown, tool)
+            return MessageView(sender, kind, markdown, blocks, tool)
         }
 
         @Throws(DeserializationError::class)
@@ -2055,6 +2217,97 @@ data class SignInOutcome(
 
         @Throws(DeserializationError::class)
         fun bincodeDeserialize(input: ByteArray?): SignInOutcome {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+/// A run of text with a single inline style.
+data class Span(
+    val text: String,
+    val style: com.strike48.pick.shared.SpanStyle,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_str(text)
+        style.serialize(serializer)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): Span {
+            deserializer.increase_container_depth()
+            val text = deserializer.deserialize_str()
+            val style = com.strike48.pick.shared.SpanStyle.deserialize(deserializer)
+            deserializer.decrease_container_depth()
+            return Span(text, style)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): Span {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+/// The inline style applied to a span of text. Bold+italic collapses to Bold.
+enum class SpanStyle {
+    PLAIN,
+    BOLD,
+    ITALIC,
+    CODE;
+
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_variant_index(ordinal)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        @Throws(DeserializationError::class)
+        fun deserialize(deserializer: Deserializer): SpanStyle {
+            deserializer.increase_container_depth()
+            val index = deserializer.deserialize_variant_index()
+            deserializer.decrease_container_depth()
+            return when (index) {
+                0 -> PLAIN
+                1 -> BOLD
+                2 -> ITALIC
+                3 -> CODE
+                else -> throw DeserializationError("Unknown variant index for SpanStyle: $index")
+            }
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): SpanStyle {
             if (input == null) {
                 throw DeserializationError("Cannot deserialize null array")
             }

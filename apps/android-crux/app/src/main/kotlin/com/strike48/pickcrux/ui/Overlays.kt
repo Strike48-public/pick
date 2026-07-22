@@ -144,7 +144,7 @@ fun DocViewer(
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
         ) {
-            MarkdownText(doc.markdownBody)
+            MarkdownText(doc.blocks)
         }
     }
 }

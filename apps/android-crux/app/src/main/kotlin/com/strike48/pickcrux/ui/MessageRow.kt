@@ -30,7 +30,7 @@ fun MessageRow(message: MessageView) {
     when (message.kind) {
         MessageKind.USER -> UserBubble(message.markdown)
         MessageKind.AGENTTEXT -> MarkdownText(
-            markdown = message.markdown,
+            blocks = message.blocks,
             modifier = Modifier.fillMaxWidth(),
         )
         MessageKind.TOOLCALL -> {

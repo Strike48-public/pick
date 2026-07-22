@@ -24,7 +24,7 @@ struct MessageRow: View {
         case .agentText:
             // Block-level markdown (headings/lists/code/paragraphs), not the
             // inline-only AttributedString which collapses block structure.
-            MarkdownText(markdown: message.markdown)
+            MarkdownText(blocks: message.blocks)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .toolCall:
             if let tool = message.tool {
