@@ -118,7 +118,10 @@ pub fn set(account: &str, value: &str) -> Result<(), String> {
             cf(kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly),
             cf(kSecAttrAccessible),
         );
-        SecItemAdd(Retained::as_ptr(&attrs) as *const c_void, std::ptr::null_mut())
+        SecItemAdd(
+            Retained::as_ptr(&attrs) as *const c_void,
+            std::ptr::null_mut(),
+        )
     };
     match status {
         ERR_SEC_SUCCESS | ERR_SEC_DUPLICATE_ITEM => Ok(()),

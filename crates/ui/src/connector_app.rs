@@ -255,7 +255,9 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
 /// then applies the TLS choice.
 fn derive_api_url(host: &str, use_tls: bool) -> String {
     let scheme = if use_tls { "https" } else { "http" };
-    let schemes = ["grpc://", "grpcs://", "http://", "https://", "ws://", "wss://"];
+    let schemes = [
+        "grpc://", "grpcs://", "http://", "https://", "ws://", "wss://",
+    ];
     let host_lower = host.to_lowercase();
     let mut bare_host = host;
     for prefix in &schemes {
@@ -423,7 +425,8 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             .or_else(|_| std::env::var("MATRIX_URL"))
             .unwrap_or_default()
     });
-    let mut matrix_auth_token = use_signal(|| std::env::var("MATRIX_AUTH_TOKEN").unwrap_or_default());
+    let mut matrix_auth_token =
+        use_signal(|| std::env::var("MATRIX_AUTH_TOKEN").unwrap_or_default());
 
     // Restore a previously-persisted chat token (OS secure store) on startup so
     // relaunching the app doesn't force a fresh browser sign-in. The API URL the
@@ -778,16 +781,12 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             return;
         }
         // Pick the config we would connect with (saved config wins, else PLG env).
-        let candidate = settings
-            .read()
-            .last_config
-            .clone()
-            .or_else(|| {
-                easy_mode_autoconnect_config.clone().map(|mut c| {
-                    c.instance_id = device_id.clone();
-                    c
-                })
-            });
+        let candidate = settings.read().last_config.clone().or_else(|| {
+            easy_mode_autoconnect_config.clone().map(|mut c| {
+                c.instance_id = device_id.clone();
+                c
+            })
+        });
         let Some(candidate) = candidate else { return };
 
         // `on_connect` registers under the ENV-SCOPED instance id

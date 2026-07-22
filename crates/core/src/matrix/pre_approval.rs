@@ -42,7 +42,9 @@ pub(crate) fn parse_pre_approve_response(body: &str, api_base: &str) -> Result<O
 /// iOS, so this lands in Pick's private, persisted storage.
 pub fn staged_ott_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".strike48").join("registration_token.json")
+    PathBuf::from(home)
+        .join(".strike48")
+        .join("registration_token.json")
 }
 
 /// Write `ott` to [`staged_ott_path`] in the SDK's `{token, matrix_url,
@@ -60,7 +62,8 @@ pub fn stage_ott_for_sdk(ott: &OttData) -> Result<PathBuf> {
         "keycloak_url": ott.keycloak_url,
     })
     .to_string();
-    std::fs::write(&path, json).map_err(|e| Error::Matrix(format!("cannot write OTT file: {e}")))?;
+    std::fs::write(&path, json)
+        .map_err(|e| Error::Matrix(format!("cannot write OTT file: {e}")))?;
 
     #[cfg(unix)]
     {

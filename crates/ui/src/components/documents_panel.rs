@@ -85,8 +85,8 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                 // Poll every 5s. Each pass rebuilds a lightweight client and
                 // updates `latest`; the first pass clears the loading state.
                 loop {
-                    let client = MatrixChatClient::new(api_url.clone())
-                        .with_auth_token(auth_token.clone());
+                    let client =
+                        MatrixChatClient::new(api_url.clone()).with_auth_token(auth_token.clone());
                     match client.list_documents(aid.as_deref()).await {
                         Ok(list) => {
                             let doc = pentest_core::matrix::latest_document(list);
@@ -196,8 +196,8 @@ pub fn ConversationDocs(props: ConversationDocsProps) -> Element {
             spawn(async move {
                 // Poll so a report written mid-conversation appears on its own.
                 loop {
-                    let client = MatrixChatClient::new(api_url.clone())
-                        .with_auth_token(auth_token.clone());
+                    let client =
+                        MatrixChatClient::new(api_url.clone()).with_auth_token(auth_token.clone());
                     if let Ok(list) = client.list_documents(aid.as_deref()).await {
                         let mut mine: Vec<DocumentSummary> = list
                             .into_iter()
@@ -320,7 +320,9 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
                             let _ = pentest_core::share::share_text(&url);
                         }
                         ShareAction::OpenBrowser => {
-                            if let Err(e) = pentest_core::matrix::open_url_in_browser(&preview_url(&url)) {
+                            if let Err(e) =
+                                pentest_core::matrix::open_url_in_browser(&preview_url(&url))
+                            {
                                 toast.set(Some(format!("Couldn't open report: {e}")));
                             }
                         }
@@ -328,11 +330,15 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
                             if let Some(net) = network {
                                 match share_intent_url(net, &url, &title) {
                                     Ok(intent) => {
-                                        if let Err(e) = pentest_core::matrix::open_url_in_browser(&intent) {
+                                        if let Err(e) =
+                                            pentest_core::matrix::open_url_in_browser(&intent)
+                                        {
                                             toast.set(Some(format!("Couldn't open share: {e}")));
                                         }
                                     }
-                                    Err(e) => toast.set(Some(format!("Couldn't build share link: {e}"))),
+                                    Err(e) => {
+                                        toast.set(Some(format!("Couldn't build share link: {e}")))
+                                    }
                                 }
                             }
                         }
