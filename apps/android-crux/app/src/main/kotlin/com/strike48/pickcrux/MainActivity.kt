@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity() {
         // Placeholder api_url/token: real Matrix/OAuth wiring is a later task.
         // Network calls may error into ViewModel.error, which the UI renders.
         val core = NativeCore.create(
-            apiUrl = "https://plg.strike48.test/api",
+            apiUrl = "https://plg.strike48.test",
             token = "placeholder-token",
         )
 
