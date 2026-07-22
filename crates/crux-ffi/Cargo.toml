@@ -6,6 +6,12 @@ edition.workspace = true
 [lib]
 crate-type = ["staticlib", "cdylib", "lib"]
 
+[features]
+# Dev-only: relax TLS verification so the shell can reach the local mkcert dev
+# cluster (self-signed / missing-intermediate chain). Enable for sim/emulator
+# builds; NEVER enable for a shipping build.
+insecure-tls = []
+
 [dependencies]
 pick-crux-core = { path = "../crux-core" }
 pick-crux-middleware = { path = "../crux-middleware" }
@@ -22,11 +28,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 openssl = { version = "0.10", features = ["vendored"] }
 
 # Android: bridge `tracing` -> `log` -> logcat so the core's events show in
-# `adb logcat`. iOS uses the plain stderr fmt layer (captured by simctl console).
+# `adb logcat`.
 [target.'cfg(target_os = "android")'.dependencies]
 tracing-log = "0.2"
 android_logger = "0.14"
 log = "0.4"
+
+# iOS: route `tracing` to os_log so events show in Console.app / `log show`
+# (stderr from a sim app is not captured by the unified log).
+[target.'cfg(target_os = "ios")'.dependencies]
+tracing-oslog = "0.3"
 
 [dev-dependencies]
 bincode = "=1.3.3"

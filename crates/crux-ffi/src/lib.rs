@@ -57,7 +57,19 @@ fn init_tracing() {
             let _ = tracing_log::LogTracer::init();
             let _ = tracing_subscriber::registry().with(filter).try_init();
         }
-        #[cfg(not(target_os = "android"))]
+        #[cfg(target_os = "ios")]
+        {
+            // stderr from a sim app is not captured by the unified log, so route
+            // to os_log (visible in Console.app / `xcrun simctl spawn booted log`).
+            let _ = tracing_subscriber::registry()
+                .with(tracing_oslog::OsLogger::new(
+                    "com.strike48.pickcrux",
+                    "core",
+                ))
+                .with(filter)
+                .try_init();
+        }
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
             let _ = tracing_subscriber::registry()
                 .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
@@ -222,15 +234,15 @@ pub extern "C" fn pick_core_new(
         return std::ptr::null_mut();
     };
 
-    // Dev-only: trust the local cluster's mkcert-signed TLS so debug builds can
-    // reach https://*.strike48.test. reqwest here uses rustls-tls-native-roots,
-    // and rustls-native-certs does not reliably read the iOS simulator trust
-    // store (adding the CA via `simctl keychain add-root-cert` isn't picked up),
-    // so we relax verification instead. Release builds (debug_assertions off)
-    // keep strict TLS — this never ships. The proper prod path is bundling the
-    // CA or webpki roots + a real cert. The matrix client reads this env when it
-    // builds its client.
-    #[cfg(debug_assertions)]
+    // Dev-only: trust the local cluster's mkcert-signed TLS so dev builds can
+    // reach https://*.strike48.test. The server sends only the leaf cert (no
+    // intermediate), so the sim's trust evaluation fails with MissingIntermediate;
+    // reqwest here uses rustls-tls-native-roots which can't build the chain
+    // either. Gated behind the `insecure-tls` cargo feature (NOT debug_assertions,
+    // which is off for the release-ffi profile the mobile libs build with) so it
+    // is impossible to ship by accident. The proper prod path is a real cert /
+    // full chain. The matrix client reads this env when it builds its client.
+    #[cfg(feature = "insecure-tls")]
     if std::env::var_os("MATRIX_TLS_INSECURE").is_none() {
         std::env::set_var("MATRIX_TLS_INSECURE", "true");
     }

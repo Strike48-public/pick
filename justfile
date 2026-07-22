@@ -629,16 +629,18 @@ crux-ffi-header:
     cbindgen --lang c --crate pick-crux-ffi --output crates/crux-ffi/include/pick_crux_ffi.h crates/crux-ffi
 
 # Build the Android x86_64 shared lib (for the emulator) — needs the nix NDK env.
+# insecure-tls: emulator targets the local mkcert dev cluster (self-signed chain).
 crux-ffi-android-x86_64:
-    cargo build -p pick-crux-ffi --target x86_64-linux-android --profile release-ffi
+    cargo build -p pick-crux-ffi --target x86_64-linux-android --profile release-ffi --features insecure-tls
 
-# Build the Android arm64 shared lib (for real devices).
+# Build the Android arm64 shared lib (for real devices). Strict TLS (no dev feature).
 crux-ffi-android-arm64:
     cargo build -p pick-crux-ffi --target aarch64-linux-android --profile release-ffi
 
 # Build the iOS simulator static lib (run on the Mac build host inside nix develop).
+# insecure-tls: the sim targets the local mkcert dev cluster (self-signed chain).
 crux-ffi-ios-sim:
-    cargo build -p pick-crux-ffi --target aarch64-apple-ios-sim --profile release-ffi
+    cargo build -p pick-crux-ffi --target aarch64-apple-ios-sim --profile release-ffi --features insecure-tls
 
 # Regenerate the Swift + Kotlin foreign types from the crux core surface.
 crux-typegen out="crates/crux-core/generated":
