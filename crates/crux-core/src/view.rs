@@ -5,9 +5,10 @@
 use facet::Facet;
 use serde::{Deserialize, Serialize};
 
-#[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[repr(C)]
 pub enum Screen {
+    #[default]
     Scan,
     Chat,
     Documents,
@@ -15,10 +16,11 @@ pub enum Screen {
     NeedsSignIn,
 }
 
-#[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[repr(C)]
 pub enum ConnectionPhase {
     SigningIn,
+    #[default]
     Connecting,
     Registering,
     Connected,
@@ -98,14 +100,11 @@ pub struct ViewModel {
     pub error: Option<String>,
 }
 
-impl Default for Screen {
-    fn default() -> Self { Screen::Scan }
-}
-impl Default for ConnectionPhase {
-    fn default() -> Self { ConnectionPhase::Connecting }
-}
 impl Default for ConnectionView {
     fn default() -> Self {
-        ConnectionView { phase: ConnectionPhase::Connecting, label: "Connecting...".to_string() }
+        ConnectionView {
+            phase: ConnectionPhase::Connecting,
+            label: "Connecting...".to_string(),
+        }
     }
 }

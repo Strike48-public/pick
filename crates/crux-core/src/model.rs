@@ -18,17 +18,14 @@ pub struct Model {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub enum Phase {
     SigningIn,
+    #[default]
     Connecting,
     Registering,
     Connected,
     NeedsSignIn,
-}
-
-impl Default for Phase {
-    fn default() -> Self { Phase::Connecting }
 }
 
 impl Phase {

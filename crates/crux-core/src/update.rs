@@ -1,7 +1,7 @@
-use crux_core::{render::render, Command};
 use crate::effect::{PentestOperation, PentestOutcome};
 use crate::model::{Model, Phase};
 use crate::{Effect, Event, PickApp};
+use crux_core::{render::render, Command};
 
 pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect, Event> {
     match event {
@@ -14,10 +14,12 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
                 prompt: pentest_core::easy_mode_scan_prompt(),
             })
             .then_send(|out| match out {
-                PentestOutcome::ScanQueued { conversation_id } => Event::ScanResult(crate::ScanOutcome {
-                    conversation_id: Some(conversation_id),
-                    error: None,
-                }),
+                PentestOutcome::ScanQueued { conversation_id } => {
+                    Event::ScanResult(crate::ScanOutcome {
+                        conversation_id: Some(conversation_id),
+                        error: None,
+                    })
+                }
                 PentestOutcome::Error { message } => Event::ScanResult(crate::ScanOutcome {
                     conversation_id: None,
                     error: Some(message),
@@ -31,27 +33,34 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         Event::SendMessage(text) => {
             model.error = None;
             let conv = model.conversation_id.clone();
-            Command::request_from_shell(PentestOperation::SendMessage { conversation_id: conv, text })
-                .then_send(|out| match out {
-                    PentestOutcome::ScanQueued { conversation_id } => Event::ScanResult(crate::ScanOutcome {
+            Command::request_from_shell(PentestOperation::SendMessage {
+                conversation_id: conv,
+                text,
+            })
+            .then_send(|out| match out {
+                PentestOutcome::ScanQueued { conversation_id } => {
+                    Event::ScanResult(crate::ScanOutcome {
                         conversation_id: Some(conversation_id),
                         error: None,
-                    }),
-                    PentestOutcome::Error { message } => Event::ScanResult(crate::ScanOutcome {
-                        conversation_id: None,
-                        error: Some(message),
-                    }),
-                    _ => Event::ScanResult(crate::ScanOutcome {
-                        conversation_id: None,
-                        error: Some("unexpected outcome".into()),
-                    }),
-                })
+                    })
+                }
+                PentestOutcome::Error { message } => Event::ScanResult(crate::ScanOutcome {
+                    conversation_id: None,
+                    error: Some(message),
+                }),
+                _ => Event::ScanResult(crate::ScanOutcome {
+                    conversation_id: None,
+                    error: Some("unexpected outcome".into()),
+                }),
+            })
         }
         Event::ScanResult(outcome) => {
             if let Some(conv) = outcome.conversation_id {
                 model.conversation_id = Some(conv.clone());
-                Command::request_from_shell(PentestOperation::PollConversation { conversation_id: conv })
-                    .then_send(delta_event)
+                Command::request_from_shell(PentestOperation::PollConversation {
+                    conversation_id: conv,
+                })
+                .then_send(delta_event)
             } else {
                 model.scan_active = false;
                 model.error = outcome.error;
@@ -67,14 +76,18 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
                     let agent = None; // agent id resolved by middleware/session
                     Command::request_from_shell(PentestOperation::ListDocuments { agent_id: agent })
                         .then_send(|out| match out {
-                            PentestOutcome::Documents { list } => Event::DocumentsResult(crate::DocumentsOutcome {
-                                documents: Some(list),
-                                error: None,
-                            }),
-                            PentestOutcome::Error { message } => Event::DocumentsResult(crate::DocumentsOutcome {
-                                documents: None,
-                                error: Some(message),
-                            }),
+                            PentestOutcome::Documents { list } => {
+                                Event::DocumentsResult(crate::DocumentsOutcome {
+                                    documents: Some(list),
+                                    error: None,
+                                })
+                            }
+                            PentestOutcome::Error { message } => {
+                                Event::DocumentsResult(crate::DocumentsOutcome {
+                                    documents: None,
+                                    error: Some(message),
+                                })
+                            }
                             _ => Event::DocumentsResult(crate::DocumentsOutcome {
                                 documents: None,
                                 error: Some("unexpected outcome".into()),
@@ -82,8 +95,10 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
                         })
                 } else {
                     let conv = model.conversation_id.clone().unwrap_or_default();
-                    Command::request_from_shell(PentestOperation::PollConversation { conversation_id: conv })
-                        .then_send(delta_event)
+                    Command::request_from_shell(PentestOperation::PollConversation {
+                        conversation_id: conv,
+                    })
+                    .then_send(delta_event)
                 }
             } else {
                 model.scan_active = false;
@@ -94,7 +109,11 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         Event::DocumentsResult(outcome) => {
             if let Some(docs) = outcome.documents {
                 let conv = model.conversation_id.clone().unwrap_or_default();
-                model.conversation_docs = docs.iter().filter(|d| d.conversation_id == conv).cloned().collect();
+                model.conversation_docs = docs
+                    .iter()
+                    .filter(|d| d.conversation_id == conv)
+                    .cloned()
+                    .collect();
                 model.all_documents = docs;
                 render()
             } else {
@@ -105,21 +124,23 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         Event::RetrySignIn => {
             model.phase = Phase::SigningIn;
             model.error = None;
-            Command::request_from_shell(PentestOperation::SignIn { api_url: model.api_url.clone() })
-                .then_send(|out| match out {
-                    PentestOutcome::SignedIn { token } => Event::SignInResult(crate::SignInOutcome {
-                        token: Some(token),
-                        error: None,
-                    }),
-                    PentestOutcome::Error { message } => Event::SignInResult(crate::SignInOutcome {
-                        token: None,
-                        error: Some(message),
-                    }),
-                    _ => Event::SignInResult(crate::SignInOutcome {
-                        token: None,
-                        error: Some("unexpected outcome".into()),
-                    }),
-                })
+            Command::request_from_shell(PentestOperation::SignIn {
+                api_url: model.api_url.clone(),
+            })
+            .then_send(|out| match out {
+                PentestOutcome::SignedIn { token } => Event::SignInResult(crate::SignInOutcome {
+                    token: Some(token),
+                    error: None,
+                }),
+                PentestOutcome::Error { message } => Event::SignInResult(crate::SignInOutcome {
+                    token: None,
+                    error: Some(message),
+                }),
+                _ => Event::SignInResult(crate::SignInOutcome {
+                    token: None,
+                    error: Some("unexpected outcome".into()),
+                }),
+            })
         }
         Event::SignInResult(outcome) => {
             if outcome.token.is_some() {
@@ -149,23 +170,31 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         }
         Event::OpenHistory => {
             model.history_open = true;
-            Command::request_from_shell(PentestOperation::ListConversations)
-                .then_send(|out| match out {
-                    PentestOutcome::Conversations { list } => Event::ConversationsResult(crate::ConversationsOutcome {
-                        conversations: Some(list),
-                        error: None,
-                    }),
-                    PentestOutcome::Error { message } => Event::ConversationsResult(crate::ConversationsOutcome {
-                        conversations: None,
-                        error: Some(message),
-                    }),
+            Command::request_from_shell(PentestOperation::ListConversations).then_send(|out| {
+                match out {
+                    PentestOutcome::Conversations { list } => {
+                        Event::ConversationsResult(crate::ConversationsOutcome {
+                            conversations: Some(list),
+                            error: None,
+                        })
+                    }
+                    PentestOutcome::Error { message } => {
+                        Event::ConversationsResult(crate::ConversationsOutcome {
+                            conversations: None,
+                            error: Some(message),
+                        })
+                    }
                     _ => Event::ConversationsResult(crate::ConversationsOutcome {
                         conversations: None,
                         error: Some("unexpected outcome".into()),
                     }),
-                })
+                }
+            })
         }
-        Event::CloseHistory => { model.history_open = false; render() }
+        Event::CloseHistory => {
+            model.history_open = false;
+            render()
+        }
         Event::ConversationsResult(outcome) => {
             if let Some(list) = outcome.conversations {
                 model.history = list;
@@ -178,21 +207,27 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         Event::SelectConversation(id) => {
             model.conversation_id = Some(id.clone());
             model.history_open = false;
-            Command::request_from_shell(PentestOperation::LoadConversation { conversation_id: id })
-                .then_send(|out| match out {
-                    PentestOutcome::LoadedMessages { messages } => Event::LoadConversationResult(crate::LoadConversationOutcome {
+            Command::request_from_shell(PentestOperation::LoadConversation {
+                conversation_id: id,
+            })
+            .then_send(|out| match out {
+                PentestOutcome::LoadedMessages { messages } => {
+                    Event::LoadConversationResult(crate::LoadConversationOutcome {
                         messages: Some(messages),
                         error: None,
-                    }),
-                    PentestOutcome::Error { message } => Event::LoadConversationResult(crate::LoadConversationOutcome {
+                    })
+                }
+                PentestOutcome::Error { message } => {
+                    Event::LoadConversationResult(crate::LoadConversationOutcome {
                         messages: None,
                         error: Some(message),
-                    }),
-                    _ => Event::LoadConversationResult(crate::LoadConversationOutcome {
-                        messages: None,
-                        error: Some("unexpected outcome".into()),
-                    }),
-                })
+                    })
+                }
+                _ => Event::LoadConversationResult(crate::LoadConversationOutcome {
+                    messages: None,
+                    error: Some("unexpected outcome".into()),
+                }),
+            })
         }
         Event::LoadConversationResult(outcome) => {
             if let Some(msgs) = outcome.messages {
@@ -205,26 +240,36 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         }
         Event::OpenDocument(id) => {
             let conv = model.conversation_id.clone().unwrap_or_default();
-            Command::request_from_shell(PentestOperation::GetDocumentContent { document_id: id.clone(), conversation_id: conv })
-                .then_send(move |out| match out {
-                    PentestOutcome::DocumentContent { markdown } => Event::DocumentContentResult(crate::DocumentContentOutcome {
+            Command::request_from_shell(PentestOperation::GetDocumentContent {
+                document_id: id.clone(),
+                conversation_id: conv,
+            })
+            .then_send(move |out| match out {
+                PentestOutcome::DocumentContent { markdown } => {
+                    Event::DocumentContentResult(crate::DocumentContentOutcome {
                         content: Some(markdown),
                         error: None,
-                    }),
-                    PentestOutcome::Error { message } => Event::DocumentContentResult(crate::DocumentContentOutcome {
+                    })
+                }
+                PentestOutcome::Error { message } => {
+                    Event::DocumentContentResult(crate::DocumentContentOutcome {
                         content: None,
                         error: Some(message),
-                    }),
-                    _ => Event::DocumentContentResult(crate::DocumentContentOutcome {
-                        content: None,
-                        error: Some("unexpected outcome".into()),
-                    }),
-                })
+                    })
+                }
+                _ => Event::DocumentContentResult(crate::DocumentContentOutcome {
+                    content: None,
+                    error: Some("unexpected outcome".into()),
+                }),
+            })
         }
         Event::DocumentContentResult(outcome) => {
             if let Some(markdown) = outcome.content {
                 model.open_document = Some(crate::view::DocView {
-                    id: String::new(), title: "Report".into(), markdown_body: markdown, share_url: None,
+                    id: String::new(),
+                    title: "Report".into(),
+                    markdown_body: markdown,
+                    share_url: None,
                 });
                 render()
             } else {
@@ -232,35 +277,50 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
                 render()
             }
         }
-        Event::CloseDocument => { model.open_document = None; render() }
+        Event::CloseDocument => {
+            model.open_document = None;
+            render()
+        }
         Event::CreateShareLink(doc_id) => {
             let conv = model.conversation_id.clone().unwrap_or_default();
-            Command::request_from_shell(PentestOperation::CreateSharedLink { conversation_id: conv, document_id: doc_id })
-                .then_send(|out| match out {
-                    PentestOutcome::SharedLink { url } => Event::ShareLinkResult(crate::ShareLinkOutcome {
+            Command::request_from_shell(PentestOperation::CreateSharedLink {
+                conversation_id: conv,
+                document_id: doc_id,
+            })
+            .then_send(|out| match out {
+                PentestOutcome::SharedLink { url } => {
+                    Event::ShareLinkResult(crate::ShareLinkOutcome {
                         url: Some(url),
                         error: None,
-                    }),
-                    PentestOutcome::Error { message } => Event::ShareLinkResult(crate::ShareLinkOutcome {
+                    })
+                }
+                PentestOutcome::Error { message } => {
+                    Event::ShareLinkResult(crate::ShareLinkOutcome {
                         url: None,
                         error: Some(message),
-                    }),
-                    _ => Event::ShareLinkResult(crate::ShareLinkOutcome {
-                        url: None,
-                        error: Some("unexpected outcome".into()),
-                    }),
-                })
+                    })
+                }
+                _ => Event::ShareLinkResult(crate::ShareLinkOutcome {
+                    url: None,
+                    error: Some("unexpected outcome".into()),
+                }),
+            })
         }
         Event::ShareLinkResult(outcome) => {
             if let Some(url) = outcome.url {
-                if let Some(doc) = model.open_document.as_mut() { doc.share_url = Some(url); }
+                if let Some(doc) = model.open_document.as_mut() {
+                    doc.share_url = Some(url);
+                }
                 render()
             } else {
                 model.error = outcome.error;
                 render()
             }
         }
-        Event::DismissError => { model.error = None; render() }
+        Event::DismissError => {
+            model.error = None;
+            render()
+        }
     }
 }
 
@@ -308,23 +368,30 @@ mod tests {
         let app = PickApp;
         let mut model = Model::default();
         let _ = app.update(Event::StartScan, &mut model);
-        let mut cmd = app.update(Event::ScanResult(crate::ScanOutcome {
-            conversation_id: Some("conv-1".into()),
-            error: None,
-        }), &mut model);
+        let mut cmd = app.update(
+            Event::ScanResult(crate::ScanOutcome {
+                conversation_id: Some("conv-1".into()),
+                error: None,
+            }),
+            &mut model,
+        );
         assert_eq!(model.conversation_id.as_deref(), Some("conv-1"));
         let op = match cmd.effects().next().unwrap() {
             Effect::Pentest(op) => op.operation,
             _ => panic!("expected Pentest effect"),
         };
-        assert!(matches!(op, PentestOperation::PollConversation { conversation_id } if conversation_id == "conv-1"));
+        assert!(
+            matches!(op, PentestOperation::PollConversation { conversation_id } if conversation_id == "conv-1")
+        );
     }
 
     #[test]
     fn non_final_delta_merges_and_reloops() {
         let app = PickApp;
-        let mut model = Model::default();
-        model.conversation_id = Some("conv-1".into());
+        let mut model = Model {
+            conversation_id: Some("conv-1".into()),
+            ..Default::default()
+        };
         let delta = ConversationDelta {
             messages: vec![MessageView {
                 sender: "pentest-connector".into(),
@@ -335,10 +402,13 @@ mod tests {
             tool_calls: vec![],
             done: false,
         };
-        let mut cmd = app.update(Event::Delta(crate::DeltaOutcome {
-            delta: Some(delta),
-            error: None,
-        }), &mut model);
+        let mut cmd = app.update(
+            Event::Delta(crate::DeltaOutcome {
+                delta: Some(delta),
+                error: None,
+            }),
+            &mut model,
+        );
         assert_eq!(model.messages.len(), 1);
         let op = match cmd.effects().next().unwrap() {
             Effect::Pentest(op) => op.operation,
@@ -350,13 +420,22 @@ mod tests {
     #[test]
     fn final_delta_requests_documents() {
         let app = PickApp;
-        let mut model = Model::default();
-        model.conversation_id = Some("conv-1".into());
-        let delta = ConversationDelta { messages: vec![], tool_calls: vec![], done: true };
-        let mut cmd = app.update(Event::Delta(crate::DeltaOutcome {
-            delta: Some(delta),
-            error: None,
-        }), &mut model);
+        let mut model = Model {
+            conversation_id: Some("conv-1".into()),
+            ..Default::default()
+        };
+        let delta = ConversationDelta {
+            messages: vec![],
+            tool_calls: vec![],
+            done: true,
+        };
+        let mut cmd = app.update(
+            Event::Delta(crate::DeltaOutcome {
+                delta: Some(delta),
+                error: None,
+            }),
+            &mut model,
+        );
         assert!(!model.scan_active);
         let op = match cmd.effects().next().unwrap() {
             Effect::Pentest(op) => op.operation,
@@ -369,11 +448,14 @@ mod tests {
     fn signin_error_sets_needs_sign_in() {
         let app = PickApp;
         let mut model = Model::default();
-        let _ = app.update(Event::SignInResult(crate::SignInOutcome {
-            token: None,
-            error: Some("nope".into()),
-        }), &mut model);
+        let _ = app.update(
+            Event::SignInResult(crate::SignInOutcome {
+                token: None,
+                error: Some("nope".into()),
+            }),
+            &mut model,
+        );
         assert_eq!(model.phase, crate::model::Phase::NeedsSignIn);
-        assert_eq!(app.view(&model).needs_sign_in, true);
+        assert!(app.view(&model).needs_sign_in);
     }
 }

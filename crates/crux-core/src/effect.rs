@@ -10,16 +10,40 @@ use crate::view::{ConversationRef, DocRef, MessageView, ToolCallView};
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[repr(C)]
 pub enum PentestOperation {
-    SignIn { api_url: String },
-    Connect { api_url: String, tenant: String, token: String },
-    SendScan { conversation_id: Option<String>, prompt: String },
-    SendMessage { conversation_id: Option<String>, text: String },
-    PollConversation { conversation_id: String },
+    SignIn {
+        api_url: String,
+    },
+    Connect {
+        api_url: String,
+        tenant: String,
+        token: String,
+    },
+    SendScan {
+        conversation_id: Option<String>,
+        prompt: String,
+    },
+    SendMessage {
+        conversation_id: Option<String>,
+        text: String,
+    },
+    PollConversation {
+        conversation_id: String,
+    },
     ListConversations,
-    LoadConversation { conversation_id: String },
-    ListDocuments { agent_id: Option<String> },
-    GetDocumentContent { document_id: String, conversation_id: String },
-    CreateSharedLink { conversation_id: String, document_id: String },
+    LoadConversation {
+        conversation_id: String,
+    },
+    ListDocuments {
+        agent_id: Option<String>,
+    },
+    GetDocumentContent {
+        document_id: String,
+        conversation_id: String,
+    },
+    CreateSharedLink {
+        conversation_id: String,
+        document_id: String,
+    },
 }
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]

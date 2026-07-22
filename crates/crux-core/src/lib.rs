@@ -167,8 +167,10 @@ mod view_tests {
     #[test]
     fn needs_sign_in_phase_projects_needs_sign_in() {
         let app = PickApp;
-        let mut m = Model::default();
-        m.phase = model::Phase::NeedsSignIn;
+        let m = Model {
+            phase: model::Phase::NeedsSignIn,
+            ..Default::default()
+        };
         let vm = app.view(&m);
         assert!(vm.needs_sign_in);
         assert_eq!(vm.screen, view::Screen::NeedsSignIn);

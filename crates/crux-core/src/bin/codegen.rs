@@ -1,8 +1,8 @@
-use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use crux_core::type_generation::facet::{Config, TypeRegistry};
 use pick_crux_core::PickApp;
+use std::path::PathBuf;
 
 fn main() -> Result<()> {
     pretty_env_logger::init();
@@ -29,4 +29,7 @@ struct Args {
 }
 
 #[derive(ValueEnum, Clone)]
-enum Language { Swift, Kotlin }
+enum Language {
+    Swift,
+    Kotlin,
+}

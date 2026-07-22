@@ -10,8 +10,17 @@ fn generates_swift_and_kotlin_types() {
     std::fs::create_dir_all(&tmp).unwrap();
     for lang in ["swift", "kotlin"] {
         let status = Command::new(env!("CARGO"))
-            .args(["run", "--quiet", "--bin", "codegen", "--features", "codegen", "--",
-                   lang, tmp.to_str().unwrap()])
+            .args([
+                "run",
+                "--quiet",
+                "--bin",
+                "codegen",
+                "--features",
+                "codegen",
+                "--",
+                lang,
+                tmp.to_str().unwrap(),
+            ])
             .status()
             .expect("run codegen");
         assert!(status.success(), "codegen failed for {lang}");
@@ -21,8 +30,12 @@ fn generates_swift_and_kotlin_types() {
     let mut found_ev = false;
     for entry in walk(&tmp) {
         let s = std::fs::read_to_string(&entry).unwrap_or_default();
-        if s.contains("ViewModel") { found_vm = true; }
-        if s.contains("Event") { found_ev = true; }
+        if s.contains("ViewModel") {
+            found_vm = true;
+        }
+        if s.contains("Event") {
+            found_ev = true;
+        }
     }
     assert!(found_vm, "generated types should contain ViewModel");
     assert!(found_ev, "generated types should contain Event");
@@ -34,7 +47,11 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let p = e.path();
-            if p.is_dir() { out.extend(walk(&p)); } else { out.push(p); }
+            if p.is_dir() {
+                out.extend(walk(&p));
+            } else {
+                out.push(p);
+            }
         }
     }
     out
