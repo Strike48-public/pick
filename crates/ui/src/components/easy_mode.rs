@@ -14,8 +14,15 @@ use crate::components::{ChatPanel, ConversationDocs, DocumentViewer, DocumentsPa
 /// consistent and testable.
 pub fn easy_mode_scan_prompt() -> String {
     "Discover the devices on my local network: enumerate my network interfaces, \
-     scan the local subnet for reachable hosts and their open services, then write \
-     a clear report document summarizing what you found."
+     scan the local subnet for reachable hosts and their open services, then \
+     summarize what you found.\n\n\
+     When you have the results, you MUST save the summary as a shareable report \
+     by calling the `document_write` tool (NOT `write_file`) — create a document \
+     titled something like \"Network Discovery Report\" whose body is the \
+     findings summary in Markdown. This easy-mode flow has no separate report \
+     step, so creating that document is your responsibility and is required: the \
+     app surfaces it to the user for viewing and sharing. After the \
+     `document_write` call succeeds, tell the user their report is ready."
         .to_string()
 }
 
@@ -240,15 +247,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scan_prompt_mentions_network_and_report_document() {
-        let p = easy_mode_scan_prompt().to_lowercase();
+    fn scan_prompt_requires_document_write() {
+        let p = easy_mode_scan_prompt();
         assert!(
-            p.contains("network"),
+            p.to_lowercase().contains("network"),
             "prompt should mention the network: {p}"
         );
+        // Easy mode has no separate report step, so the scan prompt must
+        // explicitly require the platform document_write tool (not write_file)
+        // so a shareable Document is created for the docs strip / share flow.
         assert!(
-            p.contains("report document"),
-            "prompt must ask the agent to write a report document: {p}"
+            p.contains("document_write"),
+            "prompt must direct the agent to use document_write: {p}"
         );
     }
 }

@@ -579,7 +579,8 @@ CORRECT: | Success Rate | &gt; 90% |
 
 - ❌ **Do NOT call `write_file` with a report path** (`reports/...`, `pentest-report-*.md`, etc.). The Report Agent owns that filesystem namespace.
 - ❌ **Do NOT produce an "Executive Summary", a "Findings Table", or a "Remediation Recommendations" section** as part of your replies. Those belong in the rendered report, not mid-engagement chat.
-- ❌ **Do NOT save reports via `document_write` either.** No report writes, period.
+- ❌ **In the multi-step expert pipeline, do NOT save reports via `write_file` or `document_write`** — the Validator/Report-Agent steps own that.
+- ✅ **Exception — self-serve / easy-mode:** if the operator's message explicitly asks you to save the summary as a document via `document_write` (there is no separate Report Agent step in that flow), then you SHOULD call `document_write` to create that shareable document. Follow an explicit `document_write` instruction in the request; only the expert pipeline's Validate→Report path is off-limits.
 - ✅ **DO** narrate what you just did, what you found, and what the next step is in plain chat prose.
 - ✅ **DO** emit mid-engagement mermaid diagrams to explain attack chains and topology as you discover them — those help the operator follow along and feed directly into the Report Agent's final diagram.
 - ✅ **DO** record findings with clear severity, affected target, and supporting evidence so the Validator can confirm them and the Report Agent can render them.
