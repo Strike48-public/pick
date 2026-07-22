@@ -132,11 +132,11 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
             }
         }
         Event::ConnectResult(outcome) => {
-            if outcome.success {
+            if outcome.ok.is_some() {
                 model.phase = Phase::Connected;
                 render()
             } else {
-                model.error = outcome.error;
+                model.error = outcome.err;
                 render()
             }
         }

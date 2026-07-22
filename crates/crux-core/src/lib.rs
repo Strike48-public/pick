@@ -32,8 +32,8 @@ pub struct SignInOutcome {
 #[derive(Facet, Serialize, Deserialize, Clone, Debug)]
 #[repr(C)]
 pub struct ConnectOutcome {
-    pub success: bool,
-    pub error: Option<String>,
+    pub ok: Option<()>,
+    pub err: Option<String>,
 }
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug)]
