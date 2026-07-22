@@ -17,6 +17,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import com.strike48.pick.shared.AgentActivity
 import com.strike48.pick.shared.Event
 import com.strike48.pick.shared.Screen
 import com.strike48.pick.shared.ViewModel
@@ -224,6 +225,8 @@ fun PickApp(
                     ChatList(
                         messages = model.messages,
                         toolCalls = model.toolCalls,
+                        activityActive = model.agentActivity != AgentActivity.IDLE,
+                        activityLabel = model.activityLabel,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -232,6 +235,8 @@ fun PickApp(
                 ChatList(
                     messages = model.messages,
                     toolCalls = model.toolCalls,
+                    activityActive = model.agentActivity != AgentActivity.IDLE,
+                    activityLabel = model.activityLabel,
                     modifier = Modifier.weight(1f),
                 )
                 ConversationDocStrip(

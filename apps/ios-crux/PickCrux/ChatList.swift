@@ -13,20 +13,11 @@ struct ChatList: View {
                         MessageRow(message: msg)
                     }
 
-                    // Live "running tools" strip while scanning.
-                    if core.vm.scanInProgress && !core.vm.toolCalls.isEmpty {
-                        ForEach(Array(core.vm.toolCalls.enumerated()), id: \.offset) { _, tool in
-                            ToolCallRow(tool: tool)
-                        }
-                    }
-
-                    if core.vm.scanInProgress && core.vm.toolCalls.isEmpty {
-                        HStack(spacing: 8) {
-                            ProgressView().tint(Theme.brand)
-                            Text("Working...")
-                                .font(.system(size: 14))
-                                .foregroundStyle(Theme.muted)
-                        }
+                    // Animated agent-activity status line (no spinner). Shown
+                    // whenever the agent is working; the label reflects what it
+                    // is doing (Thinking.../Running tools.../Responding...).
+                    if core.vm.agentActivity != .idle {
+                        TypingIndicator(label: core.vm.activityLabel)
                     }
                 }
                 .padding(16)

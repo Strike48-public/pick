@@ -19,15 +19,8 @@ struct ScanCard: View {
             Button {
                 core.send(.startScan)
             } label: {
-                HStack(spacing: 8) {
-                    if core.vm.scanInProgress {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .tint(Theme.onBrand)
-                    }
-                    Text(core.vm.scanInProgress ? "Scanning..." : "Scan My Network")
-                }
-                .frame(maxWidth: .infinity, minHeight: 44)
+                Text(core.vm.scanInProgress ? "Scanning..." : "Scan My Network")
+                    .frame(maxWidth: .infinity, minHeight: 44)
             }
             .buttonStyle(SagePillButtonStyle(enabled: !core.vm.scanInProgress))
             .disabled(core.vm.scanInProgress)

@@ -1,24 +1,37 @@
 package com.strike48.pickcrux.ui
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -26,11 +39,13 @@ import com.strike48.pick.shared.DocRef
 import com.strike48.pick.shared.MessageView
 import com.strike48.pick.shared.ToolCallView
 
-/** Scrolling message list with a live running-tools strip while scanning. */
+/** Scrolling message list with an animated agent-activity status line. */
 @Composable
 fun ChatList(
     messages: List<MessageView>,
     toolCalls: List<ToolCallView>,
+    activityActive: Boolean,
+    activityLabel: String,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -51,6 +66,46 @@ fun ChatList(
                     toolCalls.forEach { ToolCallRow(it) }
                 }
             }
+        }
+        // Animated agent-activity status line (no spinner) while the agent works.
+        if (activityActive) {
+            item { TypingIndicator(label = activityLabel) }
+        }
+    }
+}
+
+/**
+ * AI-chat style "agent is working" status line: three pulsing dots + a label
+ * ("Thinking...", "Running tools...", ...). Replaces the spinner.
+ */
+@Composable
+fun TypingIndicator(label: String) {
+    val transition = rememberInfiniteTransition(label = "typing")
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            repeat(3) { i ->
+                val alpha by transition.animateFloat(
+                    initialValue = 0.3f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(600, delayMillis = i * 200),
+                        repeatMode = RepeatMode.Reverse,
+                    ),
+                    label = "dot$i",
+                )
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .graphicsLayer { this.alpha = alpha }
+                        .background(PickColors.Brand, CircleShape),
+                )
+            }
+        }
+        if (label.isNotEmpty()) {
+            Text(text = label, color = PickColors.Muted, fontSize = 14.sp)
         }
     }
 }
