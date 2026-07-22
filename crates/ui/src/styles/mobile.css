@@ -694,6 +694,39 @@ body {
     overflow: hidden;
 }
 
+/* Easy Mode chat input row — Sage styleguide: rounded input + pill Send,
+   both the same height and vertically centred. Scoped to easy mode so the
+   expert console keeps its denser square-cornered look. */
+.easy-mode .chat-input-area {
+    align-items: center;
+    gap: var(--em-space-3);
+    padding: var(--em-space-3) var(--em-pad-list);
+}
+.easy-mode .chat-input {
+    /* Pill-rounded field on the sage surface, not the console's square box.
+       The textarea keeps its inline 40px min-height; vertical padding centres
+       the single line within it. */
+    background: var(--em-surface);
+    border-color: var(--em-border);
+    color: var(--em-text);
+    border-radius: var(--em-radius-pill);
+    padding: 9px var(--em-space-4);
+}
+.easy-mode .chat-input:focus {
+    border-color: var(--em-brand);
+    box-shadow: 0 0 0 1px var(--em-brand);
+}
+.easy-mode .chat-send-btn {
+    /* Sage pastel pill with dark-ink label — the primary action colour.
+       Height matches the input's 40px min-height so the two align. */
+    background: var(--em-brand);
+    color: var(--em-on-primary);
+    border-radius: var(--em-radius-pill);
+    height: 40px;
+    padding: 0 var(--em-space-4);
+    font-weight: 600;
+}
+
 /* Easy Mode Documents Panel — a fixed-height footer that never grows, so it
    can't fight the chat for space and push the brand bar/scan card off the top.
    Only the chat area (.easy-mode-chat, flex:1) is flexible. */
