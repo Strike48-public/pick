@@ -15,7 +15,7 @@ pub use agent_defaults::default_pentest_agent_input;
 pub use auth::*;
 pub use chat_notice::{build_error_notice, studio_url_from_api, ChatNotice, ChatNoticeKind};
 pub use client::MatrixChatClient;
-pub use documents::{latest_document, DocumentSummary};
+pub use documents::{latest_document, preview_url, DocumentSummary};
 pub use pre_approval::{
     clear_staged_ott, pre_approve, stage_ott_for_sdk, staged_ott_path, OttData,
 };

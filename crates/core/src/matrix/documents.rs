@@ -27,6 +27,15 @@ pub fn share_resource_id(conversation_id: &str, document_id: &str) -> String {
     format!("{conversation_id}:{document_id}")
 }
 
+/// Add `preview=1` to a share URL. Without it, the `/s/:token` route redirects
+/// to the Studio SPA documents view; `preview=1` renders the report's markdown
+/// inline as a standalone page. Appends `?preview=1` when the URL has no query
+/// string, `&preview=1` otherwise.
+pub fn preview_url(url: &str) -> String {
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}preview=1")
+}
+
 // -- GraphQL deserialize shapes --
 
 #[derive(Deserialize)]
@@ -242,6 +251,22 @@ mod tests {
     #[test]
     fn resource_id_joins_conversation_and_document() {
         assert_eq!(share_resource_id("conv-1", "doc-9"), "conv-1:doc-9");
+    }
+
+    #[test]
+    fn preview_url_appends_preview_param() {
+        assert_eq!(
+            preview_url("https://studio.example.test/s/tok"),
+            "https://studio.example.test/s/tok?preview=1"
+        );
+    }
+
+    #[test]
+    fn preview_url_uses_ampersand_when_query_present() {
+        assert_eq!(
+            preview_url("https://studio.example.test/s/tok?x=1"),
+            "https://studio.example.test/s/tok?x=1&preview=1"
+        );
     }
 
     #[test]

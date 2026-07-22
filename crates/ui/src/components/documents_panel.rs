@@ -26,12 +26,11 @@ fn clipboard_js(url: &str) -> String {
     format!("navigator.clipboard && navigator.clipboard.writeText({literal})")
 }
 
-/// Add `preview=1` to a share URL. Without it, the `/s/:token` route redirects
-/// to the Studio SPA documents view; `preview=1` renders the report's markdown
-/// inline as a standalone page.
+/// Add `preview=1` to a share URL. Delegates to the shared
+/// `pentest_core::matrix::preview_url` so Easy Mode's crux shells and the Dioxus
+/// app build the preview link identically.
 fn preview_url(url: &str) -> String {
-    let sep = if url.contains('?') { '&' } else { '?' };
-    format!("{url}{sep}preview=1")
+    pentest_core::matrix::preview_url(url)
 }
 
 // ---------------------------------------------------------------------------
