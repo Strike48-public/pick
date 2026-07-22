@@ -138,9 +138,14 @@ pub fn MessageList(props: MessageListProps) -> Element {
                 // Thinking indicator (standard)
                 if agent_thinking() {
                     div { class: "chat-bubble chat-bubble-agent chat-thinking",
-                        div { class: "chat-bubble-sender",
-                            if let Some(agent) = selected_agent.read().as_ref() {
-                                "{agent.name}"
+                        // Easy mode hides the connector/agent name above the
+                        // in-progress status — the user thinks of it as "Pick",
+                        // not "pentest-connector".
+                        if !props.easy_mode {
+                            div { class: "chat-bubble-sender",
+                                if let Some(agent) = selected_agent.read().as_ref() {
+                                    "{agent.name}"
+                                }
                             }
                         }
                         div { class: "chat-thinking-status",

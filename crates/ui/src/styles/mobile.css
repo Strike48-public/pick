@@ -743,14 +743,18 @@ body {
     padding: var(--em-space-3) var(--em-pad-list);
 }
 .easy-mode .chat-input {
-    /* Pill-rounded field on the sage surface, not the console's square box.
-       The textarea keeps its inline 40px min-height; vertical padding centres
-       the single line within it. */
+    /* Same control height as the Send button (both border-box, 44px min-height)
+       so they line up. Overrides the textarea's inline 40px min-height. */
+    box-sizing: border-box;
+    min-height: 44px;
     background: var(--em-surface);
     border-color: var(--em-border);
     color: var(--em-text);
     border-radius: var(--em-radius-pill);
-    padding: 9px var(--em-space-4);
+    /* Vertical padding centres a single line within the 44px control; grows
+       with content up to the textarea's max-height. */
+    padding: 11px var(--em-space-4);
+    line-height: 1.4;
 }
 .easy-mode .chat-input:focus {
     border-color: var(--em-brand);
@@ -759,10 +763,11 @@ body {
 .easy-mode .chat-send-btn {
     /* Sage pastel pill with dark-ink label — the primary action colour.
        Height matches the input's 40px min-height so the two align. */
+    box-sizing: border-box;
+    min-height: 44px;
     background: var(--em-brand);
     color: var(--em-on-primary);
     border-radius: var(--em-radius-pill);
-    height: 40px;
     padding: 0 var(--em-space-4);
     font-weight: 600;
 }
