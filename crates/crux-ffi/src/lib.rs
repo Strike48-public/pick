@@ -526,6 +526,8 @@ mod tests {
                 tool_calls: vec![],
                 done: true,
                 activity: Default::default(),
+                notice: None,
+                next_steps: vec![],
             })
         }
         async fn list_documents(&self, _a: Option<String>) -> Result<Vec<DocRef>, String> {

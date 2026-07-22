@@ -9,6 +9,15 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
             model.scan_active = true;
             model.error = None;
             model.notice = None;
+            model.next_steps.clear();
+            // Optimistic local echo: show the user's action immediately (before
+            // the first poll) so the chat isn't empty while the scan spins up.
+            // The scan prompt is a long block of agent instructions, so echo a
+            // short human label instead of the raw prompt. The next Delta REPLACES
+            // model.messages with the server's snapshot (which carries the real
+            // user message), naturally reconciling this echo.
+            model.messages.push(user_echo("Scan my network"));
+            model.activity = crate::view::AgentActivity::Thinking;
             let conv = model.conversation_id.clone();
             Command::request_from_shell(PentestOperation::SendScan {
                 conversation_id: conv,
@@ -34,6 +43,12 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         Event::SendMessage(text) => {
             model.error = None;
             model.notice = None;
+            model.next_steps.clear();
+            // Optimistic local echo of the sent message (see StartScan) so it
+            // appears instantly; the next Delta replaces messages with the
+            // server snapshot. Show the status line immediately too.
+            model.messages.push(user_echo(&text));
+            model.activity = crate::view::AgentActivity::Thinking;
             let conv = model.conversation_id.clone();
             Command::request_from_shell(PentestOperation::SendMessage {
                 conversation_id: conv,
@@ -77,6 +92,10 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
                 // poll/update, rendering the same message dozens of times.
                 model.messages = delta.messages;
                 model.tool_calls = delta.tool_calls;
+                // Contextual next-step chips from the last successful tool call
+                // (computed by the middleware). Refreshed every delta so they
+                // track the newest tool result; empty when none apply.
+                model.next_steps = delta.next_steps;
                 // The agent backend errored (incl. token/rate-limit exhaustion):
                 // the middleware built a notice from tokenUsageStats. Surface it,
                 // stop the scan, and stop polling — this is terminal, but unlike
@@ -141,12 +160,17 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         Event::DocumentsResult(outcome) => {
             if let Some(docs) = outcome.documents {
                 let conv = model.conversation_id.clone().unwrap_or_default();
-                model.conversation_docs = docs
+                // Order newest-first (ISO-8601 timestamps sort lexically =
+                // chronologically) and drop duplicate ids, mirroring the Dioxus
+                // Reports list. Without this the list is unordered with dupes
+                // (repeated scans each write a fresh document).
+                let all = dedup_newest_first(docs);
+                model.conversation_docs = all
                     .iter()
                     .filter(|d| d.conversation_id == conv)
                     .cloned()
                     .collect();
-                model.all_documents = docs;
+                model.all_documents = all;
                 render()
             } else {
                 model.error = outcome.error;
@@ -199,6 +223,7 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
             model.conversation_docs.clear();
             model.scan_active = false;
             model.notice = None;
+            model.next_steps.clear();
             render()
         }
         Event::OpenDocuments => {
@@ -337,6 +362,8 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
                     markdown_body: markdown,
                     blocks,
                     share_url: None,
+                    preview_url: None,
+                    social_links: vec![],
                 });
                 render()
             } else {
@@ -350,25 +377,50 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         }
         Event::CreateShareLink(doc_id) => {
             let conv = model.conversation_id.clone().unwrap_or_default();
+            // The title feeds the social compose text (e.g. X's pre-filled tweet);
+            // pull it from the open document, falling back to the doc lists.
+            let title = model
+                .open_document
+                .as_ref()
+                .filter(|d| d.id == doc_id)
+                .map(|d| d.title.clone())
+                .or_else(|| {
+                    model
+                        .conversation_docs
+                        .iter()
+                        .chain(model.all_documents.iter())
+                        .find(|d| d.id == doc_id)
+                        .map(|d| d.title.clone())
+                })
+                .unwrap_or_default();
             Command::request_from_shell(PentestOperation::CreateSharedLink {
                 conversation_id: conv,
                 document_id: doc_id,
+                title,
             })
             .then_send(|out| match out {
-                PentestOutcome::SharedLink { url } => {
-                    Event::ShareLinkResult(crate::ShareLinkOutcome {
-                        url: Some(url),
-                        error: None,
-                    })
-                }
+                PentestOutcome::SharedLink {
+                    url,
+                    preview_url,
+                    social_links,
+                } => Event::ShareLinkResult(crate::ShareLinkOutcome {
+                    url: Some(url),
+                    preview_url: Some(preview_url),
+                    social_links,
+                    error: None,
+                }),
                 PentestOutcome::Error { message } => {
                     Event::ShareLinkResult(crate::ShareLinkOutcome {
                         url: None,
+                        preview_url: None,
+                        social_links: vec![],
                         error: Some(message),
                     })
                 }
                 _ => Event::ShareLinkResult(crate::ShareLinkOutcome {
                     url: None,
+                    preview_url: None,
+                    social_links: vec![],
                     error: Some("unexpected outcome".into()),
                 }),
             })
@@ -377,6 +429,8 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
             if let Some(url) = outcome.url {
                 if let Some(doc) = model.open_document.as_mut() {
                     doc.share_url = Some(url);
+                    doc.preview_url = outcome.preview_url;
+                    doc.social_links = outcome.social_links;
                 }
                 render()
             } else {
@@ -389,6 +443,33 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
             render()
         }
     }
+}
+
+/// Build a synthetic user message for the optimistic local echo. Sender "You",
+/// a single Text part (and legacy flattened markdown/blocks) parsed from `text`,
+/// mirroring how the middleware maps a real user ChatMessage.
+fn user_echo(text: &str) -> crate::view::MessageView {
+    let blocks = crate::markdown::parse_markdown(text);
+    crate::view::MessageView {
+        sender: "You".into(),
+        kind: crate::view::MessageKind::User,
+        parts: vec![crate::view::MessagePartView::Text {
+            blocks: blocks.clone(),
+        }],
+        markdown: text.to_string(),
+        blocks,
+        tool: None,
+    }
+}
+
+/// Sort documents newest-first by ISO-8601 `timestamp` (lexical compare =
+/// chronological) and drop duplicate ids, keeping the first (newest) occurrence.
+/// Mirrors the Dioxus Reports list dedup/ordering.
+fn dedup_newest_first(mut docs: Vec<crate::view::DocRef>) -> Vec<crate::view::DocRef> {
+    docs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    let mut seen = std::collections::HashSet::new();
+    docs.retain(|d| seen.insert(d.id.clone()));
+    docs
 }
 
 fn delta_event(out: PentestOutcome) -> Event {
@@ -476,6 +557,7 @@ mod tests {
             done: false,
             activity: Default::default(),
             notice: None,
+            next_steps: vec![],
         };
         let mut cmd = app.update(
             Event::Delta(crate::DeltaOutcome {
@@ -512,6 +594,7 @@ mod tests {
             done: true,
             activity: Default::default(),
             notice: None,
+            next_steps: vec![],
         };
         let mut cmd = app.update(
             Event::Delta(crate::DeltaOutcome {
@@ -550,6 +633,7 @@ mod tests {
             done: true,
             activity: Default::default(),
             notice: Some(notice.clone()),
+            next_steps: vec![],
         };
         let mut cmd = app.update(
             Event::Delta(crate::DeltaOutcome {
@@ -596,6 +680,7 @@ mod tests {
                 id: "doc-1".into(),
                 title: "Test Report".into(),
                 conversation_id: "conv-1".into(),
+                timestamp: String::new(),
             }],
             ..Default::default()
         };
@@ -627,21 +712,31 @@ mod tests {
             _ => panic!("expected Pentest effect"),
         };
         assert!(
-            matches!(op, PentestOperation::CreateSharedLink { document_id, conversation_id }
+            matches!(op, PentestOperation::CreateSharedLink { document_id, conversation_id, .. }
                 if document_id == "doc-1" && conversation_id == "conv-1")
         );
         let _ = app.update(
             Event::ShareLinkResult(crate::ShareLinkOutcome {
                 url: Some("https://share.example/abc".into()),
+                preview_url: Some("https://share.example/abc?preview=1".into()),
+                social_links: vec![crate::view::SocialLink {
+                    label: "X".into(),
+                    url: "https://twitter.com/intent/tweet?url=https%3A%2F%2Fshare.example%2Fabc"
+                        .into(),
+                }],
                 error: None,
             }),
             &mut model,
         );
         let vm = app.view(&model);
+        let doc = vm.open_document.unwrap();
+        assert_eq!(doc.share_url.as_deref(), Some("https://share.example/abc"));
         assert_eq!(
-            vm.open_document.unwrap().share_url.as_deref(),
-            Some("https://share.example/abc")
+            doc.preview_url.as_deref(),
+            Some("https://share.example/abc?preview=1")
         );
+        assert_eq!(doc.social_links.len(), 1);
+        assert_eq!(doc.social_links[0].label, "X");
     }
 
     #[test]
@@ -663,6 +758,7 @@ mod tests {
             done: false,
             activity: Default::default(),
             notice: None,
+            next_steps: vec![],
         };
         let _ = app.update(
             Event::Delta(crate::DeltaOutcome {
@@ -675,6 +771,99 @@ mod tests {
         assert_eq!(vm.tool_calls.len(), 1);
         assert_eq!(vm.tool_calls[0].name, "nmap");
         assert_eq!(vm.tool_calls[0].status, crate::view::ToolStatus::Running);
+    }
+
+    #[test]
+    fn start_scan_echoes_user_bubble_and_shows_thinking() {
+        let app = PickApp;
+        let mut model = Model::default();
+        let _ = app.update(Event::StartScan, &mut model);
+        // A synthetic user bubble appears immediately (before any poll).
+        assert_eq!(model.messages.len(), 1);
+        assert_eq!(model.messages[0].kind, crate::view::MessageKind::User);
+        assert_eq!(model.messages[0].sender, "You");
+        assert_eq!(model.messages[0].markdown, "Scan my network");
+        // The status line reflects activity right away.
+        assert_eq!(model.activity, crate::view::AgentActivity::Thinking);
+    }
+
+    #[test]
+    fn send_message_echoes_user_bubble() {
+        let app = PickApp;
+        let mut model = Model {
+            conversation_id: Some("conv-1".into()),
+            ..Default::default()
+        };
+        let _ = app.update(Event::SendMessage("hello there".into()), &mut model);
+        assert_eq!(model.messages.len(), 1);
+        assert_eq!(model.messages[0].markdown, "hello there");
+        assert_eq!(model.messages[0].kind, crate::view::MessageKind::User);
+        assert_eq!(model.activity, crate::view::AgentActivity::Thinking);
+    }
+
+    #[test]
+    fn documents_result_orders_newest_first_and_dedups() {
+        let app = PickApp;
+        let mut model = Model {
+            conversation_id: Some("conv-1".into()),
+            ..Default::default()
+        };
+        let mk = |id: &str, ts: &str, conv: &str| crate::view::DocRef {
+            id: id.into(),
+            title: id.into(),
+            conversation_id: conv.into(),
+            timestamp: ts.into(),
+        };
+        let _ = app.update(
+            Event::DocumentsResult(crate::DocumentsOutcome {
+                documents: Some(vec![
+                    mk("a", "2026-07-20T10:00:00Z", "conv-1"),
+                    mk("b", "2026-07-21T10:00:00Z", "conv-2"),
+                    mk("a", "2026-07-20T10:00:00Z", "conv-1"), // duplicate id
+                ]),
+                error: None,
+            }),
+            &mut model,
+        );
+        let vm = app.view(&model);
+        // Newest first, dupes removed.
+        assert_eq!(vm.all_documents.len(), 2);
+        assert_eq!(vm.all_documents[0].id, "b");
+        assert_eq!(vm.all_documents[1].id, "a");
+        // Conversation docs filtered to conv-1.
+        assert_eq!(vm.conversation_docs.len(), 1);
+        assert_eq!(vm.conversation_docs[0].id, "a");
+    }
+
+    #[test]
+    fn delta_next_steps_project_and_clear_on_send() {
+        let app = PickApp;
+        let mut model = Model {
+            conversation_id: Some("conv-1".into()),
+            ..Default::default()
+        };
+        let delta = ConversationDelta {
+            messages: vec![],
+            tool_calls: vec![],
+            done: false,
+            activity: Default::default(),
+            notice: None,
+            next_steps: vec![crate::view::QuickActionView {
+                label: "Detailed Scan".into(),
+                message: "Run a detailed scan".into(),
+            }],
+        };
+        let _ = app.update(
+            Event::Delta(crate::DeltaOutcome {
+                delta: Some(delta),
+                error: None,
+            }),
+            &mut model,
+        );
+        assert_eq!(app.view(&model).next_steps.len(), 1);
+        // Sending a follow-up clears the chips.
+        let _ = app.update(Event::SendMessage("go".into()), &mut model);
+        assert!(app.view(&model).next_steps.is_empty());
     }
 
     #[test]

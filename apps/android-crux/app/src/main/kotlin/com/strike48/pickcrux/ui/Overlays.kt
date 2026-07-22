@@ -3,6 +3,7 @@ package com.strike48.pickcrux.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -96,13 +97,24 @@ fun DocumentsList(
     }
 }
 
-/** Full-screen document viewer with chevron back + share. */
+/**
+ * Full-screen document viewer with chevron back + full sharing.
+ *
+ * Once a share link exists (`doc.shareUrl`), the bar exposes the full set of
+ * share actions (matching the Dioxus app): Copy link, Share (native sheet), Open
+ * in browser (opens the preview URL), and one button per social network
+ * (X/LinkedIn/Facebook) opening the pre-built compose URL. The share URLs are
+ * all computed in Rust (`doc.previewUrl` / `doc.socialLinks`); the shell just
+ * copies or opens the given strings.
+ */
 @Composable
 fun DocViewer(
     doc: DocView,
     onClose: () -> Unit,
     onCreateShareLink: (String) -> Unit,
+    onCopy: (String) -> Unit,
     onShare: (String) -> Unit,
+    onOpenUrl: (String) -> Unit,
 ) {
     FullScreenOverlay {
         Row(
@@ -132,14 +144,31 @@ fun DocViewer(
                 fontSize = 18.sp,
                 modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
             )
-            val shareUrl = doc.shareUrl
-            if (shareUrl != null) {
-                GhostPill("Share") { onShare(shareUrl) }
-            } else {
+            if (doc.shareUrl == null) {
                 GhostPill("Create link") { onCreateShareLink(doc.id) }
             }
         }
         RowSeparator()
+        val shareUrl = doc.shareUrl
+        if (shareUrl != null) {
+            // Full share row: horizontally scrollable pills. Open-in-browser uses
+            // the Rust-computed preview URL (falls back to the raw link).
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                GhostPill("Copy link") { onCopy(shareUrl) }
+                GhostPill("Share") { onShare(shareUrl) }
+                GhostPill("Open in browser") { onOpenUrl(doc.previewUrl ?: shareUrl) }
+                doc.socialLinks.forEach { link ->
+                    GhostPill(link.label) { onOpenUrl(link.url) }
+                }
+            }
+            RowSeparator()
+        }
         Column(
             modifier = Modifier
                 .fillMaxWidth()

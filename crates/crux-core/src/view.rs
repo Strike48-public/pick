@@ -143,11 +143,25 @@ pub struct MessageView {
     pub tool: Option<ToolCallView>,
 }
 
+/// A contextual "Next Steps" suggested action, surfaced after a successful tool
+/// call. Tapping the chip sends `message` as a follow-up. Derived in the
+/// middleware from `pentest_tools::registry` `get_actions(tool, result)`; the
+/// shell renders `label` and fires `SendMessage(message)` on tap.
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct QuickActionView {
+    pub label: String,
+    pub message: String,
+}
+
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DocRef {
     pub id: String,
     pub title: String,
     pub conversation_id: String,
+    /// ISO-8601 creation time (the document's `created_at`). Used to order the
+    /// Reports list newest-first and dedup repeated scans. ISO-8601 sorts
+    /// lexically in chronological order. Empty when the server omitted it.
+    pub timestamp: String,
 }
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -155,6 +169,16 @@ pub struct ConversationRef {
     pub id: String,
     pub title: String,
     pub relative_time: String,
+}
+
+/// A social-share destination for a report's public link. `url` opens a
+/// pre-filled compose window for `label`'s network (X/LinkedIn/Facebook); the
+/// shell just opens the given URL. Built in the middleware from
+/// `pentest_core::social_share::share_intent_url` so shells never rebuild it.
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct SocialLink {
+    pub label: String,
+    pub url: String,
 }
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -165,6 +189,13 @@ pub struct DocView {
     /// Pre-parsed markdown blocks for native rendering. Derived from `markdown_body`.
     pub blocks: Vec<MarkdownBlock>,
     pub share_url: Option<String>,
+    /// The public link transformed for inline browser preview (`?preview=1`).
+    /// Set alongside `share_url`; the shell opens this in the system browser for
+    /// "Open in browser". `None` until a share link exists.
+    pub preview_url: Option<String>,
+    /// Per-network share destinations (X/LinkedIn/Facebook), each carrying a
+    /// ready-to-open compose URL. Empty until a share link exists.
+    pub social_links: Vec<SocialLink>,
 }
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -189,6 +220,10 @@ pub struct ViewModel {
     /// Inline notice surfaced when the agent backend errored (token limit or a
     /// generic upstream failure) instead of producing a reply. `None` normally.
     pub notice: Option<NoticeView>,
+    /// Contextual "Next Steps" chips computed from the last successful tool call.
+    /// Shells render a row of pill buttons below the message list when non-empty;
+    /// tapping one fires `SendMessage(message)`. Cleared on send/new-chat.
+    pub next_steps: Vec<QuickActionView>,
 }
 
 impl Default for ConnectionView {

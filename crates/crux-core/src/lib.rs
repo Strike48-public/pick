@@ -84,6 +84,11 @@ pub struct DocumentContentOutcome {
 #[repr(C)]
 pub struct ShareLinkOutcome {
     pub url: Option<String>,
+    /// Browser-preview transform of `url`; carried alongside so the App can set
+    /// `DocView::preview_url` without recomputing across the FFI boundary.
+    pub preview_url: Option<String>,
+    /// Per-network share destinations built by the middleware.
+    pub social_links: Vec<view::SocialLink>,
     pub error: Option<String>,
 }
 
@@ -160,6 +165,7 @@ impl App for PickApp {
             agent_activity: model.activity.clone(),
             activity_label: model.activity.label().to_string(),
             notice: model.notice.clone(),
+            next_steps: model.next_steps.clone(),
         }
     }
 }

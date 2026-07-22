@@ -8,8 +8,13 @@ use pentest_core::matrix::{
 use pick_crux_core::effect::{ConversationDelta, PentestOperation, PentestOutcome};
 use pick_crux_core::view::{
     AgentActivity, ConversationRef, DocRef, MessageKind, MessagePartView, MessageView, NoticeKind,
-    NoticeView, ToolCallView, ToolStatus,
+    NoticeView, QuickActionView, SocialLink, ToolCallView, ToolStatus,
 };
+
+/// Process-global quick-action registry (same one the Dioxus app uses). Built
+/// once; `get_actions(tool, result)` is pure so a shared instance is safe.
+static ACTION_REGISTRY: std::sync::LazyLock<pentest_tools::registry::QuickActionRegistry> =
+    std::sync::LazyLock::new(pentest_tools::create_action_registry);
 
 #[cfg(test)]
 use pentest_core::matrix::ToolCallInfo;
@@ -30,6 +35,13 @@ pub trait MatrixApi: Send + Sync {
         conversation_id: String,
         document_id: String,
     ) -> Result<String, String>;
+
+    /// Build the browser-preview URL and per-network social-share links from a
+    /// created share `url` and the document `title`. Pure (no I/O); a default
+    /// impl derives them from pentest-core helpers so shells never rebuild them.
+    fn shared_link_extras(&self, url: &str, title: &str) -> (String, Vec<SocialLink>) {
+        shared_link_extras(url, title)
+    }
     async fn list_conversations(&self) -> Result<Vec<ConversationRef>, String>;
     async fn load_conversation(&self, conversation_id: String) -> Result<Vec<MessageView>, String>;
 
@@ -80,8 +92,16 @@ pub async fn map_operation(api: &dyn MatrixApi, op: PentestOperation) -> Pentest
         PentestOperation::CreateSharedLink {
             conversation_id,
             document_id,
+            title,
         } => match api.shared_link(conversation_id, document_id).await {
-            Ok(u) => PentestOutcome::SharedLink { url: u },
+            Ok(u) => {
+                let (preview_url, social_links) = api.shared_link_extras(&u, &title);
+                PentestOutcome::SharedLink {
+                    url: u,
+                    preview_url,
+                    social_links,
+                }
+            }
             Err(m) => PentestOutcome::Error { message: m },
         },
         PentestOperation::ListConversations => match api.list_conversations().await {
@@ -100,6 +120,60 @@ pub async fn map_operation(api: &dyn MatrixApi, op: PentestOperation) -> Pentest
 // ---------------------------------------------------------------------------
 // Pure mapping helpers (unit-testable)
 // ---------------------------------------------------------------------------
+
+/// Build the browser-preview URL and the per-network social-share links for a
+/// created public share `url` + document `title`. Pure; reuses the SAME
+/// pentest-core helpers the Dioxus app uses (`matrix::preview_url` and
+/// `social_share::share_intent_url`) so the crux shells share identical URL
+/// construction. A network whose intent URL fails to build is skipped (never
+/// expected for the fixed hosts).
+pub fn shared_link_extras(url: &str, title: &str) -> (String, Vec<SocialLink>) {
+    use pentest_core::social_share::{share_intent_url, SocialNetwork};
+    let preview = pentest_core::matrix::preview_url(url);
+    let social_links = SocialNetwork::all()
+        .into_iter()
+        .filter_map(|net| {
+            share_intent_url(net, url, title)
+                .ok()
+                .map(|intent| SocialLink {
+                    label: net.label().to_string(),
+                    url: intent,
+                })
+        })
+        .collect();
+    (preview, social_links)
+}
+
+/// Compute contextual "Next Steps" chips from the LAST successful tool call in
+/// the conversation, using the shared quick-action registry (mirrors the Dioxus
+/// `NextStepsActions` component). Scans agent messages newest-first for the most
+/// recent successful tool call and maps its registry actions to `label` +
+/// `message` (the follow-up prompt). Empty when no successful tool call has a
+/// registered action.
+fn next_steps_from_messages(messages: &[ChatMessage]) -> Vec<QuickActionView> {
+    let last_success = messages.iter().rev().find_map(|msg| {
+        if msg.sender_type.to_uppercase() == "USER" {
+            return None;
+        }
+        msg.parts.iter().find_map(|part| match part {
+            MessagePart::ToolCall(tc) if tc.status == ToolCallStatus::Success => {
+                Some((tc.name.clone(), tc.result.clone().unwrap_or_default()))
+            }
+            _ => None,
+        })
+    });
+    match last_success {
+        Some((tool_name, result_json)) => ACTION_REGISTRY
+            .get_actions(&tool_name, &result_json)
+            .into_iter()
+            .map(|a| QuickActionView {
+                label: a.label,
+                message: a.prompt,
+            })
+            .collect(),
+        None => vec![],
+    }
+}
 
 /// Map pentest-core ToolCallStatus to crux ToolStatus.
 fn map_tool_status(status: ToolCallStatus) -> ToolStatus {
@@ -218,12 +292,14 @@ fn state_to_delta(state: ConversationState, notice: Option<NoticeView>) -> Conve
     // (non-existent) report.
     let done = state.agent_status.is_terminal() || notice.is_some();
     let activity = map_activity(state.agent_status);
+    let next_steps = next_steps_from_messages(&state.messages);
     ConversationDelta {
         messages,
         tool_calls,
         done,
         activity,
         notice,
+        next_steps,
     }
 }
 
@@ -435,6 +511,7 @@ impl MatrixApi for CoreMatrixApi {
                 id: d.id,
                 title: d.title,
                 conversation_id: d.conversation_id,
+                timestamp: d.timestamp,
             })
             .collect())
     }
@@ -544,6 +621,7 @@ mod tests {
                 done: true,
                 activity: Default::default(),
                 notice: None,
+                next_steps: vec![],
             })
         }
         async fn list_documents(
@@ -836,6 +914,54 @@ mod tests {
         assert_eq!(delta.tool_calls[0].status, ToolStatus::Success);
         assert_eq!(delta.tool_calls[1].name, "nikto");
         assert_eq!(delta.tool_calls[1].status, ToolStatus::Running);
+    }
+
+    #[test]
+    fn shared_link_extras_builds_preview_and_social_links() {
+        let (preview, social) = shared_link_extras("https://s.test/s/tok", "Network Report");
+        assert_eq!(preview, "https://s.test/s/tok?preview=1");
+        // One per network (X/LinkedIn/Facebook), each a ready-to-open compose URL.
+        assert_eq!(social.len(), 3);
+        let x = social.iter().find(|s| s.label == "X").expect("X link");
+        assert!(x.url.starts_with("https://twitter.com/intent/tweet?"));
+        assert!(x.url.contains("url=https%3A%2F%2Fs.test%2Fs%2Ftok"));
+        assert!(social.iter().any(|s| s.label == "LinkedIn"));
+        assert!(social.iter().any(|s| s.label == "Facebook"));
+    }
+
+    #[test]
+    fn next_steps_uses_last_successful_tool_call() {
+        // wifi_scan has a registered action provider; a successful call yields chips.
+        let messages = vec![ChatMessage {
+            id: "m1".into(),
+            sender_type: "AGENT".into(),
+            sender_name: "Bot".into(),
+            text: "done".into(),
+            parts: vec![MessagePart::ToolCall(ToolCallInfo {
+                id: "tc1".into(),
+                name: "wifi_scan".into(),
+                arguments: None,
+                result: Some("{}".into()),
+                error: None,
+                status: ToolCallStatus::Success,
+            })],
+        }];
+        let steps = next_steps_from_messages(&messages);
+        assert!(!steps.is_empty(), "wifi_scan should yield next-step chips");
+        assert!(!steps[0].label.is_empty());
+        assert!(!steps[0].message.is_empty());
+    }
+
+    #[test]
+    fn next_steps_empty_without_successful_tool_call() {
+        let messages = vec![ChatMessage {
+            id: "m1".into(),
+            sender_type: "USER".into(),
+            sender_name: "You".into(),
+            text: "hi".into(),
+            parts: vec![MessagePart::Text("hi".into())],
+        }];
+        assert!(next_steps_from_messages(&messages).is_empty());
     }
 
     #[test]

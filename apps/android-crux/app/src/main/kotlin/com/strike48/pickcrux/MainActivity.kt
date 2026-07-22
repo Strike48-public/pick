@@ -1,5 +1,8 @@
 package com.strike48.pickcrux
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -28,6 +31,7 @@ import com.strike48.pickcrux.ui.DocumentsList
 import com.strike48.pickcrux.ui.ErrorCard
 import com.strike48.pickcrux.ui.HistorySheet
 import com.strike48.pickcrux.ui.InputRow
+import com.strike48.pickcrux.ui.NextStepsRow
 import com.strike48.pickcrux.ui.NoticeCard
 import com.strike48.pickcrux.ui.PickColors
 import com.strike48.pickcrux.ui.PickTheme
@@ -169,12 +173,19 @@ fun PickApp(
             doc = openDoc,
             onClose = { send(Event.CloseDocument) },
             onCreateShareLink = { send(Event.CreateShareLink(it)) },
+            onCopy = { url ->
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Report link", url))
+            },
             onShare = { url ->
                 val intent = Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"
                     putExtra(Intent.EXTRA_TEXT, url)
                 }
                 context.startActivity(Intent.createChooser(intent, "Share"))
+            },
+            onOpenUrl = { url ->
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
             },
         )
         return
@@ -250,6 +261,10 @@ fun PickApp(
                     activityActive = model.agentActivity != AgentActivity.IDLE,
                     activityLabel = model.activityLabel,
                     modifier = Modifier.weight(1f),
+                )
+                NextStepsRow(
+                    actions = model.nextSteps,
+                    onSend = { send(Event.SendMessage(it)) },
                 )
                 ConversationDocStrip(
                     docs = model.conversationDocs,

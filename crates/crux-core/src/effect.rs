@@ -5,7 +5,9 @@ use crux_core::capability::Operation;
 use facet::Facet;
 use serde::{Deserialize, Serialize};
 
-use crate::view::{ConversationRef, DocRef, MessageView, NoticeView, ToolCallView};
+use crate::view::{
+    ConversationRef, DocRef, MessageView, NoticeView, QuickActionView, SocialLink, ToolCallView,
+};
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[repr(C)]
@@ -43,6 +45,9 @@ pub enum PentestOperation {
     CreateSharedLink {
         conversation_id: String,
         document_id: String,
+        /// The document title, so the middleware can build social-share compose
+        /// URLs (e.g. X's pre-filled text) alongside the raw share link.
+        title: String,
     },
 }
 
@@ -60,6 +65,10 @@ pub struct ConversationDelta {
     /// upstream failure. `None` on a normal (success) delta. When present the
     /// App treats the delta as terminal and surfaces the notice.
     pub notice: Option<NoticeView>,
+    /// Contextual next-step suggestions computed by the middleware from the last
+    /// successful tool call's (name, result) via the quick-action registry. The
+    /// App stores these on the model and projects them into the ViewModel.
+    pub next_steps: Vec<QuickActionView>,
 }
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -73,7 +82,14 @@ pub enum PentestOutcome {
     LoadedMessages { messages: Vec<MessageView> },
     Documents { list: Vec<DocRef> },
     DocumentContent { markdown: String },
-    SharedLink { url: String },
+    SharedLink {
+        url: String,
+        /// Browser-preview transform of `url` (`?preview=1`), precomputed in the
+        /// middleware via `pentest_core::matrix::preview_url`.
+        preview_url: String,
+        /// Per-network share destinations built from `url` + the document title.
+        social_links: Vec<SocialLink>,
+    },
     Error { message: String },
 }
 
