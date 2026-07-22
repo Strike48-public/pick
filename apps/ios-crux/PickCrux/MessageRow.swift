@@ -22,9 +22,9 @@ struct MessageRow: View {
                     )
             }
         case .agentText:
-            Text(markdown(message.markdown))
-                .font(.system(size: 15))
-                .foregroundStyle(Theme.text)
+            // Block-level markdown (headings/lists/code/paragraphs), not the
+            // inline-only AttributedString which collapses block structure.
+            MarkdownText(markdown: message.markdown)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .toolCall:
             if let tool = message.tool {
@@ -35,14 +35,9 @@ struct MessageRow: View {
         }
     }
 
-    /// Best-effort markdown -> AttributedString (bold, lists, code, headings).
+    /// Inline-only markdown for the user bubble (single-line, no block structure).
     private func markdown(_ raw: String) -> AttributedString {
-        if let attributed = try? AttributedString(
-            markdown: raw,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
-            return attributed
-        }
-        return AttributedString(raw)
+        (try? AttributedString(markdown: raw, options: .init(interpretedSyntax: .inlineOnly)))
+            ?? AttributedString(raw)
     }
 }

@@ -41,10 +41,16 @@ struct ChatList: View {
         }
     }
 
+    // Rows are laid out directly (no greedy ScrollView, which stretched the
+    // strip to its max height leaving a big empty drawer). The strip hugs its
+    // content; if many docs accumulate it scrolls, capped at ~3 rows tall.
     private var conversationDocsStrip: some View {
-        ScrollView {
+        let rowHeight: CGFloat = 40
+        let maxRows = 3
+        let docs = core.vm.conversationDocs
+        return ScrollView(.vertical, showsIndicators: docs.count > maxRows) {
             VStack(spacing: 0) {
-                ForEach(Array(core.vm.conversationDocs.enumerated()), id: \.offset) { _, doc in
+                ForEach(Array(docs.enumerated()), id: \.offset) { _, doc in
                     Button {
                         core.send(.openDocument(doc.id))
                     } label: {
@@ -57,7 +63,7 @@ struct ChatList: View {
                                 .foregroundStyle(Theme.text)
                             Spacer()
                         }
-                        .padding(.vertical, 10)
+                        .frame(height: rowHeight)
                         .padding(.horizontal, 16)
                         .contentShape(Rectangle())
                     }
@@ -65,7 +71,8 @@ struct ChatList: View {
                 }
             }
         }
-        .frame(maxHeight: 220)
+        // Hug content up to maxRows, then scroll — no empty drawer.
+        .frame(height: min(CGFloat(docs.count), CGFloat(maxRows)) * rowHeight)
         .background(Theme.faintWash)
         .overlay(Rectangle().frame(height: 1).foregroundStyle(Theme.hairline), alignment: .top)
     }

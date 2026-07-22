@@ -35,10 +35,7 @@ struct DocViewer: View {
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(Theme.hairline), alignment: .bottom)
 
                 ScrollView {
-                    Text(markdown(doc.markdownBody))
-                        .font(.system(size: 15))
-                        .foregroundStyle(Theme.text)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    MarkdownText(markdown: doc.markdownBody)
                         .padding(16)
                 }
             }
@@ -73,16 +70,6 @@ struct DocViewer: View {
             }
             .buttonStyle(SagePillButtonStyle())
         }
-    }
-
-    private func markdown(_ raw: String) -> AttributedString {
-        if let attributed = try? AttributedString(
-            markdown: raw,
-            options: .init(interpretedSyntax: .full)
-        ) {
-            return attributed
-        }
-        return AttributedString(raw)
     }
 }
 
