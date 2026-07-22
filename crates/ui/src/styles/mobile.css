@@ -584,15 +584,15 @@ body {
     /* Clip children so a tall chat can't push the brand bar / scan card off the
        top of the screen — the chat area scrolls internally instead. */
     overflow: hidden;
-    /* Top breathing room only. Measured (iPhone 17 Pro sim, innerH=778 vs a
-       full-bleed ~874) the dx WebView is ALREADY inset below the status bar /
-       Dynamic Island — the OS lays it out inside the safe area, so
-       env(safe-area-inset-top) is 0 here and there is no notch to clear
-       ourselves. A hardcoded 59px floor (previous value) therefore double-gapped
-       the bar to top=59. Use the real inset (0 on this WebView) plus a small
-       fixed pad; if a future build enables viewport-fit=cover the env() term
-       picks up the true inset automatically. */
-    padding-top: calc(env(safe-area-inset-top, 0px) + var(--em-space-2));
+    /* Fixed top breathing room. Measured on-device (iPhone 17 Pro sim,
+       innerH=778 vs a full-bleed ~874): the dx WebView is ALREADY laid out
+       inside the safe area, so we must NOT add our own notch clearance — a
+       previous max(env,59px) floor double-gapped the bar to top=59.
+       We deliberately DON'T use env(safe-area-inset-top) here: it resolves to 0
+       in this WebView and, worse, re-resolves across paints / keyboard show,
+       which made the bar visibly shift down as content loaded. A constant pad
+       is stable and correct for this already-inset WebView. */
+    padding-top: var(--em-space-2);
     box-sizing: border-box;
 }
 /* Co-brand top bar: Strike48 "S" badge + lowercase "pick" wordmark. */
@@ -848,10 +848,9 @@ body {
 .easy-doc-viewer-bar {
     display: flex; align-items: center; gap: 10px;
     padding: 12px 16px; border-bottom: 1px solid var(--em-border);
-    /* Trust the OS inset (the dx WebView is already laid out inside the safe
-       area — see .easy-mode), plus small breathing room. No hardcoded notch
-       floor. */
-    padding-top: calc(env(safe-area-inset-top, 0px) + 12px);
+    /* Fixed top pad — the WebView is already inset (see .easy-mode); no env()
+       so the bar can't shift as the inset re-resolves. */
+    padding-top: 12px;
     /* Positioning context for the share menu, which anchors to this bar's
        bottom edge (top:100%) instead of a guessed pixel offset. */
     position: relative;
