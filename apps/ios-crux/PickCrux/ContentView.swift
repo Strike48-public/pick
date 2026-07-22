@@ -1,98 +1,76 @@
 import SwiftUI
 import PickShared
 
+/// Thin shell: renders the sage-dark Easy Mode UI as a pure function of the
+/// core `ViewModel`, switching on `screen` and overlay fields. All interaction
+/// is emitted back through `CoreBridge.send(Event)`.
+///
+/// History and Reports are transient overlays that the ViewModel does not model
+/// with a dedicated visibility flag, so their presentation is a local flag that
+/// mirrors the corresponding open/close Events to the core.
 struct ContentView: View {
     @ObservedObject var core: CoreBridge
+    @State private var showHistory = false
+    @State private var showDocuments = false
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                Text("Pick - Easy Mode")
-                    .font(.title2)
-                    .fontWeight(.bold)
+        ZStack {
+            Theme.background.ignoresSafeArea()
 
-                Text("screen=\(String(describing: core.vm.screen)) - \(core.vm.connection.label)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if core.vm.needsSignIn || core.vm.screen == .needsSignIn {
+                SignInView(core: core)
+            } else {
+                VStack(spacing: 0) {
+                    TopBar(core: core, showHistory: $showHistory, showDocuments: $showDocuments)
 
-                if core.vm.showScanCard {
-                    scanCard
-                }
-
-                if core.vm.scanInProgress {
-                    ProgressView()
-                    Text("Scan in progress")
-                        .font(.body)
-                }
-
-                if let err = core.vm.error {
-                    errorCard(err)
-                }
-
-                if !core.vm.messages.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(core.vm.messages.enumerated()), id: \.offset) { _, msg in
-                            Text("[\(prefix(for: msg.kind))] \(msg.markdown)")
-                                .font(.caption)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
+                    if let err = core.vm.error {
+                        ErrorCard(core: core, message: err)
+                            .padding(.bottom, 8)
                     }
-                }
-            }
-            .onAppear {
-                // Test hook: when launched with -autoScan the shell fires the
-                // same code path as the Scan button so the FFI->view re-render
-                // can be exercised headlessly (no GUI tap available over SSH).
-                if ProcessInfo.processInfo.arguments.contains("-autoScan") {
-                    core.send(.startScan)
-                }
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity)
-        }
-    }
 
-    private var scanCard: some View {
-        VStack(spacing: 12) {
-            Text("Scan your network")
-                .font(.headline)
-            Text("Discover hosts and services on the local network.")
-                .font(.body)
-                .multilineTextAlignment(.center)
-            Button {
+                    mainContent
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .tint(Theme.brand)
+        .sheet(isPresented: $showHistory, onDismiss: { core.send(.closeHistory) }) {
+            HistorySheet(core: core, isPresented: $showHistory)
+        }
+        .sheet(isPresented: $showDocuments) {
+            DocumentsList(core: core, isPresented: $showDocuments)
+        }
+        .fullScreenCover(isPresented: docBinding) {
+            if let doc = core.vm.openDocument {
+                DocViewer(core: core, doc: doc)
+            }
+        }
+        .onAppear {
+            // Test hook: -autoScan fires the Scan button code path headlessly so
+            // the FFI -> view round-trip can be exercised over SSH (no GUI tap).
+            if ProcessInfo.processInfo.arguments.contains("-autoScan") {
                 core.send(.startScan)
-            } label: {
-                Text(core.vm.scanInProgress ? "Scanning..." : "Scan My Network")
-                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(core.vm.scanInProgress)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity)
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private func errorCard(_ err: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Error")
-                .font(.subheadline)
-                .foregroundStyle(.red)
-            Text(err)
-                .font(.caption)
+    @ViewBuilder private var mainContent: some View {
+        if core.vm.showScanCard {
+            ScrollView {
+                VStack(spacing: 16) {
+                    ScanCard(core: core)
+                }
+                .padding(16)
+            }
+        } else {
+            ChatList(core: core)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private func prefix(for kind: MessageKind) -> String {
-        switch kind {
-        case .user: return "you"
-        case .agentText: return "agent"
-        case .toolCall: return "tool"
-        }
+    private var docBinding: Binding<Bool> {
+        Binding(
+            get: { core.vm.openDocument != nil },
+            set: { newValue in if !newValue { core.send(.closeDocument) } }
+        )
     }
 }
