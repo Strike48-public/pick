@@ -506,6 +506,10 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         let mut terminal_lines = terminal_lines;
         let connecting_step = connecting_step;
         let mut workspace_path = workspace_path;
+        // Easy mode routes connect failures to the friendly retry overlay and
+        // discards the single-use OTT, rather than dropping to the raw form.
+        let mut needs_sign_in = needs_sign_in;
+        let easy_mode = cfg.easy_mode;
 
         // Clone identity fields before we consume `new_config` in the
         // spawned connector task — we still need them for the first-run
@@ -626,11 +630,22 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                     terminal_lines
                         .write()
                         .push(TerminalLine::error(display.clone()));
-                    // Also surface to the Connect-screen banner — status flips
-                    // back to Error which routes us there, and without this
-                    // the error would be silent (terminal is not rendered).
-                    connect_error.set(Some(display));
-                    status.set(ConnectorStatus::Error(e));
+                    if easy_mode {
+                        // A staged OTT is single-use; a failed registration
+                        // consumed or invalidated it, so drop it (a retry
+                        // re-mints a fresh one) and show the friendly retry
+                        // overlay instead of the raw Connect form.
+                        pentest_core::matrix::clear_staged_ott();
+                        std::env::remove_var("STRIKE48_REGISTRATION_TOKEN_FILE");
+                        status.set(ConnectorStatus::Disconnected);
+                        needs_sign_in.set(true);
+                    } else {
+                        // Standard shell: surface to the Connect-screen banner.
+                        // status flips to Error which routes there; without this
+                        // the error would be silent (terminal isn't rendered).
+                        connect_error.set(Some(display));
+                        status.set(ConnectorStatus::Error(e));
+                    }
                 }
             }
         });

@@ -44,65 +44,6 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     let needs_sign_in = use_context::<Signal<bool>>();
     let retry_tick = use_context::<Signal<u32>>();
 
-    // TEMP DIAGNOSTIC (top-bar layout): report the brand bar's top offset and
-    // the full ancestor box model EVERY TIME it changes (a MutationObserver on
-    // the app plus a rAF poll), so a shift as content loads is visible in the
-    // logs with a reason. Each change emits one [TOPBAR-DIAG] line. Remove after
-    // the shift is fixed.
-    use_hook(|| {
-        spawn(async move {
-            let mut eval = document::eval(
-                r#"
-                function snapshot(tag) {
-                    var el = document.querySelector('.easy-brandbar');
-                    if (!el) return null;
-                    var out = [];
-                    out.push('[' + tag + '] innerH=' + window.innerHeight);
-                    var node = el;
-                    while (node && node !== document.documentElement.parentNode) {
-                        var r = node.getBoundingClientRect();
-                        var cs = window.getComputedStyle(node);
-                        out.push(
-                            (node.tagName||'?') + '.' + (node.className||'') +
-                            ' top=' + Math.round(r.top) + ' h=' + Math.round(r.height) +
-                            ' disp=' + cs.display + ' pos=' + cs.position +
-                            ' flex=' + cs.flex + ' minH=' + cs.minHeight +
-                            ' padT=' + cs.paddingTop + ' marT=' + cs.marginTop
-                        );
-                        node = node.parentElement;
-                    }
-                    return out.join('\n');
-                }
-                var lastTop = null;
-                function check(tag) {
-                    var el = document.querySelector('.easy-brandbar');
-                    if (!el) return;
-                    var top = Math.round(el.getBoundingClientRect().top);
-                    if (top !== lastTop) {
-                        lastTop = top;
-                        dioxus.send(snapshot(tag + ' top=' + top));
-                    }
-                }
-                var mo = new MutationObserver(function(){ check('mutation'); });
-                function start() {
-                    var root = document.querySelector('.easy-mode') || document.body;
-                    if (!root) { setTimeout(start, 100); return; }
-                    mo.observe(root, {childList:true, subtree:true, attributes:true});
-                    check('initial');
-                    // Also poll a few times to catch async reflows the observer misses.
-                    var n = 0;
-                    var iv = setInterval(function(){ check('poll'); if (++n > 40) clearInterval(iv); }, 250);
-                }
-                start();
-                await new Promise(function(){});
-                "#,
-            );
-            while let Ok(report) = eval.recv::<String>().await {
-                tracing::warn!("[TOPBAR-DIAG]\n{report}");
-            }
-        });
-    });
-
     // Track the selected agent ID for the DocumentsPanel (which self-refreshes).
     let agent_id = use_signal(|| None::<String>);
     // The report currently open in the full-screen viewer (None = normal shell).
