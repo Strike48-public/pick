@@ -29,6 +29,16 @@ class NativeCore private constructor(private val handle: Long) {
         return view()
     }
 
+    /**
+     * Adopt a workspace-scoped Studio session token obtained by the shell via
+     * native OAuth. Calls `pick_set_token` on the core; subsequent
+     * [view]/[update] calls use the new credential. Call [view] (or re-drive an
+     * [Event]) afterwards to reflect the connected state.
+     */
+    fun setToken(token: String) {
+        nativeSetToken(handle, token.toByteArray(Charsets.UTF_8))
+    }
+
     fun free() {
         nativeFree(handle)
     }
@@ -48,6 +58,7 @@ class NativeCore private constructor(private val handle: Long) {
         }
 
         @JvmStatic private external fun nativeNew(apiUrl: ByteArray, token: ByteArray): Long
+        @JvmStatic private external fun nativeSetToken(handle: Long, token: ByteArray)
         @JvmStatic private external fun nativeFree(handle: Long)
         @JvmStatic private external fun nativeView(handle: Long): ByteArray
         @JvmStatic private external fun nativeUpdate(handle: Long, event: ByteArray): ByteArray

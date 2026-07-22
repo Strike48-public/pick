@@ -1,14 +1,14 @@
 package com.strike48.pickcrux
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,30 +32,117 @@ import com.strike48.pickcrux.ui.ScanCard
 import com.strike48.pickcrux.ui.SignInView
 import com.strike48.pickcrux.ui.TopBar
 
+/**
+ * Native OAuth constants. The shell opens a browser / Custom Tab to the Matrix
+ * `/auth/login` endpoint; Matrix runs the Keycloak SSO login and redirects back
+ * to [REDIRECT_URI], which [OAuthCallbackActivity] intercepts. The captured
+ * token is a workspace-scoped Studio session token (`__st`) — the only credential
+ * that carries workspace scope and can see the pentest agent.
+ */
+object Oauth {
+    const val API_BASE = "https://plg.strike48.test"
+    const val REDIRECT_URI = "com.strike48.pentest://oauth/callback"
+
+    /** `https://<host>/auth/login?redirect=<url-encoded REDIRECT_URI>`. */
+    fun loginUrl(): String {
+        val redirect = Uri.encode(REDIRECT_URI)
+        return "$API_BASE/auth/login?redirect=$redirect"
+    }
+}
+
 class MainActivity : ComponentActivity() {
+    companion object {
+        private const val TAG = "PickCruxMain"
+    }
+
+    private lateinit var core: NativeCore
+
+    // Drives which screen shows: no token yet -> SignInView. Flipped to true once
+    // OAuth delivers a token and the core adopts it via pick_set_token.
+    private var signedIn by mutableStateOf(false)
+
+    // Bumped after setToken so the composable re-reads core.view().
+    private var refreshTick by mutableStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Placeholder api_url/token: real Matrix/OAuth wiring is a later task.
-        // Network calls may error into ViewModel.error, which the UI renders.
-        val core = NativeCore.create(
-            apiUrl = "https://plg.strike48.test",
-            token = "placeholder-token",
+        core = NativeCore.create(
+            apiUrl = Oauth.API_BASE,
+            token = "", // no token yet: SignIn screen gates the shell until OAuth
         )
 
         setContent {
             PickTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = PickColors.Background) {
-                    PickApp(core)
+                androidx.compose.material3.Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = PickColors.Background,
+                ) {
+                    PickApp(
+                        core = core,
+                        signedIn = signedIn,
+                        refreshTick = refreshTick,
+                        onSignIn = { launchOauth() },
+                    )
                 }
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Adopt any token captured by OAuthCallbackActivity (may have arrived
+        // while we were backgrounded during the browser flow).
+        OAuthTokenHolder.setListener { token -> adoptToken(token) }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        OAuthTokenHolder.clearListener()
+    }
+
+    // A relaunch via FLAG_ACTIVITY_SINGLE_TOP lands here too.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+    }
+
+    private fun adoptToken(token: String) {
+        Log.i(TAG, "Adopting OAuth token (len=${token.length}) into core")
+        core.setToken(token)
+        signedIn = true
+        refreshTick++ // force the composable to re-read core.view()
+    }
+
+    /** Open a Custom Tab (falls back to ACTION_VIEW) at the Matrix login URL. */
+    private fun launchOauth() {
+        val url = Oauth.loginUrl()
+        Log.i(TAG, "Launching OAuth login: $url")
+        val uri = Uri.parse(url)
+        try {
+            // Custom Tabs via reflection-free intent: a plain VIEW intent with the
+            // Custom Tabs extras works on any browser and needs no extra dependency.
+            val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                putExtra("android.support.customtabs.extra.SESSION", null as Bundle?)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to launch browser: ${e.message}")
+            startActivity(Intent(Intent.ACTION_VIEW, uri))
         }
     }
 }
 
 @Composable
-fun PickApp(core: NativeCore) {
-    var model by remember { mutableStateOf(core.view()) }
+fun PickApp(
+    core: NativeCore,
+    signedIn: Boolean,
+    refreshTick: Int,
+    onSignIn: () -> Unit,
+) {
+    // Re-read the view whenever the sign-in state or refresh tick changes.
+    var model by remember(signedIn, refreshTick) { mutableStateOf(core.view()) }
     // Local overlay state the core does not track (which top-bar list is open).
     var showHistory by remember { mutableStateOf(false) }
     var showReports by remember { mutableStateOf(false) }
@@ -103,7 +190,7 @@ fun PickApp(core: NativeCore) {
 
     Column(modifier = Modifier.fillMaxSize()) {
         TopBar(
-            connectionLabel = model.connection.label,
+            connectionLabel = if (signedIn) model.connection.label else "Sign in to connect",
             onNewChat = { send(Event.NewChat) },
             onHistory = { send(Event.OpenHistory); showHistory = true },
             onReports = { showReports = true },
@@ -114,9 +201,10 @@ fun PickApp(core: NativeCore) {
         }
 
         when {
-            model.needsSignIn || model.screen == Screen.NEEDSSIGNIN -> {
+            // No native OAuth token yet -> gate the shell behind Sign In.
+            !signedIn || model.needsSignIn || model.screen == Screen.NEEDSSIGNIN -> {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    SignInView(onRetry = { send(Event.RetrySignIn) })
+                    SignInView(onRetry = onSignIn)
                 }
             }
             model.showScanCard -> {

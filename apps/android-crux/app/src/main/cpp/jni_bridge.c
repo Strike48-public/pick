@@ -18,6 +18,7 @@ typedef struct PickBuf {
 
 extern PickCore *pick_core_new(const uint8_t *api_url_ptr, uintptr_t api_url_len,
                                const uint8_t *token_ptr, uintptr_t token_len);
+extern void pick_set_token(PickCore *core, const uint8_t *token_ptr, uintptr_t token_len);
 extern void pick_core_free(PickCore *core);
 extern void pick_buf_free(PickBuf buf);
 extern PickBuf pick_view(PickCore *core);
@@ -47,6 +48,16 @@ Java_com_strike48_pickcrux_NativeCore_nativeNew(JNIEnv *env, jclass clazz,
     (*env)->ReleaseByteArrayElements(env, apiUrl, url_bytes, JNI_ABORT);
     (*env)->ReleaseByteArrayElements(env, token, tok_bytes, JNI_ABORT);
     return (jlong)(uintptr_t)core;
+}
+
+JNIEXPORT void JNICALL
+Java_com_strike48_pickcrux_NativeCore_nativeSetToken(JNIEnv *env, jclass clazz, jlong handle,
+                                                     jbyteArray token) {
+    jsize tok_len = (*env)->GetArrayLength(env, token);
+    jbyte *tok_bytes = (*env)->GetByteArrayElements(env, token, NULL);
+    pick_set_token((PickCore *)(uintptr_t)handle,
+                   (const uint8_t *)tok_bytes, (uintptr_t)tok_len);
+    (*env)->ReleaseByteArrayElements(env, token, tok_bytes, JNI_ABORT);
 }
 
 JNIEXPORT void JNICALL
