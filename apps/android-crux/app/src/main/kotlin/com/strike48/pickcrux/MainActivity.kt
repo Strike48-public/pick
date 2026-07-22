@@ -1,35 +1,36 @@
 package com.strike48.pickcrux
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import com.strike48.pick.shared.Event
-import com.strike48.pick.shared.MessageKind
+import com.strike48.pick.shared.Screen
 import com.strike48.pick.shared.ViewModel
+import com.strike48.pickcrux.ui.ChatList
+import com.strike48.pickcrux.ui.ConversationDocStrip
+import com.strike48.pickcrux.ui.DocViewer
+import com.strike48.pickcrux.ui.DocumentsList
+import com.strike48.pickcrux.ui.ErrorCard
+import com.strike48.pickcrux.ui.HistorySheet
+import com.strike48.pickcrux.ui.InputRow
+import com.strike48.pickcrux.ui.PickColors
+import com.strike48.pickcrux.ui.PickTheme
+import com.strike48.pickcrux.ui.ScanCard
+import com.strike48.pickcrux.ui.SignInView
+import com.strike48.pickcrux.ui.TopBar
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,9 +44,9 @@ class MainActivity : ComponentActivity() {
         )
 
         setContent {
-            MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    ScanApp(core)
+            PickTheme {
+                Surface(modifier = Modifier.fillMaxSize(), color = PickColors.Background) {
+                    PickApp(core)
                 }
             }
         }
@@ -53,100 +54,95 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun ScanApp(core: NativeCore) {
+fun PickApp(core: NativeCore) {
     var model by remember { mutableStateOf(core.view()) }
-    ScanScreen(
-        model = model,
-        onStartScan = { model = core.update(Event.StartScan) },
-    )
-}
+    // Local overlay state the core does not track (which top-bar list is open).
+    var showHistory by remember { mutableStateOf(false) }
+    var showReports by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
-@Composable
-fun ScanScreen(model: ViewModel, onStartScan: () -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(
-            text = "Pick — Easy Mode",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = "screen=${model.screen} - ${model.connection.label}",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Spacer(Modifier.height(24.dp))
+    fun send(event: Event) {
+        model = core.update(event)
+    }
 
-        if (model.showScanCard) {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        text = "Scan your network",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = "Discover hosts and services on the local network.",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    Button(
-                        onClick = onStartScan,
-                        enabled = !model.scanInProgress,
-                    ) {
-                        Text(if (model.scanInProgress) "Scanning..." else "Scan My Network")
-                    }
+    // Document viewer takes the whole screen when a doc is open.
+    val openDoc = model.openDocument
+    if (openDoc != null) {
+        DocViewer(
+            doc = openDoc,
+            onClose = { send(Event.CloseDocument) },
+            onCreateShareLink = { send(Event.CreateShareLink(it)) },
+            onShare = { url ->
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, url)
                 }
-            }
-        }
+                context.startActivity(Intent.createChooser(intent, "Share"))
+            },
+        )
+        return
+    }
 
-        if (model.scanInProgress) {
-            Spacer(Modifier.height(24.dp))
-            CircularProgressIndicator()
-            Spacer(Modifier.height(8.dp))
-            Text("Scan in progress", style = MaterialTheme.typography.bodyMedium)
-        }
+    if (showHistory) {
+        HistorySheet(
+            history = model.history,
+            onSelect = { showHistory = false; send(Event.SelectConversation(it)) },
+            onDismiss = { showHistory = false; send(Event.CloseHistory) },
+        )
+        return
+    }
+
+    if (showReports) {
+        DocumentsList(
+            documents = model.allDocuments,
+            onOpen = { showReports = false; send(Event.OpenDocument(it)) },
+            onDismiss = { showReports = false },
+        )
+        return
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        TopBar(
+            connectionLabel = model.connection.label,
+            onNewChat = { send(Event.NewChat) },
+            onHistory = { send(Event.OpenHistory); showHistory = true },
+            onReports = { showReports = true },
+        )
 
         model.error?.let { err ->
-            Spacer(Modifier.height(24.dp))
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(
-                        "Error",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(err, style = MaterialTheme.typography.bodySmall)
-                }
-            }
+            ErrorCard(message = err, onDismiss = { send(Event.DismissError) })
         }
 
-        if (model.messages.isNotEmpty()) {
-            Spacer(Modifier.height(24.dp))
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                model.messages.forEach { msg ->
-                    val prefix = when (msg.kind) {
-                        MessageKind.USER -> "you"
-                        MessageKind.AGENTTEXT -> "agent"
-                        MessageKind.TOOLCALL -> "tool"
-                    }
-                    Text(
-                        text = "[$prefix] ${msg.markdown}",
-                        style = MaterialTheme.typography.bodySmall,
+        when {
+            model.needsSignIn || model.screen == Screen.NEEDSSIGNIN -> {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    SignInView(onRetry = { send(Event.RetrySignIn) })
+                }
+            }
+            model.showScanCard -> {
+                ScanCard(
+                    scanInProgress = model.scanInProgress,
+                    onStartScan = { send(Event.StartScan) },
+                )
+                if (model.messages.isNotEmpty() || model.toolCalls.isNotEmpty()) {
+                    ChatList(
+                        messages = model.messages,
+                        toolCalls = model.toolCalls,
+                        modifier = Modifier.weight(1f),
                     )
                 }
+            }
+            else -> {
+                ChatList(
+                    messages = model.messages,
+                    toolCalls = model.toolCalls,
+                    modifier = Modifier.weight(1f),
+                )
+                ConversationDocStrip(
+                    docs = model.conversationDocs,
+                    onOpen = { send(Event.OpenDocument(it)) },
+                )
+                InputRow(onSend = { send(Event.SendMessage(it)) })
             }
         }
     }

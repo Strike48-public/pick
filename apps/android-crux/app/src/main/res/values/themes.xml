@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.PickCrux" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.PickCrux" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">#1C1C1C</item>
+        <item name="android:navigationBarColor">#1C1C1C</item>
+    </style>
 </resources>
