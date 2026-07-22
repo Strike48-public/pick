@@ -183,7 +183,9 @@ fn state_to_delta(state: ConversationState) -> ConversationDelta {
 pub struct CoreMatrixApi {
     pub api_url: String,
     token: std::sync::RwLock<String>,
-    agent_id: std::sync::RwLock<Option<String>>,
+    /// Cached resolved scan agent (id + display name). The name is used to title
+    /// a new conversation the same way the Dioxus app does ("Chat with <name>").
+    agent: std::sync::RwLock<Option<(String, String)>>,
 }
 
 /// The connector identity the auto-created scan agent binds to. This is the
@@ -213,7 +215,8 @@ impl CoreMatrixApi {
         Self {
             api_url,
             token: std::sync::RwLock::new(token),
-            agent_id: std::sync::RwLock::new(agent_id),
+            // A pre-seeded id has no known name yet; name is filled on resolve.
+            agent: std::sync::RwLock::new(agent_id.map(|id| (id, String::new()))),
         }
     }
 
@@ -240,15 +243,15 @@ impl CoreMatrixApi {
     /// falling back to the first agent. When the workspace has no agent yet, one
     /// is created (mirroring the Dioxus app, which auto-creates the pentest agent
     /// on first chat). The resolved id is cached.
-    async fn resolve_agent(&self) -> Result<String, String> {
-        if let Some(id) = self.agent_id.read().ok().and_then(|g| g.clone()) {
-            if !id.is_empty() {
-                return Ok(id);
+    async fn resolve_agent(&self) -> Result<(String, String), String> {
+        if let Some((id, name)) = self.agent.read().ok().and_then(|g| g.clone()) {
+            if !id.is_empty() && !name.is_empty() {
+                return Ok((id, name));
             }
         }
         let client = self.client();
         let agents = client.list_agents().await.map_err(|e| e.to_string())?;
-        let id = match agents
+        let (id, name) = match agents
             .iter()
             .find(|a| {
                 let n = a.name.to_lowercase();
@@ -256,7 +259,7 @@ impl CoreMatrixApi {
             })
             .or_else(|| agents.first())
         {
-            Some(a) => a.id.clone(),
+            Some(a) => (a.id.clone(), a.name.clone()),
             // Empty workspace: create the operational scan agent so a scan can
             // proceed, reusing the SHARED pentest-agent builder (the same one the
             // Dioxus app uses). The tenant is derived from the session token's
@@ -268,21 +271,21 @@ impl CoreMatrixApi {
                 let tenant = realm_from_token(&self.token()).ok_or_else(|| {
                     "cannot derive tenant: session token has no realm (sign in first)".to_string()
                 })?;
-                client
+                let created = client
                     .create_agent(pentest_core::matrix::default_pentest_agent_input(
                         &tenant,
                         SCAN_CONNECTOR_NAME,
                         &[],
                     ))
                     .await
-                    .map_err(|e| e.to_string())?
-                    .id
+                    .map_err(|e| e.to_string())?;
+                (created.id, created.name)
             }
         };
-        if let Ok(mut g) = self.agent_id.write() {
-            *g = Some(id.clone());
+        if let Ok(mut g) = self.agent.write() {
+            *g = Some((id.clone(), name.clone()));
         }
-        Ok(id)
+        Ok((id, name))
     }
 }
 
@@ -294,18 +297,19 @@ impl MatrixApi for CoreMatrixApi {
 
     async fn send(&self, conversation_id: Option<String>, text: String) -> Result<String, String> {
         let client = self.client();
-        let agent = self.resolve_agent().await?;
-        // Reuse an existing conversation, or create one for this agent so the
-        // scan lands in a real conversation we can then poll.
+        let (agent_id, agent_name) = self.resolve_agent().await?;
+        // Reuse an existing conversation, or create one titled the same way the
+        // Dioxus app does ("Chat with <agent>"). A null title is rejected by the
+        // server's changeset, so the title must be present.
         let conv = match conversation_id.filter(|c| !c.is_empty()) {
             Some(c) => c,
             None => client
-                .create_conversation(None)
+                .create_conversation(Some(&format!("Chat with {agent_name}")))
                 .await
                 .map_err(|e| e.to_string())?,
         };
         client
-            .send_message(&conv, &agent, &text)
+            .send_message(&conv, &agent_id, &text)
             .await
             .map_err(|e| e.to_string())?;
         Ok(conv)
@@ -324,7 +328,7 @@ impl MatrixApi for CoreMatrixApi {
         // Default to the resolved scan agent so the docs match the conversation.
         let agent = match agent_id {
             Some(a) if !a.is_empty() => Some(a),
-            _ => self.resolve_agent().await.ok(),
+            _ => self.resolve_agent().await.ok().map(|(id, _name)| id),
         };
         let docs = self
             .client()
@@ -373,7 +377,7 @@ impl MatrixApi for CoreMatrixApi {
     }
 
     async fn list_conversations(&self) -> Result<Vec<ConversationRef>, String> {
-        let agent = self.resolve_agent().await.ok();
+        let agent = self.resolve_agent().await.ok().map(|(id, _name)| id);
         let convs = self
             .client()
             .list_conversations(agent.as_deref())
