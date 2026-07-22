@@ -35,8 +35,9 @@ struct ArpInfo {
 
 /// Discover devices on the local network and enrich them.
 ///
-/// Merges two host sources: an nmap `-sn` ping sweep of the local /24 (fast,
-/// finds hosts not yet contacted) and the system ARP/neighbor table (instant,
+/// Merges two host sources: an nmap `-sn` ping sweep of the local subnet
+/// (derived from the interface netmask, capped at /16 - fast, finds hosts not
+/// yet contacted) and the system ARP/neighbor table (instant,
 /// cross-subnet, carries MACs). Each host is then enriched with MAC address and
 /// hostname from the ARP table and a vendor name via OUI lookup. nmap is
 /// best-effort - if it is unavailable, the ARP table alone is used.
@@ -59,9 +60,11 @@ pub async fn discover_network() -> anyhow::Result<NetworkMap> {
     // MACs. A failure here just yields a less-detailed map, never a failure.
     let arp_info = collect_arp_info().await;
 
-    // Discovery source 1: an nmap ping sweep of the local /24. Fast and finds
-    // hosts we have not yet talked to. Best-effort - on a larger network this
-    // only covers our own /24, which is why we also merge the ARP table.
+    // Discovery source 1: an nmap ping sweep of the local subnet, derived from
+    // the interface netmask (capped at /16). Fast and finds hosts we have not
+    // yet talked to. Best-effort - on a wider network the /16 cap means the
+    // sweep may not cover the whole segment, which is why we also merge the
+    // ARP table.
     let subnet = determine_subnet(&local_ip, local_prefix)?;
     let nmap_ips = match run_nmap_arp_scan(&subnet).await {
         Ok(ips) => {
@@ -231,8 +234,9 @@ fn determine_subnet(local_ip: &IpAddr, prefix_len: Option<u8>) -> anyhow::Result
 /// Pure helper: compute the sweep-subnet CIDR for an IPv4 host + prefix.
 ///
 /// * Clamps a `0` prefix and anything wider than [`MIN_SUBNET_PREFIX`] to the
-///   cap (and clamps a nonsensical `>32` to `32`), logging when it narrows a
-///   real sweep, so a wide interface prefix can't become an implicit huge scan.
+///   cap - logging the narrowing - so a wide interface prefix can't become an
+///   implicit huge scan. A nonsensical `>32` is defensively clamped to `32`
+///   (unreachable from a real `Ipv4Net`, so it is not logged).
 /// * Computes the network base via the netmask, not by zeroing octets.
 ///
 /// Kept free of any interface/I/O so the subnet math is unit-testable.
