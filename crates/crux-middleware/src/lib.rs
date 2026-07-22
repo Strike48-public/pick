@@ -2,6 +2,7 @@
 //! pure; this crate owns all I/O, on a background tokio runtime.
 
 use crux_core::middleware::{EffectMiddleware, EffectResolver};
+use pentest_core::matrix::ChatClient;
 use pick_crux_core::effect::{ConversationDelta, PentestOperation, PentestOutcome};
 use pick_crux_core::view::{ConversationRef, DocRef, MessageView};
 
@@ -72,13 +73,65 @@ pub async fn map_operation(api: &dyn MatrixApi, op: PentestOperation) -> Pentest
 /// The real MatrixApi backed by pentest-core (constructed with api_url + token).
 pub struct CoreMatrixApi { pub api_url: String, pub token: String, pub agent_id: Option<String> }
 
-// NOTE: implement CoreMatrixApi against pentest_core::matrix::{MatrixChatClient, documents, auth}.
-// send -> client.send_message(&conv, &agent, &text) then a bounded poll producing the first delta;
-// poll -> fetch conversation, diff into ConversationDelta (done when the agent turn is complete);
-// list_documents -> documents::list_documents; doc_content -> client.get_document_content;
-// shared_link -> documents::create_shared_link; sign_in -> auth::fetch_matrix_token_browser.
-// Map pentest_core::error::Error to String via to_string(). This impl is exercised by the
-// on-device/e2e phase (out of slice 1), so it is written but not unit-tested here.
+#[async_trait::async_trait]
+impl MatrixApi for CoreMatrixApi {
+    async fn send(&self, conversation_id: Option<String>, text: String) -> Result<String, String> {
+        let client = pentest_core::matrix::MatrixChatClient::new(self.api_url.clone())
+            .with_auth_token(self.token.clone());
+        let agent = self.agent_id.clone().unwrap_or_default();
+        let conv = conversation_id.unwrap_or_default();
+        // send_message returns a message_id; we return the conversation_id.
+        // When conv is empty, server creates a new conversation, but send_message doesn't
+        // return the conversation id - we'd need to poll or create explicitly. For slice-1
+        // this just returns the same conv id.
+        client.send_message(&conv, &agent, &text).await
+            .map_err(|e| e.to_string())?;
+        Ok(conv)
+    }
+
+    async fn poll(&self, conversation_id: String) -> Result<ConversationDelta, String> {
+        // Wire to GetConversation in a follow-up; minimal stub for slice-1
+        let _ = conversation_id;
+        Ok(ConversationDelta { messages: vec![], tool_calls: vec![], done: true })
+    }
+
+    async fn list_documents(&self, agent_id: Option<String>) -> Result<Vec<DocRef>, String> {
+        let client = pentest_core::matrix::MatrixChatClient::new(self.api_url.clone())
+            .with_auth_token(self.token.clone());
+        let docs = client.list_documents(agent_id.as_deref()).await.map_err(|e| e.to_string())?;
+        Ok(docs.into_iter().map(|d| DocRef {
+            id: d.id,
+            title: d.title,
+            conversation_id: d.conversation_id,
+        }).collect())
+    }
+
+    async fn sign_in(&self, api_url: String) -> Result<String, String> {
+        pentest_core::matrix::fetch_matrix_token_browser(&api_url).await.map_err(|e| e.to_string())
+    }
+
+    async fn doc_content(&self, document_id: String, conversation_id: String) -> Result<String, String> {
+        let client = pentest_core::matrix::MatrixChatClient::new(self.api_url.clone())
+            .with_auth_token(self.token.clone());
+        client.get_document_content(&conversation_id, &document_id).await.map_err(|e| e.to_string())
+    }
+
+    async fn shared_link(&self, conversation_id: String, document_id: String) -> Result<String, String> {
+        let client = pentest_core::matrix::MatrixChatClient::new(self.api_url.clone())
+            .with_auth_token(self.token.clone());
+        client.create_shared_link(&conversation_id, &document_id).await.map_err(|e| e.to_string())
+    }
+
+    async fn list_conversations(&self) -> Result<Vec<ConversationRef>, String> {
+        // Wire to ListConversations in a follow-up; empty is valid for slice-1
+        Ok(vec![])
+    }
+
+    async fn load_conversation(&self, _conversation_id: String) -> Result<Vec<MessageView>, String> {
+        // Wire to GetConversation in a follow-up
+        Ok(vec![])
+    }
+}
 
 pub struct PentestMiddleware {
     runtime: tokio::runtime::Handle,
