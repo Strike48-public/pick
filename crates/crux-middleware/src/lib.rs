@@ -215,23 +215,45 @@ impl CoreMatrixApi {
     /// Resolve the agent the scan/chat should target. Uses a cached id when set,
     /// otherwise lists the workspace agents and prefers the operational pentest
     /// agent (name contains "pentest" but not the report/validator specialists),
-    /// falling back to the first agent. The resolved id is cached.
+    /// falling back to the first agent. When the workspace has no agent yet, one
+    /// is created (mirroring the Dioxus app, which auto-creates the pentest agent
+    /// on first chat). The resolved id is cached.
     async fn resolve_agent(&self) -> Result<String, String> {
         if let Some(id) = self.agent_id.read().ok().and_then(|g| g.clone()) {
             if !id.is_empty() {
                 return Ok(id);
             }
         }
-        let agents = self.client().list_agents().await.map_err(|e| e.to_string())?;
-        let pick = agents
+        let client = self.client();
+        let agents = client.list_agents().await.map_err(|e| e.to_string())?;
+        let id = match agents
             .iter()
             .find(|a| {
                 let n = a.name.to_lowercase();
                 n.contains("pentest") && !n.contains("report") && !n.contains("valid")
             })
             .or_else(|| agents.first())
-            .ok_or_else(|| "no agents available in this workspace".to_string())?;
-        let id = pick.id.clone();
+        {
+            Some(a) => a.id.clone(),
+            // Empty workspace: create the operational scan agent so a scan can
+            // proceed. The connector normally seeds a richer agent (tools/system
+            // prompt) from crates/ui; here we create a minimal one the server
+            // fills with defaults, so Easy Mode is never dead-ended.
+            None => client
+                .create_agent(pentest_core::matrix::CreateAgentInput {
+                    name: "pentest-connector".to_string(),
+                    description: Some(
+                        "Red team operational agent for penetration testing".to_string(),
+                    ),
+                    system_message: None,
+                    agent_greeting: None,
+                    context: None,
+                    tools: None,
+                })
+                .await
+                .map_err(|e| e.to_string())?
+                .id,
+        };
         if let Ok(mut g) = self.agent_id.write() {
             *g = Some(id.clone());
         }
