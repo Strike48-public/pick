@@ -6,6 +6,7 @@ members = [
     "crates/ui",
     "crates/tools",
     "crates/cyberchef",
+    "crates/crux-core",
     "apps/desktop",
     "apps/web",
     "apps/mobile",
