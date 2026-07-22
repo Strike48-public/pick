@@ -36,6 +36,18 @@ struct PickCore *pick_core_new(const uint8_t *api_url_ptr,
                                uintptr_t token_len);
 
 /**
+ * Adopt an auth token the shell obtained via native OAuth (the `__st` Studio
+ * session token). All subsequent core calls use it. No-op on a null handle or
+ * non-UTF-8 bytes. The shell should call `pick_view`/`pick_update` afterwards
+ * to re-drive with the new credential.
+ *
+ * # Safety
+ * `core` must be a pointer from `pick_core_new` (or null); `token_ptr` must be
+ * null or point to at least `token_len` initialized bytes.
+ */
+void pick_set_token(struct PickCore *core, const uint8_t *token_ptr, uintptr_t token_len);
+
+/**
  * Free a [`PickCore`] previously returned by `pick_core_new`.
  *
  * # Safety

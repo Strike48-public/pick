@@ -29,6 +29,10 @@ pub trait MatrixApi: Send + Sync {
     ) -> Result<String, String>;
     async fn list_conversations(&self) -> Result<Vec<ConversationRef>, String>;
     async fn load_conversation(&self, conversation_id: String) -> Result<Vec<MessageView>, String>;
+
+    /// Adopt an auth token obtained out-of-band (e.g. the shell performed native
+    /// OAuth and captured the `__st` session token). Default no-op for fakes.
+    fn set_token(&self, _token: String) {}
 }
 
 /// Pure mapping from an operation to an outcome via the injected api. Unit-tested.
@@ -197,7 +201,7 @@ impl CoreMatrixApi {
     }
 
     /// Replace the auth token after a successful sign-in.
-    pub fn set_token(&self, token: String) {
+    fn store_token(&self, token: String) {
         if let Ok(mut t) = self.token.write() {
             *t = token;
         }
@@ -237,6 +241,10 @@ impl CoreMatrixApi {
 
 #[async_trait::async_trait]
 impl MatrixApi for CoreMatrixApi {
+    fn set_token(&self, token: String) {
+        self.store_token(token);
+    }
+
     async fn send(&self, conversation_id: Option<String>, text: String) -> Result<String, String> {
         let client = self.client();
         let agent = self.resolve_agent().await?;
@@ -291,7 +299,7 @@ impl MatrixApi for CoreMatrixApi {
             .await
             .map_err(|e| e.to_string())?;
         // Adopt the freshly-obtained session token for all subsequent calls.
-        self.set_token(token.clone());
+        self.store_token(token.clone());
         Ok(token)
     }
 

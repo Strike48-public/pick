@@ -34,6 +34,7 @@ use crux_core::Core;
 use pick_crux_core::{EffectFfi, PickApp};
 use pick_crux_middleware::{map_operation, CoreMatrixApi, MatrixApi};
 
+
 /// Opaque handle owning the bridge, the effect-resolving runtime, and the
 /// `MatrixApi` implementation that fulfills `Pentest` effects.
 pub struct PickCore {
@@ -190,6 +191,29 @@ pub extern "C" fn pick_core_new(
     match PickCore::with_api(api) {
         Some(core) => Box::into_raw(Box::new(core)),
         None => std::ptr::null_mut(),
+    }
+}
+
+/// Adopt an auth token the shell obtained via native OAuth (the `__st` Studio
+/// session token). All subsequent core calls use it. No-op on a null handle or
+/// non-UTF-8 bytes. The shell should call `pick_view`/`pick_update` afterwards
+/// to re-drive with the new credential.
+///
+/// # Safety
+/// `core` must be a pointer from `pick_core_new` (or null); `token_ptr` must be
+/// null or point to at least `token_len` initialized bytes.
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // FFI entrypoint; pointers are null-checked.
+pub extern "C" fn pick_set_token(core: *mut PickCore, token_ptr: *const u8, token_len: usize) {
+    let Some(core) = (unsafe { core.as_ref() }) else {
+        return;
+    };
+    if token_ptr.is_null() {
+        return;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(token_ptr, token_len) };
+    if let Ok(token) = std::str::from_utf8(slice) {
+        core.api.set_token(token.to_owned());
     }
 }
 
