@@ -186,11 +186,7 @@ pub extern "C" fn pick_core_new(
         return std::ptr::null_mut();
     };
 
-    let api: Arc<dyn MatrixApi> = Arc::new(CoreMatrixApi {
-        api_url,
-        token,
-        agent_id: None,
-    });
+    let api: Arc<dyn MatrixApi> = Arc::new(CoreMatrixApi::new(api_url, token, None));
     match PickCore::with_api(api) {
         Some(core) => Box::into_raw(Box::new(core)),
         None => std::ptr::null_mut(),

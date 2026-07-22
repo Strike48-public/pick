@@ -169,24 +169,86 @@ fn state_to_delta(state: ConversationState) -> ConversationDelta {
 // CoreMatrixApi
 // ---------------------------------------------------------------------------
 
-/// The real MatrixApi backed by pentest-core (constructed with api_url + token).
+/// The real MatrixApi backed by pentest-core.
+///
+/// `token` and `agent_id` are interior-mutable: the token starts empty (or a
+/// bootstrap value) and is replaced once the native OAuth sign-in yields the
+/// `__st` Studio session token; `agent_id` is resolved lazily on the first send
+/// by listing the workspace agents (Easy Mode targets the pentest connector
+/// agent, which the connector registration has already created).
 pub struct CoreMatrixApi {
     pub api_url: String,
-    pub token: String,
-    pub agent_id: Option<String>,
+    token: std::sync::RwLock<String>,
+    agent_id: std::sync::RwLock<Option<String>>,
+}
+
+impl CoreMatrixApi {
+    pub fn new(api_url: String, token: String, agent_id: Option<String>) -> Self {
+        Self {
+            api_url,
+            token: std::sync::RwLock::new(token),
+            agent_id: std::sync::RwLock::new(agent_id),
+        }
+    }
+
+    /// Current auth token (cloned out so no lock is held across an await).
+    fn token(&self) -> String {
+        self.token.read().map(|t| t.clone()).unwrap_or_default()
+    }
+
+    /// Replace the auth token after a successful sign-in.
+    pub fn set_token(&self, token: String) {
+        if let Ok(mut t) = self.token.write() {
+            *t = token;
+        }
+    }
+
+    fn client(&self) -> pentest_core::matrix::MatrixChatClient {
+        pentest_core::matrix::MatrixChatClient::new(self.api_url.clone())
+            .with_auth_token(self.token())
+    }
+
+    /// Resolve the agent the scan/chat should target. Uses a cached id when set,
+    /// otherwise lists the workspace agents and prefers the operational pentest
+    /// agent (name contains "pentest" but not the report/validator specialists),
+    /// falling back to the first agent. The resolved id is cached.
+    async fn resolve_agent(&self) -> Result<String, String> {
+        if let Some(id) = self.agent_id.read().ok().and_then(|g| g.clone()) {
+            if !id.is_empty() {
+                return Ok(id);
+            }
+        }
+        let agents = self.client().list_agents().await.map_err(|e| e.to_string())?;
+        let pick = agents
+            .iter()
+            .find(|a| {
+                let n = a.name.to_lowercase();
+                n.contains("pentest") && !n.contains("report") && !n.contains("valid")
+            })
+            .or_else(|| agents.first())
+            .ok_or_else(|| "no agents available in this workspace".to_string())?;
+        let id = pick.id.clone();
+        if let Ok(mut g) = self.agent_id.write() {
+            *g = Some(id.clone());
+        }
+        Ok(id)
+    }
 }
 
 #[async_trait::async_trait]
 impl MatrixApi for CoreMatrixApi {
     async fn send(&self, conversation_id: Option<String>, text: String) -> Result<String, String> {
-        let client = pentest_core::matrix::MatrixChatClient::new(self.api_url.clone())
-            .with_auth_token(self.token.clone());
-        let agent = self.agent_id.clone().unwrap_or_default();
-        let conv = conversation_id.unwrap_or_default();
-        // send_message returns a message_id; we return the conversation_id.
-        // When conv is empty, server creates a new conversation, but send_message doesn't
-        // return the conversation id - we'd need to poll or create explicitly. For slice-1
-        // this just returns the same conv id.
+        let client = self.client();
+        let agent = self.resolve_agent().await?;
+        // Reuse an existing conversation, or create one for this agent so the
+        // scan lands in a real conversation we can then poll.
+        let conv = match conversation_id.filter(|c| !c.is_empty()) {
+            Some(c) => c,
+            None => client
+                .create_conversation(None)
+                .await
+                .map_err(|e| e.to_string())?,
+        };
         client
             .send_message(&conv, &agent, &text)
             .await
@@ -195,9 +257,8 @@ impl MatrixApi for CoreMatrixApi {
     }
 
     async fn poll(&self, conversation_id: String) -> Result<ConversationDelta, String> {
-        let client = pentest_core::matrix::MatrixChatClient::new(self.api_url.clone())
-            .with_auth_token(self.token.clone());
-        let state = client
+        let state = self
+            .client()
             .get_conversation(&conversation_id)
             .await
             .map_err(|e| e.to_string())?;
@@ -205,10 +266,14 @@ impl MatrixApi for CoreMatrixApi {
     }
 
     async fn list_documents(&self, agent_id: Option<String>) -> Result<Vec<DocRef>, String> {
-        let client = pentest_core::matrix::MatrixChatClient::new(self.api_url.clone())
-            .with_auth_token(self.token.clone());
-        let docs = client
-            .list_documents(agent_id.as_deref())
+        // Default to the resolved scan agent so the docs match the conversation.
+        let agent = match agent_id {
+            Some(a) if !a.is_empty() => Some(a),
+            _ => self.resolve_agent().await.ok(),
+        };
+        let docs = self
+            .client()
+            .list_documents(agent.as_deref())
             .await
             .map_err(|e| e.to_string())?;
         Ok(docs
@@ -222,9 +287,12 @@ impl MatrixApi for CoreMatrixApi {
     }
 
     async fn sign_in(&self, api_url: String) -> Result<String, String> {
-        pentest_core::matrix::fetch_matrix_token_browser(&api_url)
+        let token = pentest_core::matrix::fetch_matrix_token_browser(&api_url)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // Adopt the freshly-obtained session token for all subsequent calls.
+        self.set_token(token.clone());
+        Ok(token)
     }
 
     async fn doc_content(
@@ -232,9 +300,7 @@ impl MatrixApi for CoreMatrixApi {
         document_id: String,
         conversation_id: String,
     ) -> Result<String, String> {
-        let client = pentest_core::matrix::MatrixChatClient::new(self.api_url.clone())
-            .with_auth_token(self.token.clone());
-        client
+        self.client()
             .get_document_content(&conversation_id, &document_id)
             .await
             .map_err(|e| e.to_string())
@@ -245,19 +311,17 @@ impl MatrixApi for CoreMatrixApi {
         conversation_id: String,
         document_id: String,
     ) -> Result<String, String> {
-        let client = pentest_core::matrix::MatrixChatClient::new(self.api_url.clone())
-            .with_auth_token(self.token.clone());
-        client
+        self.client()
             .create_shared_link(&conversation_id, &document_id)
             .await
             .map_err(|e| e.to_string())
     }
 
     async fn list_conversations(&self) -> Result<Vec<ConversationRef>, String> {
-        let client = pentest_core::matrix::MatrixChatClient::new(self.api_url.clone())
-            .with_auth_token(self.token.clone());
-        let convs = client
-            .list_conversations(self.agent_id.as_deref())
+        let agent = self.resolve_agent().await.ok();
+        let convs = self
+            .client()
+            .list_conversations(agent.as_deref())
             .await
             .map_err(|e| e.to_string())?;
         Ok(convs
@@ -274,9 +338,8 @@ impl MatrixApi for CoreMatrixApi {
         &self,
         conversation_id: String,
     ) -> Result<Vec<MessageView>, String> {
-        let client = pentest_core::matrix::MatrixChatClient::new(self.api_url.clone())
-            .with_auth_token(self.token.clone());
-        let state = client
+        let state = self
+            .client()
             .get_conversation(&conversation_id)
             .await
             .map_err(|e| e.to_string())?;
