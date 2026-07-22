@@ -105,8 +105,12 @@ impl MatrixChatClient {
             .send()
             .await
             .map_err(|e| {
-                tracing::error!("[gql] send failed: {} (url={})", e, gql_url);
-                crate::error::Error::Matrix(e.to_string())
+                // reqwest's top-level Display is just "error sending request for
+                // url ..." — the real cause (TLS/connect/DNS) lives in the
+                // source chain, so surface the whole chain instead of dropping it.
+                let chain = error_chain(&e);
+                tracing::error!("[gql] send failed: {} (url={})", chain, gql_url);
+                crate::error::Error::Matrix(chain)
             })?;
 
         let status = resp.status();
@@ -196,6 +200,20 @@ fn truncate_body(body: &str) -> String {
     } else {
         format!("{}…({} bytes total)", &body[..200], body.len())
     }
+}
+
+/// Render an error together with its `source()` chain. reqwest's top-level
+/// Display hides the real transport cause (TLS handshake, connection refused,
+/// DNS), which lives in nested sources — walk them so diagnostics are actionable.
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut src = err.source();
+    while let Some(e) = src {
+        out.push_str(" -> ");
+        out.push_str(&e.to_string());
+        src = e.source();
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
