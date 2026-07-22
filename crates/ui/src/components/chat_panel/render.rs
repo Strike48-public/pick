@@ -242,35 +242,10 @@ pub const CHART_PROCESSOR_JS: &str = include_str!("../../assets/chart_processor.
 pub const UTILS_JS: &str = include_str!("../../assets/utils.js");
 
 /// Format an ISO 8601 timestamp as a relative time string (e.g. "2m ago").
+/// Delegates to the shared `pentest_core` impl so the Dioxus history and the
+/// crux conversation list format identically.
 pub fn format_relative_time(iso: &str) -> String {
-    let parsed = chrono::DateTime::parse_from_rfc3339(iso)
-        .or_else(|_| chrono::DateTime::parse_from_rfc3339(&format!("{}Z", iso.trim())))
-        .map(|dt| dt.with_timezone(&chrono::Utc));
-
-    let now = chrono::Utc::now();
-    let ts = match parsed {
-        Ok(dt) => dt,
-        Err(_) => return "\u{2014}".to_string(),
-    };
-
-    let diff = (now - ts).num_seconds();
-    if diff <= 0 {
-        return "now".to_string();
-    }
-    let diff = diff as u64;
-    if diff < 60 {
-        return format!("{}s ago", diff);
-    }
-    let mins = diff / 60;
-    if mins < 60 {
-        return format!("{}m ago", mins);
-    }
-    let hours = mins / 60;
-    if hours < 24 {
-        return format!("{}h ago", hours);
-    }
-    let days = hours / 24;
-    format!("{}d ago", days)
+    pentest_core::rendering::format_relative_time(iso)
 }
 
 // ---------------------------------------------------------------------------

@@ -313,7 +313,21 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         Event::LoadConversationResult(outcome) => {
             if let Some(msgs) = outcome.messages {
                 model.messages = msgs;
-                render()
+                // Resume polling the selected conversation: if its agent is still
+                // working, output streams in; if it's already done, the first
+                // poll returns done=true and the loop stops. Render now so the
+                // loaded history shows immediately.
+                if let Some(conv) = model.conversation_id.clone() {
+                    Command::all([
+                        render(),
+                        Command::request_from_shell(PentestOperation::PollConversation {
+                            conversation_id: conv,
+                        })
+                        .then_send(delta_event),
+                    ])
+                } else {
+                    render()
+                }
             } else {
                 model.error = outcome.error;
                 render()

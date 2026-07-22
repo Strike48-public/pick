@@ -7,10 +7,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -22,7 +25,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -68,15 +70,20 @@ fun InputRow(onSend: (String) -> Unit) {
 
 @Composable
 private fun SendPill(enabled: Boolean, onClick: () -> Unit) {
+    // Circular sage icon button (matches the iOS up-arrow send): dark glyph on
+    // sage, sized to align with the input field height.
     Box(
         modifier = Modifier
-            .height(44.dp)
-            .width(72.dp)
-            .clip(RoundedCornerShape(999.dp))
+            .size(44.dp)
+            .clip(CircleShape)
             .background(if (enabled) PickColors.Brand else PickColors.Brand.copy(alpha = 0.5f))
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text("Send", color = PickColors.OnBrand, fontWeight = FontWeight.SemiBold)
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.Send,
+            contentDescription = "Send",
+            tint = PickColors.OnBrand,
+        )
     }
 }

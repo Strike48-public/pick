@@ -559,7 +559,7 @@ impl MatrixApi for CoreMatrixApi {
             .map(|c| ConversationRef {
                 id: c.id,
                 title: c.title,
-                relative_time: c.updated_at, // TODO: format to "2h ago" in future polish
+                relative_time: pentest_core::rendering::format_relative_time(&c.updated_at),
             })
             .collect())
     }

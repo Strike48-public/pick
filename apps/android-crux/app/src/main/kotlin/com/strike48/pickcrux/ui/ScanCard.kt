@@ -92,9 +92,11 @@ fun SagePillButton(
                 modifier = Modifier.size(18.dp),
             )
             Spacer(Modifier.height(0.dp))
-            Text("  $text", fontWeight = FontWeight.SemiBold)
+            // Explicit dark ink on sage (don't rely on the theme's onPrimary,
+            // which is white and was leaking through as white-on-green).
+            Text("  $text", color = PickColors.OnBrand, fontWeight = FontWeight.SemiBold)
         } else {
-            Text(text, fontWeight = FontWeight.SemiBold)
+            Text(text, color = PickColors.OnBrand, fontWeight = FontWeight.SemiBold)
         }
     }
 }
