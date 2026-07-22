@@ -644,3 +644,12 @@ crux-ffi-ios-sim:
 crux-typegen out="crates/crux-core/generated":
     cargo run -p pick-crux-core --features codegen --bin codegen -- swift {{out}}
     cargo run -p pick-crux-core --features codegen --bin codegen -- kotlin {{out}}
+
+# Refresh the Android Compose shell's bundled .so from the built artifact.
+# Sets a SONAME so the JNI shim records "libpick_crux_ffi.so" (not a host path)
+# as its DT_NEEDED. Run `just crux-ffi-android-x86_64` first.
+android-crux-refresh-so:
+    cp target/x86_64-linux-android/release-ffi/libpick_crux_ffi.so \
+        apps/android-crux/app/src/main/jniLibs/x86_64/libpick_crux_ffi.so
+    patchelf --set-soname libpick_crux_ffi.so \
+        apps/android-crux/app/src/main/jniLibs/x86_64/libpick_crux_ffi.so

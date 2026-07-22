@@ -1,0 +1,2262 @@
+package com.strike48.pick.shared
+
+import com.novi.bincode.BincodeDeserializer
+import com.novi.bincode.BincodeSerializer
+import com.novi.serde.DeserializationError
+import com.novi.serde.Deserializer
+import com.novi.serde.Serializer
+
+fun <T> List<T>.serialize(
+    serializer: Serializer,
+    serializeElement: Serializer.(T) -> Unit,
+) {
+    serializer.serialize_len(size.toLong())
+    forEach { element ->
+        serializer.serializeElement(element)
+    }
+}
+
+fun <T> Deserializer.deserializeListOf(deserializeElement: (Deserializer) -> T): List<T> {
+    val length = deserialize_len()
+    val list = mutableListOf<T>()
+    repeat(length.toInt()) {
+        list.add(deserializeElement(this))
+    }
+    return list
+}
+
+fun <T> T?.serializeOptionOf(
+    serializer: Serializer,
+    serializeElement: Serializer.(T) -> Unit,
+) {
+    if (this != null) {
+        serializer.serialize_option_tag(true)
+        serializer.serializeElement(this)
+    } else {
+        serializer.serialize_option_tag(false)
+    }
+}
+
+fun <T> Deserializer.deserializeOptionOf(deserializeElement: (Deserializer) -> T): T? {
+    val tag = deserialize_option_tag()
+    return if (tag) {
+        deserializeElement(this)
+    } else {
+        null
+    }
+}
+
+data class ConnectOutcome(
+    val ok: Unit? = null,
+    val err: String? = null,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        ok.serializeOptionOf(serializer) {
+            serializer.serialize_unit(it)
+        }
+        err.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): ConnectOutcome {
+            deserializer.increase_container_depth()
+            val ok =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_unit()
+                }
+            val err =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            deserializer.decrease_container_depth()
+            return ConnectOutcome(ok, err)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): ConnectOutcome {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+enum class ConnectionPhase {
+    SIGNINGIN,
+    CONNECTING,
+    REGISTERING,
+    CONNECTED,
+    NEEDSSIGNIN;
+
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_variant_index(ordinal)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        @Throws(DeserializationError::class)
+        fun deserialize(deserializer: Deserializer): ConnectionPhase {
+            deserializer.increase_container_depth()
+            val index = deserializer.deserialize_variant_index()
+            deserializer.decrease_container_depth()
+            return when (index) {
+                0 -> SIGNINGIN
+                1 -> CONNECTING
+                2 -> REGISTERING
+                3 -> CONNECTED
+                4 -> NEEDSSIGNIN
+                else -> throw DeserializationError("Unknown variant index for ConnectionPhase: $index")
+            }
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): ConnectionPhase {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class ConnectionView(
+    val phase: com.strike48.pick.shared.ConnectionPhase,
+    val label: String,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        phase.serialize(serializer)
+        serializer.serialize_str(label)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): ConnectionView {
+            deserializer.increase_container_depth()
+            val phase = com.strike48.pick.shared.ConnectionPhase.deserialize(deserializer)
+            val label = deserializer.deserialize_str()
+            deserializer.decrease_container_depth()
+            return ConnectionView(phase, label)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): ConnectionView {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class ConversationDelta(
+    val messages: List<com.strike48.pick.shared.MessageView>,
+    val toolCalls: List<com.strike48.pick.shared.ToolCallView>,
+    val done: Boolean,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        messages.serialize(serializer) {
+            it.serialize(serializer)
+        }
+        toolCalls.serialize(serializer) {
+            it.serialize(serializer)
+        }
+        serializer.serialize_bool(done)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): ConversationDelta {
+            deserializer.increase_container_depth()
+            val messages =
+                deserializer.deserializeListOf {
+                    com.strike48.pick.shared.MessageView.deserialize(deserializer)
+                }
+            val toolCalls =
+                deserializer.deserializeListOf {
+                    com.strike48.pick.shared.ToolCallView.deserialize(deserializer)
+                }
+            val done = deserializer.deserialize_bool()
+            deserializer.decrease_container_depth()
+            return ConversationDelta(messages, toolCalls, done)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): ConversationDelta {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class ConversationRef(
+    val id: String,
+    val title: String,
+    val relativeTime: String,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_str(id)
+        serializer.serialize_str(title)
+        serializer.serialize_str(relativeTime)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): ConversationRef {
+            deserializer.increase_container_depth()
+            val id = deserializer.deserialize_str()
+            val title = deserializer.deserialize_str()
+            val relativeTime = deserializer.deserialize_str()
+            deserializer.decrease_container_depth()
+            return ConversationRef(id, title, relativeTime)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): ConversationRef {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class ConversationsOutcome(
+    val conversations: List<com.strike48.pick.shared.ConversationRef>? = null,
+    val error: String? = null,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        conversations.serializeOptionOf(serializer) { level1 ->
+            level1.serialize(serializer) {
+                it.serialize(serializer)
+            }
+        }
+        error.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): ConversationsOutcome {
+            deserializer.increase_container_depth()
+            val conversations =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserializeListOf {
+                        com.strike48.pick.shared.ConversationRef.deserialize(deserializer)
+                    }
+                }
+            val error =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            deserializer.decrease_container_depth()
+            return ConversationsOutcome(conversations, error)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): ConversationsOutcome {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class DeltaOutcome(
+    val delta: com.strike48.pick.shared.ConversationDelta? = null,
+    val error: String? = null,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        delta.serializeOptionOf(serializer) {
+            it.serialize(serializer)
+        }
+        error.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): DeltaOutcome {
+            deserializer.increase_container_depth()
+            val delta =
+                deserializer.deserializeOptionOf {
+                    com.strike48.pick.shared.ConversationDelta.deserialize(deserializer)
+                }
+            val error =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            deserializer.decrease_container_depth()
+            return DeltaOutcome(delta, error)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): DeltaOutcome {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class DocRef(
+    val id: String,
+    val title: String,
+    val conversationId: String,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_str(id)
+        serializer.serialize_str(title)
+        serializer.serialize_str(conversationId)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): DocRef {
+            deserializer.increase_container_depth()
+            val id = deserializer.deserialize_str()
+            val title = deserializer.deserialize_str()
+            val conversationId = deserializer.deserialize_str()
+            deserializer.decrease_container_depth()
+            return DocRef(id, title, conversationId)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): DocRef {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class DocView(
+    val id: String,
+    val title: String,
+    val markdownBody: String,
+    val shareUrl: String? = null,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_str(id)
+        serializer.serialize_str(title)
+        serializer.serialize_str(markdownBody)
+        shareUrl.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): DocView {
+            deserializer.increase_container_depth()
+            val id = deserializer.deserialize_str()
+            val title = deserializer.deserialize_str()
+            val markdownBody = deserializer.deserialize_str()
+            val shareUrl =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            deserializer.decrease_container_depth()
+            return DocView(id, title, markdownBody, shareUrl)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): DocView {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class DocumentContentOutcome(
+    val content: String? = null,
+    val error: String? = null,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        content.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        error.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): DocumentContentOutcome {
+            deserializer.increase_container_depth()
+            val content =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            val error =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            deserializer.decrease_container_depth()
+            return DocumentContentOutcome(content, error)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): DocumentContentOutcome {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class DocumentsOutcome(
+    val documents: List<com.strike48.pick.shared.DocRef>? = null,
+    val error: String? = null,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        documents.serializeOptionOf(serializer) { level1 ->
+            level1.serialize(serializer) {
+                it.serialize(serializer)
+            }
+        }
+        error.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): DocumentsOutcome {
+            deserializer.increase_container_depth()
+            val documents =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserializeListOf {
+                        com.strike48.pick.shared.DocRef.deserialize(deserializer)
+                    }
+                }
+            val error =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            deserializer.decrease_container_depth()
+            return DocumentsOutcome(documents, error)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): DocumentsOutcome {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+sealed interface Effect {
+    fun serialize(serializer: Serializer)
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    data class Render(
+        val value: com.strike48.pick.shared.RenderOperation,
+    ) : Effect {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(0)
+            value.serialize(serializer)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): Render {
+                deserializer.increase_container_depth()
+                val value = com.strike48.pick.shared.RenderOperation.deserialize(deserializer)
+                deserializer.decrease_container_depth()
+                return Render(value)
+            }
+        }
+    }
+
+    data class Pentest(
+        val value: com.strike48.pick.shared.PentestOperation,
+    ) : Effect {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(1)
+            value.serialize(serializer)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): Pentest {
+                deserializer.increase_container_depth()
+                val value = com.strike48.pick.shared.PentestOperation.deserialize(deserializer)
+                deserializer.decrease_container_depth()
+                return Pentest(value)
+            }
+        }
+    }
+
+    companion object {
+        @Throws(DeserializationError::class)
+        fun deserialize(deserializer: Deserializer): Effect {
+            val index = deserializer.deserialize_variant_index()
+            return when (index) {
+                0 -> Render.deserialize(deserializer)
+                1 -> Pentest.deserialize(deserializer)
+                else -> throw DeserializationError("Unknown variant index for Effect: $index")
+            }
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): Effect {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+sealed interface Event {
+    fun serialize(serializer: Serializer)
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    data object StartScan: Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(0)
+            serializer.decrease_container_depth()
+        }
+
+        fun deserialize(deserializer: Deserializer): StartScan {
+            return StartScan
+        }
+    }
+
+    data class SendMessage(
+        val value: String,
+    ) : Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(1)
+            serializer.serialize_str(value)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): SendMessage {
+                deserializer.increase_container_depth()
+                val value = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return SendMessage(value)
+            }
+        }
+    }
+
+    data object NewChat: Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(2)
+            serializer.decrease_container_depth()
+        }
+
+        fun deserialize(deserializer: Deserializer): NewChat {
+            return NewChat
+        }
+    }
+
+    data object OpenHistory: Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(3)
+            serializer.decrease_container_depth()
+        }
+
+        fun deserialize(deserializer: Deserializer): OpenHistory {
+            return OpenHistory
+        }
+    }
+
+    data object CloseHistory: Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(4)
+            serializer.decrease_container_depth()
+        }
+
+        fun deserialize(deserializer: Deserializer): CloseHistory {
+            return CloseHistory
+        }
+    }
+
+    data class SelectConversation(
+        val value: String,
+    ) : Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(5)
+            serializer.serialize_str(value)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): SelectConversation {
+                deserializer.increase_container_depth()
+                val value = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return SelectConversation(value)
+            }
+        }
+    }
+
+    data class OpenDocument(
+        val value: String,
+    ) : Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(6)
+            serializer.serialize_str(value)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): OpenDocument {
+                deserializer.increase_container_depth()
+                val value = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return OpenDocument(value)
+            }
+        }
+    }
+
+    data object CloseDocument: Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(7)
+            serializer.decrease_container_depth()
+        }
+
+        fun deserialize(deserializer: Deserializer): CloseDocument {
+            return CloseDocument
+        }
+    }
+
+    data class CreateShareLink(
+        val value: String,
+    ) : Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(8)
+            serializer.serialize_str(value)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): CreateShareLink {
+                deserializer.increase_container_depth()
+                val value = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return CreateShareLink(value)
+            }
+        }
+    }
+
+    data object RetrySignIn: Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(9)
+            serializer.decrease_container_depth()
+        }
+
+        fun deserialize(deserializer: Deserializer): RetrySignIn {
+            return RetrySignIn
+        }
+    }
+
+    data object DismissError: Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(10)
+            serializer.decrease_container_depth()
+        }
+
+        fun deserialize(deserializer: Deserializer): DismissError {
+            return DismissError
+        }
+    }
+
+    data class SignInResult(
+        val value: com.strike48.pick.shared.SignInOutcome,
+    ) : Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(11)
+            value.serialize(serializer)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): SignInResult {
+                deserializer.increase_container_depth()
+                val value = com.strike48.pick.shared.SignInOutcome.deserialize(deserializer)
+                deserializer.decrease_container_depth()
+                return SignInResult(value)
+            }
+        }
+    }
+
+    data class ConnectResult(
+        val value: com.strike48.pick.shared.ConnectOutcome,
+    ) : Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(12)
+            value.serialize(serializer)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): ConnectResult {
+                deserializer.increase_container_depth()
+                val value = com.strike48.pick.shared.ConnectOutcome.deserialize(deserializer)
+                deserializer.decrease_container_depth()
+                return ConnectResult(value)
+            }
+        }
+    }
+
+    data class ScanResult(
+        val value: com.strike48.pick.shared.ScanOutcome,
+    ) : Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(13)
+            value.serialize(serializer)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): ScanResult {
+                deserializer.increase_container_depth()
+                val value = com.strike48.pick.shared.ScanOutcome.deserialize(deserializer)
+                deserializer.decrease_container_depth()
+                return ScanResult(value)
+            }
+        }
+    }
+
+    data class Delta(
+        val value: com.strike48.pick.shared.DeltaOutcome,
+    ) : Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(14)
+            value.serialize(serializer)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): Delta {
+                deserializer.increase_container_depth()
+                val value = com.strike48.pick.shared.DeltaOutcome.deserialize(deserializer)
+                deserializer.decrease_container_depth()
+                return Delta(value)
+            }
+        }
+    }
+
+    data class ConversationsResult(
+        val value: com.strike48.pick.shared.ConversationsOutcome,
+    ) : Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(15)
+            value.serialize(serializer)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): ConversationsResult {
+                deserializer.increase_container_depth()
+                val value = com.strike48.pick.shared.ConversationsOutcome.deserialize(deserializer)
+                deserializer.decrease_container_depth()
+                return ConversationsResult(value)
+            }
+        }
+    }
+
+    data class LoadConversationResult(
+        val value: com.strike48.pick.shared.LoadConversationOutcome,
+    ) : Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(16)
+            value.serialize(serializer)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): LoadConversationResult {
+                deserializer.increase_container_depth()
+                val value = com.strike48.pick.shared.LoadConversationOutcome.deserialize(deserializer)
+                deserializer.decrease_container_depth()
+                return LoadConversationResult(value)
+            }
+        }
+    }
+
+    data class DocumentsResult(
+        val value: com.strike48.pick.shared.DocumentsOutcome,
+    ) : Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(17)
+            value.serialize(serializer)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): DocumentsResult {
+                deserializer.increase_container_depth()
+                val value = com.strike48.pick.shared.DocumentsOutcome.deserialize(deserializer)
+                deserializer.decrease_container_depth()
+                return DocumentsResult(value)
+            }
+        }
+    }
+
+    data class DocumentContentResult(
+        val value: com.strike48.pick.shared.DocumentContentOutcome,
+    ) : Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(18)
+            value.serialize(serializer)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): DocumentContentResult {
+                deserializer.increase_container_depth()
+                val value = com.strike48.pick.shared.DocumentContentOutcome.deserialize(deserializer)
+                deserializer.decrease_container_depth()
+                return DocumentContentResult(value)
+            }
+        }
+    }
+
+    data class ShareLinkResult(
+        val value: com.strike48.pick.shared.ShareLinkOutcome,
+    ) : Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(19)
+            value.serialize(serializer)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): ShareLinkResult {
+                deserializer.increase_container_depth()
+                val value = com.strike48.pick.shared.ShareLinkOutcome.deserialize(deserializer)
+                deserializer.decrease_container_depth()
+                return ShareLinkResult(value)
+            }
+        }
+    }
+
+    companion object {
+        @Throws(DeserializationError::class)
+        fun deserialize(deserializer: Deserializer): Event {
+            val index = deserializer.deserialize_variant_index()
+            return when (index) {
+                0 -> StartScan.deserialize(deserializer)
+                1 -> SendMessage.deserialize(deserializer)
+                2 -> NewChat.deserialize(deserializer)
+                3 -> OpenHistory.deserialize(deserializer)
+                4 -> CloseHistory.deserialize(deserializer)
+                5 -> SelectConversation.deserialize(deserializer)
+                6 -> OpenDocument.deserialize(deserializer)
+                7 -> CloseDocument.deserialize(deserializer)
+                8 -> CreateShareLink.deserialize(deserializer)
+                9 -> RetrySignIn.deserialize(deserializer)
+                10 -> DismissError.deserialize(deserializer)
+                11 -> SignInResult.deserialize(deserializer)
+                12 -> ConnectResult.deserialize(deserializer)
+                13 -> ScanResult.deserialize(deserializer)
+                14 -> Delta.deserialize(deserializer)
+                15 -> ConversationsResult.deserialize(deserializer)
+                16 -> LoadConversationResult.deserialize(deserializer)
+                17 -> DocumentsResult.deserialize(deserializer)
+                18 -> DocumentContentResult.deserialize(deserializer)
+                19 -> ShareLinkResult.deserialize(deserializer)
+                else -> throw DeserializationError("Unknown variant index for Event: $index")
+            }
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): Event {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class LoadConversationOutcome(
+    val messages: List<com.strike48.pick.shared.MessageView>? = null,
+    val error: String? = null,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        messages.serializeOptionOf(serializer) { level1 ->
+            level1.serialize(serializer) {
+                it.serialize(serializer)
+            }
+        }
+        error.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): LoadConversationOutcome {
+            deserializer.increase_container_depth()
+            val messages =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserializeListOf {
+                        com.strike48.pick.shared.MessageView.deserialize(deserializer)
+                    }
+                }
+            val error =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            deserializer.decrease_container_depth()
+            return LoadConversationOutcome(messages, error)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): LoadConversationOutcome {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+enum class MessageKind {
+    USER,
+    AGENTTEXT,
+    TOOLCALL;
+
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_variant_index(ordinal)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        @Throws(DeserializationError::class)
+        fun deserialize(deserializer: Deserializer): MessageKind {
+            deserializer.increase_container_depth()
+            val index = deserializer.deserialize_variant_index()
+            deserializer.decrease_container_depth()
+            return when (index) {
+                0 -> USER
+                1 -> AGENTTEXT
+                2 -> TOOLCALL
+                else -> throw DeserializationError("Unknown variant index for MessageKind: $index")
+            }
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): MessageKind {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class MessageView(
+    val sender: String,
+    val kind: com.strike48.pick.shared.MessageKind,
+    val markdown: String,
+    val tool: com.strike48.pick.shared.ToolCallView? = null,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_str(sender)
+        kind.serialize(serializer)
+        serializer.serialize_str(markdown)
+        tool.serializeOptionOf(serializer) {
+            it.serialize(serializer)
+        }
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): MessageView {
+            deserializer.increase_container_depth()
+            val sender = deserializer.deserialize_str()
+            val kind = com.strike48.pick.shared.MessageKind.deserialize(deserializer)
+            val markdown = deserializer.deserialize_str()
+            val tool =
+                deserializer.deserializeOptionOf {
+                    com.strike48.pick.shared.ToolCallView.deserialize(deserializer)
+                }
+            deserializer.decrease_container_depth()
+            return MessageView(sender, kind, markdown, tool)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): MessageView {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+sealed interface PentestOperation {
+    fun serialize(serializer: Serializer)
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    data class SignIn(
+        val apiUrl: String,
+    ) : PentestOperation {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(0)
+            serializer.serialize_str(apiUrl)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): SignIn {
+                deserializer.increase_container_depth()
+                val apiUrl = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return SignIn(apiUrl)
+            }
+        }
+    }
+
+    data class Connect(
+        val apiUrl: String,
+        val tenant: String,
+        val token: String,
+    ) : PentestOperation {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(1)
+            serializer.serialize_str(apiUrl)
+            serializer.serialize_str(tenant)
+            serializer.serialize_str(token)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): Connect {
+                deserializer.increase_container_depth()
+                val apiUrl = deserializer.deserialize_str()
+                val tenant = deserializer.deserialize_str()
+                val token = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return Connect(apiUrl, tenant, token)
+            }
+        }
+    }
+
+    data class SendScan(
+        val conversationId: String? = null,
+        val prompt: String,
+    ) : PentestOperation {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(2)
+            conversationId.serializeOptionOf(serializer) {
+                serializer.serialize_str(it)
+            }
+            serializer.serialize_str(prompt)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): SendScan {
+                deserializer.increase_container_depth()
+                val conversationId =
+                    deserializer.deserializeOptionOf {
+                        deserializer.deserialize_str()
+                    }
+                val prompt = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return SendScan(conversationId, prompt)
+            }
+        }
+    }
+
+    data class SendMessage(
+        val conversationId: String? = null,
+        val text: String,
+    ) : PentestOperation {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(3)
+            conversationId.serializeOptionOf(serializer) {
+                serializer.serialize_str(it)
+            }
+            serializer.serialize_str(text)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): SendMessage {
+                deserializer.increase_container_depth()
+                val conversationId =
+                    deserializer.deserializeOptionOf {
+                        deserializer.deserialize_str()
+                    }
+                val text = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return SendMessage(conversationId, text)
+            }
+        }
+    }
+
+    data class PollConversation(
+        val conversationId: String,
+    ) : PentestOperation {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(4)
+            serializer.serialize_str(conversationId)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): PollConversation {
+                deserializer.increase_container_depth()
+                val conversationId = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return PollConversation(conversationId)
+            }
+        }
+    }
+
+    data object ListConversations: PentestOperation {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(5)
+            serializer.decrease_container_depth()
+        }
+
+        fun deserialize(deserializer: Deserializer): ListConversations {
+            return ListConversations
+        }
+    }
+
+    data class LoadConversation(
+        val conversationId: String,
+    ) : PentestOperation {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(6)
+            serializer.serialize_str(conversationId)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): LoadConversation {
+                deserializer.increase_container_depth()
+                val conversationId = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return LoadConversation(conversationId)
+            }
+        }
+    }
+
+    data class ListDocuments(
+        val agentId: String? = null,
+    ) : PentestOperation {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(7)
+            agentId.serializeOptionOf(serializer) {
+                serializer.serialize_str(it)
+            }
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): ListDocuments {
+                deserializer.increase_container_depth()
+                val agentId =
+                    deserializer.deserializeOptionOf {
+                        deserializer.deserialize_str()
+                    }
+                deserializer.decrease_container_depth()
+                return ListDocuments(agentId)
+            }
+        }
+    }
+
+    data class GetDocumentContent(
+        val documentId: String,
+        val conversationId: String,
+    ) : PentestOperation {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(8)
+            serializer.serialize_str(documentId)
+            serializer.serialize_str(conversationId)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): GetDocumentContent {
+                deserializer.increase_container_depth()
+                val documentId = deserializer.deserialize_str()
+                val conversationId = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return GetDocumentContent(documentId, conversationId)
+            }
+        }
+    }
+
+    data class CreateSharedLink(
+        val conversationId: String,
+        val documentId: String,
+    ) : PentestOperation {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(9)
+            serializer.serialize_str(conversationId)
+            serializer.serialize_str(documentId)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): CreateSharedLink {
+                deserializer.increase_container_depth()
+                val conversationId = deserializer.deserialize_str()
+                val documentId = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return CreateSharedLink(conversationId, documentId)
+            }
+        }
+    }
+
+    companion object {
+        @Throws(DeserializationError::class)
+        fun deserialize(deserializer: Deserializer): PentestOperation {
+            val index = deserializer.deserialize_variant_index()
+            return when (index) {
+                0 -> SignIn.deserialize(deserializer)
+                1 -> Connect.deserialize(deserializer)
+                2 -> SendScan.deserialize(deserializer)
+                3 -> SendMessage.deserialize(deserializer)
+                4 -> PollConversation.deserialize(deserializer)
+                5 -> ListConversations.deserialize(deserializer)
+                6 -> LoadConversation.deserialize(deserializer)
+                7 -> ListDocuments.deserialize(deserializer)
+                8 -> GetDocumentContent.deserialize(deserializer)
+                9 -> CreateSharedLink.deserialize(deserializer)
+                else -> throw DeserializationError("Unknown variant index for PentestOperation: $index")
+            }
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): PentestOperation {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+sealed interface PentestOutcome {
+    fun serialize(serializer: Serializer)
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    data class SignedIn(
+        val token: String,
+    ) : PentestOutcome {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(0)
+            serializer.serialize_str(token)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): SignedIn {
+                deserializer.increase_container_depth()
+                val token = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return SignedIn(token)
+            }
+        }
+    }
+
+    data object Connected: PentestOutcome {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(1)
+            serializer.decrease_container_depth()
+        }
+
+        fun deserialize(deserializer: Deserializer): Connected {
+            return Connected
+        }
+    }
+
+    data class ScanQueued(
+        val conversationId: String,
+    ) : PentestOutcome {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(2)
+            serializer.serialize_str(conversationId)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): ScanQueued {
+                deserializer.increase_container_depth()
+                val conversationId = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return ScanQueued(conversationId)
+            }
+        }
+    }
+
+    data class Delta(
+        val value: com.strike48.pick.shared.ConversationDelta,
+    ) : PentestOutcome {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(3)
+            value.serialize(serializer)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): Delta {
+                deserializer.increase_container_depth()
+                val value = com.strike48.pick.shared.ConversationDelta.deserialize(deserializer)
+                deserializer.decrease_container_depth()
+                return Delta(value)
+            }
+        }
+    }
+
+    data class Conversations(
+        val list: List<com.strike48.pick.shared.ConversationRef>,
+    ) : PentestOutcome {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(4)
+            list.serialize(serializer) {
+                it.serialize(serializer)
+            }
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): Conversations {
+                deserializer.increase_container_depth()
+                val list =
+                    deserializer.deserializeListOf {
+                        com.strike48.pick.shared.ConversationRef.deserialize(deserializer)
+                    }
+                deserializer.decrease_container_depth()
+                return Conversations(list)
+            }
+        }
+    }
+
+    data class LoadedMessages(
+        val messages: List<com.strike48.pick.shared.MessageView>,
+    ) : PentestOutcome {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(5)
+            messages.serialize(serializer) {
+                it.serialize(serializer)
+            }
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): LoadedMessages {
+                deserializer.increase_container_depth()
+                val messages =
+                    deserializer.deserializeListOf {
+                        com.strike48.pick.shared.MessageView.deserialize(deserializer)
+                    }
+                deserializer.decrease_container_depth()
+                return LoadedMessages(messages)
+            }
+        }
+    }
+
+    data class Documents(
+        val list: List<com.strike48.pick.shared.DocRef>,
+    ) : PentestOutcome {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(6)
+            list.serialize(serializer) {
+                it.serialize(serializer)
+            }
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): Documents {
+                deserializer.increase_container_depth()
+                val list =
+                    deserializer.deserializeListOf {
+                        com.strike48.pick.shared.DocRef.deserialize(deserializer)
+                    }
+                deserializer.decrease_container_depth()
+                return Documents(list)
+            }
+        }
+    }
+
+    data class DocumentContent(
+        val markdown: String,
+    ) : PentestOutcome {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(7)
+            serializer.serialize_str(markdown)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): DocumentContent {
+                deserializer.increase_container_depth()
+                val markdown = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return DocumentContent(markdown)
+            }
+        }
+    }
+
+    data class SharedLink(
+        val url: String,
+    ) : PentestOutcome {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(8)
+            serializer.serialize_str(url)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): SharedLink {
+                deserializer.increase_container_depth()
+                val url = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return SharedLink(url)
+            }
+        }
+    }
+
+    data class Error(
+        val message: String,
+    ) : PentestOutcome {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(9)
+            serializer.serialize_str(message)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): Error {
+                deserializer.increase_container_depth()
+                val message = deserializer.deserialize_str()
+                deserializer.decrease_container_depth()
+                return Error(message)
+            }
+        }
+    }
+
+    companion object {
+        @Throws(DeserializationError::class)
+        fun deserialize(deserializer: Deserializer): PentestOutcome {
+            val index = deserializer.deserialize_variant_index()
+            return when (index) {
+                0 -> SignedIn.deserialize(deserializer)
+                1 -> Connected.deserialize(deserializer)
+                2 -> ScanQueued.deserialize(deserializer)
+                3 -> Delta.deserialize(deserializer)
+                4 -> Conversations.deserialize(deserializer)
+                5 -> LoadedMessages.deserialize(deserializer)
+                6 -> Documents.deserialize(deserializer)
+                7 -> DocumentContent.deserialize(deserializer)
+                8 -> SharedLink.deserialize(deserializer)
+                9 -> Error.deserialize(deserializer)
+                else -> throw DeserializationError("Unknown variant index for PentestOutcome: $index")
+            }
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): PentestOutcome {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+/// The single operation `Render` implements.
+data object RenderOperation {
+    fun serialize(serializer: Serializer) {}
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    fun deserialize(deserializer: Deserializer): RenderOperation {
+        return RenderOperation
+    }
+
+    @Throws(DeserializationError::class)
+    fun bincodeDeserialize(input: ByteArray?): RenderOperation {
+        if (input == null) {
+            throw DeserializationError("Cannot deserialize null array")
+        }
+        val deserializer = BincodeDeserializer(input)
+        val value = deserialize(deserializer)
+        if (deserializer.get_buffer_offset() < input.size) {
+            throw DeserializationError("Some input bytes were not read")
+        }
+        return value
+    }
+}
+
+/// Request for a side-effect passed from the Core to the Shell.
+/// 
+/// The `EffectId` links the `Request` with the corresponding call to [`Core::resolve`] to pass the data back
+/// to the [`App::update`] function (wrapped in the event provided to the capability originating the effect).
+data class Request(
+    val id: UInt,
+    val effect: com.strike48.pick.shared.Effect,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_u32(id)
+        effect.serialize(serializer)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): Request {
+            deserializer.increase_container_depth()
+            val id = deserializer.deserialize_u32()
+            val effect = com.strike48.pick.shared.Effect.deserialize(deserializer)
+            deserializer.decrease_container_depth()
+            return Request(id, effect)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): Request {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+/// A batch of effect requests from the Core to the Shell, as serialised by
+/// [`Bridge::update`] and [`Bridge::resolve`].
+/// 
+/// The wire format is identical to `Vec<Request<Eff>>` (the newtype is
+/// `serde(transparent)`), so existing shell code that already deserialises
+/// a `Vec<Request>` remains binary-compatible.
+/// 
+/// Registering this type with the type-generation system causes the code
+/// generators to emit a `Requests` type (with a `value` field containing the
+/// list) together with a top-level `bincodeDeserialize` / `BincodeDeserialize`
+/// helper, replacing the hand-written extension files that were previously
+/// appended by `add_extensions()`.
+data class Requests(
+    val value: List<com.strike48.pick.shared.Request>,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        value.serialize(serializer) {
+            it.serialize(serializer)
+        }
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): Requests {
+            deserializer.increase_container_depth()
+            val value =
+                deserializer.deserializeListOf {
+                    com.strike48.pick.shared.Request.deserialize(deserializer)
+                }
+            deserializer.decrease_container_depth()
+            return Requests(value)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): Requests {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class ScanOutcome(
+    val conversationId: String? = null,
+    val error: String? = null,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        conversationId.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        error.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): ScanOutcome {
+            deserializer.increase_container_depth()
+            val conversationId =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            val error =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            deserializer.decrease_container_depth()
+            return ScanOutcome(conversationId, error)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): ScanOutcome {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+enum class Screen {
+    SCAN,
+    CHAT,
+    DOCUMENTS,
+    DOCVIEWER,
+    NEEDSSIGNIN;
+
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_variant_index(ordinal)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        @Throws(DeserializationError::class)
+        fun deserialize(deserializer: Deserializer): Screen {
+            deserializer.increase_container_depth()
+            val index = deserializer.deserialize_variant_index()
+            deserializer.decrease_container_depth()
+            return when (index) {
+                0 -> SCAN
+                1 -> CHAT
+                2 -> DOCUMENTS
+                3 -> DOCVIEWER
+                4 -> NEEDSSIGNIN
+                else -> throw DeserializationError("Unknown variant index for Screen: $index")
+            }
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): Screen {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class ShareLinkOutcome(
+    val url: String? = null,
+    val error: String? = null,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        url.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        error.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): ShareLinkOutcome {
+            deserializer.increase_container_depth()
+            val url =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            val error =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            deserializer.decrease_container_depth()
+            return ShareLinkOutcome(url, error)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): ShareLinkOutcome {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class SignInOutcome(
+    val token: String? = null,
+    val error: String? = null,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        token.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        error.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): SignInOutcome {
+            deserializer.increase_container_depth()
+            val token =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            val error =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            deserializer.decrease_container_depth()
+            return SignInOutcome(token, error)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): SignInOutcome {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class ToolCallView(
+    val name: String,
+    val status: com.strike48.pick.shared.ToolStatus,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_str(name)
+        status.serialize(serializer)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): ToolCallView {
+            deserializer.increase_container_depth()
+            val name = deserializer.deserialize_str()
+            val status = com.strike48.pick.shared.ToolStatus.deserialize(deserializer)
+            deserializer.decrease_container_depth()
+            return ToolCallView(name, status)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): ToolCallView {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+enum class ToolStatus {
+    RUNNING,
+    SUCCESS,
+    ERROR;
+
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_variant_index(ordinal)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        @Throws(DeserializationError::class)
+        fun deserialize(deserializer: Deserializer): ToolStatus {
+            deserializer.increase_container_depth()
+            val index = deserializer.deserialize_variant_index()
+            deserializer.decrease_container_depth()
+            return when (index) {
+                0 -> RUNNING
+                1 -> SUCCESS
+                2 -> ERROR
+                else -> throw DeserializationError("Unknown variant index for ToolStatus: $index")
+            }
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): ToolStatus {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+data class ViewModel(
+    val screen: com.strike48.pick.shared.Screen,
+    val connection: com.strike48.pick.shared.ConnectionView,
+    val messages: List<com.strike48.pick.shared.MessageView>,
+    val scanInProgress: Boolean,
+    val showScanCard: Boolean,
+    val conversationDocs: List<com.strike48.pick.shared.DocRef>,
+    val allDocuments: List<com.strike48.pick.shared.DocRef>,
+    val history: List<com.strike48.pick.shared.ConversationRef>,
+    val openDocument: com.strike48.pick.shared.DocView? = null,
+    val needsSignIn: Boolean,
+    val error: String? = null,
+    val toolCalls: List<com.strike48.pick.shared.ToolCallView>,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        screen.serialize(serializer)
+        connection.serialize(serializer)
+        messages.serialize(serializer) {
+            it.serialize(serializer)
+        }
+        serializer.serialize_bool(scanInProgress)
+        serializer.serialize_bool(showScanCard)
+        conversationDocs.serialize(serializer) {
+            it.serialize(serializer)
+        }
+        allDocuments.serialize(serializer) {
+            it.serialize(serializer)
+        }
+        history.serialize(serializer) {
+            it.serialize(serializer)
+        }
+        openDocument.serializeOptionOf(serializer) {
+            it.serialize(serializer)
+        }
+        serializer.serialize_bool(needsSignIn)
+        error.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        toolCalls.serialize(serializer) {
+            it.serialize(serializer)
+        }
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): ViewModel {
+            deserializer.increase_container_depth()
+            val screen = com.strike48.pick.shared.Screen.deserialize(deserializer)
+            val connection = com.strike48.pick.shared.ConnectionView.deserialize(deserializer)
+            val messages =
+                deserializer.deserializeListOf {
+                    com.strike48.pick.shared.MessageView.deserialize(deserializer)
+                }
+            val scanInProgress = deserializer.deserialize_bool()
+            val showScanCard = deserializer.deserialize_bool()
+            val conversationDocs =
+                deserializer.deserializeListOf {
+                    com.strike48.pick.shared.DocRef.deserialize(deserializer)
+                }
+            val allDocuments =
+                deserializer.deserializeListOf {
+                    com.strike48.pick.shared.DocRef.deserialize(deserializer)
+                }
+            val history =
+                deserializer.deserializeListOf {
+                    com.strike48.pick.shared.ConversationRef.deserialize(deserializer)
+                }
+            val openDocument =
+                deserializer.deserializeOptionOf {
+                    com.strike48.pick.shared.DocView.deserialize(deserializer)
+                }
+            val needsSignIn = deserializer.deserialize_bool()
+            val error =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            val toolCalls =
+                deserializer.deserializeListOf {
+                    com.strike48.pick.shared.ToolCallView.deserialize(deserializer)
+                }
+            deserializer.decrease_container_depth()
+            return ViewModel(screen, connection, messages, scanInProgress, showScanCard, conversationDocs, allDocuments, history, openDocument, needsSignIn, error, toolCalls)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): ViewModel {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}

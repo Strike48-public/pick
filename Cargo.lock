@@ -7531,6 +7531,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "crux_core",
+ "openssl",
  "pentest-core",
  "pick-crux-core",
  "pick-crux-middleware",
