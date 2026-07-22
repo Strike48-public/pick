@@ -41,15 +41,19 @@ final class OAuthManager: NSObject, ObservableObject, ASWebAuthenticationPresent
             DispatchQueue.main.async { self.inProgress = false }
 
             if let error {
+                NSLog("[PickCrux] OAuth session error: \(error.localizedDescription)")
                 DispatchQueue.main.async { self.lastError = error.localizedDescription }
                 return
             }
+            NSLog("[PickCrux] OAuth callback URL: \(callbackURL?.absoluteString ?? "nil")")
             guard let callbackURL,
                   let token = Self.extractAccessToken(from: callbackURL)
             else {
+                NSLog("[PickCrux] OAuth: no access_token in callback URL")
                 DispatchQueue.main.async { self.lastError = "no access_token in callback" }
                 return
             }
+            NSLog("[PickCrux] OAuth: extracted token len=\(token.count)")
             DispatchQueue.main.async { onToken(token) }
         }
         session.presentationContextProvider = self

@@ -33,9 +33,11 @@ struct SignInView: View {
             }
 
             Button {
-                // Re-drive the core sign-in effect for state parity, then run
-                // native OAuth to obtain the workspace-scoped session token.
-                core.send(.retrySignIn)
+                // The shell owns OAuth: run the native browser flow directly.
+                // Do NOT drive the in-core SignIn effect — that path hits the
+                // browser-auth stub in this build and pushes the model into
+                // NeedsSignIn, which would trap the UI on this screen even after
+                // a successful native sign-in.
                 oauth.signIn(onToken: onToken)
             } label: {
                 if oauth.inProgress {

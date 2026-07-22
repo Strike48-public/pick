@@ -24,7 +24,11 @@ struct ContentView: View {
         ZStack {
             Theme.background.ignoresSafeArea()
 
-            if !hasToken || core.vm.needsSignIn || core.vm.screen == .needsSignIn {
+            // Once the shell has adopted a workspace-scoped OAuth token, show the
+            // app. `hasToken` takes precedence over the model's `needsSignIn`,
+            // which can be stale: the in-core SignIn effect is a stub in this
+            // build and is not what authenticates the shell.
+            if !hasToken {
                 SignInView(core: core, oauth: oauth, onToken: adoptToken)
             } else {
                 VStack(spacing: 0) {
@@ -67,7 +71,6 @@ struct ContentView: View {
                 // auth session resolves its presentation anchor (a real user tap
                 // already happens after the screen is active).
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                    core.send(.retrySignIn)
                     oauth.signIn(onToken: adoptToken)
                 }
             }
@@ -77,6 +80,7 @@ struct ContentView: View {
     /// Adopt the workspace-scoped token from the browser flow and advance to
     /// the Scan screen.
     private func adoptToken(_ token: String) {
+        NSLog("[PickCrux] adoptToken: got token len=\(token.count), advancing past Sign In")
         core.setToken(token)
         hasToken = true
     }
