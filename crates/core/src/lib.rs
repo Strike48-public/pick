@@ -6,6 +6,7 @@
 pub mod aggression;
 pub mod config;
 pub mod connector;
+pub mod connector_registration;
 pub mod error;
 pub mod evidence;
 pub mod export;

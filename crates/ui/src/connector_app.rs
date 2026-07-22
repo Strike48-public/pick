@@ -251,58 +251,10 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
 // ---------------------------------------------------------------------------
 
 /// Derive the HTTPS(S) Matrix API URL from a connector host string.
-/// Strips transport scheme prefixes and a leading `connectors-` host label,
-/// then applies the TLS choice.
+/// Delegates to the shared [`pentest_core::connector_registration::derive_api_url`]
+/// so the Dioxus app and the crux FFI use ONE implementation.
 fn derive_api_url(host: &str, use_tls: bool) -> String {
-    let scheme = if use_tls { "https" } else { "http" };
-    let schemes = [
-        "grpc://", "grpcs://", "http://", "https://", "ws://", "wss://",
-    ];
-    let host_lower = host.to_lowercase();
-    let mut bare_host = host;
-    for prefix in &schemes {
-        if host_lower.starts_with(prefix) {
-            bare_host = &host[prefix.len()..];
-            break;
-        }
-    }
-    let api_host = bare_host.strip_prefix("connectors-").unwrap_or(bare_host);
-    let api_host = api_host.trim_end_matches('/');
-    format!("{scheme}://{api_host}")
-}
-
-#[cfg(test)]
-mod derive_api_url_tests {
-    use super::derive_api_url;
-
-    #[test]
-    fn strips_ws_scheme_and_applies_tls() {
-        assert_eq!(
-            derive_api_url("wss://plg.strike48.test", true),
-            "https://plg.strike48.test"
-        );
-    }
-
-    #[test]
-    fn strips_connectors_label() {
-        assert_eq!(
-            derive_api_url("wss://connectors-studio.strike48.test", true),
-            "https://studio.strike48.test"
-        );
-    }
-
-    #[test]
-    fn no_tls_uses_http_and_trims_trailing_slash() {
-        assert_eq!(
-            derive_api_url("ws://localhost:3030/", false),
-            "http://localhost:3030"
-        );
-    }
-
-    #[test]
-    fn bare_host_gets_scheme() {
-        assert_eq!(derive_api_url("example.com", true), "https://example.com");
-    }
+    pentest_core::connector_registration::derive_api_url(host, use_tls)
 }
 
 /// Shared connector app component.
@@ -724,7 +676,11 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                     }
                 };
 
-                let ott = match pentest_core::matrix::pre_approve(
+                // Exchange the JWT for a tenant-scoped OTT, stage it, and point
+                // the SDK at it (STRIKE48_REGISTRATION_TOKEN_FILE) via the shared
+                // orchestration so the Dioxus app and crux FFI register the same
+                // way.
+                let ott = match pentest_core::connector_registration::prepare_connector_registration(
                     &api_url,
                     &jwt,
                     &base_config.connector_name,
@@ -743,22 +699,8 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                     }
                 };
 
-                let staged = match pentest_core::matrix::stage_ott_for_sdk(&ott) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        terminal_lines
-                            .write()
-                            .push(TerminalLine::error(format!("Could not stage OTT: {e}")));
-                        status.set(ConnectorStatus::Disconnected);
-                        connecting_step.set(None);
-                        needs_sign_in.set(true);
-                        return;
-                    }
-                };
-
-                // Point the SDK at the staged OTT and adopt the authoritative
-                // tenant so the connector registers under the personal tenant.
-                std::env::set_var("STRIKE48_REGISTRATION_TOKEN_FILE", &staged);
+                // Adopt the authoritative tenant so the connector registers under
+                // the personal tenant.
                 let mut c = base_config;
                 c.tenant_id = ott.tenant_id.clone();
                 config.set(c.clone());
