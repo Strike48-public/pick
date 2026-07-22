@@ -697,6 +697,43 @@ body {
     overflow: hidden;
 }
 
+/* Easy Mode history dropdown — touch-friendly rows (the console's dense
+   0.35rem/0.72rem rows are far too small for a finger on iOS). Sage surface,
+   comfortable row height, readable type. Scoped to easy mode. */
+.easy-mode .chat-history-dropdown {
+    top: calc(env(safe-area-inset-top, 0px) + 56px);
+    max-height: 60vh;
+    background: var(--em-surface);
+    border-color: var(--em-border);
+    border-radius: var(--em-radius-card);
+    box-shadow: 0 8px 28px var(--em-shadow);
+}
+.easy-mode .chat-history-item {
+    padding: var(--em-space-3) var(--em-space-4);
+    min-height: 52px;
+    border-bottom-color: var(--em-hairline);
+    gap: var(--em-space-3);
+}
+.easy-mode .chat-history-title {
+    font-size: 15px;
+    color: var(--em-text);
+}
+.easy-mode .chat-history-time {
+    font-size: 12px;
+    opacity: 0.6;
+}
+.easy-mode .chat-history-item.active {
+    background: var(--em-surface-soft);
+    border-left: 3px solid var(--em-brand);
+}
+.easy-mode .chat-history-item.active .chat-history-title,
+.easy-mode .chat-history-item:active .chat-history-title { color: var(--em-brand); }
+.easy-mode .chat-history-loading,
+.easy-mode .chat-history-empty {
+    padding: var(--em-space-4);
+    font-size: 14px;
+}
+
 /* Easy Mode chat input row — Sage styleguide: rounded input + pill Send,
    both the same height and vertically centred. Scoped to easy mode so the
    expert console keeps its denser square-cornered look. */
@@ -744,9 +781,53 @@ body {
 .easy-docs-chevron { opacity: 0.4; font-size: 20px; padding-right: 2px; }
 .easy-docs-prev-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-top: 4px; }
 
+/* Conversation-scoped documents strip, pinned above the chat input. Fixed
+   height so it can't fight the chat for space; only appears when the active
+   conversation has produced a report. */
+.easy-conv-docs {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--em-space-1);
+    padding: var(--em-space-2) var(--em-pad-list);
+    border-top: 1px solid var(--em-hairline);
+    background: var(--em-surface-faint);
+    max-height: 30vh;
+    overflow-y: auto;
+}
+.easy-conv-docs-header {
+    display: flex; align-items: center; gap: var(--em-space-2);
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
+    opacity: 0.6; color: var(--em-text);
+}
+.easy-conv-docs-icon { font-size: 13px; }
+.easy-conv-docs-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: var(--em-space-2);
+    padding: var(--em-space-3) var(--em-space-1);
+    min-height: 44px;
+    cursor: pointer;
+}
+.easy-conv-docs-row:active { background: var(--em-surface-soft); }
+.easy-conv-docs-title {
+    flex: 1; min-width: 0;
+    font-size: 15px; color: var(--em-text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
 /* Full-screen wrapper for the report viewer — fills the viewport with no extra
    top padding (the viewer bar owns the safe-area inset). */
 .easy-doc-screen { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+/* Full-viewport overlay layered above the always-mounted easy-mode shell, so
+   the chat (and the live conversation) stays mounted underneath — tapping Back
+   returns to the same conversation instead of a fresh, empty one. */
+.easy-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: var(--background);
+}
 
 .easy-signin {
     flex: 1;
@@ -775,7 +856,15 @@ body {
        bottom edge (top:100%) instead of a guessed pixel offset. */
     position: relative;
 }
-.easy-doc-back { background: none; border: none; color: var(--em-brand); font-size: 17px; padding: 4px; flex-shrink: 0; }
+/* Chevron-only back control — larger glyph + a proper touch target. */
+.easy-doc-back {
+    background: none; border: none; color: var(--em-brand);
+    font-size: 28px; line-height: 1;
+    padding: 0 8px; margin-left: -4px;
+    min-width: 40px; height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; cursor: pointer;
+}
 .easy-doc-viewer-title { flex: 1; font-weight: 600; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .easy-doc-viewer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px; }
 

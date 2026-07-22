@@ -144,6 +144,10 @@ pub struct ChatPanelProps {
     /// Mode uses this to hide the Scan card once a chat has started.
     #[props(default)]
     pub conversation_active_out: Option<Signal<bool>>,
+    /// Output signal: the active conversation's ID (None until one starts).
+    /// Easy Mode uses this to show a documents strip scoped to THIS conversation.
+    #[props(default)]
+    pub conversation_id_out: Option<Signal<Option<String>>>,
 }
 
 #[component]
@@ -171,6 +175,16 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             let active = !messages.read().is_empty();
             if *out.peek() != active {
                 out.set(active);
+            }
+        });
+    }
+    // Mirror the active conversation ID so Easy Mode can scope its documents
+    // strip to the current conversation.
+    if let Some(mut out) = props.conversation_id_out {
+        use_effect(move || {
+            let cid = conversation_id.read().clone();
+            if *out.peek() != cid {
+                out.set(cid);
             }
         });
     }

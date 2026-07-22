@@ -146,6 +146,103 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
 }
 
 // ---------------------------------------------------------------------------
+// ConversationDocs — bottom strip scoped to the CURRENT conversation
+// ---------------------------------------------------------------------------
+
+#[derive(Props, Clone, PartialEq)]
+pub struct ConversationDocsProps {
+    pub api_url: String,
+    pub auth_token: String,
+    /// The Easy Mode agent id (documents are fetched per agent, then filtered
+    /// to the active conversation below).
+    pub agent_id: Signal<Option<String>>,
+    /// The active conversation's id. When None (no conversation yet) the strip
+    /// renders nothing.
+    pub conversation_id: Signal<Option<String>>,
+    /// Fired when the user taps a report row.
+    pub on_open: EventHandler<DocumentSummary>,
+}
+
+/// A compact bottom strip listing reports written in the *current* conversation.
+/// Distinct from [`DocumentsPanel`] (the top-bar Docs overlay lists ALL reports);
+/// this is conversation-scoped and only appears once the active conversation has
+/// produced at least one document.
+#[component]
+pub fn ConversationDocs(props: ConversationDocsProps) -> Element {
+    let api_url = props.api_url.clone();
+    let auth_token = props.auth_token.clone();
+    let agent_id = props.agent_id;
+    let conversation_id = props.conversation_id;
+
+    // Reports belonging to the active conversation, newest first.
+    let mut docs = use_signal(Vec::<DocumentSummary>::new);
+
+    {
+        let api_url = api_url.clone();
+        let auth_token = auth_token.clone();
+        use_effect(move || {
+            let aid = agent_id();
+            let cid = conversation_id();
+            let api_url = api_url.clone();
+            let auth_token = auth_token.clone();
+            // No conversation yet, or not connected → nothing to show.
+            let Some(cid) = cid else {
+                docs.set(Vec::new());
+                return;
+            };
+            if auth_token.is_empty() || api_url.is_empty() {
+                return;
+            }
+            spawn(async move {
+                // Poll so a report written mid-conversation appears on its own.
+                loop {
+                    let client = MatrixChatClient::new(api_url.clone())
+                        .with_auth_token(auth_token.clone());
+                    if let Ok(list) = client.list_documents(aid.as_deref()).await {
+                        let mut mine: Vec<DocumentSummary> = list
+                            .into_iter()
+                            .filter(|d| d.conversation_id == cid)
+                            .collect();
+                        // Newest first (timestamp is ISO-8601, so lexical sort works).
+                        mine.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+                        docs.set(mine);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            });
+        });
+    }
+
+    let items = docs();
+    if items.is_empty() {
+        return rsx! {};
+    }
+
+    rsx! {
+        div { class: "easy-conv-docs",
+            div { class: "easy-conv-docs-header",
+                span { class: "easy-conv-docs-icon", "\u{1F4C4}" }
+                span { "Documents from this chat" }
+            }
+            for doc in items {
+                {
+                    let title = doc.title.clone();
+                    let open_doc = doc.clone();
+                    rsx! {
+                        div {
+                            class: "easy-conv-docs-row",
+                            onclick: move |_| props.on_open.call(open_doc.clone()),
+                            span { class: "easy-conv-docs-title", "{title}" }
+                            span { class: "easy-docs-chevron", "\u{203A}" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // DocumentViewer — full-screen report render + share actions
 // ---------------------------------------------------------------------------
 
@@ -251,8 +348,9 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
             div { class: "easy-doc-viewer-bar",
                 button {
                     class: "easy-doc-back",
+                    "aria-label": "Back",
                     onclick: move |_| props.on_back.call(()),
-                    "‹ Back"
+                    "‹"
                 }
                 span { class: "easy-doc-viewer-title", "{title}" }
                 // Top-right share icon → opens our share menu, anchored to the

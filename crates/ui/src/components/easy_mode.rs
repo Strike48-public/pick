@@ -6,7 +6,7 @@ use pentest_core::matrix::DocumentSummary;
 
 use super::chat_panel::ChatHeaderCtx;
 use super::icons::{FileText, History, Network, Plus, STRIKE48_S_BADGE_SVG};
-use crate::components::{ChatPanel, DocumentViewer, DocumentsPanel};
+use crate::components::{ChatPanel, ConversationDocs, DocumentViewer, DocumentsPanel};
 
 /// The canned chat message the Easy Mode "Scan" button sends. It instructs the
 /// server-side agent to enumerate local interfaces, scan the local subnet, and
@@ -50,6 +50,9 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     let mut viewing = use_signal(|| None::<DocumentSummary>);
     // True once a conversation has messages — hides the Scan card.
     let conversation_active = use_signal(|| false);
+    // The active conversation's ID — scopes the bottom documents strip to docs
+    // written in THIS conversation (the top-bar Docs icon lists all reports).
+    let conversation_id = use_signal(|| None::<String>);
     // Whether the full-screen Reports list overlay is open (Docs icon).
     let mut show_docs = use_signal(|| false);
 
@@ -76,14 +79,20 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
         }
     });
 
-    // A report open in the viewer replaces the whole Easy Mode screen so it's
-    // genuinely full-screen (matches the app's signal-driven navigation).
-    if let Some(doc) = viewing() {
-        // Wrap in .easy-doc-screen (full viewport height, no extra top padding —
-        // the viewer's own bar handles the safe area) rather than .easy-mode,
-        // whose 59px notch padding would double up and leave a gap above "Back".
-        return rsx! {
-            div { class: "easy-doc-screen",
+    let ctx = chat_header_ctx.read().clone();
+    let has_ctx = ctx.is_some();
+
+    // The base shell (brand bar + scan card + chat) is ALWAYS rendered so the
+    // ChatPanel — and thus the live conversation — stays mounted. The report
+    // viewer, reports list, and sign-in retry are layered OVER it as overlays
+    // rather than early-returns that would unmount the chat and lose the
+    // conversation when the user taps Back.
+    rsx! {
+        // ---- Overlays (mounted on top of the shell) ----
+        if let Some(doc) = viewing() {
+            // .easy-doc-screen is a fixed full-viewport layer; the viewer's own
+            // bar handles the safe area (no double notch padding).
+            div { class: "easy-doc-screen easy-overlay",
                 DocumentViewer {
                     api_url: props.api_url.clone(),
                     auth_token: auth_token(),
@@ -91,18 +100,15 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                     on_back: move |_| viewing.set(None),
                 }
             }
-        };
-    }
-
-    // Docs overlay: a full-screen Reports list opened by the top-bar Docs icon.
-    if show_docs() {
-        return rsx! {
-            div { class: "easy-doc-screen",
+        }
+        if show_docs() {
+            div { class: "easy-doc-screen easy-overlay",
                 div { class: "easy-doc-viewer-bar",
                     button {
                         class: "easy-doc-back",
+                        "aria-label": "Back",
                         onclick: move |_| show_docs.set(false),
-                        "‹ Back"
+                        "‹"
                     }
                     span { class: "easy-doc-viewer-title", "Reports" }
                 }
@@ -118,34 +124,30 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                     }
                 }
             }
-        };
-    }
-
-    if needs_sign_in() {
-        let mut needs_sign_in = needs_sign_in;
-        let mut retry_tick = retry_tick;
-        return rsx! {
-            div { class: "easy-doc-screen",
-                div { class: "easy-signin",
-                    p { class: "easy-signin-title", "Sign in to connect to Strike48" }
-                    p { class: "easy-signin-sub", "We could not complete sign-in. Tap retry to try again." }
-                    button {
-                        class: "action-card",
-                        onclick: move |_| {
-                            needs_sign_in.set(false);
-                            retry_tick.set(retry_tick() + 1);
-                        },
-                        span { class: "action-card-label", "Retry sign-in" }
+        }
+        if needs_sign_in() {
+            {
+                let mut needs_sign_in = needs_sign_in;
+                let mut retry_tick = retry_tick;
+                rsx! {
+                    div { class: "easy-doc-screen easy-overlay",
+                        div { class: "easy-signin",
+                            p { class: "easy-signin-title", "Sign in to connect to Strike48" }
+                            p { class: "easy-signin-sub", "We could not complete sign-in. Tap retry to try again." }
+                            button {
+                                class: "action-card",
+                                onclick: move |_| {
+                                    needs_sign_in.set(false);
+                                    retry_tick.set(retry_tick() + 1);
+                                },
+                                span { class: "action-card-label", "Retry sign-in" }
+                            }
+                        }
                     }
                 }
             }
-        };
-    }
+        }
 
-    let ctx = chat_header_ctx.read().clone();
-    let has_ctx = ctx.is_some();
-
-    rsx! {
         div { class: "easy-mode",
             // Co-brand top bar: Strike48 "S" badge + "Pick" + action icons.
             div { class: "easy-brandbar",
@@ -216,7 +218,18 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                     open_conversation_id: props.conversation_mailbox,
                     selected_agent_out: Some(agent_id),
                     conversation_active_out: Some(conversation_active),
+                    conversation_id_out: Some(conversation_id),
                 }
+            }
+            // Conversation-scoped documents strip: shows reports written in the
+            // CURRENT conversation, pinned to the bottom. The top-bar Docs icon
+            // still lists all reports across conversations.
+            ConversationDocs {
+                api_url: props.api_url.clone(),
+                auth_token: auth_token(),
+                agent_id,
+                conversation_id,
+                on_open: move |doc: DocumentSummary| viewing.set(Some(doc)),
             }
         }
     }
