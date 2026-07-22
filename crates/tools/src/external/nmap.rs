@@ -772,11 +772,14 @@ fn calculate_timeout(
     // Estimate number of target hosts
     let host_count = estimate_host_count(target);
 
-    // Estimate number of ports
-    let port_count = match ports {
+    // Estimate number of ports. Fold the keyword/full-range synonyms the same
+    // way resolve_port_args does (#257) so a full scan requested as "-" /
+    // "1-65535" / "ALL" is sized as 65535 ports, not mis-estimated as 1 and
+    // clamped to the 60s floor (which would kill the scan mid-run).
+    let port_count = match ports.trim().to_ascii_lowercase().as_str() {
         "top100" => 100,
         "top1000" => 1000,
-        "all" => 65535,
+        "all" | "-" | "1-65535" => 65535,
         _ => {
             // Parse custom port spec (e.g., "80,443", "1-1000", "80-443,8000-9000")
             parse_port_count(ports)
@@ -1209,6 +1212,25 @@ mod tests {
             all_ports,
             top1000
         );
+    }
+
+    #[test]
+    fn full_range_synonyms_get_the_same_timeout_as_all() {
+        // Regression (#257): the full-port-range synonyms resolve_port_args accepts
+        // ("-", "1-65535", case variants) must estimate the same 65535-port workload
+        // as "all". Before, calculate_timeout only knew the literal "all" and fell
+        // through to parse_port_count, which returned 1 for "-"/"ALL" -> the full scan
+        // was clamped to the 60s minimum and killed mid-scan.
+        let target = "10.0.4.0/24";
+        let all = calculate_timeout(target, "all", "connect", 4, false);
+        for synonym in ["-", "1-65535", "ALL", "  all  "] {
+            assert_eq!(
+                calculate_timeout(target, synonym, "connect", 4, false),
+                all,
+                "ports={:?} should time out like a full scan, not the 60s floor",
+                synonym
+            );
+        }
     }
 
     #[test]
