@@ -8,6 +8,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +26,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -41,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.strike48.pick.shared.DocRef
 import com.strike48.pick.shared.MessageView
+import com.strike48.pick.shared.QuickActionView
 import com.strike48.pick.shared.ToolCallView
 
 /** Scrolling message list with an animated agent-activity status line. */
@@ -134,6 +137,54 @@ fun TypingIndicator(label: String) {
         }
         if (label.isNotEmpty()) {
             Text(text = label, color = PickColors.Muted, fontSize = 14.sp)
+        }
+    }
+}
+
+/**
+ * Contextual "Next Steps" chips shown below the message list after a successful
+ * tool call. Tapping a chip fires a follow-up `SendMessage(chip.message)`. The
+ * chips are computed in Rust (middleware quick-action registry); the shell just
+ * renders label + fires the message.
+ */
+@Composable
+fun NextStepsRow(actions: List<QuickActionView>, onSend: (String) -> Unit) {
+    if (actions.isEmpty()) return
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = "Next Steps",
+            color = PickColors.Muted,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            actions.forEach { action ->
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(PickColors.SubtleFill)
+                        .border(1.dp, PickColors.Brand.copy(alpha = 0.4f), RoundedCornerShape(999.dp))
+                        .clickable { onSend(action.message) }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                ) {
+                    Text(
+                        text = action.label,
+                        color = PickColors.Text,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+            }
         }
     }
 }

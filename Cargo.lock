@@ -7555,6 +7555,7 @@ dependencies = [
  "base64",
  "crux_core",
  "pentest-core",
+ "pentest-tools",
  "pick-crux-core",
  "serde_json",
  "tokio",

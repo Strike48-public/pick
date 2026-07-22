@@ -60,6 +60,11 @@ struct ChatList: View {
                 }
             }
 
+            // Contextual "Next Steps" chips from the last successful tool call.
+            if !core.vm.nextSteps.isEmpty {
+                nextStepsRow
+            }
+
             // Conversation-scoped documents strip pinned above the input.
             if !core.vm.conversationDocs.isEmpty {
                 conversationDocsStrip
@@ -67,6 +72,37 @@ struct ChatList: View {
 
             InputRow(core: core)
         }
+    }
+
+    // Contextual next-step chips: a horizontal row of pills below the messages.
+    // Tapping one fires the follow-up message the chip carries (computed in Rust).
+    private var nextStepsRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Next Steps")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.muted)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(core.vm.nextSteps.enumerated()), id: \.offset) { _, action in
+                        Button {
+                            core.send(.sendMessage(action.message))
+                        } label: {
+                            Text(action.label)
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(Theme.text)
+                                .padding(.vertical, 8)
+                                .padding(.horizontal, 14)
+                                .background(Capsule().fill(Theme.faintWash))
+                                .overlay(Capsule().stroke(Theme.brand.opacity(0.4), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // Rows are laid out directly (no greedy ScrollView, which stretched the

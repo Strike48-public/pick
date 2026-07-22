@@ -277,13 +277,18 @@ public struct ConversationDelta: Hashable, Equatable {
     /// upstream failure. `None` on a normal (success) delta. When present the
     /// App treats the delta as terminal and surfaces the notice.
     public var notice: NoticeView?
+    /// Contextual next-step suggestions computed by the middleware from the last
+    /// successful tool call's (name, result) via the quick-action registry. The
+    /// App stores these on the model and projects them into the ViewModel.
+    public var nextSteps: [QuickActionView]
 
-    public init(messages: [MessageView], toolCalls: [ToolCallView], done: Bool, activity: AgentActivity, notice: NoticeView?) {
+    public init(messages: [MessageView], toolCalls: [ToolCallView], done: Bool, activity: AgentActivity, notice: NoticeView?, nextSteps: [QuickActionView]) {
         self.messages = messages
         self.toolCalls = toolCalls
         self.done = done
         self.activity = activity
         self.notice = notice
+        self.nextSteps = nextSteps
     }
 
     public func serialize<S: Serializer>(serializer: S) throws {
@@ -298,6 +303,9 @@ public struct ConversationDelta: Hashable, Equatable {
         try self.activity.serialize(serializer: serializer)
         try serializeOption(value: self.notice, serializer: serializer) { value, serializer in
             try value.serialize(serializer: serializer)
+        }
+        try serializeArray(value: self.nextSteps, serializer: serializer) { item, serializer in
+            try item.serialize(serializer: serializer)
         }
         try serializer.decrease_container_depth()
     }
@@ -321,8 +329,11 @@ public struct ConversationDelta: Hashable, Equatable {
         let notice = try deserializeOption(deserializer: deserializer) { deserializer in
             try NoticeView.deserialize(deserializer: deserializer)
         }
+        let nextSteps = try deserializeArray(deserializer: deserializer) { deserializer in
+            try QuickActionView.deserialize(deserializer: deserializer)
+        }
         try deserializer.decrease_container_depth()
-        return ConversationDelta(messages: messages, toolCalls: toolCalls, done: done, activity: activity, notice: notice)
+        return ConversationDelta(messages: messages, toolCalls: toolCalls, done: done, activity: activity, notice: notice, nextSteps: nextSteps)
     }
 
     public static func bincodeDeserialize(input: [UInt8]) throws -> ConversationDelta {
@@ -483,11 +494,16 @@ public struct DocRef: Hashable, Equatable {
     public var id: String
     public var title: String
     public var conversationId: String
+    /// ISO-8601 creation time (the document's `created_at`). Used to order the
+    /// Reports list newest-first and dedup repeated scans. ISO-8601 sorts
+    /// lexically in chronological order. Empty when the server omitted it.
+    public var timestamp: String
 
-    public init(id: String, title: String, conversationId: String) {
+    public init(id: String, title: String, conversationId: String, timestamp: String) {
         self.id = id
         self.title = title
         self.conversationId = conversationId
+        self.timestamp = timestamp
     }
 
     public func serialize<S: Serializer>(serializer: S) throws {
@@ -495,6 +511,7 @@ public struct DocRef: Hashable, Equatable {
         try serializer.serialize_str(value: self.id)
         try serializer.serialize_str(value: self.title)
         try serializer.serialize_str(value: self.conversationId)
+        try serializer.serialize_str(value: self.timestamp)
         try serializer.decrease_container_depth()
     }
 
@@ -509,8 +526,9 @@ public struct DocRef: Hashable, Equatable {
         let id = try deserializer.deserialize_str()
         let title = try deserializer.deserialize_str()
         let conversationId = try deserializer.deserialize_str()
+        let timestamp = try deserializer.deserialize_str()
         try deserializer.decrease_container_depth()
-        return DocRef(id: id, title: title, conversationId: conversationId)
+        return DocRef(id: id, title: title, conversationId: conversationId, timestamp: timestamp)
     }
 
     public static func bincodeDeserialize(input: [UInt8]) throws -> DocRef {
@@ -530,13 +548,22 @@ public struct DocView: Hashable, Equatable {
     /// Pre-parsed markdown blocks for native rendering. Derived from `markdown_body`.
     public var blocks: [MarkdownBlock]
     public var shareUrl: String?
+    /// The public link transformed for inline browser preview (`?preview=1`).
+    /// Set alongside `share_url`; the shell opens this in the system browser for
+    /// "Open in browser". `None` until a share link exists.
+    public var previewUrl: String?
+    /// Per-network share destinations (X/LinkedIn/Facebook), each carrying a
+    /// ready-to-open compose URL. Empty until a share link exists.
+    public var socialLinks: [SocialLink]
 
-    public init(id: String, title: String, markdownBody: String, blocks: [MarkdownBlock], shareUrl: String?) {
+    public init(id: String, title: String, markdownBody: String, blocks: [MarkdownBlock], shareUrl: String?, previewUrl: String?, socialLinks: [SocialLink]) {
         self.id = id
         self.title = title
         self.markdownBody = markdownBody
         self.blocks = blocks
         self.shareUrl = shareUrl
+        self.previewUrl = previewUrl
+        self.socialLinks = socialLinks
     }
 
     public func serialize<S: Serializer>(serializer: S) throws {
@@ -549,6 +576,12 @@ public struct DocView: Hashable, Equatable {
         }
         try serializeOption(value: self.shareUrl, serializer: serializer) { value, serializer in
             try serializer.serialize_str(value: value)
+        }
+        try serializeOption(value: self.previewUrl, serializer: serializer) { value, serializer in
+            try serializer.serialize_str(value: value)
+        }
+        try serializeArray(value: self.socialLinks, serializer: serializer) { item, serializer in
+            try item.serialize(serializer: serializer)
         }
         try serializer.decrease_container_depth()
     }
@@ -570,8 +603,14 @@ public struct DocView: Hashable, Equatable {
         let shareUrl = try deserializeOption(deserializer: deserializer) { deserializer in
             try deserializer.deserialize_str()
         }
+        let previewUrl = try deserializeOption(deserializer: deserializer) { deserializer in
+            try deserializer.deserialize_str()
+        }
+        let socialLinks = try deserializeArray(deserializer: deserializer) { deserializer in
+            try SocialLink.deserialize(deserializer: deserializer)
+        }
         try deserializer.decrease_container_depth()
-        return DocView(id: id, title: title, markdownBody: markdownBody, blocks: blocks, shareUrl: shareUrl)
+        return DocView(id: id, title: title, markdownBody: markdownBody, blocks: blocks, shareUrl: shareUrl, previewUrl: previewUrl, socialLinks: socialLinks)
     }
 
     public static func bincodeDeserialize(input: [UInt8]) throws -> DocView {
@@ -1362,7 +1401,7 @@ indirect public enum PentestOperation: Hashable, Equatable {
     case loadConversation(conversationId: String)
     case listDocuments(agentId: String?)
     case getDocumentContent(documentId: String, conversationId: String)
-    case createSharedLink(conversationId: String, documentId: String)
+    case createSharedLink(conversationId: String, documentId: String, title: String)
 
     public func serialize<S: Serializer>(serializer: S) throws {
         try serializer.increase_container_depth()
@@ -1404,10 +1443,11 @@ indirect public enum PentestOperation: Hashable, Equatable {
             try serializer.serialize_variant_index(value: 8)
             try serializer.serialize_str(value: documentId)
             try serializer.serialize_str(value: conversationId)
-        case .createSharedLink(let conversationId, let documentId):
+        case .createSharedLink(let conversationId, let documentId, let title):
             try serializer.serialize_variant_index(value: 9)
             try serializer.serialize_str(value: conversationId)
             try serializer.serialize_str(value: documentId)
+            try serializer.serialize_str(value: title)
         }
         try serializer.decrease_container_depth()
     }
@@ -1471,8 +1511,9 @@ indirect public enum PentestOperation: Hashable, Equatable {
         case 9:
             let conversationId = try deserializer.deserialize_str()
             let documentId = try deserializer.deserialize_str()
+            let title = try deserializer.deserialize_str()
             try deserializer.decrease_container_depth()
-            return .createSharedLink(conversationId: conversationId, documentId: documentId)
+            return .createSharedLink(conversationId: conversationId, documentId: documentId, title: title)
         default: throw DeserializationError.invalidInput(issue: "Unknown variant index for PentestOperation: \(index)")
         }
     }
@@ -1496,7 +1537,7 @@ indirect public enum PentestOutcome: Hashable, Equatable {
     case loadedMessages(messages: [MessageView])
     case documents(list: [DocRef])
     case documentContent(markdown: String)
-    case sharedLink(url: String)
+    case sharedLink(url: String, previewUrl: String, socialLinks: [SocialLink])
     case error(message: String)
 
     public func serialize<S: Serializer>(serializer: S) throws {
@@ -1531,9 +1572,13 @@ indirect public enum PentestOutcome: Hashable, Equatable {
         case .documentContent(let markdown):
             try serializer.serialize_variant_index(value: 7)
             try serializer.serialize_str(value: markdown)
-        case .sharedLink(let url):
+        case .sharedLink(let url, let previewUrl, let socialLinks):
             try serializer.serialize_variant_index(value: 8)
             try serializer.serialize_str(value: url)
+            try serializer.serialize_str(value: previewUrl)
+            try serializeArray(value: socialLinks, serializer: serializer) { item, serializer in
+                try item.serialize(serializer: serializer)
+            }
         case .error(let message):
             try serializer.serialize_variant_index(value: 9)
             try serializer.serialize_str(value: message)
@@ -1590,8 +1635,12 @@ indirect public enum PentestOutcome: Hashable, Equatable {
             return .documentContent(markdown: markdown)
         case 8:
             let url = try deserializer.deserialize_str()
+            let previewUrl = try deserializer.deserialize_str()
+            let socialLinks = try deserializeArray(deserializer: deserializer) { deserializer in
+                try SocialLink.deserialize(deserializer: deserializer)
+            }
             try deserializer.decrease_container_depth()
-            return .sharedLink(url: url)
+            return .sharedLink(url: url, previewUrl: previewUrl, socialLinks: socialLinks)
         case 9:
             let message = try deserializer.deserialize_str()
             try deserializer.decrease_container_depth()
@@ -1601,6 +1650,50 @@ indirect public enum PentestOutcome: Hashable, Equatable {
     }
 
     public static func bincodeDeserialize(input: [UInt8]) throws -> PentestOutcome {
+        let deserializer = BincodeDeserializer.init(input: input);
+        let obj = try deserialize(deserializer: deserializer)
+        if deserializer.get_buffer_offset() < input.count {
+            throw DeserializationError.invalidInput(issue: "Some input bytes were not read")
+        }
+        return obj
+    }
+}
+
+/// A contextual "Next Steps" suggested action, surfaced after a successful tool
+/// call. Tapping the chip sends `message` as a follow-up. Derived in the
+/// middleware from `pentest_tools::registry` `get_actions(tool, result)`; the
+/// shell renders `label` and fires `SendMessage(message)` on tap.
+public struct QuickActionView: Hashable, Equatable {
+    public var label: String
+    public var message: String
+
+    public init(label: String, message: String) {
+        self.label = label
+        self.message = message
+    }
+
+    public func serialize<S: Serializer>(serializer: S) throws {
+        try serializer.increase_container_depth()
+        try serializer.serialize_str(value: self.label)
+        try serializer.serialize_str(value: self.message)
+        try serializer.decrease_container_depth()
+    }
+
+    public func bincodeSerialize() throws -> [UInt8] {
+        let serializer = BincodeSerializer.init();
+        try self.serialize(serializer: serializer)
+        return serializer.get_bytes()
+    }
+
+    public static func deserialize<D: Deserializer>(deserializer: D) throws -> QuickActionView {
+        try deserializer.increase_container_depth()
+        let label = try deserializer.deserialize_str()
+        let message = try deserializer.deserialize_str()
+        try deserializer.decrease_container_depth()
+        return QuickActionView(label: label, message: message)
+    }
+
+    public static func bincodeDeserialize(input: [UInt8]) throws -> QuickActionView {
         let deserializer = BincodeDeserializer.init(input: input);
         let obj = try deserialize(deserializer: deserializer)
         if deserializer.get_buffer_offset() < input.count {
@@ -1851,10 +1944,17 @@ indirect public enum Screen: Hashable, Equatable {
 
 public struct ShareLinkOutcome: Hashable, Equatable {
     public var url: String?
+    /// Browser-preview transform of `url`; carried alongside so the App can set
+    /// `DocView::preview_url` without recomputing across the FFI boundary.
+    public var previewUrl: String?
+    /// Per-network share destinations built by the middleware.
+    public var socialLinks: [SocialLink]
     public var error: String?
 
-    public init(url: String?, error: String?) {
+    public init(url: String?, previewUrl: String?, socialLinks: [SocialLink], error: String?) {
         self.url = url
+        self.previewUrl = previewUrl
+        self.socialLinks = socialLinks
         self.error = error
     }
 
@@ -1862,6 +1962,12 @@ public struct ShareLinkOutcome: Hashable, Equatable {
         try serializer.increase_container_depth()
         try serializeOption(value: self.url, serializer: serializer) { value, serializer in
             try serializer.serialize_str(value: value)
+        }
+        try serializeOption(value: self.previewUrl, serializer: serializer) { value, serializer in
+            try serializer.serialize_str(value: value)
+        }
+        try serializeArray(value: self.socialLinks, serializer: serializer) { item, serializer in
+            try item.serialize(serializer: serializer)
         }
         try serializeOption(value: self.error, serializer: serializer) { value, serializer in
             try serializer.serialize_str(value: value)
@@ -1880,11 +1986,17 @@ public struct ShareLinkOutcome: Hashable, Equatable {
         let url = try deserializeOption(deserializer: deserializer) { deserializer in
             try deserializer.deserialize_str()
         }
+        let previewUrl = try deserializeOption(deserializer: deserializer) { deserializer in
+            try deserializer.deserialize_str()
+        }
+        let socialLinks = try deserializeArray(deserializer: deserializer) { deserializer in
+            try SocialLink.deserialize(deserializer: deserializer)
+        }
         let error = try deserializeOption(deserializer: deserializer) { deserializer in
             try deserializer.deserialize_str()
         }
         try deserializer.decrease_container_depth()
-        return ShareLinkOutcome(url: url, error: error)
+        return ShareLinkOutcome(url: url, previewUrl: previewUrl, socialLinks: socialLinks, error: error)
     }
 
     public static func bincodeDeserialize(input: [UInt8]) throws -> ShareLinkOutcome {
@@ -1936,6 +2048,50 @@ public struct SignInOutcome: Hashable, Equatable {
     }
 
     public static func bincodeDeserialize(input: [UInt8]) throws -> SignInOutcome {
+        let deserializer = BincodeDeserializer.init(input: input);
+        let obj = try deserialize(deserializer: deserializer)
+        if deserializer.get_buffer_offset() < input.count {
+            throw DeserializationError.invalidInput(issue: "Some input bytes were not read")
+        }
+        return obj
+    }
+}
+
+/// A social-share destination for a report's public link. `url` opens a
+/// pre-filled compose window for `label`'s network (X/LinkedIn/Facebook); the
+/// shell just opens the given URL. Built in the middleware from
+/// `pentest_core::social_share::share_intent_url` so shells never rebuild it.
+public struct SocialLink: Hashable, Equatable {
+    public var label: String
+    public var url: String
+
+    public init(label: String, url: String) {
+        self.label = label
+        self.url = url
+    }
+
+    public func serialize<S: Serializer>(serializer: S) throws {
+        try serializer.increase_container_depth()
+        try serializer.serialize_str(value: self.label)
+        try serializer.serialize_str(value: self.url)
+        try serializer.decrease_container_depth()
+    }
+
+    public func bincodeSerialize() throws -> [UInt8] {
+        let serializer = BincodeSerializer.init();
+        try self.serialize(serializer: serializer)
+        return serializer.get_bytes()
+    }
+
+    public static func deserialize<D: Deserializer>(deserializer: D) throws -> SocialLink {
+        try deserializer.increase_container_depth()
+        let label = try deserializer.deserialize_str()
+        let url = try deserializer.deserialize_str()
+        try deserializer.decrease_container_depth()
+        return SocialLink(label: label, url: url)
+    }
+
+    public static func bincodeDeserialize(input: [UInt8]) throws -> SocialLink {
         let deserializer = BincodeDeserializer.init(input: input);
         let obj = try deserialize(deserializer: deserializer)
         if deserializer.get_buffer_offset() < input.count {
@@ -2183,8 +2339,12 @@ public struct ViewModel: Hashable, Equatable {
     /// Inline notice surfaced when the agent backend errored (token limit or a
     /// generic upstream failure) instead of producing a reply. `None` normally.
     public var notice: NoticeView?
+    /// Contextual "Next Steps" chips computed from the last successful tool call.
+    /// Shells render a row of pill buttons below the message list when non-empty;
+    /// tapping one fires `SendMessage(message)`. Cleared on send/new-chat.
+    public var nextSteps: [QuickActionView]
 
-    public init(screen: Screen, connection: ConnectionView, messages: [MessageView], scanInProgress: Bool, showScanCard: Bool, conversationDocs: [DocRef], allDocuments: [DocRef], history: [ConversationRef], openDocument: DocView?, needsSignIn: Bool, error: String?, toolCalls: [ToolCallView], agentActivity: AgentActivity, activityLabel: String, notice: NoticeView?) {
+    public init(screen: Screen, connection: ConnectionView, messages: [MessageView], scanInProgress: Bool, showScanCard: Bool, conversationDocs: [DocRef], allDocuments: [DocRef], history: [ConversationRef], openDocument: DocView?, needsSignIn: Bool, error: String?, toolCalls: [ToolCallView], agentActivity: AgentActivity, activityLabel: String, notice: NoticeView?, nextSteps: [QuickActionView]) {
         self.screen = screen
         self.connection = connection
         self.messages = messages
@@ -2200,6 +2360,7 @@ public struct ViewModel: Hashable, Equatable {
         self.agentActivity = agentActivity
         self.activityLabel = activityLabel
         self.notice = notice
+        self.nextSteps = nextSteps
     }
 
     public func serialize<S: Serializer>(serializer: S) throws {
@@ -2234,6 +2395,9 @@ public struct ViewModel: Hashable, Equatable {
         try serializer.serialize_str(value: self.activityLabel)
         try serializeOption(value: self.notice, serializer: serializer) { value, serializer in
             try value.serialize(serializer: serializer)
+        }
+        try serializeArray(value: self.nextSteps, serializer: serializer) { item, serializer in
+            try item.serialize(serializer: serializer)
         }
         try serializer.decrease_container_depth()
     }
@@ -2277,8 +2441,11 @@ public struct ViewModel: Hashable, Equatable {
         let notice = try deserializeOption(deserializer: deserializer) { deserializer in
             try NoticeView.deserialize(deserializer: deserializer)
         }
+        let nextSteps = try deserializeArray(deserializer: deserializer) { deserializer in
+            try QuickActionView.deserialize(deserializer: deserializer)
+        }
         try deserializer.decrease_container_depth()
-        return ViewModel(screen: screen, connection: connection, messages: messages, scanInProgress: scanInProgress, showScanCard: showScanCard, conversationDocs: conversationDocs, allDocuments: allDocuments, history: history, openDocument: openDocument, needsSignIn: needsSignIn, error: error, toolCalls: toolCalls, agentActivity: agentActivity, activityLabel: activityLabel, notice: notice)
+        return ViewModel(screen: screen, connection: connection, messages: messages, scanInProgress: scanInProgress, showScanCard: showScanCard, conversationDocs: conversationDocs, allDocuments: allDocuments, history: history, openDocument: openDocument, needsSignIn: needsSignIn, error: error, toolCalls: toolCalls, agentActivity: agentActivity, activityLabel: activityLabel, notice: notice, nextSteps: nextSteps)
     }
 
     public static func bincodeDeserialize(input: [UInt8]) throws -> ViewModel {

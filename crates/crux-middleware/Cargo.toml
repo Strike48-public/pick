@@ -7,12 +7,25 @@ edition.workspace = true
 crux_core = "0.19"
 pick-crux-core = { path = "../crux-core" }
 pentest-core = { path = "../core" }
+# Quick-action registry: builds contextual "Next Steps" chips from a tool's
+# (name, result). Platform features are target-selected below (mirrors
+# apps/mobile and crux-ffi) so the correct native tool set compiles per target.
+pentest-tools = { workspace = true, default-features = false }
 tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 async-trait = "0.1"
 # Decode the session token's realm (iss claim) to derive the tenant scope.
 base64 = "0.22"
 serde_json = "1"
 tracing = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+pentest-tools = { workspace = true, default-features = false, features = ["android"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+pentest-tools = { workspace = true, default-features = false, features = ["ios"] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+pentest-tools = { workspace = true, default-features = false, features = ["desktop"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }

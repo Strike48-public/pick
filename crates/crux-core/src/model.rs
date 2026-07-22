@@ -23,6 +23,9 @@ pub struct Model {
     /// Inline notice set when the agent backend errored (token limit / upstream
     /// failure) instead of producing a reply. Cleared on new scan/message/chat.
     pub notice: Option<NoticeView>,
+    /// Contextual "Next Steps" chips from the last successful tool call (built by
+    /// the middleware). Set from each Delta; cleared on send/new-chat.
+    pub next_steps: Vec<crate::view::QuickActionView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]

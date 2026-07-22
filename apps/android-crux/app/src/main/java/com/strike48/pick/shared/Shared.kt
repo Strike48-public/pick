@@ -253,6 +253,10 @@ data class ConversationDelta(
     /// upstream failure. `None` on a normal (success) delta. When present the
     /// App treats the delta as terminal and surfaces the notice.
     val notice: com.strike48.pick.shared.NoticeView? = null,
+    /// Contextual next-step suggestions computed by the middleware from the last
+    /// successful tool call's (name, result) via the quick-action registry. The
+    /// App stores these on the model and projects them into the ViewModel.
+    val nextSteps: List<com.strike48.pick.shared.QuickActionView>,
 ) {
     fun serialize(serializer: Serializer) {
         serializer.increase_container_depth()
@@ -265,6 +269,9 @@ data class ConversationDelta(
         serializer.serialize_bool(done)
         activity.serialize(serializer)
         notice.serializeOptionOf(serializer) {
+            it.serialize(serializer)
+        }
+        nextSteps.serialize(serializer) {
             it.serialize(serializer)
         }
         serializer.decrease_container_depth()
@@ -293,8 +300,12 @@ data class ConversationDelta(
                 deserializer.deserializeOptionOf {
                     com.strike48.pick.shared.NoticeView.deserialize(deserializer)
                 }
+            val nextSteps =
+                deserializer.deserializeListOf {
+                    com.strike48.pick.shared.QuickActionView.deserialize(deserializer)
+                }
             deserializer.decrease_container_depth()
-            return ConversationDelta(messages, toolCalls, done, activity, notice)
+            return ConversationDelta(messages, toolCalls, done, activity, notice, nextSteps)
         }
 
         @Throws(DeserializationError::class)
@@ -466,12 +477,17 @@ data class DocRef(
     val id: String,
     val title: String,
     val conversationId: String,
+    /// ISO-8601 creation time (the document's `created_at`). Used to order the
+    /// Reports list newest-first and dedup repeated scans. ISO-8601 sorts
+    /// lexically in chronological order. Empty when the server omitted it.
+    val timestamp: String,
 ) {
     fun serialize(serializer: Serializer) {
         serializer.increase_container_depth()
         serializer.serialize_str(id)
         serializer.serialize_str(title)
         serializer.serialize_str(conversationId)
+        serializer.serialize_str(timestamp)
         serializer.decrease_container_depth()
     }
 
@@ -487,8 +503,9 @@ data class DocRef(
             val id = deserializer.deserialize_str()
             val title = deserializer.deserialize_str()
             val conversationId = deserializer.deserialize_str()
+            val timestamp = deserializer.deserialize_str()
             deserializer.decrease_container_depth()
-            return DocRef(id, title, conversationId)
+            return DocRef(id, title, conversationId, timestamp)
         }
 
         @Throws(DeserializationError::class)
@@ -513,6 +530,13 @@ data class DocView(
     /// Pre-parsed markdown blocks for native rendering. Derived from `markdown_body`.
     val blocks: List<com.strike48.pick.shared.MarkdownBlock>,
     val shareUrl: String? = null,
+    /// The public link transformed for inline browser preview (`?preview=1`).
+    /// Set alongside `share_url`; the shell opens this in the system browser for
+    /// "Open in browser". `None` until a share link exists.
+    val previewUrl: String? = null,
+    /// Per-network share destinations (X/LinkedIn/Facebook), each carrying a
+    /// ready-to-open compose URL. Empty until a share link exists.
+    val socialLinks: List<com.strike48.pick.shared.SocialLink>,
 ) {
     fun serialize(serializer: Serializer) {
         serializer.increase_container_depth()
@@ -524,6 +548,12 @@ data class DocView(
         }
         shareUrl.serializeOptionOf(serializer) {
             serializer.serialize_str(it)
+        }
+        previewUrl.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        socialLinks.serialize(serializer) {
+            it.serialize(serializer)
         }
         serializer.decrease_container_depth()
     }
@@ -548,8 +578,16 @@ data class DocView(
                 deserializer.deserializeOptionOf {
                     deserializer.deserialize_str()
                 }
+            val previewUrl =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            val socialLinks =
+                deserializer.deserializeListOf {
+                    com.strike48.pick.shared.SocialLink.deserialize(deserializer)
+                }
             deserializer.decrease_container_depth()
-            return DocView(id, title, markdownBody, blocks, shareUrl)
+            return DocView(id, title, markdownBody, blocks, shareUrl, previewUrl, socialLinks)
         }
 
         @Throws(DeserializationError::class)
@@ -1901,12 +1939,16 @@ sealed interface PentestOperation {
     data class CreateSharedLink(
         val conversationId: String,
         val documentId: String,
+        /// The document title, so the middleware can build social-share compose
+        /// URLs (e.g. X's pre-filled text) alongside the raw share link.
+        val title: String,
     ) : PentestOperation {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
             serializer.serialize_variant_index(9)
             serializer.serialize_str(conversationId)
             serializer.serialize_str(documentId)
+            serializer.serialize_str(title)
             serializer.decrease_container_depth()
         }
 
@@ -1915,8 +1957,9 @@ sealed interface PentestOperation {
                 deserializer.increase_container_depth()
                 val conversationId = deserializer.deserialize_str()
                 val documentId = deserializer.deserialize_str()
+                val title = deserializer.deserialize_str()
                 deserializer.decrease_container_depth()
-                return CreateSharedLink(conversationId, documentId)
+                return CreateSharedLink(conversationId, documentId, title)
             }
         }
     }
@@ -2133,11 +2176,20 @@ sealed interface PentestOutcome {
 
     data class SharedLink(
         val url: String,
+        /// Browser-preview transform of `url` (`?preview=1`), precomputed in the
+        /// middleware via `pentest_core::matrix::preview_url`.
+        val previewUrl: String,
+        /// Per-network share destinations built from `url` + the document title.
+        val socialLinks: List<com.strike48.pick.shared.SocialLink>,
     ) : PentestOutcome {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
             serializer.serialize_variant_index(8)
             serializer.serialize_str(url)
+            serializer.serialize_str(previewUrl)
+            socialLinks.serialize(serializer) {
+                it.serialize(serializer)
+            }
             serializer.decrease_container_depth()
         }
 
@@ -2145,8 +2197,13 @@ sealed interface PentestOutcome {
             fun deserialize(deserializer: Deserializer): SharedLink {
                 deserializer.increase_container_depth()
                 val url = deserializer.deserialize_str()
+                val previewUrl = deserializer.deserialize_str()
+                val socialLinks =
+                    deserializer.deserializeListOf {
+                        com.strike48.pick.shared.SocialLink.deserialize(deserializer)
+                    }
                 deserializer.decrease_container_depth()
-                return SharedLink(url)
+                return SharedLink(url, previewUrl, socialLinks)
             }
         }
     }
@@ -2192,6 +2249,51 @@ sealed interface PentestOutcome {
 
         @Throws(DeserializationError::class)
         fun bincodeDeserialize(input: ByteArray?): PentestOutcome {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+/// A contextual "Next Steps" suggested action, surfaced after a successful tool
+/// call. Tapping the chip sends `message` as a follow-up. Derived in the
+/// middleware from `pentest_tools::registry` `get_actions(tool, result)`; the
+/// shell renders `label` and fires `SendMessage(message)` on tap.
+data class QuickActionView(
+    val label: String,
+    val message: String,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_str(label)
+        serializer.serialize_str(message)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): QuickActionView {
+            deserializer.increase_container_depth()
+            val label = deserializer.deserialize_str()
+            val message = deserializer.deserialize_str()
+            deserializer.decrease_container_depth()
+            return QuickActionView(label, message)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): QuickActionView {
             if (input == null) {
                 throw DeserializationError("Cannot deserialize null array")
             }
@@ -2436,12 +2538,23 @@ enum class Screen {
 
 data class ShareLinkOutcome(
     val url: String? = null,
+    /// Browser-preview transform of `url`; carried alongside so the App can set
+    /// `DocView::preview_url` without recomputing across the FFI boundary.
+    val previewUrl: String? = null,
+    /// Per-network share destinations built by the middleware.
+    val socialLinks: List<com.strike48.pick.shared.SocialLink>,
     val error: String? = null,
 ) {
     fun serialize(serializer: Serializer) {
         serializer.increase_container_depth()
         url.serializeOptionOf(serializer) {
             serializer.serialize_str(it)
+        }
+        previewUrl.serializeOptionOf(serializer) {
+            serializer.serialize_str(it)
+        }
+        socialLinks.serialize(serializer) {
+            it.serialize(serializer)
         }
         error.serializeOptionOf(serializer) {
             serializer.serialize_str(it)
@@ -2462,12 +2575,20 @@ data class ShareLinkOutcome(
                 deserializer.deserializeOptionOf {
                     deserializer.deserialize_str()
                 }
+            val previewUrl =
+                deserializer.deserializeOptionOf {
+                    deserializer.deserialize_str()
+                }
+            val socialLinks =
+                deserializer.deserializeListOf {
+                    com.strike48.pick.shared.SocialLink.deserialize(deserializer)
+                }
             val error =
                 deserializer.deserializeOptionOf {
                     deserializer.deserialize_str()
                 }
             deserializer.decrease_container_depth()
-            return ShareLinkOutcome(url, error)
+            return ShareLinkOutcome(url, previewUrl, socialLinks, error)
         }
 
         @Throws(DeserializationError::class)
@@ -2523,6 +2644,51 @@ data class SignInOutcome(
 
         @Throws(DeserializationError::class)
         fun bincodeDeserialize(input: ByteArray?): SignInOutcome {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
+/// A social-share destination for a report's public link. `url` opens a
+/// pre-filled compose window for `label`'s network (X/LinkedIn/Facebook); the
+/// shell just opens the given URL. Built in the middleware from
+/// `pentest_core::social_share::share_intent_url` so shells never rebuild it.
+data class SocialLink(
+    val label: String,
+    val url: String,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_str(label)
+        serializer.serialize_str(url)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): SocialLink {
+            deserializer.increase_container_depth()
+            val label = deserializer.deserialize_str()
+            val url = deserializer.deserialize_str()
+            deserializer.decrease_container_depth()
+            return SocialLink(label, url)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): SocialLink {
             if (input == null) {
                 throw DeserializationError("Cannot deserialize null array")
             }
@@ -2762,6 +2928,10 @@ data class ViewModel(
     /// Inline notice surfaced when the agent backend errored (token limit or a
     /// generic upstream failure) instead of producing a reply. `None` normally.
     val notice: com.strike48.pick.shared.NoticeView? = null,
+    /// Contextual "Next Steps" chips computed from the last successful tool call.
+    /// Shells render a row of pill buttons below the message list when non-empty;
+    /// tapping one fires `SendMessage(message)`. Cleared on send/new-chat.
+    val nextSteps: List<com.strike48.pick.shared.QuickActionView>,
 ) {
     fun serialize(serializer: Serializer) {
         serializer.increase_container_depth()
@@ -2794,6 +2964,9 @@ data class ViewModel(
         agentActivity.serialize(serializer)
         serializer.serialize_str(activityLabel)
         notice.serializeOptionOf(serializer) {
+            it.serialize(serializer)
+        }
+        nextSteps.serialize(serializer) {
             it.serialize(serializer)
         }
         serializer.decrease_container_depth()
@@ -2847,8 +3020,12 @@ data class ViewModel(
                 deserializer.deserializeOptionOf {
                     com.strike48.pick.shared.NoticeView.deserialize(deserializer)
                 }
+            val nextSteps =
+                deserializer.deserializeListOf {
+                    com.strike48.pick.shared.QuickActionView.deserialize(deserializer)
+                }
             deserializer.decrease_container_depth()
-            return ViewModel(screen, connection, messages, scanInProgress, showScanCard, conversationDocs, allDocuments, history, openDocument, needsSignIn, error, toolCalls, agentActivity, activityLabel, notice)
+            return ViewModel(screen, connection, messages, scanInProgress, showScanCard, conversationDocs, allDocuments, history, openDocument, needsSignIn, error, toolCalls, agentActivity, activityLabel, notice, nextSteps)
         }
 
         @Throws(DeserializationError::class)
