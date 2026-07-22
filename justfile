@@ -621,3 +621,26 @@ docker-package:
     @echo ""
     @echo "=== Image layers ==="
     docker history pick:local-scratch
+
+# ============ Crux native core (FFI) ============
+
+# Regenerate the C header for the crux-ffi extern "C" surface (needs cbindgen on PATH or ~/.cargo/bin).
+crux-ffi-header:
+    cbindgen --lang c --crate pick-crux-ffi --output crates/crux-ffi/include/pick_crux_ffi.h crates/crux-ffi
+
+# Build the Android x86_64 shared lib (for the emulator) — needs the nix NDK env.
+crux-ffi-android-x86_64:
+    cargo build -p pick-crux-ffi --target x86_64-linux-android --release
+
+# Build the Android arm64 shared lib (for real devices).
+crux-ffi-android-arm64:
+    cargo build -p pick-crux-ffi --target aarch64-linux-android --release
+
+# Build the iOS simulator static lib (run on the Mac build host inside nix develop).
+crux-ffi-ios-sim:
+    cargo build -p pick-crux-ffi --target aarch64-apple-ios-sim --release
+
+# Regenerate the Swift + Kotlin foreign types from the crux core surface.
+crux-typegen out="crates/crux-core/generated":
+    cargo run -p pick-crux-core --features codegen --bin codegen -- --language swift --output-dir {{out}}
+    cargo run -p pick-crux-core --features codegen --bin codegen -- --language kotlin --output-dir {{out}}
