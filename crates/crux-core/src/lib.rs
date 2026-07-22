@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod effect;
 pub mod model;
+pub mod update;
 pub mod view;
 
 pub use effect::{ConversationDelta, PentestOperation};
@@ -56,31 +57,8 @@ impl App for PickApp {
     type ViewModel = ViewModel;
     type Effect = Effect;
 
-    fn update(&self, event: Event, _model: &mut Model) -> Command<Effect, Event> {
-        match event {
-            // user intents
-            Event::StartScan => crux_core::render::render(),
-            Event::SendMessage(_) => crux_core::render::render(),
-            Event::NewChat => crux_core::render::render(),
-            Event::OpenHistory => crux_core::render::render(),
-            Event::CloseHistory => crux_core::render::render(),
-            Event::SelectConversation(_) => crux_core::render::render(),
-            Event::OpenDocument(_) => crux_core::render::render(),
-            Event::CloseDocument => crux_core::render::render(),
-            Event::CreateShareLink(_) => crux_core::render::render(),
-            Event::RetrySignIn => crux_core::render::render(),
-            Event::DismissError => crux_core::render::render(),
-            // effect results
-            Event::SignInResult(_) => crux_core::render::render(),
-            Event::ConnectResult(_) => crux_core::render::render(),
-            Event::ScanResult(_) => crux_core::render::render(),
-            Event::Delta(_) => crux_core::render::render(),
-            Event::ConversationsResult(_) => crux_core::render::render(),
-            Event::LoadConversationResult(_) => crux_core::render::render(),
-            Event::DocumentsResult(_) => crux_core::render::render(),
-            Event::DocumentContentResult(_) => crux_core::render::render(),
-            Event::ShareLinkResult(_) => crux_core::render::render(),
-        }
+    fn update(&self, event: Event, model: &mut Model) -> Command<Effect, Event> {
+        update::update(self, event, model)
     }
 
     fn view(&self, model: &Model) -> ViewModel {
