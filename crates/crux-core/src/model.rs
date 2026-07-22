@@ -1,0 +1,53 @@
+//! Private App state. Never crosses the FFI boundary; `view()` projects it into
+//! the ViewModel.
+
+use crate::view::{ConnectionPhase, ConversationRef, DocRef, DocView, MessageView};
+
+#[derive(Default)]
+pub struct Model {
+    pub phase: Phase,
+    pub api_url: String,
+    pub conversation_id: Option<String>,
+    pub messages: Vec<MessageView>,
+    pub conversation_docs: Vec<DocRef>,
+    pub all_documents: Vec<DocRef>,
+    pub history: Vec<ConversationRef>,
+    pub open_document: Option<DocView>,
+    pub scan_active: bool,
+    pub history_open: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Phase {
+    SigningIn,
+    Connecting,
+    Registering,
+    Connected,
+    NeedsSignIn,
+}
+
+impl Default for Phase {
+    fn default() -> Self { Phase::Connecting }
+}
+
+impl Phase {
+    pub fn to_view(&self) -> ConnectionPhase {
+        match self {
+            Phase::SigningIn => ConnectionPhase::SigningIn,
+            Phase::Connecting => ConnectionPhase::Connecting,
+            Phase::Registering => ConnectionPhase::Registering,
+            Phase::Connected => ConnectionPhase::Connected,
+            Phase::NeedsSignIn => ConnectionPhase::NeedsSignIn,
+        }
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            Phase::SigningIn => "Signing in to Strike48...",
+            Phase::Connecting => "Connecting...",
+            Phase::Registering => "Registering connector...",
+            Phase::Connected => "Connected",
+            Phase::NeedsSignIn => "Sign in to connect",
+        }
+    }
+}
