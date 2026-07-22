@@ -34,6 +34,7 @@ fun MarkdownText(blocks: List<MarkdownBlock>, modifier: Modifier = Modifier) {
         blocks.forEach { block ->
             when (block) {
                 is MarkdownBlock.CodeBlock -> CodeBlock(block.text)
+                is MarkdownBlock.Mermaid -> MermaidDiagram(block.code)
                 is MarkdownBlock.Heading -> Text(
                     text = inline(block.spans),
                     color = PickColors.Text,

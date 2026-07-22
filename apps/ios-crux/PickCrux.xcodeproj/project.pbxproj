@@ -29,6 +29,8 @@
 		CC0000000000000000000015 /* OAuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000015 /* OAuthManager.swift */; };
 		CC0000000000000000000016 /* MarkdownText.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000016 /* MarkdownText.swift */; };
 		CC0000000000000000000017 /* TypingIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000017 /* TypingIndicator.swift */; };
+		CC0000000000000000000019 /* MermaidView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000019 /* MermaidView.swift */; };
+		CC0000000000000000000020 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000020 /* KeychainStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -55,6 +57,8 @@
 		BB0000000000000000000015 /* OAuthManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthManager.swift; sourceTree = "<group>"; };
 		BB0000000000000000000016 /* MarkdownText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownText.swift; sourceTree = "<group>"; };
 		BB0000000000000000000017 /* TypingIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingIndicator.swift; sourceTree = "<group>"; };
+		BB0000000000000000000019 /* MermaidView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MermaidView.swift; sourceTree = "<group>"; };
+		BB0000000000000000000020 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		DD0000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -110,6 +114,8 @@
 				BB0000000000000000000015 /* OAuthManager.swift */,
 				BB0000000000000000000016 /* MarkdownText.swift */,
 				BB0000000000000000000017 /* TypingIndicator.swift */,
+				BB0000000000000000000019 /* MermaidView.swift */,
+				BB0000000000000000000020 /* KeychainStore.swift */,
 				DD0000000000000000000001 /* Info.plist */,
 				AA0000000000000000000019 /* PickCrux-Bridging-Header.h */,
 			);
@@ -211,6 +217,8 @@
 				CC0000000000000000000015 /* OAuthManager.swift in Sources */,
 				CC0000000000000000000016 /* MarkdownText.swift in Sources */,
 				CC0000000000000000000017 /* TypingIndicator.swift in Sources */,
+				CC0000000000000000000019 /* MermaidView.swift in Sources */,
+				CC0000000000000000000020 /* KeychainStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

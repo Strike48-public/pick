@@ -2,8 +2,13 @@ import SwiftUI
 
 /// The sage rounded-square "S" brand badge. Draws the spec's stroke path
 /// (viewBox 0 0 32 32) as a SwiftUI Path, scaled to the requested size.
+///
+/// `connected` drives a small connection-status dot in the bottom-right
+/// corner: green (`Theme.success`) when connected, muted otherwise. This
+/// replaces the separate "Connected" text line under the wordmark.
 struct BrandBadge: View {
     var size: CGFloat = 30
+    var connected: Bool = false
 
     var body: some View {
         RoundedRectangle(cornerRadius: Theme.radiusBadge * (size / 30))
@@ -17,6 +22,16 @@ struct BrandBadge: View {
                     )
                     .frame(width: size, height: size)
             )
+            .overlay(alignment: .bottomTrailing) {
+                let dot = size * 0.3
+                Circle()
+                    .fill(connected ? Theme.success : Theme.muted)
+                    // Ring in the page background so the dot reads clearly
+                    // against the sage badge and the bar behind it.
+                    .overlay(Circle().stroke(Theme.background, lineWidth: dot * 0.2))
+                    .frame(width: dot, height: dot)
+                    .offset(x: dot * 0.28, y: dot * 0.28)
+            }
     }
 }
 

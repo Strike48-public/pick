@@ -64,6 +64,8 @@ struct ContentView: View {
             }
         }
         .onAppear {
+            // Restore a persisted token (Keychain) so a relaunch skips sign-in.
+            restorePersistedToken()
             // Test hook: -autoScan fires the Scan button code path headlessly so
             // the FFI -> view round-trip can be exercised over SSH (no GUI tap).
             if ProcessInfo.processInfo.arguments.contains("-autoScan") {
@@ -85,9 +87,26 @@ struct ContentView: View {
     }
 
     /// Adopt the workspace-scoped token from the browser flow and advance to
-    /// the Scan screen.
+    /// the Scan screen. Persists the token to the Keychain so a relaunch can
+    /// skip sign-in (mirrors the Dioxus `persist_matrix_token` flow).
     private func adoptToken(_ token: String) {
         NSLog("[PickCrux] adoptToken: got token len=\(token.count), advancing past Sign In")
+        core.setToken(token)
+        KeychainStore.save(token)
+        hasToken = true
+    }
+
+    /// On launch, restore a previously-persisted token from the Keychain and
+    /// skip sign-in if it isn't expired. An expired token is cleared so we fall
+    /// through to a fresh sign-in.
+    private func restorePersistedToken() {
+        guard !hasToken, let token = KeychainStore.load() else { return }
+        if KeychainStore.isTokenExpired(token) {
+            NSLog("[PickCrux] restore: persisted token expired, clearing")
+            KeychainStore.clear()
+            return
+        }
+        NSLog("[PickCrux] restore: adopting persisted token len=\(token.count)")
         core.setToken(token)
         hasToken = true
     }

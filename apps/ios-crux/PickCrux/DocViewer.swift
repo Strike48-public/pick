@@ -14,6 +14,15 @@ struct DocViewer: View {
     @ObservedObject var core: CoreBridge
     let doc: DocView
     @State private var showShareSheet = false
+    // Set when the user taps Share before a link exists; once the link arrives
+    // we auto-present the OS share sheet so it behaves like a normal share button.
+    @State private var pendingShare = false
+
+    /// The link we actually hand out. The raw `/s/:token` URL redirects to the
+    /// Studio login/SPA; the `preview=1` variant renders the report standalone,
+    /// so it's the one that works when opened or shared. Falls back to the raw
+    /// URL only if no preview URL was computed.
+    private var shareableURL: String? { doc.previewUrl ?? doc.shareUrl }
 
     var body: some View {
         ZStack {
@@ -35,18 +44,24 @@ struct DocViewer: View {
                         .foregroundStyle(Theme.text)
                         .lineLimit(1)
                     Spacer()
-                    if doc.shareUrl == nil {
-                        Button {
+                    // A normal share button. If the public link isn't created
+                    // yet, tapping creates it and then auto-opens the OS share
+                    // sheet once it arrives.
+                    Button {
+                        if shareableURL != nil {
+                            showShareSheet = true
+                        } else {
+                            pendingShare = true
                             core.send(.createShareLink(doc.id))
-                        } label: {
-                            Text("Create link")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(Theme.onBrand)
-                                .padding(.vertical, 6)
-                                .padding(.horizontal, 12)
                         }
-                        .buttonStyle(SagePillButtonStyle())
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Theme.text)
+                            .frame(width: 40, height: 40)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -63,8 +78,16 @@ struct DocViewer: View {
             }
         }
         .sheet(isPresented: $showShareSheet) {
-            if let url = doc.shareUrl, let link = URL(string: url) {
+            if let url = shareableURL, let link = URL(string: url) {
                 ShareSheet(items: [link])
+            }
+        }
+        // When Share was tapped before the link existed, present the sheet as
+        // soon as the created link (and its preview URL) lands in the model.
+        .onChange(of: doc.shareUrl) { _ in
+            if pendingShare, shareableURL != nil {
+                pendingShare = false
+                showShareSheet = true
             }
         }
     }
@@ -73,7 +96,9 @@ struct DocViewer: View {
     @ViewBuilder private func shareRow(shareUrl: String) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                sharePill("Copy link") { UIPasteboard.general.string = shareUrl }
+                // Copy/Open the preview link (renders standalone); the raw
+                // share URL redirects to the Studio login.
+                sharePill("Copy link") { UIPasteboard.general.string = doc.previewUrl ?? shareUrl }
                 sharePill("Share") { showShareSheet = true }
                 sharePill("Open in browser") { open(doc.previewUrl ?? shareUrl) }
                 ForEach(Array(doc.socialLinks.enumerated()), id: \.offset) { _, link in

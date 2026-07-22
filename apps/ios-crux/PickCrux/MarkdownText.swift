@@ -29,13 +29,16 @@ struct MarkdownText: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.leading, 8)
-                case let .codeBlock(code):
+                case let .codeBlock(code, _):
                     Text(code)
                         .font(.system(size: 13, design: .monospaced))
                         .foregroundStyle(Theme.text)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
                         .background(Theme.subtleFill, in: RoundedCornerShape())
+                case let .mermaid(code):
+                    MermaidView(code: code)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 case let .paragraph(spans):
                     text(spans)
                         .foregroundStyle(Theme.text)

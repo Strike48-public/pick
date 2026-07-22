@@ -9,30 +9,24 @@ struct TopBar: View {
     @Binding var showDocuments: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 12) {
-                BrandBadge(size: 30)
-                Text("Pick")
-                    .font(.system(size: 20, weight: .bold))
-                    .kerning(-0.2)
-                    .foregroundStyle(Theme.text)
+        HStack(spacing: 12) {
+            BrandBadge(size: 30, connected: core.vm.connection.phase == .connected)
+            Text("Pick")
+                .font(.system(size: 20, weight: .bold))
+                .kerning(-0.2)
+                .foregroundStyle(Theme.text)
 
-                Spacer()
+            Spacer()
 
-                iconButton(system: "plus") { core.send(.newChat) }
-                iconButton(system: "clock") {
-                    core.send(.openHistory)
-                    showHistory = true
-                }
-                iconButton(system: "doc.text") {
-                    core.send(.openDocuments)
-                    showDocuments = true
-                }
+            iconButton(system: "plus") { core.send(.newChat) }
+            iconButton(system: "clock") {
+                core.send(.openHistory)
+                showHistory = true
             }
-
-            Text(core.vm.connection.label)
-                .font(.system(size: 12))
-                .foregroundStyle(Theme.muted)
+            iconButton(system: "doc.text") {
+                core.send(.openDocuments)
+                showDocuments = true
+            }
         }
         .padding(.top, 4)
         .padding(.horizontal, 20)

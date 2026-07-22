@@ -17,9 +17,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.DateRange
-import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -35,7 +35,7 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 fun TopBar(
-    connectionLabel: String,
+    connected: Boolean,
     onNewChat: () -> Unit,
     onHistory: () -> Unit,
     onReports: () -> Unit,
@@ -52,22 +52,13 @@ fun TopBar(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            BrandBadge()
+            BrandBadge(connected = connected)
             Spacer(Modifier.width(10.dp))
             Text(text = "Pick", style = WordmarkStyle)
             Spacer(Modifier.weight(1f))
             IconAction(Icons.Filled.Add, "New chat", onNewChat)
             IconAction(Icons.Filled.DateRange, "History", onHistory)
-            IconAction(Icons.Filled.List, "Reports", onReports)
-        }
-        if (connectionLabel.isNotBlank()) {
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = connectionLabel,
-                color = PickColors.Muted,
-                style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(start = 40.dp),
-            )
+            IconAction(Icons.AutoMirrored.Filled.List, "Reports", onReports)
         }
     }
 }
@@ -90,9 +81,17 @@ private fun IconAction(icon: ImageVector, description: String, onClick: () -> Un
     }
 }
 
-/** 30x30 sage rounded-square badge with the "S" stroke glyph from the spec. */
+/**
+ * 30x30 sage rounded-square badge with the "S" stroke glyph from the spec.
+ *
+ * `connected` drives a small connection-status dot in the bottom-right corner:
+ * green when connected, muted otherwise. This replaces the old "Connected"
+ * text line under the wordmark.
+ */
 @Composable
-fun BrandBadge(sizeDp: Int = 30) {
+fun BrandBadge(sizeDp: Int = 30, connected: Boolean = false) {
+    val dotColor = if (connected) PickColors.StatusSuccess else PickColors.Muted
+    val ringColor = PickColors.Background
     Box(
         modifier = Modifier
             .size(sizeDp.dp)
@@ -118,6 +117,17 @@ fun BrandBadge(sizeDp: Int = 30) {
                 color = PickColors.OnBrand,
                 style = Stroke(width = 3.2f * s, cap = StrokeCap.Round, join = StrokeJoin.Round),
             )
+        }
+        // Status dot, aligned to the badge's bottom-right corner. A ring in the
+        // page background keeps it legible against the sage fill.
+        Canvas(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .size((sizeDp * 0.3f).dp),
+        ) {
+            val r = size.minDimension / 2f
+            drawCircle(color = ringColor, radius = r)
+            drawCircle(color = dotColor, radius = r * 0.72f)
         }
     }
 }

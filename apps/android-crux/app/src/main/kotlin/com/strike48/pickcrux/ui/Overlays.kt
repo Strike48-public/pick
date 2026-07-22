@@ -23,6 +23,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -111,7 +112,8 @@ fun DocumentsList(
 fun DocViewer(
     doc: DocView,
     onClose: () -> Unit,
-    onCreateShareLink: (String) -> Unit,
+    // Tapped the share button before a link existed: create it, then share.
+    onShareRequest: (String) -> Unit,
     onCopy: (String) -> Unit,
     onShare: (String) -> Unit,
     onOpenUrl: (String) -> Unit,
@@ -144,15 +146,33 @@ fun DocViewer(
                 fontSize = 18.sp,
                 modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
             )
-            if (doc.shareUrl == null) {
-                GhostPill("Create link") { onCreateShareLink(doc.id) }
+            // A normal share button. The link we hand out is the preview URL
+            // (renders standalone); the raw share URL redirects to the Studio
+            // login. If no link exists yet, create it and share once it lands.
+            val shareable = doc.previewUrl ?: doc.shareUrl
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .clickable {
+                        if (shareable != null) onShare(shareable) else onShareRequest(doc.id)
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Share,
+                    contentDescription = "Share",
+                    tint = PickColors.Text,
+                    modifier = Modifier.size(20.dp),
+                )
             }
         }
         RowSeparator()
         val shareUrl = doc.shareUrl
         if (shareUrl != null) {
-            // Full share row: horizontally scrollable pills. Open-in-browser uses
-            // the Rust-computed preview URL (falls back to the raw link).
+            val shareable = doc.previewUrl ?: shareUrl
+            // Full share row: horizontally scrollable pills. Copy/Open/Share all
+            // use the Rust-computed preview URL (falls back to the raw link).
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -160,9 +180,9 @@ fun DocViewer(
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                GhostPill("Copy link") { onCopy(shareUrl) }
-                GhostPill("Share") { onShare(shareUrl) }
-                GhostPill("Open in browser") { onOpenUrl(doc.previewUrl ?: shareUrl) }
+                GhostPill("Copy link") { onCopy(shareable) }
+                GhostPill("Share") { onShare(shareable) }
+                GhostPill("Open in browser") { onOpenUrl(shareable) }
                 doc.socialLinks.forEach { link ->
                     GhostPill(link.label) { onOpenUrl(link.url) }
                 }

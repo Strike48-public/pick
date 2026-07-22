@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,6 +64,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private lateinit var core: NativeCore
+    private lateinit var tokenStore: TokenStore
 
     // Drives which screen shows: no token yet -> SignInView. Flipped to true once
     // OAuth delivers a token and the core adopts it via pick_set_token.
@@ -74,10 +76,26 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        tokenStore = TokenStore(applicationContext)
+
+        // Restore a persisted token (Keystore-backed) so a relaunch skips the
+        // browser sign-in. An expired token is dropped so we fall through to a
+        // fresh sign-in (mirrors the Dioxus restore_matrix_token guard).
+        val restored = tokenStore.load()?.takeUnless { TokenStore.isTokenExpired(it) }
+        if (restored == null) {
+            tokenStore.clear()
+        }
+
         core = NativeCore.create(
             apiUrl = Oauth.API_BASE,
-            token = "", // no token yet: SignIn screen gates the shell until OAuth
+            // Seed the core with the restored token so it can see the agent
+            // immediately; empty otherwise (SignIn screen gates the shell).
+            token = restored ?: "",
         )
+        if (restored != null) {
+            Log.i(TAG, "Restored persisted token (len=${restored.length}); skipping sign-in")
+            signedIn = true
+        }
 
         setContent {
             PickTheme {
@@ -117,6 +135,8 @@ class MainActivity : ComponentActivity() {
     private fun adoptToken(token: String) {
         Log.i(TAG, "Adopting OAuth token (len=${token.length}) into core")
         core.setToken(token)
+        // Persist so a relaunch skips sign-in (Keystore-backed encrypted store).
+        tokenStore.save(token)
         signedIn = true
         refreshTick++ // force the composable to re-read core.view()
     }
@@ -153,7 +173,19 @@ fun PickApp(
     // Local overlay state the core does not track (which top-bar list is open).
     var showHistory by remember { mutableStateOf(false) }
     var showReports by remember { mutableStateOf(false) }
+    // Set to a doc id when Share is tapped before its link exists; once the
+    // created link's preview URL lands we auto-fire the share sheet.
+    var pendingShareDocId by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
+
+    // Shared helper: fire the Android share chooser for a URL.
+    fun shareUrl(url: String) {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, url)
+        }
+        context.startActivity(Intent.createChooser(intent, "Share"))
+    }
 
     // Streaming: the core pushes a view update (on the main thread) whenever an
     // async effect resolves. Re-render as the scan streams in — no polling.
@@ -169,21 +201,26 @@ fun PickApp(
     // Document viewer takes the whole screen when a doc is open.
     val openDoc = model.openDocument
     if (openDoc != null) {
+        // Once the pending link's preview URL arrives, fire the share sheet.
+        val pendingShareable = openDoc.previewUrl ?: openDoc.shareUrl
+        LaunchedEffect(pendingShareDocId, pendingShareable) {
+            if (pendingShareDocId == openDoc.id && pendingShareable != null) {
+                pendingShareDocId = null
+                shareUrl(pendingShareable)
+            }
+        }
         DocViewer(
             doc = openDoc,
             onClose = { send(Event.CloseDocument) },
-            onCreateShareLink = { send(Event.CreateShareLink(it)) },
+            onShareRequest = { docId ->
+                pendingShareDocId = docId
+                send(Event.CreateShareLink(docId))
+            },
             onCopy = { url ->
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 clipboard.setPrimaryClip(ClipData.newPlainText("Report link", url))
             },
-            onShare = { url ->
-                val intent = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_TEXT, url)
-                }
-                context.startActivity(Intent.createChooser(intent, "Share"))
-            },
+            onShare = { url -> shareUrl(url) },
             onOpenUrl = { url ->
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
             },
@@ -211,7 +248,7 @@ fun PickApp(
 
     Column(modifier = Modifier.fillMaxSize()) {
         TopBar(
-            connectionLabel = if (signedIn) model.connection.label else "Sign in to connect",
+            connected = signedIn && model.connection.phase == com.strike48.pick.shared.ConnectionPhase.CONNECTED,
             onNewChat = { send(Event.NewChat) },
             onHistory = { send(Event.OpenHistory); showHistory = true },
             onReports = { send(Event.OpenDocuments); showReports = true },
