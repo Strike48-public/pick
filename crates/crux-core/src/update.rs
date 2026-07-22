@@ -98,11 +98,18 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
                             }),
                         })
                 } else {
+                    // Render the just-merged snapshot AND keep polling. Without
+                    // the render, the runtime never emits a view update between
+                    // polls, so the shell only sees the final state (spinner
+                    // until done). Emitting both streams each poll to the UI.
                     let conv = model.conversation_id.clone().unwrap_or_default();
-                    Command::request_from_shell(PentestOperation::PollConversation {
-                        conversation_id: conv,
-                    })
-                    .then_send(delta_event)
+                    Command::all([
+                        render(),
+                        Command::request_from_shell(PentestOperation::PollConversation {
+                            conversation_id: conv,
+                        })
+                        .then_send(delta_event),
+                    ])
                 }
             } else {
                 model.scan_active = false;
@@ -427,11 +434,18 @@ mod tests {
             &mut model,
         );
         assert_eq!(model.messages.len(), 1);
-        let op = match cmd.effects().next().unwrap() {
-            Effect::Pentest(op) => op.operation,
-            _ => panic!("expected Pentest effect"),
-        };
-        assert!(matches!(op, PentestOperation::PollConversation { .. }));
+        // A non-final delta now emits BOTH a Render (so the shell streams the
+        // just-merged snapshot) AND the next PollConversation. Find the Pentest
+        // op among the effects.
+        let mut effects = cmd.effects();
+        let poll_op = effects.find_map(|e| match e {
+            Effect::Pentest(op) => Some(op.operation),
+            _ => None,
+        });
+        assert!(
+            matches!(poll_op, Some(PentestOperation::PollConversation { .. })),
+            "non-final delta should re-emit PollConversation"
+        );
     }
 
     #[test]

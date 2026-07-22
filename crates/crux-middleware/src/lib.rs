@@ -317,12 +317,24 @@ impl MatrixApi for CoreMatrixApi {
     }
 
     async fn poll(&self, conversation_id: String) -> Result<ConversationDelta, String> {
+        // Match the Dioxus poll cadence (800ms) instead of hammering the server
+        // with a tight re-emit loop; also gives the agent time to produce
+        // incremental output between polls.
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
         let state = self
             .client()
             .get_conversation(&conversation_id)
             .await
             .map_err(|e| e.to_string())?;
-        Ok(state_to_delta(state))
+        let delta = state_to_delta(state);
+        tracing::info!(
+            "[poll] conv={} msgs={} tool_calls={} done={}",
+            conversation_id,
+            delta.messages.len(),
+            delta.tool_calls.len(),
+            delta.done,
+        );
+        Ok(delta)
     }
 
     async fn list_documents(&self, agent_id: Option<String>) -> Result<Vec<DocRef>, String> {

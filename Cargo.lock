@@ -7558,6 +7558,7 @@ dependencies = [
  "pick-crux-core",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
