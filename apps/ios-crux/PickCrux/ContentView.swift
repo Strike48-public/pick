@@ -8,8 +8,15 @@ import PickShared
 /// History and Reports are transient overlays that the ViewModel does not model
 /// with a dedicated visibility flag, so their presentation is a local flag that
 /// mirrors the corresponding open/close Events to the core.
+///
+/// Sign-in is a native-shell capability: until the shell has adopted an OAuth
+/// token (`hasToken`) or the core reports `needsSignIn`, the `SignInView` is
+/// shown and its button drives `ASWebAuthenticationSession`.
 struct ContentView: View {
     @ObservedObject var core: CoreBridge
+    @StateObject private var oauth = OAuthManager()
+    /// True once the shell has handed a workspace-scoped token to the core.
+    @State private var hasToken = false
     @State private var showHistory = false
     @State private var showDocuments = false
 
@@ -17,8 +24,8 @@ struct ContentView: View {
         ZStack {
             Theme.background.ignoresSafeArea()
 
-            if core.vm.needsSignIn || core.vm.screen == .needsSignIn {
-                SignInView(core: core)
+            if !hasToken || core.vm.needsSignIn || core.vm.screen == .needsSignIn {
+                SignInView(core: core, oauth: oauth, onToken: adoptToken)
             } else {
                 VStack(spacing: 0) {
                     TopBar(core: core, showHistory: $showHistory, showDocuments: $showDocuments)
@@ -49,9 +56,29 @@ struct ContentView: View {
             // Test hook: -autoScan fires the Scan button code path headlessly so
             // the FFI -> view round-trip can be exercised over SSH (no GUI tap).
             if ProcessInfo.processInfo.arguments.contains("-autoScan") {
+                hasToken = true
                 core.send(.startScan)
             }
+            // Test hook: -autoSignIn fires the Sign In button code path so the
+            // ASWebAuthenticationSession start can be exercised over SSH (the
+            // sim runs windowless, so a real tap cannot be injected).
+            if ProcessInfo.processInfo.arguments.contains("-autoSignIn") {
+                // Delay so the window scene reaches .foregroundActive before the
+                // auth session resolves its presentation anchor (a real user tap
+                // already happens after the screen is active).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    core.send(.retrySignIn)
+                    oauth.signIn(onToken: adoptToken)
+                }
+            }
         }
+    }
+
+    /// Adopt the workspace-scoped token from the browser flow and advance to
+    /// the Scan screen.
+    private func adoptToken(_ token: String) {
+        core.setToken(token)
+        hasToken = true
     }
 
     @ViewBuilder private var mainContent: some View {

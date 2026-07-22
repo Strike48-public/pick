@@ -1,10 +1,14 @@
 import SwiftUI
 import PickShared
 
-/// Needs-sign-in screen. Native OAuth is a later task; the button emits
-/// `.retrySignIn` to re-drive the sign-in effect.
+/// Needs-sign-in screen. The button runs the shell's native OAuth flow
+/// (`ASWebAuthenticationSession`); on success the caller adopts the
+/// workspace-scoped token into the core and advances to the Scan screen.
 struct SignInView: View {
     @ObservedObject var core: CoreBridge
+    @ObservedObject var oauth: OAuthManager
+    /// Invoked with the extracted `access_token` after a successful browser flow.
+    var onToken: (String) -> Void
 
     var body: some View {
         VStack(spacing: 16) {
@@ -20,13 +24,30 @@ struct SignInView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
 
+            if let err = oauth.lastError {
+                Text(err)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.error)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
+
             Button {
+                // Re-drive the core sign-in effect for state parity, then run
+                // native OAuth to obtain the workspace-scoped session token.
                 core.send(.retrySignIn)
+                oauth.signIn(onToken: onToken)
             } label: {
-                Text("Sign in")
-                    .frame(maxWidth: .infinity, minHeight: 44)
+                if oauth.inProgress {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                } else {
+                    Text("Sign in")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
             }
             .buttonStyle(SagePillButtonStyle())
+            .disabled(oauth.inProgress)
             .padding(.horizontal, 32)
             .padding(.top, 8)
             Spacer()
