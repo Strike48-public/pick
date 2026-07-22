@@ -152,6 +152,8 @@ impl App for PickApp {
             needs_sign_in: matches!(model.phase, model::Phase::NeedsSignIn),
             error: model.error.clone(),
             tool_calls: model.tool_calls.clone(),
+            agent_activity: model.activity.clone(),
+            activity_label: model.activity.label().to_string(),
         }
     }
 }

@@ -18,6 +18,8 @@ pub struct Model {
     pub error: Option<String>,
     pub opening_document_id: Option<String>,
     pub tool_calls: Vec<crate::view::ToolCallView>,
+    /// What the agent is doing right now — drives the animated status line.
+    pub activity: crate::view::AgentActivity,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]

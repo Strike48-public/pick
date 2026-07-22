@@ -51,6 +51,36 @@ pub enum ToolStatus {
     Error,
 }
 
+/// What the agent is currently doing, projected from the server's AgentStatus.
+/// Drives the animated status line (never a spinner) while a scan/chat is live.
+/// `Idle` means no activity (terminal / not running).
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[repr(C)]
+pub enum AgentActivity {
+    #[default]
+    Idle,
+    Thinking,
+    Responding,
+    RunningTools,
+    AwaitingConsent,
+}
+
+impl AgentActivity {
+    /// Human label for the status line (matches the Dioxus wording).
+    pub fn label(&self) -> &'static str {
+        match self {
+            AgentActivity::Idle => "",
+            AgentActivity::Thinking => "Thinking...",
+            AgentActivity::Responding => "Responding...",
+            AgentActivity::RunningTools => "Running tools...",
+            AgentActivity::AwaitingConsent => "Awaiting approval...",
+        }
+    }
+    pub fn is_active(&self) -> bool {
+        !matches!(self, AgentActivity::Idle)
+    }
+}
+
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ToolCallView {
     pub name: String,
@@ -129,6 +159,11 @@ pub struct ViewModel {
     pub needs_sign_in: bool,
     pub error: Option<String>,
     pub tool_calls: Vec<ToolCallView>,
+    /// What the agent is doing right now. Shells render an animated status line
+    /// (never a spinner) whenever this is not `Idle`.
+    pub agent_activity: AgentActivity,
+    /// Pre-formatted human label for `agent_activity` (empty when Idle).
+    pub activity_label: String,
 }
 
 impl Default for ConnectionView {

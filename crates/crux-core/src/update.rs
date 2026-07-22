@@ -75,6 +75,13 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
                 // poll/update, rendering the same message dozens of times.
                 model.messages = delta.messages;
                 model.tool_calls = delta.tool_calls;
+                // Reflect what the agent is doing (Thinking/RunningTools/...) so
+                // the shell shows an animated status line; clear it once done.
+                model.activity = if delta.done {
+                    crate::view::AgentActivity::Idle
+                } else {
+                    delta.activity
+                };
                 if delta.done {
                     model.scan_active = false;
                     let agent = None; // agent id resolved by middleware/session
@@ -426,6 +433,7 @@ mod tests {
             }],
             tool_calls: vec![],
             done: false,
+            activity: Default::default(),
         };
         let mut cmd = app.update(
             Event::Delta(crate::DeltaOutcome {
@@ -460,6 +468,7 @@ mod tests {
             messages: vec![],
             tool_calls: vec![],
             done: true,
+            activity: Default::default(),
         };
         let mut cmd = app.update(
             Event::Delta(crate::DeltaOutcome {
@@ -565,6 +574,7 @@ mod tests {
                 error: None,
             }],
             done: false,
+            activity: Default::default(),
         };
         let _ = app.update(
             Event::Delta(crate::DeltaOutcome {

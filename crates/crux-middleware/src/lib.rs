@@ -2,14 +2,17 @@
 //! pure; this crate owns all I/O, on a background tokio runtime.
 
 use crux_core::middleware::{EffectMiddleware, EffectResolver};
-use pentest_core::matrix::{ChatClient, ChatMessage, ConversationState, MessagePart, ToolCallStatus};
+use pentest_core::matrix::{
+    AgentStatus, ChatClient, ChatMessage, ConversationState, MessagePart, ToolCallStatus,
+};
 use pick_crux_core::effect::{ConversationDelta, PentestOperation, PentestOutcome};
 use pick_crux_core::view::{
-    ConversationRef, DocRef, MessageKind, MessagePartView, MessageView, ToolCallView, ToolStatus,
+    AgentActivity, ConversationRef, DocRef, MessageKind, MessagePartView, MessageView, ToolCallView,
+    ToolStatus,
 };
 
 #[cfg(test)]
-use pentest_core::matrix::{AgentStatus, ToolCallInfo};
+use pentest_core::matrix::ToolCallInfo;
 
 #[async_trait::async_trait]
 pub trait MatrixApi: Send + Sync {
@@ -179,6 +182,24 @@ fn messages_to_views(messages: &[ChatMessage]) -> Vec<MessageView> {
     messages.iter().map(message_to_view).collect()
 }
 
+/// Map the server's AgentStatus to the crux AgentActivity that drives the
+/// animated status line (mirrors the Dioxus status-label mapping).
+fn map_activity(status: AgentStatus) -> AgentActivity {
+    match status {
+        AgentStatus::Processing => AgentActivity::Thinking,
+        AgentStatus::Streaming => AgentActivity::Responding,
+        AgentStatus::ExecutingTools => AgentActivity::RunningTools,
+        AgentStatus::AwaitingConsent | AgentStatus::AwaitingClientTools => {
+            AgentActivity::AwaitingConsent
+        }
+        // Terminal / unknown -> not actively working.
+        AgentStatus::Idle
+        | AgentStatus::StreamEnd
+        | AgentStatus::Error
+        | AgentStatus::Unknown => AgentActivity::Idle,
+    }
+}
+
 /// Map ConversationState to ConversationDelta (for poll).
 fn state_to_delta(state: ConversationState) -> ConversationDelta {
     let messages = messages_to_views(&state.messages);
@@ -188,10 +209,12 @@ fn state_to_delta(state: ConversationState) -> ConversationDelta {
         .flat_map(|m| extract_tool_calls(&m.parts))
         .collect();
     let done = state.agent_status.is_terminal();
+    let activity = map_activity(state.agent_status);
     ConversationDelta {
         messages,
         tool_calls,
         done,
+        activity,
     }
 }
 
@@ -489,6 +512,7 @@ mod tests {
                 messages: vec![],
                 tool_calls: vec![],
                 done: true,
+                activity: Default::default(),
             })
         }
         async fn list_documents(

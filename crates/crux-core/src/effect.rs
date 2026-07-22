@@ -52,6 +52,9 @@ pub struct ConversationDelta {
     pub messages: Vec<MessageView>,
     pub tool_calls: Vec<ToolCallView>,
     pub done: bool,
+    /// What the agent is doing right now (Thinking/Responding/RunningTools/...),
+    /// projected from the server's AgentStatus. Drives the animated status line.
+    pub activity: crate::view::AgentActivity,
 }
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
