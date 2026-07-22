@@ -25,6 +25,7 @@
 		CC0000000000000000000012 /* DocViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000012 /* DocViewer.swift */; };
 		CC0000000000000000000013 /* SignInView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000013 /* SignInView.swift */; };
 		CC0000000000000000000014 /* ErrorCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000014 /* ErrorCard.swift */; };
+		CC0000000000000000000015 /* OAuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000015 /* OAuthManager.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -47,6 +48,8 @@
 		BB0000000000000000000012 /* DocViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocViewer.swift; sourceTree = "<group>"; };
 		BB0000000000000000000013 /* SignInView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignInView.swift; sourceTree = "<group>"; };
 		BB0000000000000000000014 /* ErrorCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorCard.swift; sourceTree = "<group>"; };
+		BB0000000000000000000015 /* OAuthManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthManager.swift; sourceTree = "<group>"; };
+		DD0000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -97,6 +100,8 @@
 				BB0000000000000000000012 /* DocViewer.swift */,
 				BB0000000000000000000013 /* SignInView.swift */,
 				BB0000000000000000000014 /* ErrorCard.swift */,
+				BB0000000000000000000015 /* OAuthManager.swift */,
+				DD0000000000000000000001 /* Info.plist */,
 				AA0000000000000000000019 /* PickCrux-Bridging-Header.h */,
 			);
 			path = PickCrux;
@@ -193,6 +198,7 @@
 				CC0000000000000000000012 /* DocViewer.swift in Sources */,
 				CC0000000000000000000013 /* SignInView.swift in Sources */,
 				CC0000000000000000000014 /* ErrorCard.swift in Sources */,
+				CC0000000000000000000015 /* OAuthManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -234,6 +240,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/../../crates/crux-ffi/include";
+				INFOPLIST_FILE = "PickCrux/Info.plist";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release-ffi";
@@ -257,6 +264,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/../../crates/crux-ffi/include";
+				INFOPLIST_FILE = "PickCrux/Info.plist";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release-ffi";

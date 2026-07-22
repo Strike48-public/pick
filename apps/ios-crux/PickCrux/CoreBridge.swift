@@ -5,9 +5,9 @@ import PickShared
 /// pure view of `ViewModel`; it only encodes `Event`s and decodes the returned
 /// ViewModel bytes.
 ///
-/// Pentest effects resolve in-core (Design A). For this task the core is built
-/// with a placeholder api_url/token, so network calls may populate
-/// `ViewModel.error`, which the UI renders.
+/// Pentest effects resolve in-core (Design A). The core is built with a
+/// placeholder token; the shell performs native OAuth and adopts the
+/// workspace-scoped session token via `setToken` before scanning.
 final class CoreBridge: ObservableObject {
     private let handle: OpaquePointer
 
@@ -42,6 +42,19 @@ final class CoreBridge: ObservableObject {
         eventBytes.withUnsafeBufferPointer { buf in
             let out = pick_update(handle, buf.baseAddress, UInt(buf.count))
             pick_buf_free(out)
+        }
+        if let next = CoreBridge.decodeView(handle) {
+            vm = next
+        }
+    }
+
+    /// Adopt a token obtained via native OAuth (`ASWebAuthenticationSession`).
+    /// Calls `pick_set_token`, then refreshes the view so subsequent scans use
+    /// the workspace-scoped session token.
+    func setToken(_ token: String) {
+        let tokenBytes = Array(token.utf8)
+        tokenBytes.withUnsafeBufferPointer { buf in
+            pick_set_token(handle, buf.baseAddress, UInt(buf.count))
         }
         if let next = CoreBridge.decodeView(handle) {
             vm = next
