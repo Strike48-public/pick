@@ -2,6 +2,7 @@ package com.strike48.pickcrux.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,10 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -109,15 +114,30 @@ private fun UserBubble(text: String) {
 
 @Composable
 fun ToolCallRow(tool: ToolCallView) {
-    Box(
+    val hasDetail = !tool.arguments.isNullOrEmpty() ||
+        !tool.result.isNullOrEmpty() ||
+        !tool.error.isNullOrEmpty()
+    var expanded by remember { mutableStateOf(false) }
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(PickColors.Surface)
             .border(1.dp, PickColors.Hairline, RoundedCornerShape(16.dp))
+            .then(if (hasDetail) Modifier.clickable { expanded = !expanded } else Modifier)
             .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            if (hasDetail) {
+                Text(
+                    text = if (expanded) "▼" else "▶",
+                    fontSize = 10.sp,
+                    color = PickColors.Muted,
+                    modifier = Modifier.padding(end = 6.dp),
+                )
+            }
             Text(
                 text = tool.name,
                 fontFamily = FontFamily.Monospace,
@@ -128,6 +148,22 @@ fun ToolCallRow(tool: ToolCallView) {
             Spacer(Modifier.width(8.dp))
             StatusBadge(tool.status)
         }
+        if (expanded) {
+            tool.arguments?.takeIf { it.isNotEmpty() }
+                ?.let { ToolDetail("Arguments", it, PickColors.Muted) }
+            tool.result?.takeIf { it.isNotEmpty() }
+                ?.let { ToolDetail("Result", it, PickColors.Text) }
+            tool.error?.takeIf { it.isNotEmpty() }
+                ?.let { ToolDetail("Error", it, PickColors.StatusError) }
+        }
+    }
+}
+
+@Composable
+private fun ToolDetail(title: String, body: String, color: Color) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(title, color = PickColors.Muted, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+        Text(body, color = color, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
     }
 }
 

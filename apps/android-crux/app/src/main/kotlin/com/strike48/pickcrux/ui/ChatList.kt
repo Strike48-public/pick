@@ -22,12 +22,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,7 +52,31 @@ fun ChatList(
     activityLabel: String,
     modifier: Modifier = Modifier,
 ) {
+    val listState = rememberLazyListState()
+
+    // How much content is on screen; grows as the scan streams in.
+    val streamSize = messages.size + toolCalls.size + (if (activityActive) 1 else 0)
+
+    // Whether the user has scrolled up to read history. When they're at (or
+    // near) the bottom we auto-follow new content; if they scroll up we stop,
+    // and re-follow once they scroll back down.
+    val atBottom by remember {
+        derivedStateOf {
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            last >= listState.layoutInfo.totalItemsCount - 2
+        }
+    }
+
+    // Auto-scroll to the newest content as it streams, unless the user scrolled
+    // up (atBottom == false). They override simply by scrolling.
+    LaunchedEffect(streamSize) {
+        if (streamSize > 0 && atBottom) {
+            listState.animateScrollToItem((streamSize - 1).coerceAtLeast(0))
+        }
+    }
+
     LazyColumn(
+        state = listState,
         modifier = modifier.fillMaxWidth(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
