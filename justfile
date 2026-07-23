@@ -221,6 +221,27 @@ _inject-android-lib proj:
     ln -sfn "$(pwd)/android-lib" "{{proj}}/android-lib"
     grep -q "android-lib" "{{proj}}/settings.gradle" 2>/dev/null || \
         echo "include ':android-lib'" >> "{{proj}}/settings.gradle"
+    # Opt out of Android 15's forced edge-to-edge. dx regenerates styles.xml on
+    # every build with a plain NoActionBar theme; on targetSdk 35 (Android 15)
+    # that makes the WebView draw UNDER the status bar, so the OS clock/battery
+    # overlap Pick's brand bar. env(safe-area-inset-top) resolves to 0 in this
+    # WebView (see mobile.css), so CSS can't compensate — we opt out at the theme
+    # level, restoring the inset window the layout assumes on iOS and Android <=14.
+    # windowOptOutEdgeToEdgeEnforcement is honored on API 35 and ignored below it.
+    styles="{{proj}}/app/src/main/res/values/styles.xml"
+    if [ -f "$styles" ] && ! grep -q "windowOptOutEdgeToEdgeEnforcement" "$styles"; then
+        cat > "$styles" <<'XML'
+    <resources>
+
+        <!-- Base application theme. -->
+        <style name="AppTheme" parent="@style/Theme.AppCompat.Light.NoActionBar">
+            <!-- Opt out of Android 15 forced edge-to-edge so the WebView stays
+                 below the status bar (patched by justfile _inject-android-lib). -->
+            <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+        </style>
+    </resources>
+    XML
+    fi
     grep -q "android-lib" "{{proj}}/app/build.gradle.kts" 2>/dev/null || \
         echo 'dependencies { implementation(project(":android-lib")) }' >> "{{proj}}/app/build.gradle.kts"
     # Copy proot, busybox, and dependencies into jniLibs
