@@ -27,6 +27,21 @@ fn main() {
                 .with_tag("PentestConnector"),
         );
 
+        // Dev-only: propagate the BUILD-TIME baked MATRIX_TLS_INSECURE into the
+        // process env so the strike48-connector SDK — which reads it via
+        // std::env::var when it builds its WebSocket/gRPC/OTT HTTP clients — can
+        // see it. Mobile apps have no runtime environment, so without this the
+        // SDK's register-with-ott call verify-fails against the local mkcert dev
+        // cluster ("error sending request"), even though our own baked reqwest
+        // clients (GraphQL, pre-approve) succeed. `option_env!` is None in a
+        // release build that didn't set it, so this is a no-op in production and
+        // cannot ship an insecure default.
+        if let Some(v) = option_env!("MATRIX_TLS_INSECURE") {
+            if !v.is_empty() && std::env::var_os("MATRIX_TLS_INSECURE").is_none() {
+                std::env::set_var("MATRIX_TLS_INSECURE", v);
+            }
+        }
+
         pentest_platform::android::init();
 
         // Register Android-specific browser opener for OAuth flows
@@ -46,13 +61,10 @@ fn main() {
             |k| pentest_platform::android::secure_delete(k).map_err(|e| e.to_string()),
         );
 
-        // Register OAuth callback port setter — tells OAuthCallbackActivity
-        // which port the local Axum server is listening on.
-        pentest_core::matrix::set_oauth_port_setter(|port| {
-            if let Err(e) = pentest_platform::android::set_oauth_callback_port(port) {
-                tracing::warn!("Failed to set OAuth callback port: {e}");
-            }
-        });
+        // Native OAuth: OAuthCallbackActivity delivers the token straight into
+        // the core via the JNI export in this lib (see the
+        // Java_..._OAuthCallbackActivity_deliverOAuthToken symbol below), so no
+        // loopback callback server or port hand-off is needed on Android.
     }
 
     #[cfg(target_os = "ios")]
@@ -92,4 +104,35 @@ fn main() {
 #[component]
 fn MobileApp() -> Element {
     connector_app(MOBILE_CONFIG)
+}
+
+/// JNI entrypoint: `OAuthCallbackActivity` calls this with the full
+/// custom-scheme callback URL (`com.strike48.pentest://oauth/callback?...`)
+/// after the OS routes the browser's OAuth redirect back to the app. We hand it
+/// to the core, which parses the `access_token` and completes the in-flight
+/// login. This replaces the loopback HTTP hand-off, which can't work on Android
+/// (launching the browser backgrounds the app and suspends the callback
+/// server).
+///
+/// The JNI symbol encodes the Kotlin package: the `_` in `pentest_connector`
+/// mangles to `_1`. Runs on the JVM thread — we only send on a channel, so no
+/// thread affinity is required.
+///
+/// # Safety
+/// Standard JNI ABI contract: `env`/`url` are valid handles supplied by the JVM.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_strike48_pentest_1connector_OAuthCallbackActivity_deliverOAuthToken(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    url: jni::objects::JString,
+) -> jni::sys::jboolean {
+    let callback_url = match env.get_string(&url) {
+        Ok(s) => String::from(s),
+        Err(e) => {
+            tracing::error!("deliverOAuthToken: failed to read callback URL: {e}");
+            return false as jni::sys::jboolean;
+        }
+    };
+    pentest_core::matrix::deliver_native_oauth_callback(&callback_url) as jni::sys::jboolean
 }

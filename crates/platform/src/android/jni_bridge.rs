@@ -185,24 +185,6 @@ pub fn check_permission(env: &mut JNIEnv, ctx: &JObject, permission: &str) -> bo
     }
 }
 
-/// Tell the Android OAuthCallbackActivity which port the local callback server is on.
-///
-/// Called before opening the browser for OAuth so the Activity knows where to
-/// forward the access token it receives via the custom URI scheme intent.
-pub fn set_oauth_callback_port(port: u16) -> Result<()> {
-    with_activity(move |env, _activity| {
-        let bridge_cls = find_app_class(env, "com/strike48/pentest_connector/ConnectorBridge")?;
-        env.call_static_method(
-            &bridge_cls,
-            "setOAuthCallbackPort",
-            "(I)V",
-            &[JValue::Int(port as i32)],
-        )
-        .map_err(|e| Error::ToolExecution(format!("setOAuthCallbackPort: {e}")))?;
-        Ok(())
-    })
-}
-
 /// Open a URL in the system browser via Android Intent.
 ///
 /// Uses ConnectorBridge.invoke(context, "open_browser", {"url": "..."})
