@@ -195,6 +195,7 @@ impl PentestTool for PortScanTool {
             let sem = Arc::new(tokio::sync::Semaphore::new(MAX_HOSTS_IN_FLIGHT));
             let ports = Arc::new(ports);
 
+            let single_host = hosts.len() == 1;
             let futures = hosts.into_iter().map(|host| {
                 let sem = sem.clone();
                 let ports = ports.clone();
@@ -207,36 +208,66 @@ impl PentestTool for PortScanTool {
                         concurrency,
                     };
                     match get_platform().port_scan(config).await {
-                        Ok(result) => json!({
-                            "host": result.host,
-                            "ports": result.ports,
-                            "open_count": result.open_count,
-                            "total_scanned": result.ports.len(),
-                            "duration_ms": result.duration_ms,
-                        }),
-                        Err(e) => json!({ "host": host, "error": e.to_string() }),
+                        Ok(result) => Ok(result),
+                        Err(e) => Err((host, e)),
                     }
                 }
             });
-            let results: Vec<Value> = futures::future::join_all(futures).await;
+            let results = futures::future::join_all(futures).await;
 
-            // Single-host callers get the flat legacy shape (host/ports/... at
-            // top level) for backward compatibility; multi-host callers get a
-            // `hosts` array. A `hosts_with_open_ports` summary saves the agent a
-            // pass over the data when deciding what to banner-grab next.
-            if results.len() == 1 {
-                Ok(results.into_iter().next().unwrap())
-            } else {
-                let with_open: Vec<&Value> = results
-                    .iter()
-                    .filter(|r| r.get("open_count").and_then(|c| c.as_u64()).unwrap_or(0) > 0)
-                    .collect();
-                Ok(json!({
-                    "hosts": results,
-                    "hosts_scanned": results.len(),
-                    "hosts_with_open_ports": with_open.len(),
-                }))
+            // Single-host callers get the flat legacy shape (full per-port list
+            // under `ports`) for backward compatibility.
+            if single_host {
+                return match results.into_iter().next().unwrap() {
+                    Ok(r) => Ok(json!({
+                        "host": r.host,
+                        "ports": r.ports,
+                        "open_count": r.open_count,
+                        "total_scanned": r.ports.len(),
+                        "duration_ms": r.duration_ms,
+                    })),
+                    Err((host, e)) => Err(pentest_core::error::Error::Network(format!(
+                        "{host}: {e}"
+                    ))),
+                };
             }
+
+            // Multi-host: emit ONLY hosts that have open ports, and for those
+            // only the open ports (as {port, service}). A full 254-host ×
+            // all-ports dump is ~100k+ tokens and gets truncated by the platform
+            // summarizer — useless to the agent. This keeps the payload tiny and
+            // directly feeds the batched service_banner step.
+            let mut host_entries: Vec<Value> = Vec::new();
+            let mut hosts_scanned = 0usize;
+            let mut errors: Vec<Value> = Vec::new();
+            for r in results {
+                match r {
+                    Ok(scan) => {
+                        hosts_scanned += 1;
+                        if scan.open_count == 0 {
+                            continue;
+                        }
+                        let open: Vec<Value> = scan
+                            .ports
+                            .iter()
+                            .filter(|p| p.open)
+                            .map(|p| json!({ "port": p.port, "service": p.service }))
+                            .collect();
+                        host_entries.push(json!({
+                            "host": scan.host,
+                            "open_ports": open,
+                            "open_count": scan.open_count,
+                        }));
+                    }
+                    Err((host, e)) => errors.push(json!({ "host": host, "error": e.to_string() })),
+                }
+            }
+            Ok(json!({
+                "hosts": host_entries,
+                "hosts_scanned": hosts_scanned,
+                "hosts_with_open_ports": host_entries.len(),
+                "errors": errors,
+            }))
         })
         .await
     }
