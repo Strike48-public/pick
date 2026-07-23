@@ -31,7 +31,7 @@ import com.strike48.pickcrux.ui.ConversationDocStrip
 import com.strike48.pickcrux.ui.DocViewer
 import com.strike48.pickcrux.ui.DocumentsList
 import com.strike48.pickcrux.ui.ErrorCard
-import com.strike48.pickcrux.ui.HistorySheet
+import kotlinx.coroutines.launch
 import com.strike48.pickcrux.ui.InputRow
 import com.strike48.pickcrux.ui.NextStepsRow
 import com.strike48.pickcrux.ui.NoticeCard
@@ -66,6 +66,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var core: NativeCore
     private lateinit var tokenStore: TokenStore
+    private lateinit var settingsStore: SettingsStore
 
     // Drives which screen shows: no token yet -> SignInView. Flipped to true once
     // OAuth delivers a token and the core adopts it via pick_set_token.
@@ -78,6 +79,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         tokenStore = TokenStore(applicationContext)
+        settingsStore = SettingsStore(applicationContext)
 
         // Restore a persisted token (Keystore-backed) so a relaunch skips the
         // browser sign-in. An expired token is dropped so we fall through to a
@@ -98,6 +100,10 @@ class MainActivity : ComponentActivity() {
             signedIn = true
         }
 
+        // Seed the core with the persisted telemetry choice so the Sentry client
+        // reflects the opt-out from the very first launch, before any UI.
+        core.update(Event.SeedSettings(settingsStore.telemetryEnabled))
+
         setContent {
             PickTheme {
                 androidx.compose.material3.Surface(
@@ -109,10 +115,22 @@ class MainActivity : ComponentActivity() {
                         signedIn = signedIn,
                         refreshTick = refreshTick,
                         onSignIn = { launchOauth() },
+                        onTelemetryChange = { settingsStore.telemetryEnabled = it },
+                        onLogout = { logout() },
                     )
                 }
             }
         }
+    }
+
+    /** Sign out: clear the persisted token and reset the in-core session. */
+    private fun logout() {
+        Log.i(TAG, "Logging out: clearing token + session")
+        tokenStore.clear()
+        core.setToken("")
+        core.update(Event.Logout)
+        signedIn = false
+        refreshTick++
     }
 
     override fun onResume() {
@@ -168,12 +186,18 @@ fun PickApp(
     signedIn: Boolean,
     refreshTick: Int,
     onSignIn: () -> Unit,
+    onTelemetryChange: (Boolean) -> Unit,
+    onLogout: () -> Unit,
 ) {
     // Re-read the view whenever the sign-in state or refresh tick changes.
     var model by remember(signedIn, refreshTick) { mutableStateOf(core.view()) }
-    // Local overlay state the core does not track (which top-bar list is open).
-    var showHistory by remember { mutableStateOf(false) }
+    // Local overlay state the core does not track (which surface is open).
     var showReports by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    val drawerState = androidx.compose.material3.rememberDrawerState(
+        androidx.compose.material3.DrawerValue.Closed,
+    )
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     // Set to a doc id when Share is tapped before its link exists; once the
     // created link's preview URL lands we auto-fire the share sheet.
     var pendingShareDocId by remember { mutableStateOf<String?>(null) }
@@ -229,15 +253,6 @@ fun PickApp(
         return
     }
 
-    if (showHistory) {
-        HistorySheet(
-            history = model.history,
-            onSelect = { showHistory = false; send(Event.SelectConversation(it)) },
-            onDismiss = { showHistory = false; send(Event.CloseHistory) },
-        )
-        return
-    }
-
     if (showReports) {
         DocumentsList(
             documents = model.allDocuments,
@@ -247,12 +262,44 @@ fun PickApp(
         return
     }
 
+    if (showSettings) {
+        com.strike48.pickcrux.ui.SettingsScreen(
+            telemetryEnabled = model.settings.telemetryEnabled,
+            onTelemetryChange = { enabled ->
+                send(Event.SetTelemetryEnabled(enabled)) // apply in core (Sentry on/off)
+                onTelemetryChange(enabled) // persist natively
+            },
+            onClose = { showSettings = false },
+        )
+        return
+    }
+
+    // Native navigation drawer: hamburger (top-left) opens it; holds New chat,
+    // Reports, Settings, recent chats, and Log out.
+    androidx.compose.material3.ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            com.strike48.pickcrux.ui.DrawerContents(
+                recentChats = model.history,
+                onNewChat = { scope.launch { drawerState.close() }; send(Event.NewChat) },
+                onOpenReports = {
+                    scope.launch { drawerState.close() }
+                    send(Event.OpenDocuments); showReports = true
+                },
+                onOpenSettings = { scope.launch { drawerState.close() }; showSettings = true },
+                onSelectChat = { id ->
+                    scope.launch { drawerState.close() }
+                    send(Event.SelectConversation(id))
+                },
+                onLogout = { scope.launch { drawerState.close() }; onLogout() },
+            )
+        },
+    ) {
     Column(modifier = Modifier.fillMaxSize()) {
         TopBar(
             connected = signedIn && model.connection.phase == com.strike48.pick.shared.ConnectionPhase.CONNECTED,
+            onMenu = { scope.launch { drawerState.open() } },
             onNewChat = { send(Event.NewChat) },
-            onHistory = { send(Event.OpenHistory); showHistory = true },
-            onReports = { send(Event.OpenDocuments); showReports = true },
         )
 
         model.error?.let { err ->
@@ -318,4 +365,5 @@ fun PickApp(
             }
         }
     }
+    } // ModalNavigationDrawer content
 }

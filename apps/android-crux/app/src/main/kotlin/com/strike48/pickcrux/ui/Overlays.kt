@@ -308,7 +308,7 @@ fun NoticeCard(notice: NoticeView, onOpenStudio: (String) -> Unit) {
 // --- shared overlay primitives ---
 
 @Composable
-private fun FullScreenOverlay(content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+internal fun FullScreenOverlay(content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -318,7 +318,7 @@ private fun FullScreenOverlay(content: @Composable androidx.compose.foundation.l
 }
 
 @Composable
-private fun OverlayHeader(title: String, onClose: () -> Unit) {
+internal fun OverlayHeader(title: String, onClose: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -350,7 +350,7 @@ private fun OverlayHeader(title: String, onClose: () -> Unit) {
 }
 
 @Composable
-private fun RowSeparator() {
+internal fun RowSeparator() {
     Box(
         modifier = Modifier
             .fillMaxWidth()

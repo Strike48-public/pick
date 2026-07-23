@@ -17,9 +17,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -36,9 +35,8 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun TopBar(
     connected: Boolean,
+    onMenu: () -> Unit,
     onNewChat: () -> Unit,
-    onHistory: () -> Unit,
-    onReports: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -46,19 +44,20 @@ fun TopBar(
             .background(PickColors.Background)
             // Clear the system status bar so the badge/wordmark aren't drawn under the clock.
             .statusBarsPadding()
-            .padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 12.dp),
+            .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 12.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // Hamburger (left) opens the navigation drawer.
+            IconAction(Icons.Filled.Menu, "Menu", onMenu)
+            Spacer(Modifier.width(4.dp))
             BrandBadge(connected = connected)
             Spacer(Modifier.width(10.dp))
             Text(text = "Pick", style = WordmarkStyle)
             Spacer(Modifier.weight(1f))
             IconAction(Icons.Filled.Add, "New chat", onNewChat)
-            IconAction(Icons.Filled.DateRange, "History", onHistory)
-            IconAction(Icons.AutoMirrored.Filled.List, "Reports", onReports)
         }
     }
 }
