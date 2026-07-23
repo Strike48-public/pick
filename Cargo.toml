@@ -68,7 +68,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Telemetry (usage analytics + crash/release health). rustls to avoid a native
 # OpenSSL dependency on mobile targets.
-sentry = { version = "0.34", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls", "tracing"] }
+sentry = { version = "0.34", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }

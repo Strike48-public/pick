@@ -59,8 +59,9 @@ pub async fn map_operation(api: &dyn MatrixApi, op: PentestOperation) -> Pentest
         } => {
             // Telemetry: the easy-mode "Scan My Network" action fired. Record
             // scan.start tagged with its source so button-initiated scans are
-            // distinguishable from typed ones. No-op unless a DSN was baked in
-            // and telemetry is enabled; carries no PII (just coarse names).
+            // distinguishable from typed ones. No PII; no-op unless a DSN was
+            // baked in and telemetry is enabled. The per-conversation grouping is
+            // a distributed trace originating on the backend (see tool spans).
             pentest_core::telemetry::record(
                 pentest_core::telemetry::Activity::ScanStart,
                 &[("source", "easy_mode_button")],

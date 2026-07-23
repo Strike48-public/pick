@@ -869,25 +869,36 @@ impl ToolRegistry {
     ) -> Result<ToolResult> {
         match self.get(name) {
             Some(tool) => {
-                // Telemetry (#278): time the tool run as a `tracing` span so the
-                // sentry-tracing layer records it as a Sentry span WITH DURATION
-                // (start → end of the await). Only the tool name, a coarse
-                // outcome, and the network-check flag are attached — never
-                // arguments, targets, or output. The span is entered across the
-                // execute().await so its measured time is the real tool duration.
-                use tracing::Instrument;
+                // Telemetry (#278): time the tool run as a Sentry span WITH
+                // DURATION — opened before execute(), finished after — so it
+                // nests under the open conversation session as a child span
+                // (the waterfall). Only the tool name, a coarse outcome, and the
+                // network-check flag are attached — never arguments, targets, or
+                // output.
                 let is_net = is_network_check_tool(name);
-                let span = tracing::info_span!(
-                    "tool.run",
-                    tool = name,
-                    outcome = tracing::field::Empty,
-                    network_check = is_net,
+                // Continue the distributed trace from headers the backend
+                // forwarded in the tool request (carried in ctx.metadata), so
+                // this tool span nests under the backend's conversation trace as
+                // one cross-process trace. Absent headers -> standalone span.
+                let span = crate::telemetry::start_tool_span(
+                    &[
+                        ("tool", name),
+                        ("network_check", if is_net { "true" } else { "false" }),
+                    ],
+                    ctx.metadata.get(crate::telemetry::SENTRY_TRACE_HEADER).map(String::as_str),
+                    ctx.metadata.get(crate::telemetry::BAGGAGE_HEADER).map(String::as_str),
                 );
-                // `.instrument()` (not a held `enter()` guard) is the correct way
-                // to span an async block — the span is entered only while the
-                // future is polled, so its duration is the real execution time.
-                let result = tool.execute(params, ctx).instrument(span.clone()).await;
-                span.record("outcome", if result.is_ok() { "ok" } else { "error" });
+                let result = tool.execute(params, ctx).await;
+                let outcome = if result.is_ok() { "ok" } else { "error" };
+                span.finish(&[("outcome", outcome)]);
+                // Network-discovery tools also fire the network.check activity so
+                // the "did they check their network" funnel is measurable.
+                if is_net {
+                    crate::telemetry::record(
+                        crate::telemetry::Activity::NetworkCheck,
+                        &[("tool", name), ("outcome", outcome)],
+                    );
+                }
                 result
             }
             None => {

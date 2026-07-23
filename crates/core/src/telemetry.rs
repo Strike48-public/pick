@@ -36,6 +36,15 @@ static GUARD: Mutex<Option<sentry::ClientInitGuard>> = Mutex::new(None);
 /// back on within a session.
 static IDENTITY: Mutex<Option<(String, bool)>> = Mutex::new(None);
 
+
+/// Metadata keys under which the backend forwards distributed-trace headers in
+/// the tool-request frame, so a connector-side tool span can join the backend's
+/// conversation trace. The connector copies these from the inbound request's
+/// `metadata` into `ToolContext::metadata`; `start_tool_span` reads them. Named
+/// after the W3C/Sentry headers so the platform contract is obvious.
+pub const SENTRY_TRACE_HEADER: &str = "sentry_trace";
+pub const BAGGAGE_HEADER: &str = "baggage";
+
 /// Compile-time DSN. `None` (the default in local/dev builds) disables Sentry
 /// entirely — release CI injects `SENTRY_DSN` so shipped builds report.
 const DSN: Option<&str> = option_env!("SENTRY_DSN");
@@ -124,7 +133,7 @@ pub fn set_enabled(enabled: bool) {
         }
     } else {
         // Drop the guard -> flush pending events, end the release-health
-        // session, close the client. Nothing further is sent until re-enabled.
+        // session, close the client. Nothing further sent until re-enabled.
         ENABLED.store(false, Ordering::Relaxed);
         if let Ok(mut g) = GUARD.lock() {
             *g = None;
@@ -278,13 +287,9 @@ impl Activity {
     }
 }
 
-/// Record an instantaneous activity event with optional safe key/value
-/// properties, as a zero-duration `tracing` span. The `sentry-tracing` layer
-/// (installed in the shell's tracing subscriber) turns it into a Sentry span —
-/// nested under the current span (e.g. the conversation-turn span) when one is
-/// active on this task, otherwise a standalone transaction — so activities land
-/// in Traces, never Issues. Durationful work (tool runs) is instrumented at the
-/// call site with its own `tracing` span instead (see `tools.rs`).
+/// Record an INSTANTANEOUS activity (no duration) as a standalone Sentry
+/// transaction. Routes to Traces, never Issues. Use [`ToolSpan`] for durationful
+/// work (tool runs).
 ///
 /// Property values MUST be non-sensitive: tool names, result enums, counts —
 /// never target hosts, arguments, or scan data. Callers are responsible for
@@ -294,57 +299,67 @@ pub fn record(activity: Activity, props: &[(&str, &str)]) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
     }
-    // Emit a short-lived `tracing` span; the sentry-tracing layer turns spans
-    // into Sentry transactions/child-spans (nested under the current span on
-    // this task when there is one), so activities land in Traces, never Issues.
-    // `props` are attached as span fields via a dynamic valueset is not possible
-    // (tracing fields are static), so they ride along as span data through the
-    // `sentry_props` field which the layer serialises.
-    let props_str = props
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    let span = tracing::info_span!("activity", otel.name = activity.name(), props = %props_str);
-    let _guard = span.enter();
-
-    // Also a breadcrumb for error-timeline context if a real error follows.
-    let mut data = std::collections::BTreeMap::new();
+    let ctx = sentry::TransactionContext::new(activity.name(), "activity");
+    let tx = sentry::start_transaction(ctx);
     for (k, v) in props {
-        data.insert((*k).to_string(), sentry::protocol::Value::from(*v));
+        tx.set_data(k, sentry::protocol::Value::from(*v));
     }
-    sentry::add_breadcrumb(sentry::Breadcrumb {
-        category: Some("activity".into()),
-        message: Some(activity.name().to_string()),
-        level: sentry::Level::Info,
-        data,
-        ..Default::default()
-    });
+    tx.finish();
 }
 
-/// The `sentry-tracing` layer, to be added to the shell's `tracing` subscriber.
-/// It turns `tracing` spans into Sentry transactions/spans **with real
-/// durations** and automatic parent/child nesting (a span entered inside another
-/// becomes its child) — the idiomatic Rust+Sentry way, instead of hand-managing
-/// transactions. Re-exported here so shells install it without each taking a
-/// direct `sentry` dependency. Harmless when no client is initialized.
-///
-/// Only spans named for our activity taxonomy become transactions; ordinary
-/// debug/info tracing stays out of Sentry via the span filter.
-pub fn sentry_tracing_layer<S>() -> impl tracing_subscriber::Layer<S>
-where
-    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-{
-    use sentry::integrations::tracing::EventFilter;
-    sentry::integrations::tracing::layer()
-        // Only record our own activity/tool spans as transactions; don't turn
-        // every info-level tracing span in the app into a Sentry transaction.
-        .span_filter(|md| {
-            matches!(md.name(), "activity" | "tool.run")
-        })
-        // Never auto-capture tracing events as Sentry issues; we only want
-        // spans (traces). Errors are surfaced deliberately elsewhere.
-        .event_filter(|_md| EventFilter::Ignore)
+/// A live, timed span for a tool run. Opened before `execute()` and finished
+/// after, so it carries the real duration. When the inbound tool request carried
+/// distributed-trace headers (`sentry-trace` / `baggage`, forwarded by the
+/// backend), the span CONTINUES that trace — so the tool nests under the
+/// backend's conversation transaction as part of ONE cross-process trace, with
+/// no shared-memory parent. Absent headers it's a standalone transaction.
+/// `None` inside when telemetry is off, so it's a cheap no-op handle callers can
+/// hold across an await unconditionally.
+#[must_use = "a ToolSpan must be finished to record its duration"]
+pub struct ToolSpan(Option<sentry::TransactionOrSpan>);
+
+/// Start a timed `tool.run` span, continuing the distributed trace from the
+/// (optional) `sentry-trace` / `baggage` headers the backend forwarded in the
+/// tool request. Pass safe start props (e.g. tool name); finish with
+/// [`ToolSpan::finish`] and the outcome once the tool returns.
+pub fn start_tool_span(
+    props: &[(&str, &str)],
+    sentry_trace: Option<&str>,
+    baggage: Option<&str>,
+) -> ToolSpan {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return ToolSpan(None);
+    }
+    let name = Activity::ToolRun.name();
+    // Build trace headers from whatever the backend sent so the span joins the
+    // distributed trace. `continue_from_headers` with no headers just starts a
+    // fresh root transaction, so this is safe when the backend sends nothing.
+    let mut headers: Vec<(&str, &str)> = Vec::new();
+    if let Some(t) = sentry_trace.filter(|s| !s.is_empty()) {
+        headers.push(("sentry-trace", t));
+    }
+    if let Some(b) = baggage.filter(|s| !s.is_empty()) {
+        headers.push(("baggage", b));
+    }
+    let ctx = sentry::TransactionContext::continue_from_headers(name, "activity", headers);
+    let span: sentry::TransactionOrSpan = sentry::start_transaction(ctx).into();
+    for (k, v) in props {
+        span.set_data(k, sentry::protocol::Value::from(*v));
+    }
+    ToolSpan(Some(span))
+}
+
+impl ToolSpan {
+    /// Finish the span, stamping final props (e.g. outcome) and sending it with
+    /// its measured duration. No-op if telemetry was off.
+    pub fn finish(self, extra: &[(&str, &str)]) {
+        if let Some(span) = self.0 {
+            for (k, v) in extra {
+                span.set_data(k, sentry::protocol::Value::from(*v));
+            }
+            span.finish();
+        }
+    }
 }
 
 #[cfg(test)]
