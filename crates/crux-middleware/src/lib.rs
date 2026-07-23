@@ -57,14 +57,10 @@ pub async fn map_operation(api: &dyn MatrixApi, op: PentestOperation) -> Pentest
             conversation_id,
             prompt,
         } => {
-            // Telemetry: the easy-mode "Scan My Network" action fired. Open the
-            // per-conversation session trace (if not already open) so every tool
-            // the agent runs nests under it, then record scan.start tagged with
-            // its source so we can tell button-initiated scans from typed ones.
-            // The session containing a scan.start = a scan conversation; one
-            // without = a freeform chat. No-op unless a DSN was baked in and
-            // telemetry is enabled; carries no PII (just coarse event names).
-            pentest_core::telemetry::begin_session();
+            // Telemetry: the easy-mode "Scan My Network" action fired. Record
+            // scan.start tagged with its source so button-initiated scans are
+            // distinguishable from typed ones. No-op unless a DSN was baked in
+            // and telemetry is enabled; carries no PII (just coarse names).
             pentest_core::telemetry::record(
                 pentest_core::telemetry::Activity::ScanStart,
                 &[("source", "easy_mode_button")],
@@ -78,9 +74,6 @@ pub async fn map_operation(api: &dyn MatrixApi, op: PentestOperation) -> Pentest
             conversation_id,
             text,
         } => {
-            // Freeform message: open the session trace too (no scan.start span,
-            // which is how we distinguish a chat session from a scan session).
-            pentest_core::telemetry::begin_session();
             match api.send(conversation_id, text).await {
                 Ok(c) => PentestOutcome::ScanQueued { conversation_id: c },
                 Err(m) => PentestOutcome::Error { message: m },
@@ -512,9 +505,20 @@ impl MatrixApi for CoreMatrixApi {
         let notice = if matches!(state.agent_status, AgentStatus::Error)
             || state.stream_error.is_some()
         {
-            Some(notice_to_view(
-                pentest_core::matrix::build_error_notice(&client).await,
-            ))
+            let built = pentest_core::matrix::build_error_notice(&client).await;
+            // Also capture the failure as a Sentry ISSUE (usage traces don't
+            // cover errors). Classify: a mid-stream drop vs a token-limit vs a
+            // generic upstream error. `detail` stays non-PII (kind + reason).
+            let kind = if state.stream_error.is_some() {
+                "stream_error"
+            } else if matches!(built.kind, pentest_core::matrix::ChatNoticeKind::TokenLimit) {
+                "token_limit"
+            } else {
+                "upstream"
+            };
+            let detail = state.stream_error.clone().unwrap_or_else(|| built.title.clone());
+            pentest_core::telemetry::capture_agent_error(kind, &detail);
+            Some(notice_to_view(built))
         } else {
             None
         };

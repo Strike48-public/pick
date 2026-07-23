@@ -192,10 +192,9 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                     div {
                         class: "action-card",
                         onclick: move |_| {
-                            // Open the per-conversation session trace, then record
-                            // scan.start tagged with its source so button-initiated
-                            // scans are distinguishable from typed ones.
-                            pentest_core::telemetry::begin_session();
+                            // Record scan.start tagged with its source so
+                            // button-initiated scans are distinguishable from typed
+                            // ones in the trace data.
                             pentest_core::telemetry::record(
                                 pentest_core::telemetry::Activity::ScanStart,
                                 &[("channel", "easy"), ("source", "easy_mode_button")],

@@ -869,23 +869,25 @@ impl ToolRegistry {
     ) -> Result<ToolResult> {
         match self.get(name) {
             Some(tool) => {
-                let result = tool.execute(params, ctx).await;
-                // Telemetry (#278): one event per tool run at the single
-                // choke point. Only the tool name and a coarse outcome leave
-                // the device — never arguments, targets, or output.
-                let outcome = if result.is_ok() { "ok" } else { "error" };
-                crate::telemetry::record(
-                    crate::telemetry::Activity::ToolRun,
-                    &[("tool", name), ("outcome", outcome)],
+                // Telemetry (#278): time the tool run as a `tracing` span so the
+                // sentry-tracing layer records it as a Sentry span WITH DURATION
+                // (start → end of the await). Only the tool name, a coarse
+                // outcome, and the network-check flag are attached — never
+                // arguments, targets, or output. The span is entered across the
+                // execute().await so its measured time is the real tool duration.
+                use tracing::Instrument;
+                let is_net = is_network_check_tool(name);
+                let span = tracing::info_span!(
+                    "tool.run",
+                    tool = name,
+                    outcome = tracing::field::Empty,
+                    network_check = is_net,
                 );
-                // Network-discovery tools also fire the network.check event so
-                // the "did they check their network" funnel is measurable.
-                if is_network_check_tool(name) {
-                    crate::telemetry::record(
-                        crate::telemetry::Activity::NetworkCheck,
-                        &[("tool", name), ("outcome", outcome)],
-                    );
-                }
+                // `.instrument()` (not a held `enter()` guard) is the correct way
+                // to span an async block — the span is entered only while the
+                // future is polled, so its duration is the real execution time.
+                let result = tool.execute(params, ctx).instrument(span.clone()).await;
+                span.record("outcome", if result.is_ok() { "ok" } else { "error" });
                 result
             }
             None => {

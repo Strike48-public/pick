@@ -87,7 +87,12 @@ fn init_tracing() {
             );
             // Route tracing events into the `log` facade that android_logger drains.
             let _ = tracing_log::LogTracer::init();
-            let _ = tracing_subscriber::registry().with(filter).try_init();
+            // sentry-tracing layer: turns our tool.run / activity spans into
+            // Sentry spans WITH durations (see telemetry::sentry_tracing_layer).
+            let _ = tracing_subscriber::registry()
+                .with(filter)
+                .with(pentest_core::telemetry::sentry_tracing_layer())
+                .try_init();
         }
         #[cfg(target_os = "ios")]
         {
@@ -103,6 +108,9 @@ fn init_tracing() {
                     "core",
                 ))
                 .with(filter)
+                // sentry-tracing layer: tool.run / activity spans -> Sentry
+                // spans with durations.
+                .with(pentest_core::telemetry::sentry_tracing_layer())
                 .try_init();
         }
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -112,6 +120,7 @@ fn init_tracing() {
             let _ = tracing_subscriber::registry()
                 .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
                 .with(filter)
+                .with(pentest_core::telemetry::sentry_tracing_layer())
                 .try_init();
         }
     });

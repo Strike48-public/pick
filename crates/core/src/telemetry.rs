@@ -36,15 +36,6 @@ static GUARD: Mutex<Option<sentry::ClientInitGuard>> = Mutex::new(None);
 /// back on within a session.
 static IDENTITY: Mutex<Option<(String, bool)>> = Mutex::new(None);
 
-/// The in-flight per-conversation "session" parent transaction. A session spans
-/// a whole conversation — the initial scan plus any follow-up turns — so it's
-/// the natural unit: one trace = one conversation. While set, `record` attaches
-/// each activity (scan.start / tool.run / network.check) as a CHILD span of it,
-/// giving a waterfall of everything that happened in the conversation. `None`
-/// between conversations, where activities become standalone one-off
-/// transactions.
-static SESSION_TX: Mutex<Option<sentry::Transaction>> = Mutex::new(None);
-
 /// Compile-time DSN. `None` (the default in local/dev builds) disables Sentry
 /// entirely — release CI injects `SENTRY_DSN` so shipped builds report.
 const DSN: Option<&str> = option_env!("SENTRY_DSN");
@@ -132,11 +123,8 @@ pub fn set_enabled(enabled: bool) {
             None => tracing::warn!("telemetry set_enabled(true) before init; ignoring"),
         }
     } else {
-        // Finish any open conversation-session trace first so it isn't stranded
-        // when the client closes; then drop the guard -> flush pending events,
-        // end the release-health session, close the client. Nothing further is
-        // sent until re-enabled.
-        end_session();
+        // Drop the guard -> flush pending events, end the release-health
+        // session, close the client. Nothing further is sent until re-enabled.
         ENABLED.store(false, Ordering::Relaxed);
         if let Ok(mut g) = GUARD.lock() {
             *g = None;
@@ -240,6 +228,31 @@ pub fn set_plg_identity(tenant_id: &str) {
     });
 }
 
+/// Capture an agent backend error as a Sentry **issue** (a captured event, not a
+/// span). Usage activity is emitted only as traces and the tracing layer ignores
+/// events, so real failures like an agent-turn error would otherwise never reach
+/// Sentry. `kind` is a coarse classifier (e.g. "token_limit" / "upstream" /
+/// "stream_error"); `detail` MUST be non-PII (a short reason string, never a
+/// host, argument, or scan output). No-op when telemetry is disabled.
+pub fn capture_agent_error(kind: &str, detail: &str) {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("error.source", "agent_backend");
+            scope.set_tag("error.kind", kind);
+        },
+        || {
+            sentry::capture_message(
+                &format!("agent error: {kind}"),
+                sentry::Level::Error,
+            );
+        },
+    );
+    tracing::warn!("captured agent error to sentry: kind={kind} detail={detail}");
+}
+
 /// A telemetry-safe activity event. Names are provisional (see module docs) and
 /// deliberately coarse; properties must be non-PII (enums, counts, booleans) —
 /// never hostnames, tool arguments, or scan output.
@@ -265,7 +278,13 @@ impl Activity {
     }
 }
 
-/// Record an activity event with optional safe key/value properties.
+/// Record an instantaneous activity event with optional safe key/value
+/// properties, as a zero-duration `tracing` span. The `sentry-tracing` layer
+/// (installed in the shell's tracing subscriber) turns it into a Sentry span —
+/// nested under the current span (e.g. the conversation-turn span) when one is
+/// active on this task, otherwise a standalone transaction — so activities land
+/// in Traces, never Issues. Durationful work (tool runs) is instrumented at the
+/// call site with its own `tracing` span instead (see `tools.rs`).
 ///
 /// Property values MUST be non-sensitive: tool names, result enums, counts —
 /// never target hosts, arguments, or scan data. Callers are responsible for
@@ -275,38 +294,21 @@ pub fn record(activity: Activity, props: &[(&str, &str)]) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
     }
-    // If a scan is in flight, attach this activity as a CHILD span of the scan's
-    // parent transaction so the whole scan is one trace (a waterfall of its tool
-    // calls). Otherwise emit a standalone one-off transaction (freeform tool runs
-    // outside a scan). Either way it routes to Traces/Performance, never Issues
-    // (capture_message would create an Issue regardless of level).
-    let attached_to_session = {
-        if let Ok(guard) = SESSION_TX.lock() {
-            if let Some(parent) = guard.as_ref() {
-                let span = parent.start_child(activity.name(), activity.name());
-                for (k, v) in props {
-                    span.set_data(k, sentry::protocol::Value::from(*v));
-                }
-                span.finish();
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    };
-    if !attached_to_session {
-        let ctx = sentry::TransactionContext::new(activity.name(), "activity");
-        let tx = sentry::start_transaction(ctx);
-        for (k, v) in props {
-            tx.set_data(k, sentry::protocol::Value::from(*v));
-        }
-        tx.finish();
-    }
+    // Emit a short-lived `tracing` span; the sentry-tracing layer turns spans
+    // into Sentry transactions/child-spans (nested under the current span on
+    // this task when there is one), so activities land in Traces, never Issues.
+    // `props` are attached as span fields via a dynamic valueset is not possible
+    // (tracing fields are static), so they ride along as span data through the
+    // `sentry_props` field which the layer serialises.
+    let props_str = props
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let span = tracing::info_span!("activity", otel.name = activity.name(), props = %props_str);
+    let _guard = span.enter();
 
-    // Keep a breadcrumb too: harmless, and it gives context on the timeline if a
-    // real error is ever captured later in the same session.
+    // Also a breadcrumb for error-timeline context if a real error follows.
     let mut data = std::collections::BTreeMap::new();
     for (k, v) in props {
         data.insert((*k).to_string(), sentry::protocol::Value::from(*v));
@@ -320,34 +322,29 @@ pub fn record(activity: Activity, props: &[(&str, &str)]) {
     });
 }
 
-/// Begin a per-conversation "session" parent transaction, if one isn't already
-/// open. Every activity recorded until [`end_session`] nests under it as a child
-/// span, so the whole conversation shows up in Sentry as one trace: `session` →
-/// `scan.start` / `tool.run` / `network.check` spans. Idempotent: called on
-/// every send, but only the first send of a conversation opens the trace;
-/// follow-up turns reuse it. Call [`end_session`] when leaving the conversation.
-pub fn begin_session() {
-    if !ENABLED.load(Ordering::Relaxed) {
-        return;
-    }
-    if let Ok(mut guard) = SESSION_TX.lock() {
-        if guard.is_some() {
-            return; // a session is already open; keep it across turns
-        }
-        let ctx = sentry::TransactionContext::new("session", "session");
-        *guard = Some(sentry::start_transaction(ctx));
-    }
-}
-
-/// Finish the current per-conversation session transaction (if any), sending the
-/// whole conversation trace. Called when leaving the conversation (new chat,
-/// selecting a different chat, or logout). No-op if no session is open.
-pub fn end_session() {
-    if let Ok(mut guard) = SESSION_TX.lock() {
-        if let Some(tx) = guard.take() {
-            tx.finish();
-        }
-    }
+/// The `sentry-tracing` layer, to be added to the shell's `tracing` subscriber.
+/// It turns `tracing` spans into Sentry transactions/spans **with real
+/// durations** and automatic parent/child nesting (a span entered inside another
+/// becomes its child) — the idiomatic Rust+Sentry way, instead of hand-managing
+/// transactions. Re-exported here so shells install it without each taking a
+/// direct `sentry` dependency. Harmless when no client is initialized.
+///
+/// Only spans named for our activity taxonomy become transactions; ordinary
+/// debug/info tracing stays out of Sentry via the span filter.
+pub fn sentry_tracing_layer<S>() -> impl tracing_subscriber::Layer<S>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    use sentry::integrations::tracing::EventFilter;
+    sentry::integrations::tracing::layer()
+        // Only record our own activity/tool spans as transactions; don't turn
+        // every info-level tracing span in the app into a Sentry transaction.
+        .span_filter(|md| {
+            matches!(md.name(), "activity" | "tool.run")
+        })
+        // Never auto-capture tracing events as Sentry issues; we only want
+        // spans (traces). Errors are surfaced deliberately elsewhere.
+        .event_filter(|_md| EventFilter::Ignore)
 }
 
 #[cfg(test)]
