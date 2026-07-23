@@ -56,10 +56,16 @@ pub async fn map_operation(api: &dyn MatrixApi, op: PentestOperation) -> Pentest
         PentestOperation::SendScan {
             conversation_id,
             prompt,
-        } => match api.send(conversation_id, prompt).await {
-            Ok(c) => PentestOutcome::ScanQueued { conversation_id: c },
-            Err(m) => PentestOutcome::Error { message: m },
-        },
+        } => {
+            // Telemetry: the easy-mode "Scan My Network" action fired. No-op
+            // unless a DSN was baked in and telemetry is enabled; carries no
+            // PII (just the coarse event name).
+            pentest_core::telemetry::record(pentest_core::telemetry::Activity::ScanStart, &[]);
+            match api.send(conversation_id, prompt).await {
+                Ok(c) => PentestOutcome::ScanQueued { conversation_id: c },
+                Err(m) => PentestOutcome::Error { message: m },
+            }
+        }
         PentestOperation::SendMessage {
             conversation_id,
             text,
@@ -440,6 +446,13 @@ impl CoreMatrixApi {
 #[async_trait::async_trait]
 impl MatrixApi for CoreMatrixApi {
     fn set_token(&self, token: String) {
+        // Attach the (pseudonymous) PLG tenant realm to telemetry once the user
+        // connects, powering the who/how funnel. The realm is an opaque slug
+        // from the token's `iss`, never an email or target data. No-op when
+        // telemetry is disabled or the token carries no realm.
+        if let Some(realm) = realm_from_token(&token) {
+            pentest_core::telemetry::set_plg_identity(&realm);
+        }
         self.store_token(token);
     }
 

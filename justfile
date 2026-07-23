@@ -628,6 +628,14 @@ docker-package:
 crux-ffi-header:
     cbindgen --lang c --crate pick-crux-ffi --output crates/crux-ffi/include/pick_crux_ffi.h crates/crux-ffi
 
+# Sentry (telemetry): the DSN is baked at compile time via option_env!("SENTRY_DSN"),
+# so set it in the shell env when building to enable telemetry — e.g.
+#   SENTRY_DSN='https://…@…ingest.sentry.io/…' STRIKE48_SENTRY_ENV=development \
+#     just crux-ffi-ios-sim
+# Absent DSN => telemetry is a compile-time no-op (nothing is sent). Because
+# option_env! caches, force a rebuild of the reader crate when toggling it:
+#   touch crates/core/src/telemetry.rs
+
 # Build the Android x86_64 shared lib (for the emulator) — needs the nix NDK env.
 # insecure-tls: emulator targets the local mkcert dev cluster (self-signed chain).
 crux-ffi-android-x86_64:

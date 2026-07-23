@@ -149,6 +149,15 @@ impl PickCore {
         notifier: Option<ShellNotifier>,
     ) -> Option<Self> {
         let rt = tokio::runtime::Runtime::new().ok()?;
+
+        // Usage telemetry + release health (Sentry). No-op unless SENTRY_DSN was
+        // baked in at build time and telemetry isn't env-opted-out. The crux
+        // shells ARE the easy-mode UI, so channel = easy. The per-core
+        // instance_id doubles as the pseudonymous install id (same value the
+        // connector registration is keyed by — no extra PII).
+        let instance_id = uuid::Uuid::new_v4().to_string();
+        pentest_core::telemetry::init(true, &instance_id, true);
+
         let middleware = PentestMiddleware::new(rt.handle().clone(), api.clone());
 
         let slot: NotifierSlot = Arc::new(std::sync::RwLock::new(notifier));
@@ -174,7 +183,7 @@ impl PickCore {
             api,
             notifier: slot,
             api_url,
-            instance_id: uuid::Uuid::new_v4().to_string(),
+            instance_id,
             connector_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }

@@ -33,12 +33,21 @@ static GUARD: OnceLock<sentry::ClientInitGuard> = OnceLock::new();
 /// entirely — release CI injects `SENTRY_DSN` so shipped builds report.
 const DSN: Option<&str> = option_env!("SENTRY_DSN");
 
-/// The build environment reported to Sentry, derived from the build profile.
-fn environment() -> &'static str {
+/// The build environment reported to Sentry. Derived from the build profile,
+/// but overridable via `STRIKE48_SENTRY_ENV` — needed because the mobile FFI
+/// libs build under `release-ffi` (debug_assertions OFF), so they'd otherwise
+/// always tag as `production`; a local dev build sets `STRIKE48_SENTRY_ENV=development`
+/// to keep test traffic out of the production environment.
+fn environment() -> String {
+    if let Ok(env) = std::env::var("STRIKE48_SENTRY_ENV") {
+        if !env.is_empty() {
+            return env;
+        }
+    }
     if cfg!(debug_assertions) {
-        "development"
+        "development".to_string()
     } else {
-        "production"
+        "production".to_string()
     }
 }
 
@@ -194,9 +203,21 @@ mod tests {
     }
 
     #[test]
-    fn environment_matches_build_profile() {
-        // In test/debug builds this is always "development".
+    fn environment_profile_default_and_override() {
+        // One test (not two) so the env var can't race a sibling running in
+        // parallel. Default in debug/test builds is "development"; the override
+        // wins when set. Restore prior state to avoid leaking into other tests.
+        let prior = std::env::var("STRIKE48_SENTRY_ENV").ok();
+        std::env::remove_var("STRIKE48_SENTRY_ENV");
         assert_eq!(environment(), "development");
+
+        std::env::set_var("STRIKE48_SENTRY_ENV", "staging");
+        assert_eq!(environment(), "staging");
+
+        match prior {
+            Some(v) => std::env::set_var("STRIKE48_SENTRY_ENV", v),
+            None => std::env::remove_var("STRIKE48_SENTRY_ENV"),
+        }
     }
 
     #[test]
