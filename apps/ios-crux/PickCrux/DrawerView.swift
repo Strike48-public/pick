@@ -14,7 +14,7 @@ struct DrawerView: View {
 
     var body: some View {
         ZStack {
-            Theme.background.ignoresSafeArea()
+            Theme.surface.ignoresSafeArea()
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 10) {
                     BrandBadge(size: 28)
@@ -23,7 +23,9 @@ struct DrawerView: View {
                         .foregroundStyle(Theme.text)
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 16)
+                // Clear the status bar (the drawer is a raw overlay, not inside
+                // a navigation chrome that would inset it).
+                .padding(.top, 60)
                 .padding(.bottom, 12)
 
                 Divider().overlay(Theme.hairline)

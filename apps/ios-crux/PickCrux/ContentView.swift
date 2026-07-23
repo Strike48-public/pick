@@ -19,8 +19,8 @@ struct ContentView: View {
     @State private var hasToken = false
     @State private var showDocuments = false
     @State private var showSettings = false
-    /// Drives the native NavigationSplitView drawer (slides over on iPhone).
-    @State private var drawerVisibility: NavigationSplitViewVisibility = .detailOnly
+    /// Drives the slide-over navigation drawer overlay.
+    @State private var drawerOpen = false
 
     var body: some View {
         Group {
@@ -83,21 +83,13 @@ struct ContentView: View {
         }
     }
 
-    /// The signed-in app: a native NavigationSplitView whose sidebar is the
-    /// drawer (slides over on iPhone), detail is the chat/scan surface with the
-    /// top bar. The hamburger toggles `drawerVisibility`.
+    /// The signed-in app: the chat/scan surface with the top bar, plus a
+    /// slide-over drawer overlay. `NavigationSplitView` is an iPad/Mac
+    /// master-detail control and doesn't behave as a hamburger drawer on iPhone
+    /// (its column visibility leaks under sheets and swallows taps), so the
+    /// drawer is a hand-rolled slide-over: a dimming scrim + an offset panel.
     @ViewBuilder private var signedInApp: some View {
-        NavigationSplitView(columnVisibility: $drawerVisibility) {
-            DrawerView(
-                core: core,
-                onNewChat: { core.send(.newChat); closeDrawer() },
-                onOpenReports: { core.send(.openDocuments); showDocuments = true; closeDrawer() },
-                onOpenSettings: { showSettings = true; closeDrawer() },
-                onSelectChat: { id in core.send(.selectConversation(id)); closeDrawer() },
-                onLogout: { logout() }
-            )
-            .navigationBarHidden(true)
-        } detail: {
+        ZStack(alignment: .leading) {
             ZStack {
                 Theme.background.ignoresSafeArea()
                 VStack(spacing: 0) {
@@ -114,13 +106,39 @@ struct ContentView: View {
                     mainContent
                 }
             }
-            .navigationBarHidden(true)
+
+            // Scrim: tap outside the panel to dismiss.
+            if drawerOpen {
+                Color.black.opacity(0.4)
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+                    .onTapGesture { closeDrawer() }
+            }
+
+            // Slide-over panel (~82% width), anchored to the leading edge.
+            GeometryReader { geo in
+                let width = min(geo.size.width * 0.82, 340)
+                DrawerView(
+                    core: core,
+                    onNewChat: { closeDrawer(); core.send(.newChat) },
+                    onOpenReports: { closeDrawer(); core.send(.openDocuments); showDocuments = true },
+                    onOpenSettings: { closeDrawer(); showSettings = true },
+                    onSelectChat: { id in closeDrawer(); core.send(.selectConversation(id)) },
+                    onLogout: { logout() }
+                )
+                .frame(width: width)
+                .frame(maxHeight: .infinity)
+                .offset(x: drawerOpen ? 0 : -width - 8)
+            }
         }
-        .navigationSplitViewStyle(.balanced)
+        .animation(.easeInOut(duration: 0.22), value: drawerOpen)
     }
 
-    private func openDrawer() { drawerVisibility = .all }
-    private func closeDrawer() { drawerVisibility = .detailOnly }
+    private func openDrawer() {
+        core.send(.openHistory) // refresh recent-chats list when the drawer opens
+        drawerOpen = true
+    }
+    private func closeDrawer() { drawerOpen = false }
 
     /// Sign out: clear the persisted token and reset the in-core session, then
     /// return to the sign-in screen.
