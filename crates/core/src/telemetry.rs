@@ -36,6 +36,15 @@ static GUARD: Mutex<Option<sentry::ClientInitGuard>> = Mutex::new(None);
 /// back on within a session.
 static IDENTITY: Mutex<Option<(String, bool)>> = Mutex::new(None);
 
+/// The in-flight per-conversation "session" parent transaction. A session spans
+/// a whole conversation — the initial scan plus any follow-up turns — so it's
+/// the natural unit: one trace = one conversation. While set, `record` attaches
+/// each activity (scan.start / tool.run / network.check) as a CHILD span of it,
+/// giving a waterfall of everything that happened in the conversation. `None`
+/// between conversations, where activities become standalone one-off
+/// transactions.
+static SESSION_TX: Mutex<Option<sentry::Transaction>> = Mutex::new(None);
+
 /// Compile-time DSN. `None` (the default in local/dev builds) disables Sentry
 /// entirely — release CI injects `SENTRY_DSN` so shipped builds report.
 const DSN: Option<&str> = option_env!("SENTRY_DSN");
@@ -123,8 +132,11 @@ pub fn set_enabled(enabled: bool) {
             None => tracing::warn!("telemetry set_enabled(true) before init; ignoring"),
         }
     } else {
-        // Drop the guard -> flush pending events, end the session, close the
-        // client. Nothing further is sent until re-enabled.
+        // Finish any open conversation-session trace first so it isn't stranded
+        // when the client closes; then drop the guard -> flush pending events,
+        // end the release-health session, close the client. Nothing further is
+        // sent until re-enabled.
+        end_session();
         ENABLED.store(false, Ordering::Relaxed);
         if let Ok(mut g) = GUARD.lock() {
             *g = None;
@@ -263,17 +275,35 @@ pub fn record(activity: Activity, props: &[(&str, &str)]) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
     }
-    // Emit the activity as a TRANSACTION (a trace), not a captured message.
-    // capture_message creates an Issue in Sentry regardless of level, so usage
-    // events like `scan.start` were showing up as errors. A transaction routes
-    // to Traces/Performance instead — the correct home for who/how usage
-    // signal. op="activity", name=the event name; safe props become span data.
-    let ctx = sentry::TransactionContext::new(activity.name(), "activity");
-    let tx = sentry::start_transaction(ctx);
-    for (k, v) in props {
-        tx.set_data(k, sentry::protocol::Value::from(*v));
+    // If a scan is in flight, attach this activity as a CHILD span of the scan's
+    // parent transaction so the whole scan is one trace (a waterfall of its tool
+    // calls). Otherwise emit a standalone one-off transaction (freeform tool runs
+    // outside a scan). Either way it routes to Traces/Performance, never Issues
+    // (capture_message would create an Issue regardless of level).
+    let attached_to_session = {
+        if let Ok(guard) = SESSION_TX.lock() {
+            if let Some(parent) = guard.as_ref() {
+                let span = parent.start_child(activity.name(), activity.name());
+                for (k, v) in props {
+                    span.set_data(k, sentry::protocol::Value::from(*v));
+                }
+                span.finish();
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+    if !attached_to_session {
+        let ctx = sentry::TransactionContext::new(activity.name(), "activity");
+        let tx = sentry::start_transaction(ctx);
+        for (k, v) in props {
+            tx.set_data(k, sentry::protocol::Value::from(*v));
+        }
+        tx.finish();
     }
-    tx.finish();
 
     // Keep a breadcrumb too: harmless, and it gives context on the timeline if a
     // real error is ever captured later in the same session.
@@ -288,6 +318,36 @@ pub fn record(activity: Activity, props: &[(&str, &str)]) {
         data,
         ..Default::default()
     });
+}
+
+/// Begin a per-conversation "session" parent transaction, if one isn't already
+/// open. Every activity recorded until [`end_session`] nests under it as a child
+/// span, so the whole conversation shows up in Sentry as one trace: `session` →
+/// `scan.start` / `tool.run` / `network.check` spans. Idempotent: called on
+/// every send, but only the first send of a conversation opens the trace;
+/// follow-up turns reuse it. Call [`end_session`] when leaving the conversation.
+pub fn begin_session() {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    if let Ok(mut guard) = SESSION_TX.lock() {
+        if guard.is_some() {
+            return; // a session is already open; keep it across turns
+        }
+        let ctx = sentry::TransactionContext::new("session", "session");
+        *guard = Some(sentry::start_transaction(ctx));
+    }
+}
+
+/// Finish the current per-conversation session transaction (if any), sending the
+/// whole conversation trace. Called when leaving the conversation (new chat,
+/// selecting a different chat, or logout). No-op if no session is open.
+pub fn end_session() {
+    if let Ok(mut guard) = SESSION_TX.lock() {
+        if let Some(tx) = guard.take() {
+            tx.finish();
+        }
+    }
 }
 
 #[cfg(test)]

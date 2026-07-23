@@ -227,6 +227,9 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
             }
         }
         Event::NewChat => {
+            // Close the prior conversation's telemetry session; a fresh one
+            // opens on the next send.
+            pentest_core::telemetry::end_session();
             model.conversation_id = None;
             model.messages.clear();
             model.conversation_docs.clear();
@@ -295,6 +298,9 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
             }
         }
         Event::SelectConversation(id) => {
+            // Leaving the current conversation: close its telemetry session
+            // trace before switching. A new session opens on the next send.
+            pentest_core::telemetry::end_session();
             model.conversation_id = Some(id.clone());
             model.history_open = false;
             Command::request_from_shell(PentestOperation::LoadConversation {
@@ -483,6 +489,7 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         Event::Logout => {
             // Clear in-core session/conversation state and return to sign-in.
             // The shell clears its persisted token separately.
+            pentest_core::telemetry::end_session();
             model.phase = Phase::NeedsSignIn;
             model.conversation_id = None;
             model.messages.clear();

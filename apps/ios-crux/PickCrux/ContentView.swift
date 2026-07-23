@@ -39,7 +39,7 @@ struct ContentView: View {
         }
         .preferredColorScheme(.dark)
         .tint(Theme.brand)
-        .sheet(isPresented: $showDocuments) {
+        .fullScreenCover(isPresented: $showDocuments) {
             DocumentsList(core: core, isPresented: $showDocuments)
         }
         .fullScreenCover(isPresented: $showSettings) {

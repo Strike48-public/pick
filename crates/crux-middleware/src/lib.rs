@@ -57,10 +57,18 @@ pub async fn map_operation(api: &dyn MatrixApi, op: PentestOperation) -> Pentest
             conversation_id,
             prompt,
         } => {
-            // Telemetry: the easy-mode "Scan My Network" action fired. No-op
-            // unless a DSN was baked in and telemetry is enabled; carries no
-            // PII (just the coarse event name).
-            pentest_core::telemetry::record(pentest_core::telemetry::Activity::ScanStart, &[]);
+            // Telemetry: the easy-mode "Scan My Network" action fired. Open the
+            // per-conversation session trace (if not already open) so every tool
+            // the agent runs nests under it, then record scan.start tagged with
+            // its source so we can tell button-initiated scans from typed ones.
+            // The session containing a scan.start = a scan conversation; one
+            // without = a freeform chat. No-op unless a DSN was baked in and
+            // telemetry is enabled; carries no PII (just coarse event names).
+            pentest_core::telemetry::begin_session();
+            pentest_core::telemetry::record(
+                pentest_core::telemetry::Activity::ScanStart,
+                &[("source", "easy_mode_button")],
+            );
             match api.send(conversation_id, prompt).await {
                 Ok(c) => PentestOutcome::ScanQueued { conversation_id: c },
                 Err(m) => PentestOutcome::Error { message: m },
@@ -69,10 +77,15 @@ pub async fn map_operation(api: &dyn MatrixApi, op: PentestOperation) -> Pentest
         PentestOperation::SendMessage {
             conversation_id,
             text,
-        } => match api.send(conversation_id, text).await {
-            Ok(c) => PentestOutcome::ScanQueued { conversation_id: c },
-            Err(m) => PentestOutcome::Error { message: m },
-        },
+        } => {
+            // Freeform message: open the session trace too (no scan.start span,
+            // which is how we distinguish a chat session from a scan session).
+            pentest_core::telemetry::begin_session();
+            match api.send(conversation_id, text).await {
+                Ok(c) => PentestOutcome::ScanQueued { conversation_id: c },
+                Err(m) => PentestOutcome::Error { message: m },
+            }
+        }
         PentestOperation::PollConversation { conversation_id } => {
             match api.poll(conversation_id).await {
                 Ok(d) => PentestOutcome::Delta(d),
