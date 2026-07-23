@@ -41,10 +41,17 @@ struct PickCruxApp: App {
             options.dsn = dsn
             options.environment = env
             options.releaseName = release
-            // Crashes + app-hang detection are the point; the Rust core owns
-            // UI-flow traces, so no performance tracing from the native SDK.
             options.enableAppHangTracking = true
-            options.tracesSampleRate = 0.0
+            // Native performance: app-start timing + slow/frozen frames are
+            // attached to the SDK's auto-generated UI transactions, so they only
+            // flow when tracing is sampled. Enable auto perf tracing at a modest
+            // rate to get those mobile vitals. These native screen-load traces
+            // are complementary to (not duplicates of) the Rust core's UI-action
+            // traces, which use different span names.
+            options.enableAutoPerformanceTracing = true
+            options.tracesSampleRate = 1.0
+            // Auto breadcrumbs (view lifecycle / UI / network) are on by default
+            // and give a crash report its leadup; left enabled.
             options.sendDefaultPii = false
             options.beforeSend = { event in
                 event.tags = (event.tags ?? [:]).merging(["app.layer": "native_view"]) { _, new in new }

@@ -38,10 +38,14 @@ class PickApplication : Application() {
             options.release = "pick-crux@${BuildConfig.VERSION_NAME}"
             // Crash + ANR capture is on by default; be explicit about ANRs.
             options.isAnrEnabled = true
-            // No traces from the native SDK — UI-flow traces come from the Rust
-            // core. The native SDK is here for crashes/ANRs only.
-            options.tracesSampleRate = 0.0
-            // Never attach PII (IPs, etc.).
+            // Native performance: app-start timing + slow/frozen frames attach to
+            // the SDK's auto activity transactions, so they only flow when tracing
+            // is sampled. Enable at a modest rate for those mobile vitals. Distinct
+            // from the Rust core's UI-action traces (different span names).
+            options.isEnableFramesTracking = true
+            options.tracesSampleRate = 1.0
+            // Auto breadcrumbs (activity lifecycle / UI / network) are on by
+            // default and give a crash its leadup; left enabled.
             options.isSendDefaultPii = false
             options.setTag("app.layer", "native_view")
             options.setDiagnosticLevel(SentryLevel.WARNING)
