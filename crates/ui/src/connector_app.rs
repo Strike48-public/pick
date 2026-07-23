@@ -291,14 +291,15 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     });
 
     // Easy-mode default PLG connection (#283): when there's no saved config,
-    // easy mode seeds host/tenant from the environment (STRIKE48_HOST /
-    // STRIKE48_TENANT etc., via ConnectorConfig::from_env) so a PLG build can
-    // point at its tenant without the user touching the connect form. Empty
-    // token → the existing post-approval flow. If no env host is present we
-    // fall through to Default (empty host) and the connect form still shows —
-    // that form is the override/escape hatch. No host is baked into the repo.
+    // easy mode seeds host/tenant from the PLG target baked in at BUILD time
+    // (option_env! STRIKE48_HOST/STRIKE48_TENANT), falling back to the runtime
+    // env on desktop/dev. Mobile apps have no runtime environment, so the host
+    // MUST be baked in at build time — same mechanism as the Sentry DSN. Empty
+    // token → the existing post-approval flow. If no build-time host is present
+    // we fall through to Default (empty host) and the connect form still shows —
+    // that form is the override/escape hatch. Nothing is hardcoded in the repo.
     let easy_mode_env_config = if cfg.easy_mode {
-        ConnectorConfig::from_env().filter(|c| !c.host.is_empty())
+        ConnectorConfig::from_baked_or_env().filter(|c| !c.host.is_empty())
     } else {
         None
     };

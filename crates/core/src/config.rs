@@ -409,6 +409,45 @@ impl ConnectorConfig {
         None
     }
 
+    /// Build an easy-mode default config from the PLG target supplied at BUILD
+    /// time via `option_env!("STRIKE48_HOST")` (+ optional `STRIKE48_TENANT`),
+    /// falling back to the RUNTIME [`from_env`] for desktop/dev where the process
+    /// environment is real. This is the correct path for the mobile apps, which
+    /// have no runtime environment — a runtime `std::env::var` is always empty
+    /// on-device, so the host must be baked in at build time (same mechanism as
+    /// the Sentry DSN). Nothing is hardcoded in the repo: absent a build-time
+    /// host, this returns `None` and the connect form shows as the escape hatch.
+    pub fn from_baked_or_env() -> Option<Self> {
+        // Build-time host (baked into the binary). Empty/unset -> fall through.
+        let baked_host = option_env!("STRIKE48_HOST")
+            .or(option_env!("STRIKE48_URL"))
+            .or(option_env!("STRIKE48_API_URL"))
+            .map(str::trim)
+            .filter(|h| !h.is_empty());
+
+        let Some(host) = baked_host else {
+            // No build-time host: use the runtime env (desktop/dev/headless).
+            return Self::from_env();
+        };
+
+        let mut config = ConnectorConfig {
+            host: host.to_string(),
+            ..Default::default()
+        };
+        // Build-time tenant (UUID preferred, else slug). Optional.
+        if let Some(tenant) = option_env!("STRIKE48_TENANT")
+            .or(option_env!("MATRIX_TENANT_ID"))
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            config.tenant_id = tenant.to_string();
+        }
+        if let Some(tls) = option_env!("STRIKE48_TLS") {
+            config.use_tls = tls != "false" && tls != "0";
+        }
+        Some(config)
+    }
+
     /// Build a config from environment variables alone (host + tenant + tls),
     /// with an empty auth token (post-approval flow). Returns `None` if no host
     /// env var is set, so callers can distinguish "env configured a PLG target"
