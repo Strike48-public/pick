@@ -33,12 +33,23 @@ static GUARD: OnceLock<sentry::ClientInitGuard> = OnceLock::new();
 /// entirely — release CI injects `SENTRY_DSN` so shipped builds report.
 const DSN: Option<&str> = option_env!("SENTRY_DSN");
 
-/// The build environment reported to Sentry. Derived from the build profile,
-/// but overridable via `STRIKE48_SENTRY_ENV` — needed because the mobile FFI
-/// libs build under `release-ffi` (debug_assertions OFF), so they'd otherwise
-/// always tag as `production`; a local dev build sets `STRIKE48_SENTRY_ENV=development`
-/// to keep test traffic out of the production environment.
+/// The build environment reported to Sentry. Resolved in priority order:
+///   1. `STRIKE48_SENTRY_ENV` baked at BUILD time (`option_env!`) — the source
+///      that works for the mobile FFI libs, which have no runtime environment.
+///   2. `STRIKE48_SENTRY_ENV` at RUNTIME (`std::env::var`) — for the desktop /
+///      headless path where the process env is set.
+///   3. The build profile: `development` under debug, else `production`.
+///
+/// The mobile `release-ffi` libs build with debug_assertions OFF, so without an
+/// explicit override they'd tag as `production`; a local dev build sets
+/// `STRIKE48_SENTRY_ENV=development` at build time to keep test traffic out of
+/// the production environment.
 fn environment() -> String {
+    if let Some(env) = option_env!("STRIKE48_SENTRY_ENV") {
+        if !env.is_empty() {
+            return env.to_string();
+        }
+    }
     if let Ok(env) = std::env::var("STRIKE48_SENTRY_ENV") {
         if !env.is_empty() {
             return env;
