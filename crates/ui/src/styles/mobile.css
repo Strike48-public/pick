@@ -847,9 +847,36 @@ body {
     padding: var(--em-space-4);
     text-align: center;
 }
-.easy-signin-title { font-size: 18px; font-weight: 600; color: var(--em-text); }
-.easy-signin-sub { font-size: 14px; opacity: 0.7; color: var(--em-text); }
-.easy-signin .action-card { max-width: 320px; }
+.easy-signin-title { font-size: 22px; font-weight: 700; color: var(--em-text); margin: 0; }
+.easy-signin-sub {
+    font-size: 15px;
+    line-height: 1.5;
+    opacity: 0.7;
+    color: var(--em-text);
+    margin: 0;
+    max-width: 300px;
+}
+/* The overlay is a sibling of `.easy-mode`, so the `.easy-mode .action-card`
+   rule above doesn't reach it — style the retry button here as the sage CTA
+   pill (matching "Scan My Network"), overriding the browser-default button. */
+.easy-signin .action-card {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    max-width: 320px;
+    min-height: 56px;
+    margin-top: var(--em-space-2);
+    padding: 16px 20px;
+    border: none;
+    border-radius: var(--em-radius-pill);
+    background: var(--em-scan-bg);
+    color: var(--em-on-scan);
+    font-family: inherit;
+    cursor: pointer;
+}
+.easy-signin .action-card:active { filter: brightness(0.92); }
+.easy-signin .action-card-label { font-size: 18px; font-weight: 600; }
 
 /* Full-screen in-app report viewer (replaces the Easy Mode screen). */
 .easy-doc-viewer { display: flex; flex-direction: column; flex: 1 1 auto; height: 100%; min-height: 0; position: relative; }
