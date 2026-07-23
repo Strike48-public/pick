@@ -31,6 +31,8 @@
 		CC0000000000000000000017 /* TypingIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000017 /* TypingIndicator.swift */; };
 		CC0000000000000000000019 /* MermaidView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000019 /* MermaidView.swift */; };
 		CC0000000000000000000020 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000020 /* KeychainStore.swift */; };
+		CC0000000000000000000021 /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000021 /* SettingsStore.swift */; };
+		CC0000000000000000000022 /* DrawerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000022 /* DrawerView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -59,6 +61,8 @@
 		BB0000000000000000000017 /* TypingIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingIndicator.swift; sourceTree = "<group>"; };
 		BB0000000000000000000019 /* MermaidView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MermaidView.swift; sourceTree = "<group>"; };
 		BB0000000000000000000020 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		BB0000000000000000000021 /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
+		BB0000000000000000000022 /* DrawerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawerView.swift; sourceTree = "<group>"; };
 		DD0000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -116,6 +120,8 @@
 				BB0000000000000000000017 /* TypingIndicator.swift */,
 				BB0000000000000000000019 /* MermaidView.swift */,
 				BB0000000000000000000020 /* KeychainStore.swift */,
+				BB0000000000000000000021 /* SettingsStore.swift */,
+				BB0000000000000000000022 /* DrawerView.swift */,
 				DD0000000000000000000001 /* Info.plist */,
 				AA0000000000000000000019 /* PickCrux-Bridging-Header.h */,
 			);
@@ -219,6 +225,8 @@
 				CC0000000000000000000017 /* TypingIndicator.swift in Sources */,
 				CC0000000000000000000019 /* MermaidView.swift in Sources */,
 				CC0000000000000000000020 /* KeychainStore.swift in Sources */,
+				CC0000000000000000000021 /* SettingsStore.swift in Sources */,
+				CC0000000000000000000022 /* DrawerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

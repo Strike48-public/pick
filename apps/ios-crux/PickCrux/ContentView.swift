@@ -17,46 +17,40 @@ struct ContentView: View {
     @StateObject private var oauth = OAuthManager()
     /// True once the shell has handed a workspace-scoped token to the core.
     @State private var hasToken = false
-    @State private var showHistory = false
     @State private var showDocuments = false
+    @State private var showSettings = false
+    /// Drives the native NavigationSplitView drawer (slides over on iPhone).
+    @State private var drawerVisibility: NavigationSplitViewVisibility = .detailOnly
 
     var body: some View {
-        ZStack {
-            Theme.background.ignoresSafeArea()
-
+        Group {
             // Once the shell has adopted a workspace-scoped OAuth token, show the
             // app. `hasToken` takes precedence over the model's `needsSignIn`,
             // which can be stale: the in-core SignIn effect is a stub in this
             // build and is not what authenticates the shell.
             if !hasToken {
-                SignInView(core: core, oauth: oauth, onToken: adoptToken)
-            } else {
-                VStack(spacing: 0) {
-                    TopBar(core: core, showHistory: $showHistory, showDocuments: $showDocuments)
-
-                    if let err = core.vm.error {
-                        ErrorCard(core: core, message: err)
-                            .padding(.bottom, 8)
-                    }
-
-                    // Surfaced when the agent backend errored (token limit or a
-                    // generic upstream failure) instead of ending silently.
-                    if let notice = core.vm.notice {
-                        NoticeCard(notice: notice)
-                            .padding(.bottom, 8)
-                    }
-
-                    mainContent
+                ZStack {
+                    Theme.background.ignoresSafeArea()
+                    SignInView(core: core, oauth: oauth, onToken: adoptToken)
                 }
+            } else {
+                signedInApp
             }
         }
         .preferredColorScheme(.dark)
         .tint(Theme.brand)
-        .sheet(isPresented: $showHistory, onDismiss: { core.send(.closeHistory) }) {
-            HistorySheet(core: core, isPresented: $showHistory)
-        }
         .sheet(isPresented: $showDocuments) {
             DocumentsList(core: core, isPresented: $showDocuments)
+        }
+        .fullScreenCover(isPresented: $showSettings) {
+            SettingsScreen(
+                core: core,
+                onClose: { showSettings = false },
+                onTelemetryChange: { enabled in
+                    core.send(.setTelemetryEnabled(enabled)) // apply in core (Sentry)
+                    SettingsStore.telemetryEnabled = enabled // persist natively
+                }
+            )
         }
         .fullScreenCover(isPresented: docBinding) {
             if let doc = core.vm.openDocument {
@@ -64,6 +58,9 @@ struct ContentView: View {
             }
         }
         .onAppear {
+            // Seed the persisted telemetry choice so the Sentry client reflects
+            // the opt-out from the first launch, before any UI interaction.
+            core.send(.seedSettings(telemetryEnabled: SettingsStore.telemetryEnabled))
             // Restore a persisted token (Keychain) so a relaunch skips sign-in.
             restorePersistedToken()
             // Test hook: -autoScan fires the Scan button code path headlessly so
@@ -84,6 +81,55 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    /// The signed-in app: a native NavigationSplitView whose sidebar is the
+    /// drawer (slides over on iPhone), detail is the chat/scan surface with the
+    /// top bar. The hamburger toggles `drawerVisibility`.
+    @ViewBuilder private var signedInApp: some View {
+        NavigationSplitView(columnVisibility: $drawerVisibility) {
+            DrawerView(
+                core: core,
+                onNewChat: { core.send(.newChat); closeDrawer() },
+                onOpenReports: { core.send(.openDocuments); showDocuments = true; closeDrawer() },
+                onOpenSettings: { showSettings = true; closeDrawer() },
+                onSelectChat: { id in core.send(.selectConversation(id)); closeDrawer() },
+                onLogout: { logout() }
+            )
+            .navigationBarHidden(true)
+        } detail: {
+            ZStack {
+                Theme.background.ignoresSafeArea()
+                VStack(spacing: 0) {
+                    TopBar(core: core, onMenu: { openDrawer() })
+
+                    if let err = core.vm.error {
+                        ErrorCard(core: core, message: err)
+                            .padding(.bottom, 8)
+                    }
+                    if let notice = core.vm.notice {
+                        NoticeCard(notice: notice)
+                            .padding(.bottom, 8)
+                    }
+                    mainContent
+                }
+            }
+            .navigationBarHidden(true)
+        }
+        .navigationSplitViewStyle(.balanced)
+    }
+
+    private func openDrawer() { drawerVisibility = .all }
+    private func closeDrawer() { drawerVisibility = .detailOnly }
+
+    /// Sign out: clear the persisted token and reset the in-core session, then
+    /// return to the sign-in screen.
+    private func logout() {
+        closeDrawer()
+        KeychainStore.clear()
+        core.setToken("")
+        core.send(.logout)
+        hasToken = false
     }
 
     /// Adopt the workspace-scoped token from the browser flow and advance to

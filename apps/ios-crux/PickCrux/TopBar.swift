@@ -5,11 +5,12 @@ import PickShared
 /// New chat -> .newChat, History -> .openHistory, Reports -> opens documents.
 struct TopBar: View {
     @ObservedObject var core: CoreBridge
-    @Binding var showHistory: Bool
-    @Binding var showDocuments: Bool
+    let onMenu: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
+            // Hamburger (left) opens the navigation drawer.
+            iconButton(system: "line.3.horizontal", action: onMenu)
             BrandBadge(size: 30, connected: core.vm.connection.phase == .connected)
             Text("Pick")
                 .font(.system(size: 20, weight: .bold))
@@ -19,17 +20,9 @@ struct TopBar: View {
             Spacer()
 
             iconButton(system: "plus") { core.send(.newChat) }
-            iconButton(system: "clock") {
-                core.send(.openHistory)
-                showHistory = true
-            }
-            iconButton(system: "doc.text") {
-                core.send(.openDocuments)
-                showDocuments = true
-            }
         }
         .padding(.top, 4)
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 16)
         .padding(.bottom, 12)
     }
 
