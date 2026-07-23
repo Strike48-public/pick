@@ -1041,7 +1041,10 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                         let mut s = settings.write();
                                         s.telemetry_enabled = v;
                                         let _ = save_settings(&s);
-                                        // Takes effect on next launch (Sentry inits once at startup).
+                                        // Apply immediately: on disables the
+                                        // Sentry client (no events/sessions),
+                                        // off re-inits. No relaunch needed.
+                                        pentest_core::telemetry::set_enabled(v);
                                     },
                                     on_disconnect: move |_| on_disconnect(()),
                                     on_start_download: on_start_download,
