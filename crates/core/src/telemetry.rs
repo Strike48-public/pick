@@ -307,6 +307,36 @@ pub fn record(activity: Activity, props: &[(&str, &str)]) {
     tx.finish();
 }
 
+/// A live, timed span for a user-facing UI action (e.g. "send", "open reports",
+/// "create share link"). Opened when the action's async work starts and finished
+/// when it returns, so each becomes a small standalone trace with a real
+/// duration and outcome — the lightweight "what did the user do and how long did
+/// it take" signal. `None` when telemetry is off (cheap no-op).
+#[must_use = "a UiSpan must be finished to record its duration"]
+pub struct UiSpan(Option<sentry::Transaction>);
+
+/// Start a timed UI-action span named `action` (a short, stable verb like
+/// "send", "load_conversation", "create_share_link"). Finish with
+/// [`UiSpan::finish`], passing the outcome ("ok"/"error").
+pub fn start_ui_span(action: &str) -> UiSpan {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return UiSpan(None);
+    }
+    let ctx = sentry::TransactionContext::new(action, "ui.action");
+    UiSpan(Some(sentry::start_transaction(ctx)))
+}
+
+impl UiSpan {
+    /// Finish the span with an outcome tag and send it with its measured
+    /// duration. No-op if telemetry was off.
+    pub fn finish(self, outcome: &str) {
+        if let Some(tx) = self.0 {
+            tx.set_data("outcome", sentry::protocol::Value::from(outcome));
+            tx.finish();
+        }
+    }
+}
+
 /// A live, timed span for a tool run. Opened before `execute()` and finished
 /// after, so it carries the real duration. When the inbound tool request carried
 /// distributed-trace headers (`sentry-trace` / `baggage`, forwarded by the

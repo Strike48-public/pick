@@ -50,8 +50,42 @@ pub trait MatrixApi: Send + Sync {
     fn set_token(&self, _token: String) {}
 }
 
+/// A short, stable span name for a user-facing operation, or `None` for ops we
+/// deliberately don't trace: `PollConversation` fires every 800ms (span spam)
+/// and `Connect` is a no-op. Keeps the traces to genuine user actions.
+fn ui_span_name(op: &PentestOperation) -> Option<&'static str> {
+    match op {
+        PentestOperation::SendScan { .. } => Some("scan.send"),
+        PentestOperation::SendMessage { .. } => Some("message.send"),
+        PentestOperation::ListDocuments { .. } => Some("reports.list"),
+        PentestOperation::SignIn { .. } => Some("sign_in"),
+        PentestOperation::GetDocumentContent { .. } => Some("document.open"),
+        PentestOperation::CreateSharedLink { .. } => Some("share_link.create"),
+        PentestOperation::ListConversations => Some("conversations.list"),
+        PentestOperation::LoadConversation { .. } => Some("conversation.load"),
+        PentestOperation::PollConversation { .. } | PentestOperation::Connect { .. } => None,
+    }
+}
+
 /// Pure mapping from an operation to an outcome via the injected api. Unit-tested.
 pub async fn map_operation(api: &dyn MatrixApi, op: PentestOperation) -> PentestOutcome {
+    // Time genuine user actions as small standalone traces (see ui_span_name);
+    // the span's duration is the async op's latency and its outcome tag reflects
+    // success/failure. No-op when telemetry is disabled.
+    let ui_span = ui_span_name(&op).map(pentest_core::telemetry::start_ui_span);
+    let outcome = map_operation_inner(api, op).await;
+    if let Some(span) = ui_span {
+        let tag = if matches!(outcome, PentestOutcome::Error { .. }) {
+            "error"
+        } else {
+            "ok"
+        };
+        span.finish(tag);
+    }
+    outcome
+}
+
+async fn map_operation_inner(api: &dyn MatrixApi, op: PentestOperation) -> PentestOutcome {
     match op {
         PentestOperation::SendScan {
             conversation_id,
