@@ -617,6 +617,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 let mut conn = lv_connector.write().await;
                 if let Err(e) = conn.connect_and_run().await {
                     let display = format!("Connection error: {}", e);
+                    tracing::error!("[CONNECT] connect_and_run failed: {e}");
                     terminal_lines
                         .write()
                         .push(TerminalLine::error(display.clone()));
@@ -652,6 +653,8 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             let mut terminal_lines = terminal_lines;
             let mut needs_sign_in = needs_sign_in;
             let mut config = config;
+            let mut matrix_auth_token = matrix_auth_token;
+            let mut matrix_api_url = matrix_api_url;
             spawn(async move {
                 needs_sign_in.set(false);
                 status.set(ConnectorStatus::Connecting);
@@ -675,6 +678,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 let jwt = match pentest_core::matrix::fetch_matrix_token_browser(&api_url).await {
                     Ok(t) => t,
                     Err(e) => {
+                        tracing::error!("[CONNECT] fetch_matrix_token_browser failed: {e}");
                         terminal_lines
                             .write()
                             .push(TerminalLine::error(format!("Sign-in failed: {e}")));
@@ -684,6 +688,20 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                         return;
                     }
                 };
+
+                // The browser-OAuth JWT is a session-backed Studio token — the
+                // credential GraphQL requires. Feed it to the chat path NOW
+                // (mirrors the MatrixTokenObtained event) so the chat panel uses
+                // this fresh token instead of a stale one restored from the secure
+                // store at startup, which would fail with "session not found" /
+                // "Not authenticated". The connector JWT that the connect flow
+                // emits later via CredentialsUpdated is gRPC-only and deliberately
+                // does not touch the chat token. Persisting here also means a
+                // relaunch restores THIS working token.
+                matrix_api_url.set(api_url.clone());
+                matrix_auth_token.set(jwt.clone());
+                crate::session::set_auth_token(&jwt);
+                crate::session::persist_matrix_token(&jwt, &api_url);
 
                 // Exchange the JWT for a tenant-scoped OTT, stage it, and point
                 // the SDK at it (STRIKE48_REGISTRATION_TOKEN_FILE) via the shared
@@ -698,6 +716,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 {
                     Ok(o) => o,
                     Err(e) => {
+                        tracing::error!("[CONNECT] prepare_connector_registration failed: {e}");
                         terminal_lines
                             .write()
                             .push(TerminalLine::error(format!("Pre-approval failed: {e}")));

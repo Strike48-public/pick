@@ -220,6 +220,17 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // AppLayout provides this via use_context_provider; ChatPanel writes when full_page.
     let mut chat_header_ctx: Signal<Option<ChatHeaderCtx>> = use_context();
 
+    // Easy-mode sign-in gate (provided by connector_app). Present only in easy
+    // mode; `try_consume_context` keeps ChatPanel usable elsewhere (sidebar). On a
+    // persistent auth failure we flip these to route back through the sign-in
+    // overlay instead of retrying a dead token forever.
+    let needs_sign_in_ctx = try_consume_context::<Signal<bool>>();
+    let retry_tick_ctx = try_consume_context::<Signal<u32>>();
+    // Count consecutive auth failures so a stale restored token forces a fresh
+    // sign-in (via the easy-mode overlay) rather than retrying the dead token
+    // forever.
+    let auth_fail_count = use_signal(|| 0u32);
+
     // Reset closing when panel becomes visible again
     if props.visible && closing() {
         closing.set(false);
@@ -365,6 +376,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         let client = make_client();
         let tenant_id = props.tenant_id.clone();
         let log_url = api_url.clone();
+        // Captured for the auth-error recovery path below (Signals are Copy).
+        let mut auth_fail_count = auth_fail_count;
         crate::liveview_server::push_terminal_line(TerminalLine::info(format!(
             "[chat] fetching agents from {}",
             api_url
@@ -535,7 +548,30 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         || err_str.contains("expired");
 
                     if is_auth_err {
-                        // Auth error — wait before retrying to avoid tight loop
+                        // A restored/persisted token whose server session is gone
+                        // (backend "session not found" -> "Not authenticated")
+                        // never recovers by retrying — the token is simply dead.
+                        // After a couple of attempts, clear it and route back to
+                        // the easy-mode sign-in overlay for a fresh browser login.
+                        // Without the easy-mode context (e.g. sidebar usage) we
+                        // keep the original slow-retry behavior.
+                        let n = auth_fail_count() + 1;
+                        auth_fail_count.set(n);
+                        if n >= 2 {
+                            if let Some(mut needs_sign_in) = needs_sign_in_ctx {
+                                tracing::info!(
+                                    "ChatPanel: auth error persisted ({n}x); clearing stale token and prompting sign-in"
+                                );
+                                crate::session::clear_matrix_token();
+                                crate::session::set_auth_token("");
+                                pentest_core::matrix::clear_browser_token_cache();
+                                if let Some(mut retry_tick) = retry_tick_ctx {
+                                    retry_tick.set(retry_tick() + 1);
+                                }
+                                needs_sign_in.set(true);
+                                return;
+                            }
+                        }
                         tracing::info!("ChatPanel: auth error, will retry in 5s");
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                         fetch_started.set(false);
