@@ -91,6 +91,10 @@ fn init_tracing() {
         }
         #[cfg(target_os = "ios")]
         {
+            // Bridge the `log` facade into tracing so records from `log`-based
+            // deps (e.g. the Sentry SDK's internal debug output) reach os_log
+            // too — without this they vanish on iOS (only Android had a bridge).
+            let _ = tracing_log::LogTracer::init();
             // stderr from a sim app is not captured by the unified log, so route
             // to os_log (visible in Console.app / `xcrun simctl spawn booted log`).
             let _ = tracing_subscriber::registry()
@@ -103,6 +107,8 @@ fn init_tracing() {
         }
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
+            // Same `log` -> tracing bridge for the desktop/headless path.
+            let _ = tracing_log::LogTracer::init();
             let _ = tracing_subscriber::registry()
                 .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
                 .with(filter)
