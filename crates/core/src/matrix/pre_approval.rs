@@ -87,13 +87,14 @@ pub async fn pre_approve(api_url: &str, jwt: &str, connector_type: &str) -> Resu
     let base = super::normalize_url(api_url);
     let url = format!("{}/api/connectors/pre-approve", base);
 
+    // Resolve TLS trust the same way the GraphQL client does — build-time
+    // `option_env!` OR runtime env. Reading only the runtime env here (the prior
+    // bug) made this request verify-fail on mobile, where the runtime env is
+    // always empty, even though the baked GraphQL client to the same host
+    // succeeded. That surfaced as "pre-approve request failed: error sending
+    // request" and the easy-mode retry card.
     let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(
-            std::env::var("MATRIX_TLS_INSECURE")
-                .or_else(|_| std::env::var("MATRIX_INSECURE"))
-                .map(|v| v == "1" || v == "true")
-                .unwrap_or(false),
-        )
+        .danger_accept_invalid_certs(super::insecure_tls())
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 

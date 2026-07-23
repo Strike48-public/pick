@@ -3,27 +3,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::insecure_tls;
 use super::types::*;
-
-/// Whether to skip TLS cert verification (DEV ONLY, for the local mkcert dev
-/// cluster's self-signed chain). Resolved at BUILD time via `option_env!` first
-/// — the only source that reaches the mobile apps, which have no runtime
-/// environment — then the RUNTIME env for desktop/dev/headless. The reqwest
-/// client here uses OpenSSL, which does NOT consult Android's system trust
-/// store, so a device CA install can't help it; this flag is the dev path.
-/// Ships disabled: a release build without the env set verifies certs normally.
-fn insecure_tls() -> bool {
-    let truthy = |v: &str| v == "1" || v == "true";
-    if let Some(v) = option_env!("MATRIX_TLS_INSECURE").or(option_env!("MATRIX_INSECURE")) {
-        if truthy(v) {
-            return true;
-        }
-    }
-    std::env::var("MATRIX_TLS_INSECURE")
-        .or_else(|_| std::env::var("MATRIX_INSECURE"))
-        .map(|v| truthy(&v))
-        .unwrap_or(false)
-}
 
 // ---------------------------------------------------------------------------
 // MatrixChatClient
