@@ -29,6 +29,12 @@ android {
         val sentryEnv = System.getenv("STRIKE48_SENTRY_ENV") ?: "production"
         buildConfigField("String", "SENTRY_DSN", "\"$sentryDsn\"")
         buildConfigField("String", "SENTRY_ENV", "\"$sentryEnv\"")
+
+        // Strike48 PLG host, injected from the build env (not hardcoded in
+        // source). Falls back to the dev PLG cluster so a plain local build
+        // still works; set STRIKE48_HOST to point a build elsewhere.
+        val strike48Host = System.getenv("STRIKE48_HOST") ?: "https://plg.strike48.test"
+        buildConfigField("String", "STRIKE48_HOST", "\"$strike48Host\"")
     }
 
     externalNativeBuild {

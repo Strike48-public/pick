@@ -13,9 +13,9 @@ final class OAuthManager: NSObject, ObservableObject, ASWebAuthenticationPresent
     /// the app's `Info.plist` `CFBundleURLTypes`, or the session errors out.
     static let callbackScheme = "com.strike48.pentest"
 
-    /// PLG login endpoint; `redirect` returns the token to our custom scheme.
-    static let authURL =
-        "https://plg.strike48.test/auth/login?redirect=com.strike48.pentest://oauth/callback"
+    /// PLG login endpoint (host baked at build time via `AppConfig`); `redirect`
+    /// returns the token to our custom scheme.
+    static var authURL: String { AppConfig.authURL }
 
     @Published var inProgress = false
     @Published var lastError: String?

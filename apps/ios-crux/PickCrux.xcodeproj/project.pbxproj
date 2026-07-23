@@ -34,6 +34,7 @@
 		CC0000000000000000000020 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000020 /* KeychainStore.swift */; };
 		CC0000000000000000000021 /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000021 /* SettingsStore.swift */; };
 		CC0000000000000000000022 /* DrawerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000022 /* DrawerView.swift */; };
+		CC0000000000000000000023 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000023 /* AppConfig.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -64,6 +65,7 @@
 		BB0000000000000000000020 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		BB0000000000000000000021 /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
 		BB0000000000000000000022 /* DrawerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawerView.swift; sourceTree = "<group>"; };
+		BB0000000000000000000023 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		DD0000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -124,6 +126,7 @@
 				BB0000000000000000000020 /* KeychainStore.swift */,
 				BB0000000000000000000021 /* SettingsStore.swift */,
 				BB0000000000000000000022 /* DrawerView.swift */,
+				BB0000000000000000000023 /* AppConfig.swift */,
 				DD0000000000000000000001 /* Info.plist */,
 				AA0000000000000000000019 /* PickCrux-Bridging-Header.h */,
 			);
@@ -231,6 +234,7 @@
 				CC0000000000000000000020 /* KeychainStore.swift in Sources */,
 				CC0000000000000000000021 /* SettingsStore.swift in Sources */,
 				CC0000000000000000000022 /* DrawerView.swift in Sources */,
+				CC0000000000000000000023 /* AppConfig.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -287,6 +291,7 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 				SENTRY_DSN = "$(SENTRY_DSN)";
 				SENTRY_ENV = "$(SENTRY_ENV)";
+				STRIKE48_HOST = "$(STRIKE48_HOST)";
 			};
 			name = Debug;
 		};
@@ -315,6 +320,7 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 				SENTRY_DSN = "$(SENTRY_DSN)";
 				SENTRY_ENV = "$(SENTRY_ENV)";
+				STRIKE48_HOST = "$(STRIKE48_HOST)";
 			};
 			name = Release;
 		};

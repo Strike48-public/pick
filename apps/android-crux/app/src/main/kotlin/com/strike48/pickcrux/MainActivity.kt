@@ -49,7 +49,9 @@ import com.strike48.pickcrux.ui.TopBar
  * that carries workspace scope and can see the pentest agent.
  */
 object Oauth {
-    const val API_BASE = "https://plg.strike48.test"
+    // Strike48 PLG host, baked at build time from the STRIKE48_HOST env
+    // (BuildConfig), not hardcoded here. See app/build.gradle.kts.
+    val API_BASE: String = BuildConfig.STRIKE48_HOST
     const val REDIRECT_URI = "com.strike48.pentest://oauth/callback"
 
     /** `https://<host>/auth/login?redirect=<url-encoded REDIRECT_URI>`. */

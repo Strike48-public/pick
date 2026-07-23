@@ -6,7 +6,7 @@ struct PickCruxApp: App {
     // Placeholder api_url/token: real Matrix/OAuth wiring is a later task.
     // Network calls may error into ViewModel.error, which the UI renders.
     @StateObject private var core = CoreBridge(
-        apiUrl: "https://plg.strike48.test",
+        apiUrl: AppConfig.strike48Host,
         token: "placeholder-token"
     )!
 

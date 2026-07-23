@@ -9,6 +9,10 @@
 	<string>$(SENTRY_DSN)</string>
 	<key>SentryEnv</key>
 	<string>$(SENTRY_ENV)</string>
+	<!-- Strike48 PLG host, substituted from the STRIKE48_HOST build setting
+	     (build env). Empty/unsubstituted falls back to the dev cluster in code. -->
+	<key>Strike48Host</key>
+	<string>$(STRIKE48_HOST)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
