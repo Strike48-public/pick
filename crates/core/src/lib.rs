@@ -43,6 +43,11 @@ pub fn easy_mode_scan_prompt() -> String {
     "Discover the devices on my local network: enumerate my network interfaces, \
      scan the local subnet for reachable hosts and their open services, then \
      summarize what you found.\n\n\
+     Work efficiently — batch your tool calls instead of looping one host at a \
+     time. `port_scan` accepts a whole `subnet` (CIDR, e.g. \"10.10.0.0/24\") or \
+     a `hosts` list in a single call, and `service_banner` accepts a `targets` \
+     list of {host, port} objects in a single call. Use those batch forms so the \
+     scan takes a few calls, not dozens.\n\n\
      When you have the results, you MUST save the summary as a shareable report \
      by calling the `document_write` tool (NOT `write_file`) — create a document \
      titled something like \"Network Discovery Report\" whose body is the \

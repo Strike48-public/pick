@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use pentest_core::error::{Error, Result};
 use pentest_core::provenance::{truncate_excerpt, ProbeCommand, Provenance};
 use pentest_core::tools::{
-    execute_timed_with_provenance, ParamType, PentestTool, Platform, ToolContext, ToolParam,
-    ToolResult, ToolSchema,
+    execute_timed, execute_timed_with_provenance, ParamType, PentestTool, Platform, ToolContext,
+    ToolParam, ToolResult, ToolSchema,
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -109,20 +109,31 @@ impl PentestTool for ServiceBannerTool {
     }
 
     fn description(&self) -> &str {
-        "Grab service banners from open ports to identify service type and version"
+        "Grab service banners from open ports to identify service type and \
+         version. Grab MANY services in ONE call via `targets` (a list of \
+         {host, port}) instead of calling this once per host:port."
     }
 
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(self.name(), self.description())
-            .param(ToolParam::required(
+            .param(ToolParam::optional(
                 "host",
                 ParamType::String,
-                "Target host IP or hostname",
+                "Single target host IP or hostname (use with `port`)",
+                json!(null),
             ))
-            .param(ToolParam::required(
+            .param(ToolParam::optional(
                 "port",
                 ParamType::Integer,
-                "Target port number",
+                "Single target port number (use with `host`)",
+                json!(null),
+            ))
+            .param(ToolParam::optional(
+                "targets",
+                ParamType::Array,
+                "List of {host, port} objects to grab in one call, e.g. \
+                 [{\"host\":\"10.0.0.1\",\"port\":22},{\"host\":\"10.0.0.1\",\"port\":80}]",
+                json!([]),
             ))
             .param(ToolParam::optional(
                 "timeout_ms",
@@ -143,92 +154,150 @@ impl PentestTool for ServiceBannerTool {
     }
 
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+        let timeout_ms = param_u64(&params, "timeout_ms", 5000);
+
+        // Batch mode: a `targets` list grabs every {host, port} in one call so
+        // the agent doesn't fan out one service_banner per open port.
+        if let Some(arr) = params.get("targets").and_then(|v| v.as_array()) {
+            if !arr.is_empty() {
+                return execute_timed(|| async move {
+                    let mut targets: Vec<(String, u16)> = Vec::new();
+                    for t in arr {
+                        let host = t.get("host").and_then(|v| v.as_str()).unwrap_or("");
+                        let port = param_u16_opt(t, "port");
+                        match (host.is_empty(), port) {
+                            (false, Some(p)) => targets.push((host.to_string(), p)),
+                            _ => {
+                                return Err(Error::InvalidParams(
+                                    "each target needs a non-empty host and a valid port".into(),
+                                ))
+                            }
+                        }
+                    }
+
+                    // Grab all banners concurrently, bounded so a big list can't
+                    // open too many sockets at once.
+                    const MAX_IN_FLIGHT: usize = 32;
+                    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT));
+                    let futures = targets.into_iter().map(|(host, port)| {
+                        let sem = sem.clone();
+                        async move {
+                            let _permit = sem.acquire().await.expect("semaphore not closed");
+                            match Self::grab_one(&host, port, timeout_ms).await {
+                                Ok((data, _prov)) => data,
+                                Err(e) => json!({
+                                    "host": host, "port": port, "error": e.to_string(),
+                                }),
+                            }
+                        }
+                    });
+                    let results: Vec<Value> = futures::future::join_all(futures).await;
+                    let identified = results
+                        .iter()
+                        .filter(|r| r.get("service").map(|s| !s.is_null()).unwrap_or(false))
+                        .count();
+                    Ok(json!({
+                        "results": results,
+                        "count": results.len(),
+                        "identified": identified,
+                    }))
+                })
+                .await;
+            }
+        }
+
+        // Single mode (legacy shape): one host + port.
         execute_timed_with_provenance(|| async {
-            // Parse parameters
             let host = param_str(&params, "host");
             if host.is_empty() {
                 return Err(Error::InvalidParams("host parameter is required".into()));
             }
-
             // Accept int/float/string port args (LLM callers often send `22.0`).
             let port = param_u16_opt(&params, "port")
                 .ok_or_else(|| Error::InvalidParams("port parameter is required".into()))?;
 
-            let timeout_ms = param_u64(&params, "timeout_ms", 5000);
+            Self::grab_one(&host, port, timeout_ms).await
+        })
+        .await
+    }
+}
 
-            // Connect to target
-            let addr = format!("{}:{}", host, port);
-            let stream = timeout(Duration::from_millis(timeout_ms), TcpStream::connect(&addr))
+impl ServiceBannerTool {
+    /// Grab a single banner and emit its evidence nodes. Returns the per-target
+    /// data object and its provenance. Shared by the single- and batch-mode
+    /// paths so both produce identical per-service output and evidence.
+    async fn grab_one(
+        host: &str,
+        port: u16,
+        timeout_ms: u64,
+    ) -> std::result::Result<(Value, Provenance), Error> {
+        // Connect to target
+        let addr = format!("{}:{}", host, port);
+        let stream = timeout(Duration::from_millis(timeout_ms), TcpStream::connect(&addr))
+            .await
+            .map_err(|_| Error::Timeout(format!("Connection to {} timed out", addr)))?
+            .map_err(|e| Error::Network(format!("Failed to connect to {}: {}", addr, e)))?;
+
+        let (mut read_half, mut write_half) = stream.into_split();
+
+        // Send probe if needed
+        let probe = Self::get_probe(port);
+        if !probe.is_empty() {
+            write_half
+                .write_all(probe.as_bytes())
                 .await
-                .map_err(|_| Error::Timeout(format!("Connection to {} timed out", addr)))?
-                .map_err(|e| Error::Network(format!("Failed to connect to {}: {}", addr, e)))?;
+                .map_err(|e| Error::Network(format!("Failed to send probe: {}", e)))?;
+        }
 
-            let (mut read_half, mut write_half) = stream.into_split();
-
-            // Send probe if needed
-            let probe = Self::get_probe(port);
-            if !probe.is_empty() {
-                write_half
-                    .write_all(probe.as_bytes())
-                    .await
-                    .map_err(|e| Error::Network(format!("Failed to send probe: {}", e)))?;
-            }
-
-            // Read banner (max 4KB)
-            let mut buffer = vec![0u8; 4096];
-            let bytes_read = timeout(
-                Duration::from_millis(timeout_ms),
-                read_half.read(&mut buffer),
-            )
+        // Read banner (max 4KB)
+        let mut buffer = vec![0u8; 4096];
+        let bytes_read = timeout(Duration::from_millis(timeout_ms), read_half.read(&mut buffer))
             .await
             .map_err(|_| Error::Timeout("Banner read timed out".into()))?
             .map_err(|e| Error::Network(format!("Failed to read banner: {}", e)))?;
 
-            let banner = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+        let banner = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
 
-            // Parse banner
-            let (service, version) = Self::parse_banner(&banner, port);
+        // Parse banner
+        let (service, version) = Self::parse_banner(&banner, port);
 
-            // Provenance: the reproducible analogue of our raw TCP probe is
-            // an ncat command piping the same bytes into the socket. This
-            // lets a reviewer re-grab the banner with a standard tool.
-            let reproducible = if probe.is_empty() {
-                format!("ncat {host} {port}")
-            } else {
-                // Render escape sequences visibly (\r\n etc.) so the
-                // published command is legible and executable as-is.
-                let escaped = probe.replace('\r', "\\r").replace('\n', "\\n");
-                format!("printf '{escaped}' | ncat {host} {port}")
-            };
-            let provenance = Provenance::new(
-                "tcp-banner",
-                env!("CARGO_PKG_VERSION"),
-                ProbeCommand::from_exact(reproducible).with_description("raw TCP banner grab"),
-                truncate_excerpt(&banner),
-            );
+        // Provenance: the reproducible analogue of our raw TCP probe is an ncat
+        // command piping the same bytes into the socket. This lets a reviewer
+        // re-grab the banner with a standard tool.
+        let reproducible = if probe.is_empty() {
+            format!("ncat {host} {port}")
+        } else {
+            // Render escape sequences visibly (\r\n etc.) so the published
+            // command is legible and executable as-is.
+            let escaped = probe.replace('\r', "\\r").replace('\n', "\\n");
+            format!("printf '{escaped}' | ncat {host} {port}")
+        };
+        let provenance = Provenance::new(
+            "tcp-banner",
+            env!("CARGO_PKG_VERSION"),
+            ProbeCommand::from_exact(reproducible).with_description("raw TCP banner grab"),
+            truncate_excerpt(&banner),
+        );
 
-            let data = json!({
-                "host": host,
-                "port": port,
-                "banner": banner,
-                "service": service,
-                "version": version,
-            });
+        let data = json!({
+            "host": host,
+            "port": port,
+            "banner": banner,
+            "service": service,
+            "version": version,
+        });
 
-            // Produce evidence nodes for the three-agent pipeline
-            let evidence_nodes = crate::evidence_producer::evidence_from_service_banner(
-                &data,
-                &host,
-                port,
-                provenance.clone(),
-            );
+        // Produce evidence nodes for the three-agent pipeline
+        let evidence_nodes = crate::evidence_producer::evidence_from_service_banner(
+            &data,
+            host,
+            port,
+            provenance.clone(),
+        );
+        for node in evidence_nodes {
+            let _ = crate::evidence_producer::push_evidence(node);
+        }
 
-            for node in evidence_nodes {
-                let _ = crate::evidence_producer::push_evidence(node);
-            }
-
-            Ok((data, provenance))
-        })
-        .await
+        Ok((data, provenance))
     }
 }
