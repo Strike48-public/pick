@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
 
@@ -13,9 +14,23 @@
     </queries>
 
     <application
+        android:name=".PickApplication"
         android:label="Pick Crux"
         android:supportsRtl="true"
         android:theme="@style/Theme.PickCrux">
+
+        <!-- Disable sentry-android's auto-init ContentProvider: it runs before
+             Application.onCreate and requires a manifest DSN, crashing when none
+             is set. We init manually in PickApplication (gated on the baked DSN +
+             telemetry opt-out) instead. -->
+        <provider
+            android:name="io.sentry.android.core.SentryInitProvider"
+            android:authorities="${applicationId}.SentryInitProvider"
+            tools:node="remove" />
+        <provider
+            android:name="io.sentry.android.core.SentryPerformanceProvider"
+            android:authorities="${applicationId}.SentryPerformanceProvider"
+            tools:node="remove" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

@@ -20,6 +20,15 @@ android {
             // Emulator only for this task; add "arm64-v8a" once that .so is built.
             abiFilters += "x86_64"
         }
+
+        // Sentry (native crash/ANR capture) config, injected from the build env
+        // the same way the Rust lib gets it. Absent DSN => the native SDK stays
+        // uninitialised (see PickApplication), so nothing is sent. Kept out of
+        // source; set SENTRY_DSN / STRIKE48_SENTRY_ENV when building to enable.
+        val sentryDsn = System.getenv("SENTRY_DSN") ?: ""
+        val sentryEnv = System.getenv("STRIKE48_SENTRY_ENV") ?: "production"
+        buildConfigField("String", "SENTRY_DSN", "\"$sentryDsn\"")
+        buildConfigField("String", "SENTRY_ENV", "\"$sentryEnv\"")
     }
 
     externalNativeBuild {
@@ -72,5 +81,8 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     // Keystore-backed encrypted storage for the persisted auth token.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    // Native crash / ANR capture for the view layer (Kotlin/JVM + NDK), which
+    // the Rust SDK can't see. Auto-installs uncaught-exception + ANR handlers.
+    implementation("io.sentry:sentry-android:7.18.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
