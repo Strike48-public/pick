@@ -11,6 +11,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -277,6 +278,9 @@ fun PickApp(
                 }
             }
             model.showScanCard -> {
+                // Start screen: Scan CTA plus a message box, so the user can
+                // either run the network scan or start a freeform chat. Sending
+                // a message creates a conversation just like the chat screen.
                 ScanCard(
                     scanInProgress = model.scanInProgress,
                     onStartScan = { send(Event.StartScan) },
@@ -289,7 +293,10 @@ fun PickApp(
                         activityLabel = model.activityLabel,
                         modifier = Modifier.weight(1f),
                     )
+                } else {
+                    Spacer(modifier = Modifier.weight(1f))
                 }
+                InputRow(onSend = { send(Event.SendMessage(it)) })
             }
             else -> {
                 ChatList(

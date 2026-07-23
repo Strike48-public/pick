@@ -113,11 +113,17 @@ struct ContentView: View {
 
     @ViewBuilder private var mainContent: some View {
         if core.vm.showScanCard {
-            ScrollView {
-                VStack(spacing: 16) {
-                    ScanCard(core: core)
+            // Start screen: the Scan CTA plus a message box, so the user can
+            // either run the network scan or start a freeform chat. Sending a
+            // message here creates a conversation just like the chat screen.
+            VStack(spacing: 0) {
+                ScrollView {
+                    VStack(spacing: 16) {
+                        ScanCard(core: core)
+                    }
+                    .padding(16)
                 }
-                .padding(16)
+                InputRow(core: core)
             }
         } else {
             ChatList(core: core)
