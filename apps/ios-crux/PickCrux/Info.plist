@@ -2,6 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Sentry native crash/hang capture config, substituted from the SENTRY_DSN
+	     / SENTRY_ENV build settings (which come from the build env). Empty DSN =>
+	     the native SDK stays uninitialised (see PickCruxApp). -->
+	<key>SentryDSN</key>
+	<string>$(SENTRY_DSN)</string>
+	<key>SentryEnv</key>
+	<string>$(SENTRY_ENV)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

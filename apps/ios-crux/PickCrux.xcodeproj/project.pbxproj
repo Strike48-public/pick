@@ -11,6 +11,7 @@
 		AA0000000000000000000013 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000010 /* ContentView.swift */; };
 		AA0000000000000000000014 /* CoreBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000011 /* CoreBridge.swift */; };
 		AA0000000000000000000018 /* PickShared in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000017 /* PickShared */; };
+		AA0000000000000000000030 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000031 /* Sentry */; };
 		CC0000000000000000000001 /* Colors.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000001 /* Colors.swift */; };
 		CC0000000000000000000002 /* BrandBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002 /* BrandBadge.swift */; };
 		CC0000000000000000000003 /* TopBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000003 /* TopBar.swift */; };
@@ -72,6 +73,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0000000000000000000018 /* PickShared in Frameworks */,
+				AA0000000000000000000030 /* Sentry in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -146,6 +148,7 @@
 			name = PickCrux;
 			packageProductDependencies = (
 				AA0000000000000000000017 /* PickShared */,
+				AA0000000000000000000031 /* Sentry */,
 			);
 			productName = PickCrux;
 			productReference = AA0000000000000000000005 /* PickCrux.app */;
@@ -177,6 +180,7 @@
 			mainGroup = AA0000000000000000000002;
 			packageReferences = (
 				AA0000000000000000000016 /* XCLocalSwiftPackageReference "generated/PickShared" */,
+				AA0000000000000000000032 /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
 			);
 			productRefGroup = AA0000000000000000000003 /* Products */;
 			projectDirPath = "";
@@ -281,6 +285,8 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "PickCrux/PickCrux-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				SENTRY_DSN = "$(SENTRY_DSN)";
+				SENTRY_ENV = "$(SENTRY_ENV)";
 			};
 			name = Debug;
 		};
@@ -307,6 +313,8 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "PickCrux/PickCrux-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				SENTRY_DSN = "$(SENTRY_DSN)";
+				SENTRY_ENV = "$(SENTRY_ENV)";
 			};
 			name = Release;
 		};
@@ -340,10 +348,26 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		AA0000000000000000000032 /* XCRemoteSwiftPackageReference "sentry-cocoa" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/getsentry/sentry-cocoa.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 8.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		AA0000000000000000000017 /* PickShared */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = PickShared;
+		};
+		AA0000000000000000000031 /* Sentry */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0000000000000000000032 /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
+			productName = Sentry;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
