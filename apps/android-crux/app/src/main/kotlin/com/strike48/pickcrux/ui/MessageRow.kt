@@ -125,11 +125,18 @@ fun ToolCallRow(tool: ToolCallView) {
             .clip(RoundedCornerShape(16.dp))
             .background(PickColors.Surface)
             .border(1.dp, PickColors.Hairline, RoundedCornerShape(16.dp))
-            .then(if (hasDetail) Modifier.clickable { expanded = !expanded } else Modifier)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        // Only the header row toggles expansion. Putting clickable on the whole
+        // card (including the detail body) collapsed the row when the user
+        // touched the expanded result to scroll.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(if (hasDetail) Modifier.clickable { expanded = !expanded } else Modifier),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             if (hasDetail) {
                 Text(
                     text = if (expanded) "▼" else "▶",

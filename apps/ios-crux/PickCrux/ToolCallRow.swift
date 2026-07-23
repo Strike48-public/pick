@@ -15,6 +15,9 @@ struct ToolCallRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            // Only the header toggles expansion. Putting the tap gesture on the
+            // whole card (including the detail body) meant a touch to scroll the
+            // expanded result collapsed the row.
             HStack {
                 if hasDetail {
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
@@ -26,6 +29,10 @@ struct ToolCallRow: View {
                     .foregroundStyle(Theme.text)
                 Spacer()
                 ToolStatusBadge(status: tool.status)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if hasDetail { expanded.toggle() }
             }
             if expanded {
                 if let args = tool.arguments, !args.isEmpty {
@@ -48,10 +55,6 @@ struct ToolCallRow: View {
         .overlay(
             RoundedRectangle(cornerRadius: Theme.radiusCard).stroke(Theme.hairline, lineWidth: 1)
         )
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if hasDetail { expanded.toggle() }
-        }
     }
 
     private func detailBlock(title: String, body: String, color: Color) -> some View {

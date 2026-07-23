@@ -476,7 +476,16 @@ impl MatrixApi for CoreMatrixApi {
         // On an agent error, cross-reference tokenUsageStats (same data Studio
         // uses) to build a specific notice — token-limit vs generic upstream —
         // instead of silently ending the scan with no report and no error.
-        let notice = if matches!(state.agent_status, AgentStatus::Error) {
+        //
+        // A mid-stream failure (`stream_error`, e.g. the LLM gateway dropping the
+        // gRPC connection) is ALSO terminal: the turn produced no report and the
+        // agent won't resume, so we must stop polling and surface it. It's a
+        // separate signal from `agent_status` because a hard ConversationServer
+        // crash reports IDLE, not ERROR — the durable message-level metadata is
+        // the reliable terminal marker.
+        let notice = if matches!(state.agent_status, AgentStatus::Error)
+            || state.stream_error.is_some()
+        {
             Some(notice_to_view(
                 pentest_core::matrix::build_error_notice(&client).await,
             ))
@@ -823,6 +832,7 @@ mod tests {
         let state = ConversationState {
             messages: vec![],
             agent_status: AgentStatus::StreamEnd,
+            stream_error: None,
         };
         let delta = state_to_delta(state, None);
         assert!(delta.done);
@@ -833,6 +843,7 @@ mod tests {
         let state = ConversationState {
             messages: vec![],
             agent_status: AgentStatus::Processing,
+            stream_error: None,
         };
         let delta = state_to_delta(state, None);
         assert!(!delta.done);
@@ -852,6 +863,7 @@ mod tests {
         let state = ConversationState {
             messages: vec![],
             agent_status: AgentStatus::Error,
+            stream_error: None,
         };
         let delta = state_to_delta(state, Some(notice.clone()));
         assert!(delta.done, "error notice forces a terminal delta");
@@ -907,6 +919,7 @@ mod tests {
                 },
             ],
             agent_status: AgentStatus::ExecutingTools,
+            stream_error: None,
         };
         let delta = state_to_delta(state, None);
         assert_eq!(delta.tool_calls.len(), 2);

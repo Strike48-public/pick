@@ -319,6 +319,9 @@ struct MessageNode {
     id: Option<String>,
     profile: Option<ProfileNode>,
     parts: Option<Vec<serde_json::Value>>,
+    /// Free-form message metadata (`json` scalar). Carries `stream_error` /
+    /// `stream_failed_at` when an assistant turn died mid-stream.
+    metadata: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -473,6 +476,7 @@ const GET_CONVERSATION_QUERY: &str = r#"
             agentStatus
             messages {
                 id
+                metadata
                 parts {
                     ... on TextPart { id text }
                     ... on ThinkingPart { id thinking { content } }
@@ -680,6 +684,12 @@ impl ChatClient for MatrixChatClient {
             .parse::<AgentStatus>()
             .unwrap_or(AgentStatus::Idle);
 
+        // Track the last non-empty `metadata.stream_error` we see. A turn that
+        // died mid-stream stamps this on the in-flight assistant message; it's a
+        // durable terminal signal even when `agentStatus` doesn't reflect the
+        // failure (a hard ConversationServer crash reports IDLE, not ERROR).
+        let mut stream_error: Option<String> = None;
+
         let messages = conv
             .messages
             .unwrap_or_default()
@@ -693,6 +703,16 @@ impl ChatClient for MatrixChatClient {
                     ),
                     None => (String::new(), String::new()),
                 };
+
+                if let Some(err) = m
+                    .metadata
+                    .as_ref()
+                    .and_then(|meta| meta.get("stream_error"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                {
+                    stream_error = Some(err.to_string());
+                }
 
                 let parts_json = m.parts.unwrap_or_default();
                 let (text, parts) = parse_message_parts(&parts_json);
@@ -710,6 +730,7 @@ impl ChatClient for MatrixChatClient {
         Ok(ConversationState {
             messages,
             agent_status,
+            stream_error,
         })
     }
 

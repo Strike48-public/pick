@@ -145,6 +145,13 @@ pub struct ConversationState {
     pub messages: Vec<ChatMessage>,
     /// Agent status: Idle, Processing, StreamEnd, Error, or Unknown.
     pub agent_status: AgentStatus,
+    /// Set when the latest assistant message's `metadata.stream_error` is
+    /// present: the agent turn died mid-stream (e.g. the LLM gateway dropped the
+    /// gRPC connection). This is a durable, message-level terminal signal — it
+    /// survives even when `agent_status` doesn't reflect the failure (a hard
+    /// ConversationServer crash reports `IDLE`, not `ERROR`). `None` on healthy
+    /// conversations.
+    pub stream_error: Option<String>,
 }
 
 /// Lightweight conversation summary for the history list.
