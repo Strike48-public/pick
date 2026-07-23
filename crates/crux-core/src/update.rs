@@ -465,6 +465,37 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
             model.error = None;
             render()
         }
+        Event::SeedSettings { telemetry_enabled } => {
+            // Startup: apply the shell's persisted opt-out choice to both the
+            // model (so Settings reflects it) and the live telemetry client.
+            model.telemetry_enabled = telemetry_enabled;
+            pentest_core::telemetry::set_enabled(telemetry_enabled);
+            render()
+        }
+        Event::SetTelemetryEnabled(enabled) => {
+            // Runtime toggle from Settings: flip the flag and enable/disable the
+            // Sentry client immediately (off = client fully closed). The shell
+            // persists the new value natively.
+            model.telemetry_enabled = enabled;
+            pentest_core::telemetry::set_enabled(enabled);
+            render()
+        }
+        Event::Logout => {
+            // Clear in-core session/conversation state and return to sign-in.
+            // The shell clears its persisted token separately.
+            model.phase = Phase::NeedsSignIn;
+            model.conversation_id = None;
+            model.messages.clear();
+            model.conversation_docs.clear();
+            model.all_documents.clear();
+            model.history.clear();
+            model.open_document = None;
+            model.scan_active = false;
+            model.notice = None;
+            model.next_steps.clear();
+            model.error = None;
+            render()
+        }
     }
 }
 
@@ -518,6 +549,52 @@ mod tests {
     use crate::view::MessageView;
     use crate::{Effect, Event, Model, PickApp};
     use crux_core::App;
+
+    #[test]
+    fn telemetry_defaults_on_and_toggles() {
+        let app = PickApp;
+        let mut model = Model::default();
+        // Opt-out: on by default, surfaced in the ViewModel settings.
+        assert!(model.telemetry_enabled);
+        assert!(app.view(&model).settings.telemetry_enabled);
+
+        let _ = app.update(Event::SetTelemetryEnabled(false), &mut model);
+        assert!(!model.telemetry_enabled);
+        assert!(!app.view(&model).settings.telemetry_enabled);
+
+        let _ = app.update(Event::SetTelemetryEnabled(true), &mut model);
+        assert!(model.telemetry_enabled);
+    }
+
+    #[test]
+    fn seed_settings_applies_persisted_choice() {
+        let app = PickApp;
+        let mut model = Model::default();
+        let _ = app.update(
+            Event::SeedSettings {
+                telemetry_enabled: false,
+            },
+            &mut model,
+        );
+        assert!(!model.telemetry_enabled);
+        assert!(!app.view(&model).settings.telemetry_enabled);
+    }
+
+    #[test]
+    fn logout_resets_session_and_shows_sign_in() {
+        let app = PickApp;
+        let mut model = Model {
+            conversation_id: Some("c1".into()),
+            scan_active: true,
+            ..Default::default()
+        };
+        model.messages.push(super::user_echo("hi"));
+        let _ = app.update(Event::Logout, &mut model);
+        assert!(model.conversation_id.is_none());
+        assert!(model.messages.is_empty());
+        assert!(!model.scan_active);
+        assert!(app.view(&model).needs_sign_in);
+    }
 
     #[test]
     fn start_scan_emits_send_scan_and_hides_card() {

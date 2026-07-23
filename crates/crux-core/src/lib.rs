@@ -110,6 +110,16 @@ pub enum Event {
     CreateShareLink(String),
     RetrySignIn,
     DismissError,
+    /// Seed persisted settings at startup from the shell's native store. Sent
+    /// once before the user interacts, so the ViewModel + telemetry reflect the
+    /// saved opt-out choice.
+    SeedSettings { telemetry_enabled: bool },
+    /// Toggle usage telemetry at runtime (Settings). Flips the core flag and
+    /// enables/disables the Sentry client immediately; the shell persists it.
+    SetTelemetryEnabled(bool),
+    /// Sign out: clears in-core session/conversation state and returns to the
+    /// sign-in screen. The shell separately clears its persisted token.
+    Logout,
     // effect results
     SignInResult(SignInOutcome),
     ConnectResult(ConnectOutcome),
@@ -166,6 +176,9 @@ impl App for PickApp {
             activity_label: model.activity.label().to_string(),
             notice: model.notice.clone(),
             next_steps: model.next_steps.clone(),
+            settings: view::SettingsView {
+                telemetry_enabled: model.telemetry_enabled,
+            },
         }
     }
 }

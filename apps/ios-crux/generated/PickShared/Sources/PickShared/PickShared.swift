@@ -787,6 +787,16 @@ indirect public enum Event {
     case createShareLink(String)
     case retrySignIn
     case dismissError
+    /// Seed persisted settings at startup from the shell's native store. Sent
+    /// once before the user interacts, so the ViewModel + telemetry reflect the
+    /// saved opt-out choice.
+    case seedSettings(telemetryEnabled: Bool)
+    /// Toggle usage telemetry at runtime (Settings). Flips the core flag and
+    /// enables/disables the Sentry client immediately; the shell persists it.
+    case setTelemetryEnabled(Bool)
+    /// Sign out: clears in-core session/conversation state and returns to the
+    /// sign-in screen. The shell separately clears its persisted token.
+    case logout
     case signInResult(SignInOutcome)
     case connectResult(ConnectOutcome)
     case scanResult(ScanOutcome)
@@ -828,32 +838,40 @@ indirect public enum Event {
             try serializer.serialize_variant_index(value: 10)
         case .dismissError:
             try serializer.serialize_variant_index(value: 11)
-        case .signInResult(let x):
+        case .seedSettings(let telemetryEnabled):
             try serializer.serialize_variant_index(value: 12)
-            try x.serialize(serializer: serializer)
-        case .connectResult(let x):
+            try serializer.serialize_bool(value: telemetryEnabled)
+        case .setTelemetryEnabled(let x):
             try serializer.serialize_variant_index(value: 13)
-            try x.serialize(serializer: serializer)
-        case .scanResult(let x):
+            try serializer.serialize_bool(value: x)
+        case .logout:
             try serializer.serialize_variant_index(value: 14)
-            try x.serialize(serializer: serializer)
-        case .delta(let x):
+        case .signInResult(let x):
             try serializer.serialize_variant_index(value: 15)
             try x.serialize(serializer: serializer)
-        case .conversationsResult(let x):
+        case .connectResult(let x):
             try serializer.serialize_variant_index(value: 16)
             try x.serialize(serializer: serializer)
-        case .loadConversationResult(let x):
+        case .scanResult(let x):
             try serializer.serialize_variant_index(value: 17)
             try x.serialize(serializer: serializer)
-        case .documentsResult(let x):
+        case .delta(let x):
             try serializer.serialize_variant_index(value: 18)
             try x.serialize(serializer: serializer)
-        case .documentContentResult(let x):
+        case .conversationsResult(let x):
             try serializer.serialize_variant_index(value: 19)
             try x.serialize(serializer: serializer)
-        case .shareLinkResult(let x):
+        case .loadConversationResult(let x):
             try serializer.serialize_variant_index(value: 20)
+            try x.serialize(serializer: serializer)
+        case .documentsResult(let x):
+            try serializer.serialize_variant_index(value: 21)
+            try x.serialize(serializer: serializer)
+        case .documentContentResult(let x):
+            try serializer.serialize_variant_index(value: 22)
+            try x.serialize(serializer: serializer)
+        case .shareLinkResult(let x):
+            try serializer.serialize_variant_index(value: 23)
             try x.serialize(serializer: serializer)
         }
         try serializer.decrease_container_depth()
@@ -910,38 +928,49 @@ indirect public enum Event {
             try deserializer.decrease_container_depth()
             return .dismissError
         case 12:
+            let telemetryEnabled = try deserializer.deserialize_bool()
+            try deserializer.decrease_container_depth()
+            return .seedSettings(telemetryEnabled: telemetryEnabled)
+        case 13:
+            let x = try deserializer.deserialize_bool()
+            try deserializer.decrease_container_depth()
+            return .setTelemetryEnabled(x)
+        case 14:
+            try deserializer.decrease_container_depth()
+            return .logout
+        case 15:
             let x = try SignInOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .signInResult(x)
-        case 13:
+        case 16:
             let x = try ConnectOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .connectResult(x)
-        case 14:
+        case 17:
             let x = try ScanOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .scanResult(x)
-        case 15:
+        case 18:
             let x = try DeltaOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .delta(x)
-        case 16:
+        case 19:
             let x = try ConversationsOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .conversationsResult(x)
-        case 17:
+        case 20:
             let x = try LoadConversationOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .loadConversationResult(x)
-        case 18:
+        case 21:
             let x = try DocumentsOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .documentsResult(x)
-        case 19:
+        case 22:
             let x = try DocumentContentOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .documentContentResult(x)
-        case 20:
+        case 23:
             let x = try ShareLinkOutcome.deserialize(deserializer: deserializer)
             try deserializer.decrease_container_depth()
             return .shareLinkResult(x)
@@ -1956,6 +1985,47 @@ indirect public enum Screen: Hashable, Equatable {
     }
 }
 
+/// Runtime feature flags shown in Settings. Toggled via [`crate::Event`]s; the
+/// shell persists the value natively and re-seeds it on the next launch (the
+/// core is not durable across process restarts).
+public struct SettingsView: Hashable, Equatable {
+    /// Usage telemetry + release health (Sentry). Opt-out: on by default. When
+    /// off, the core fully closes the Sentry client (no events, no sessions).
+    public var telemetryEnabled: Bool
+
+    public init(telemetryEnabled: Bool) {
+        self.telemetryEnabled = telemetryEnabled
+    }
+
+    public func serialize<S: Serializer>(serializer: S) throws {
+        try serializer.increase_container_depth()
+        try serializer.serialize_bool(value: self.telemetryEnabled)
+        try serializer.decrease_container_depth()
+    }
+
+    public func bincodeSerialize() throws -> [UInt8] {
+        let serializer = BincodeSerializer.init();
+        try self.serialize(serializer: serializer)
+        return serializer.get_bytes()
+    }
+
+    public static func deserialize<D: Deserializer>(deserializer: D) throws -> SettingsView {
+        try deserializer.increase_container_depth()
+        let telemetryEnabled = try deserializer.deserialize_bool()
+        try deserializer.decrease_container_depth()
+        return SettingsView(telemetryEnabled: telemetryEnabled)
+    }
+
+    public static func bincodeDeserialize(input: [UInt8]) throws -> SettingsView {
+        let deserializer = BincodeDeserializer.init(input: input);
+        let obj = try deserialize(deserializer: deserializer)
+        if deserializer.get_buffer_offset() < input.count {
+            throw DeserializationError.invalidInput(issue: "Some input bytes were not read")
+        }
+        return obj
+    }
+}
+
 public struct ShareLinkOutcome: Hashable, Equatable {
     public var url: String?
     /// Browser-preview transform of `url`; carried alongside so the App can set
@@ -2357,8 +2427,11 @@ public struct ViewModel: Hashable, Equatable {
     /// Shells render a row of pill buttons below the message list when non-empty;
     /// tapping one fires `SendMessage(message)`. Cleared on send/new-chat.
     public var nextSteps: [QuickActionView]
+    /// User-facing feature flags surfaced in the Settings drawer. The shell
+    /// renders toggles bound to these and mirrors changes back via events.
+    public var settings: SettingsView
 
-    public init(screen: Screen, connection: ConnectionView, messages: [MessageView], scanInProgress: Bool, showScanCard: Bool, conversationDocs: [DocRef], allDocuments: [DocRef], history: [ConversationRef], openDocument: DocView?, needsSignIn: Bool, error: String?, toolCalls: [ToolCallView], agentActivity: AgentActivity, activityLabel: String, notice: NoticeView?, nextSteps: [QuickActionView]) {
+    public init(screen: Screen, connection: ConnectionView, messages: [MessageView], scanInProgress: Bool, showScanCard: Bool, conversationDocs: [DocRef], allDocuments: [DocRef], history: [ConversationRef], openDocument: DocView?, needsSignIn: Bool, error: String?, toolCalls: [ToolCallView], agentActivity: AgentActivity, activityLabel: String, notice: NoticeView?, nextSteps: [QuickActionView], settings: SettingsView) {
         self.screen = screen
         self.connection = connection
         self.messages = messages
@@ -2375,6 +2448,7 @@ public struct ViewModel: Hashable, Equatable {
         self.activityLabel = activityLabel
         self.notice = notice
         self.nextSteps = nextSteps
+        self.settings = settings
     }
 
     public func serialize<S: Serializer>(serializer: S) throws {
@@ -2413,6 +2487,7 @@ public struct ViewModel: Hashable, Equatable {
         try serializeArray(value: self.nextSteps, serializer: serializer) { item, serializer in
             try item.serialize(serializer: serializer)
         }
+        try self.settings.serialize(serializer: serializer)
         try serializer.decrease_container_depth()
     }
 
@@ -2458,8 +2533,9 @@ public struct ViewModel: Hashable, Equatable {
         let nextSteps = try deserializeArray(deserializer: deserializer) { deserializer in
             try QuickActionView.deserialize(deserializer: deserializer)
         }
+        let settings = try SettingsView.deserialize(deserializer: deserializer)
         try deserializer.decrease_container_depth()
-        return ViewModel(screen: screen, connection: connection, messages: messages, scanInProgress: scanInProgress, showScanCard: showScanCard, conversationDocs: conversationDocs, allDocuments: allDocuments, history: history, openDocument: openDocument, needsSignIn: needsSignIn, error: error, toolCalls: toolCalls, agentActivity: agentActivity, activityLabel: activityLabel, notice: notice, nextSteps: nextSteps)
+        return ViewModel(screen: screen, connection: connection, messages: messages, scanInProgress: scanInProgress, showScanCard: showScanCard, conversationDocs: conversationDocs, allDocuments: allDocuments, history: history, openDocument: openDocument, needsSignIn: needsSignIn, error: error, toolCalls: toolCalls, agentActivity: agentActivity, activityLabel: activityLabel, notice: notice, nextSteps: nextSteps, settings: settings)
     }
 
     public static func bincodeDeserialize(input: [UInt8]) throws -> ViewModel {

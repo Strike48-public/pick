@@ -973,12 +973,71 @@ sealed interface Event {
         }
     }
 
+    /// Seed persisted settings at startup from the shell's native store. Sent
+    /// once before the user interacts, so the ViewModel + telemetry reflect the
+    /// saved opt-out choice.
+    data class SeedSettings(
+        val telemetryEnabled: Boolean,
+    ) : Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(12)
+            serializer.serialize_bool(telemetryEnabled)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): SeedSettings {
+                deserializer.increase_container_depth()
+                val telemetryEnabled = deserializer.deserialize_bool()
+                deserializer.decrease_container_depth()
+                return SeedSettings(telemetryEnabled)
+            }
+        }
+    }
+
+    /// Toggle usage telemetry at runtime (Settings). Flips the core flag and
+    /// enables/disables the Sentry client immediately; the shell persists it.
+    data class SetTelemetryEnabled(
+        val value: Boolean,
+    ) : Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(13)
+            serializer.serialize_bool(value)
+            serializer.decrease_container_depth()
+        }
+
+        companion object {
+            fun deserialize(deserializer: Deserializer): SetTelemetryEnabled {
+                deserializer.increase_container_depth()
+                val value = deserializer.deserialize_bool()
+                deserializer.decrease_container_depth()
+                return SetTelemetryEnabled(value)
+            }
+        }
+    }
+
+    /// Sign out: clears in-core session/conversation state and returns to the
+    /// sign-in screen. The shell separately clears its persisted token.
+    data object Logout: Event {
+        override fun serialize(serializer: Serializer) {
+            serializer.increase_container_depth()
+            serializer.serialize_variant_index(14)
+            serializer.decrease_container_depth()
+        }
+
+        fun deserialize(deserializer: Deserializer): Logout {
+            return Logout
+        }
+    }
+
     data class SignInResult(
         val value: com.strike48.pick.shared.SignInOutcome,
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(12)
+            serializer.serialize_variant_index(15)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -998,7 +1057,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(13)
+            serializer.serialize_variant_index(16)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -1018,7 +1077,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(14)
+            serializer.serialize_variant_index(17)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -1038,7 +1097,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(15)
+            serializer.serialize_variant_index(18)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -1058,7 +1117,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(16)
+            serializer.serialize_variant_index(19)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -1078,7 +1137,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(17)
+            serializer.serialize_variant_index(20)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -1098,7 +1157,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(18)
+            serializer.serialize_variant_index(21)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -1118,7 +1177,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(19)
+            serializer.serialize_variant_index(22)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -1138,7 +1197,7 @@ sealed interface Event {
     ) : Event {
         override fun serialize(serializer: Serializer) {
             serializer.increase_container_depth()
-            serializer.serialize_variant_index(20)
+            serializer.serialize_variant_index(23)
             value.serialize(serializer)
             serializer.decrease_container_depth()
         }
@@ -1170,15 +1229,18 @@ sealed interface Event {
                 9 -> CreateShareLink.deserialize(deserializer)
                 10 -> RetrySignIn.deserialize(deserializer)
                 11 -> DismissError.deserialize(deserializer)
-                12 -> SignInResult.deserialize(deserializer)
-                13 -> ConnectResult.deserialize(deserializer)
-                14 -> ScanResult.deserialize(deserializer)
-                15 -> Delta.deserialize(deserializer)
-                16 -> ConversationsResult.deserialize(deserializer)
-                17 -> LoadConversationResult.deserialize(deserializer)
-                18 -> DocumentsResult.deserialize(deserializer)
-                19 -> DocumentContentResult.deserialize(deserializer)
-                20 -> ShareLinkResult.deserialize(deserializer)
+                12 -> SeedSettings.deserialize(deserializer)
+                13 -> SetTelemetryEnabled.deserialize(deserializer)
+                14 -> Logout.deserialize(deserializer)
+                15 -> SignInResult.deserialize(deserializer)
+                16 -> ConnectResult.deserialize(deserializer)
+                17 -> ScanResult.deserialize(deserializer)
+                18 -> Delta.deserialize(deserializer)
+                19 -> ConversationsResult.deserialize(deserializer)
+                20 -> LoadConversationResult.deserialize(deserializer)
+                21 -> DocumentsResult.deserialize(deserializer)
+                22 -> DocumentContentResult.deserialize(deserializer)
+                23 -> ShareLinkResult.deserialize(deserializer)
                 else -> throw DeserializationError("Unknown variant index for Event: $index")
             }
         }
@@ -2564,6 +2626,49 @@ enum class Screen {
     }
 }
 
+/// Runtime feature flags shown in Settings. Toggled via [`crate::Event`]s; the
+/// shell persists the value natively and re-seeds it on the next launch (the
+/// core is not durable across process restarts).
+data class SettingsView(
+    /// Usage telemetry + release health (Sentry). Opt-out: on by default. When
+    /// off, the core fully closes the Sentry client (no events, no sessions).
+    val telemetryEnabled: Boolean,
+) {
+    fun serialize(serializer: Serializer) {
+        serializer.increase_container_depth()
+        serializer.serialize_bool(telemetryEnabled)
+        serializer.decrease_container_depth()
+    }
+
+    fun bincodeSerialize(): ByteArray {
+        val serializer = BincodeSerializer()
+        serialize(serializer)
+        return serializer.get_bytes()
+    }
+
+    companion object {
+        fun deserialize(deserializer: Deserializer): SettingsView {
+            deserializer.increase_container_depth()
+            val telemetryEnabled = deserializer.deserialize_bool()
+            deserializer.decrease_container_depth()
+            return SettingsView(telemetryEnabled)
+        }
+
+        @Throws(DeserializationError::class)
+        fun bincodeDeserialize(input: ByteArray?): SettingsView {
+            if (input == null) {
+                throw DeserializationError("Cannot deserialize null array")
+            }
+            val deserializer = BincodeDeserializer(input)
+            val value = deserialize(deserializer)
+            if (deserializer.get_buffer_offset() < input.size) {
+                throw DeserializationError("Some input bytes were not read")
+            }
+            return value
+        }
+    }
+}
+
 data class ShareLinkOutcome(
     val url: String? = null,
     /// Browser-preview transform of `url`; carried alongside so the App can set
@@ -2960,6 +3065,9 @@ data class ViewModel(
     /// Shells render a row of pill buttons below the message list when non-empty;
     /// tapping one fires `SendMessage(message)`. Cleared on send/new-chat.
     val nextSteps: List<com.strike48.pick.shared.QuickActionView>,
+    /// User-facing feature flags surfaced in the Settings drawer. The shell
+    /// renders toggles bound to these and mirrors changes back via events.
+    val settings: com.strike48.pick.shared.SettingsView,
 ) {
     fun serialize(serializer: Serializer) {
         serializer.increase_container_depth()
@@ -2997,6 +3105,7 @@ data class ViewModel(
         nextSteps.serialize(serializer) {
             it.serialize(serializer)
         }
+        settings.serialize(serializer)
         serializer.decrease_container_depth()
     }
 
@@ -3052,8 +3161,9 @@ data class ViewModel(
                 deserializer.deserializeListOf {
                     com.strike48.pick.shared.QuickActionView.deserialize(deserializer)
                 }
+            val settings = com.strike48.pick.shared.SettingsView.deserialize(deserializer)
             deserializer.decrease_container_depth()
-            return ViewModel(screen, connection, messages, scanInProgress, showScanCard, conversationDocs, allDocuments, history, openDocument, needsSignIn, error, toolCalls, agentActivity, activityLabel, notice, nextSteps)
+            return ViewModel(screen, connection, messages, scanInProgress, showScanCard, conversationDocs, allDocuments, history, openDocument, needsSignIn, error, toolCalls, agentActivity, activityLabel, notice, nextSteps, settings)
         }
 
         @Throws(DeserializationError::class)

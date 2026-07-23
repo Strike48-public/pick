@@ -224,6 +224,28 @@ pub struct ViewModel {
     /// Shells render a row of pill buttons below the message list when non-empty;
     /// tapping one fires `SendMessage(message)`. Cleared on send/new-chat.
     pub next_steps: Vec<QuickActionView>,
+    /// User-facing feature flags surfaced in the Settings drawer. The shell
+    /// renders toggles bound to these and mirrors changes back via events.
+    pub settings: SettingsView,
+}
+
+/// Runtime feature flags shown in Settings. Toggled via [`crate::Event`]s; the
+/// shell persists the value natively and re-seeds it on the next launch (the
+/// core is not durable across process restarts).
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct SettingsView {
+    /// Usage telemetry + release health (Sentry). Opt-out: on by default. When
+    /// off, the core fully closes the Sentry client (no events, no sessions).
+    pub telemetry_enabled: bool,
+}
+
+impl Default for SettingsView {
+    fn default() -> Self {
+        // Telemetry is opt-out (on by default), matching the Dioxus app.
+        Self {
+            telemetry_enabled: true,
+        }
+    }
 }
 
 impl Default for ConnectionView {

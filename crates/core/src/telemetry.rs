@@ -18,16 +18,23 @@
 //! route through the helpers here so renaming is a one-file change.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
-/// Set once `init` installs a live Sentry client, so event helpers can cheaply
+/// True while a live Sentry client is installed, so event helpers can cheaply
 /// no-op when telemetry is disabled or the DSN is absent.
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// Holds the Sentry client guard for the process lifetime. Kept here rather than
-/// handed to the caller because the guard isn't `Clone` (awkward for UI hooks),
-/// and its only job is to live until shutdown (drop flushes pending events).
-static GUARD: OnceLock<sentry::ClientInitGuard> = OnceLock::new();
+/// Holds the Sentry client guard. A `Mutex<Option<..>>` (not a `OnceLock`) so
+/// telemetry can be turned OFF at runtime: dropping the guard closes the client
+/// and stops release-health sessions, and turning it back ON re-inits. The
+/// guard isn't `Clone` and its only job is to live until torn down (drop
+/// flushes pending events).
+static GUARD: Mutex<Option<sentry::ClientInitGuard>> = Mutex::new(None);
+
+/// The last `(device_id, easy_mode)` seen by `init`, retained so `set_enabled`
+/// can re-init with the same identity/tags after the user toggles telemetry
+/// back on within a session.
+static IDENTITY: Mutex<Option<(String, bool)>> = Mutex::new(None);
 
 /// Compile-time DSN. `None` (the default in local/dev builds) disables Sentry
 /// entirely — release CI injects `SENTRY_DSN` so shipped builds report.
@@ -80,26 +87,68 @@ fn form_factor() -> &'static str {
     }
 }
 
-/// Initialize telemetry once for the process. The client guard is retained
-/// internally (see [`GUARD`]). Safe to call once at startup; a second call is a
-/// no-op. Does nothing when the DSN is absent or the user has opted out.
+/// Initialize telemetry at startup with the user's opt-out setting. Remembers
+/// the identity so a later runtime toggle (see [`set_enabled`]) can re-install
+/// with the same tags. Does nothing when the DSN is absent or the user has
+/// opted out (the env override or `enabled=false`).
 ///
 /// - `enabled`: the user's `telemetry_enabled` setting (opt-out).
 /// - `device_id`: the persistent anonymous install id.
 /// - `easy_mode`: whether this build runs the easy-mode UI (channel tag).
 pub fn init(enabled: bool, device_id: &str, easy_mode: bool) {
-    if GUARD.get().is_some() {
-        return; // already initialized
+    if let Ok(mut id) = IDENTITY.lock() {
+        *id = Some((device_id.to_string(), easy_mode));
+    }
+    if enabled {
+        install(device_id, easy_mode);
+    } else {
+        tracing::debug!("telemetry disabled at startup (opt-out)");
+    }
+}
+
+/// Turn telemetry on or off at runtime (from the Settings toggle). Turning it
+/// OFF fully closes the Sentry client — no events AND no release-health sessions
+/// leave the device. Turning it ON re-installs with the identity captured at
+/// [`init`]. No-op if the requested state already matches, or if `init` was
+/// never called (no identity to install with).
+pub fn set_enabled(enabled: bool) {
+    let currently = ENABLED.load(Ordering::Relaxed);
+    if enabled == currently {
+        return;
+    }
+    if enabled {
+        let identity = IDENTITY.lock().ok().and_then(|g| g.clone());
+        match identity {
+            Some((device_id, easy_mode)) => install(&device_id, easy_mode),
+            None => tracing::warn!("telemetry set_enabled(true) before init; ignoring"),
+        }
+    } else {
+        // Drop the guard -> flush pending events, end the session, close the
+        // client. Nothing further is sent until re-enabled.
+        ENABLED.store(false, Ordering::Relaxed);
+        if let Ok(mut g) = GUARD.lock() {
+            *g = None;
+        }
+        tracing::info!("telemetry disabled at runtime");
+    }
+}
+
+/// Build and install a live Sentry client, storing the guard. Private: callers
+/// go through [`init`] or [`set_enabled`]. No-op when the DSN is absent or the
+/// `STRIKE48_TELEMETRY` env kill-switch is set, or a client is already live.
+fn install(device_id: &str, easy_mode: bool) {
+    if ENABLED.load(Ordering::Relaxed) {
+        return; // already installed
     }
     // An env override lets any target opt out without touching settings/UI
     // (e.g. `STRIKE48_TELEMETRY=0`). Truthy setting AND not env-disabled.
     let env_opt_out = std::env::var("STRIKE48_TELEMETRY")
         .map(|v| matches!(v.as_str(), "0" | "false" | "off" | "no"))
         .unwrap_or(false);
-    let dsn = match (enabled && !env_opt_out, DSN) {
+    let dsn = match (!env_opt_out, DSN) {
         (true, Some(dsn)) if !dsn.is_empty() => dsn,
         _ => {
-            tracing::debug!("telemetry disabled (opt-out or no DSN)");
+            tracing::debug!("telemetry not installed (env kill-switch or no DSN)");
             return;
         }
     };
@@ -143,14 +192,15 @@ pub fn init(enabled: bool, device_id: &str, easy_mode: bool) {
         scope.set_tag("app.channel", channel(easy_mode));
     });
 
-    let _ = GUARD.set(guard);
+    if let Ok(mut g) = GUARD.lock() {
+        *g = Some(guard);
+    }
     ENABLED.store(true, Ordering::Relaxed);
     tracing::info!(
         "telemetry initialized (env={}, channel={})",
         environment(),
         channel(easy_mode)
     );
-
 }
 
 /// Flush any queued telemetry to Sentry, blocking up to `timeout`. The shell
@@ -293,6 +343,17 @@ mod tests {
         // No SENTRY_DSN in the test build -> init does nothing and telemetry
         // stays disabled (record/set_plg_identity remain no-ops).
         init(true, "device-1", true);
+        assert!(!ENABLED.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn set_enabled_is_noop_without_dsn() {
+        // Toggling telemetry with no DSN must never panic and must leave it
+        // disabled (install() bails when the DSN is absent).
+        init(true, "device-1", true); // records identity, installs nothing
+        set_enabled(false);
+        assert!(!ENABLED.load(Ordering::Relaxed));
+        set_enabled(true);
         assert!(!ENABLED.load(Ordering::Relaxed));
     }
 }

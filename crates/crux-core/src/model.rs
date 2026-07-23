@@ -3,7 +3,6 @@
 
 use crate::view::{ConnectionPhase, ConversationRef, DocRef, DocView, MessageView, NoticeView};
 
-#[derive(Default)]
 pub struct Model {
     pub phase: Phase,
     pub api_url: String,
@@ -26,6 +25,35 @@ pub struct Model {
     /// Contextual "Next Steps" chips from the last successful tool call (built by
     /// the middleware). Set from each Delta; cleared on send/new-chat.
     pub next_steps: Vec<crate::view::QuickActionView>,
+    /// Usage-telemetry opt-out flag surfaced in Settings. Seeded from the shell's
+    /// persisted value at startup (`SeedSettings`) and toggled at runtime
+    /// (`SetTelemetryEnabled`). Defaults on (opt-out) to match the Dioxus app.
+    pub telemetry_enabled: bool,
+}
+
+impl Default for Model {
+    fn default() -> Self {
+        Self {
+            phase: Phase::default(),
+            api_url: String::new(),
+            conversation_id: None,
+            messages: Vec::new(),
+            conversation_docs: Vec::new(),
+            all_documents: Vec::new(),
+            history: Vec::new(),
+            open_document: None,
+            scan_active: false,
+            history_open: false,
+            error: None,
+            opening_document_id: None,
+            tool_calls: Vec::new(),
+            activity: crate::view::AgentActivity::default(),
+            notice: None,
+            next_steps: Vec::new(),
+            // Telemetry is opt-out: on unless the user disables it.
+            telemetry_enabled: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
