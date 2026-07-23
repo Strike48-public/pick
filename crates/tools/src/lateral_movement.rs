@@ -351,8 +351,9 @@ impl PentestTool for LateralMovementTool {
             let password = params["password"].as_str();
             let nt_hash = params["nt_hash"].as_str();
             let pivot_host = params["pivot_host"].as_str();
-            let target_port = params["target_port"].as_u64().unwrap_or(22) as u16;
-            let local_port = params["local_port"].as_u64().unwrap_or(2222) as u16;
+            // Coerce int/float/string port args (LLM callers often send `22.0`).
+            let target_port = crate::util::param_u16_opt(&params, "target_port").unwrap_or(22);
+            let local_port = crate::util::param_u16_opt(&params, "local_port").unwrap_or(2222);
 
             tracing::info!("═══════════════════════════════════════════════════");
             tracing::info!("🔀 Lateral Movement Attack");

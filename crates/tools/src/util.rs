@@ -36,6 +36,23 @@ pub fn param_u64(params: &Value, key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// Extract an optional `u16` parameter (e.g. a network port).
+///
+/// Accepts integer, float, or string JSON values and clamps to the valid u16
+/// range: `22`, `22.0`, and `"22"` all yield `Some(22)`. LLM tool callers
+/// frequently emit numeric args as floats (`22.0`), so a raw `as_u64()` here
+/// silently rejected valid ports — this coerces them the same way `param_u64`
+/// does. Out-of-range or non-numeric values yield `None`.
+pub fn param_u16_opt(params: &Value, key: &str) -> Option<u16> {
+    params.get(key).and_then(|v| {
+        v.as_u64()
+            .or_else(|| v.as_f64().map(|f| f as u64))
+            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+            .filter(|n| *n >= 1 && *n <= u16::MAX as u64)
+            .map(|n| n as u16)
+    })
+}
+
 /// Extract a `bool` parameter with a default value.
 pub fn param_bool(params: &Value, key: &str, default: bool) -> bool {
     params.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
@@ -97,4 +114,30 @@ pub fn quality_to_bars(quality: u8) -> &'static str {
 /// Unicode bar visualization string
 pub fn dbm_to_bars(dbm: i32) -> &'static str {
     quality_to_bars(dbm_to_quality(dbm))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn param_u16_opt_accepts_int_float_and_string() {
+        // The bug this guards: LLM tool callers send ports as JSON floats
+        // (`22.0`), which `as_u64()` rejects. All three forms must coerce.
+        assert_eq!(param_u16_opt(&json!({"port": 22}), "port"), Some(22));
+        assert_eq!(param_u16_opt(&json!({"port": 22.0}), "port"), Some(22));
+        assert_eq!(param_u16_opt(&json!({"port": 5432.0}), "port"), Some(5432));
+        assert_eq!(param_u16_opt(&json!({"port": "22"}), "port"), Some(22));
+        assert_eq!(param_u16_opt(&json!({"port": 65535}), "port"), Some(65535));
+    }
+
+    #[test]
+    fn param_u16_opt_rejects_missing_and_out_of_range() {
+        assert_eq!(param_u16_opt(&json!({}), "port"), None);
+        assert_eq!(param_u16_opt(&json!({"port": 0}), "port"), None);
+        assert_eq!(param_u16_opt(&json!({"port": 70000}), "port"), None);
+        assert_eq!(param_u16_opt(&json!({"port": -1}), "port"), None);
+        assert_eq!(param_u16_opt(&json!({"port": "nope"}), "port"), None);
+    }
 }

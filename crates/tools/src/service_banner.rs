@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 
-use crate::util::{param_str, param_u64};
+use crate::util::{param_str, param_u16_opt, param_u64};
 
 /// Service banner grabbing tool
 pub struct ServiceBannerTool;
@@ -150,11 +150,9 @@ impl PentestTool for ServiceBannerTool {
                 return Err(Error::InvalidParams("host parameter is required".into()));
             }
 
-            let port = params
-                .get("port")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| Error::InvalidParams("port parameter is required".into()))?
-                as u16;
+            // Accept int/float/string port args (LLM callers often send `22.0`).
+            let port = param_u16_opt(&params, "port")
+                .ok_or_else(|| Error::InvalidParams("port parameter is required".into()))?;
 
             let timeout_ms = param_u64(&params, "timeout_ms", 5000);
 
