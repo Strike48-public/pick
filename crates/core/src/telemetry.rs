@@ -104,14 +104,26 @@ pub fn init(enabled: bool, device_id: &str, easy_mode: bool) {
         }
     };
 
+    // The SDK's internal transport logging, on only when STRIKE48_SENTRY_DEBUG
+    // is set — surfaces "sending envelope"/transport errors so a dev build can
+    // see WHY delivery fails (TLS, DNS, timeout) instead of guessing.
+    let debug = option_env!("STRIKE48_SENTRY_DEBUG").is_some()
+        || std::env::var("STRIKE48_SENTRY_DEBUG").is_ok();
+
     let guard = sentry::init((
         dsn,
         sentry::ClientOptions {
             release: Some(env!("CARGO_PKG_VERSION").into()),
             environment: Some(environment().into()),
+            debug,
             // Release-health sessions power DAU/WAU + crash-free rate.
             auto_session_tracking: true,
             session_mode: sentry::SessionMode::Application,
+            // Send all activity transactions (see `record`). These are the
+            // who/how usage signal and are low-volume, so full sampling is fine;
+            // revisit if volume grows. Without this, start_transaction is
+            // sampled out and nothing reaches Traces.
+            traces_sample_rate: 1.0,
             // Never attach the connecting server URL or request bodies.
             send_default_pii: false,
             ..Default::default()
@@ -139,19 +151,6 @@ pub fn init(enabled: bool, device_id: &str, easy_mode: bool) {
         channel(easy_mode)
     );
 
-    // Emit a startup event and flush it synchronously. Two reasons:
-    //  1. Delivery proof — the mobile SDK batches and our client guard lives in
-    //     a `static` that never Drops on a normal app lifecycle, so without an
-    //     explicit flush queued events can die with the process. `flush` blocks
-    //     until the transport drains (or times out) and returns whether it did.
-    //  2. Observability — we log the flush result so a build's telemetry health
-    //     is visible in the device log even though the SDK's transport is silent.
-    sentry::capture_message("app.launch", sentry::Level::Info);
-    let flushed = sentry::Hub::current()
-        .client()
-        .map(|c| c.flush(Some(std::time::Duration::from_secs(5))))
-        .unwrap_or(false);
-    tracing::info!("telemetry startup event flushed={flushed}");
 }
 
 /// Flush any queued telemetry to Sentry, blocking up to `timeout`. The shell
@@ -214,6 +213,20 @@ pub fn record(activity: Activity, props: &[(&str, &str)]) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
     }
+    // Emit the activity as a TRANSACTION (a trace), not a captured message.
+    // capture_message creates an Issue in Sentry regardless of level, so usage
+    // events like `scan.start` were showing up as errors. A transaction routes
+    // to Traces/Performance instead — the correct home for who/how usage
+    // signal. op="activity", name=the event name; safe props become span data.
+    let ctx = sentry::TransactionContext::new(activity.name(), "activity");
+    let tx = sentry::start_transaction(ctx);
+    for (k, v) in props {
+        tx.set_data(k, sentry::protocol::Value::from(*v));
+    }
+    tx.finish();
+
+    // Keep a breadcrumb too: harmless, and it gives context on the timeline if a
+    // real error is ever captured later in the same session.
     let mut data = std::collections::BTreeMap::new();
     for (k, v) in props {
         data.insert((*k).to_string(), sentry::protocol::Value::from(*v));
@@ -225,9 +238,6 @@ pub fn record(activity: Activity, props: &[(&str, &str)]) {
         data,
         ..Default::default()
     });
-    // Also capture as a lightweight message so activities show up as events
-    // (not only crumbs on a later error), which the who/how funnel needs.
-    sentry::capture_message(activity.name(), sentry::Level::Info);
 }
 
 #[cfg(test)]
