@@ -138,6 +138,34 @@ pub fn init(enabled: bool, device_id: &str, easy_mode: bool) {
         environment(),
         channel(easy_mode)
     );
+
+    // Emit a startup event and flush it synchronously. Two reasons:
+    //  1. Delivery proof — the mobile SDK batches and our client guard lives in
+    //     a `static` that never Drops on a normal app lifecycle, so without an
+    //     explicit flush queued events can die with the process. `flush` blocks
+    //     until the transport drains (or times out) and returns whether it did.
+    //  2. Observability — we log the flush result so a build's telemetry health
+    //     is visible in the device log even though the SDK's transport is silent.
+    sentry::capture_message("app.launch", sentry::Level::Info);
+    let flushed = sentry::Hub::current()
+        .client()
+        .map(|c| c.flush(Some(std::time::Duration::from_secs(5))))
+        .unwrap_or(false);
+    tracing::info!("telemetry startup event flushed={flushed}");
+}
+
+/// Flush any queued telemetry to Sentry, blocking up to `timeout`. The shell
+/// should call this when it backgrounds so batched events survive a subsequent
+/// process termination (our client guard lives in a `static` and never Drops).
+/// No-op when telemetry is disabled.
+pub fn flush() {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    if let Some(client) = sentry::Hub::current().client() {
+        let flushed = client.flush(Some(std::time::Duration::from_secs(3)));
+        tracing::debug!("telemetry flush requested (drained={flushed})");
+    }
 }
 
 /// Attach the authenticated PLG identity once the user connects. Still
