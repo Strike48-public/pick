@@ -657,6 +657,14 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 status.set(ConnectorStatus::Connecting);
                 connecting_step.set(Some(ConnectingStep::SigningIn));
 
+                // Drop any process-cached browser token so this sign-in always
+                // performs a FRESH login. Otherwise `fetch_matrix_token_browser`
+                // returns a stale cached token whose server-side session may be
+                // gone (backend: "Auth.verify_token: session not found" ->
+                // "Not authenticated"), and retry can never recover because it
+                // keeps re-serving the dead token.
+                pentest_core::matrix::clear_browser_token_cache();
+
                 // Derive the HTTPS API URL from the connector host using the
                 // same logic as the chat_api_url derivation below (connector_app.rs
                 // ~801-826). `matrix::normalize_url` is pub(crate) and not
