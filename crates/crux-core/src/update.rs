@@ -3,35 +3,6 @@ use crate::model::{Model, Phase};
 use crate::{Effect, Event, PickApp};
 use crux_core::{render::render, Command};
 
-/// Consecutive no-progress polls before the scan is declared stalled. At the
-/// 800ms middleware poll cadence this is ~24s of complete silence — long enough
-/// that a working agent (which streams tokens / tool events well inside that
-/// window) never trips it, short enough that a dead turn surfaces promptly.
-const POLL_STALL_LIMIT: u32 = 30;
-
-/// A cheap fingerprint of the agent's observable progress. Any real progress —
-/// a new/edited message, a new/updated tool call, or an activity change — moves
-/// this value; a stalled turn leaves it fixed. Deliberately coarse: it only has
-/// to distinguish "something changed" from "nothing changed".
-fn progress_fingerprint(model: &Model) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    model.messages.len().hash(&mut h);
-    model.tool_calls.len().hash(&mut h);
-    // Tool-call statuses change as they run -> complete, even at a fixed count.
-    // These view enums don't derive Hash (they cross the FFI boundary), so fold
-    // in their Debug form — cheap and sufficient for a change detector.
-    for tc in &model.tool_calls {
-        format!("{:?}", tc.status).hash(&mut h);
-    }
-    // The last message's part count advances as tool/text parts stream in.
-    if let Some(last) = model.messages.last() {
-        last.parts.len().hash(&mut h);
-    }
-    format!("{:?}", model.activity).hash(&mut h);
-    h.finish()
-}
-
 pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect, Event> {
     match event {
         Event::StartScan => {
@@ -39,7 +10,6 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
             model.error = None;
             model.notice = None;
             model.next_steps.clear();
-            model.poll_progress = (0, 0);
             // Optimistic local echo: show the user's action immediately (before
             // the first poll) so the chat isn't empty while the scan spins up.
             // The scan prompt is a long block of agent instructions, so echo a
@@ -74,7 +44,6 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
             model.error = None;
             model.notice = None;
             model.next_steps.clear();
-            model.poll_progress = (0, 0);
             // Optimistic local echo of the sent message (see StartScan) so it
             // appears instantly; the next Delta replaces messages with the
             // server snapshot. Show the status line immediately too.
@@ -169,36 +138,19 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
                             }),
                         })
                 } else {
-                    // Stall backstop: a healthy agent changes *something* every
-                    // poll (a new message/tool-call, or its activity). If the
-                    // observable state is byte-for-byte identical for
-                    // POLL_STALL_LIMIT consecutive polls, the turn is dead with no
-                    // terminal signal (e.g. a hard ConversationServer crash, which
-                    // reports IDLE rather than ERROR / stream_error). Surface an
-                    // error and stop polling instead of spinning forever.
-                    let fp = progress_fingerprint(model);
-                    if fp == model.poll_progress.0 {
-                        model.poll_progress.1 += 1;
-                    } else {
-                        model.poll_progress = (fp, 0);
-                    }
-                    if model.poll_progress.1 >= POLL_STALL_LIMIT {
-                        model.scan_active = false;
-                        model.activity = crate::view::AgentActivity::Idle;
-                        model.notice = Some(crate::view::NoticeView {
-                            kind: crate::view::NoticeKind::UpstreamError,
-                            title: "The agent stopped responding".into(),
-                            detail: "The scan didn't finish — the assistant went \
-                                quiet before writing a report. Please try again."
-                                .into(),
-                            studio_url: None,
-                        });
-                        return render();
-                    }
                     // Render the just-merged snapshot AND keep polling. Without
                     // the render, the runtime never emits a view update between
                     // polls, so the shell only sees the final state (spinner
                     // until done). Emitting both streams each poll to the UI.
+                    //
+                    // Termination is driven entirely by the agent's own state:
+                    // `done` (terminal agent_status) ends the scan cleanly, and a
+                    // mid-stream failure is surfaced via the durable
+                    // `stream_error` message metadata (see the middleware poll).
+                    // We do NOT second-guess a "quiet" poll with a timer — a long
+                    // report-generation turn looks quiet to the poller while the
+                    // LLM is actively streaming server-side, and a timeout there
+                    // kills a scan that's about to succeed.
                     let conv = model.conversation_id.clone().unwrap_or_default();
                     Command::all([
                         render(),
@@ -281,7 +233,6 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
             model.scan_active = false;
             model.notice = None;
             model.next_steps.clear();
-            model.poll_progress = (0, 0);
             render()
         }
         Event::OpenDocuments => {
@@ -346,7 +297,6 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
         Event::SelectConversation(id) => {
             model.conversation_id = Some(id.clone());
             model.history_open = false;
-            model.poll_progress = (0, 0);
             Command::request_from_shell(PentestOperation::LoadConversation {
                 conversation_id: id,
             })
@@ -564,7 +514,6 @@ fn delta_event(out: PentestOutcome) -> Event {
 
 #[cfg(test)]
 mod tests {
-    use super::POLL_STALL_LIMIT;
     use crate::effect::{ConversationDelta, PentestOperation};
     use crate::view::MessageView;
     use crate::{Effect, Event, Model, PickApp};
@@ -653,98 +602,6 @@ mod tests {
             matches!(poll_op, Some(PentestOperation::PollConversation { .. })),
             "non-final delta should re-emit PollConversation"
         );
-    }
-
-    #[test]
-    fn repeated_no_progress_deltas_stall_out_with_notice() {
-        // A turn that never changes (hard backend crash: no stream_error, no
-        // ERROR status, just silence) must not poll forever. After
-        // POLL_STALL_LIMIT identical polls the scan ends with an error notice.
-        let app = PickApp;
-        let mut model = Model {
-            conversation_id: Some("conv-1".into()),
-            scan_active: true,
-            ..Default::default()
-        };
-        let make_delta = || ConversationDelta {
-            messages: vec![MessageView {
-                sender: "pentest-connector".into(),
-                kind: crate::view::MessageKind::AgentText,
-                parts: vec![],
-                markdown: "working...".into(),
-                blocks: vec![],
-                tool: None,
-            }],
-            tool_calls: vec![],
-            done: false,
-            activity: Default::default(),
-            notice: None,
-            next_steps: vec![],
-        };
-
-        // The first delta establishes the fingerprint (count resets to 0); each
-        // subsequent identical delta increments the stall counter. The stall
-        // fires when the counter REACHES the limit.
-        let mut last_cmd = None;
-        for _ in 0..(POLL_STALL_LIMIT + 1) {
-            last_cmd = Some(app.update(
-                Event::Delta(crate::DeltaOutcome {
-                    delta: Some(make_delta()),
-                    error: None,
-                }),
-                &mut model,
-            ));
-        }
-
-        assert!(!model.scan_active, "stalled scan stops");
-        assert!(model.notice.is_some(), "stall surfaces an error notice");
-        // The stalling delta emits only a render — no further PollConversation.
-        let poll = last_cmd.unwrap().effects().find_map(|e| match e {
-            Effect::Pentest(op) => Some(op.operation),
-            _ => None,
-        });
-        assert!(poll.is_none(), "no more polling after a stall");
-    }
-
-    #[test]
-    fn progressing_deltas_do_not_stall() {
-        // As long as each poll shows new content, polling continues indefinitely
-        // (a long but healthy scan must never trip the stall guard).
-        let app = PickApp;
-        let mut model = Model {
-            conversation_id: Some("conv-1".into()),
-            scan_active: true,
-            ..Default::default()
-        };
-        for i in 0..(POLL_STALL_LIMIT + 5) {
-            let delta = ConversationDelta {
-                // Growing message count = real progress every poll.
-                messages: (0..=i)
-                    .map(|n| MessageView {
-                        sender: "pentest-connector".into(),
-                        kind: crate::view::MessageKind::AgentText,
-                        parts: vec![],
-                        markdown: format!("step {n}"),
-                        blocks: vec![],
-                        tool: None,
-                    })
-                    .collect(),
-                tool_calls: vec![],
-                done: false,
-                activity: Default::default(),
-                notice: None,
-                next_steps: vec![],
-            };
-            let _ = app.update(
-                Event::Delta(crate::DeltaOutcome {
-                    delta: Some(delta),
-                    error: None,
-                }),
-                &mut model,
-            );
-        }
-        assert!(model.scan_active, "progressing scan keeps running");
-        assert!(model.notice.is_none(), "no stall notice while progressing");
     }
 
     #[test]

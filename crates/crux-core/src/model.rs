@@ -26,15 +26,6 @@ pub struct Model {
     /// Contextual "Next Steps" chips from the last successful tool call (built by
     /// the middleware). Set from each Delta; cleared on send/new-chat.
     pub next_steps: Vec<crate::view::QuickActionView>,
-    /// Stall backstop for a scan that never reaches a terminal signal. A healthy
-    /// agent emits *something* (a new message, tool call, or activity change)
-    /// every poll; if `POLL_STALL_LIMIT` consecutive polls show zero change we
-    /// treat the turn as dead and surface an error. This is the belt-and-braces
-    /// guard for a hard backend crash that leaves no `stream_error` / `Error`
-    /// status (a crashed ConversationServer reports IDLE). `(fingerprint, count)`
-    /// where the fingerprint is a cheap snapshot of observable progress; reset
-    /// on send / new-chat / conversation-load.
-    pub poll_progress: (u64, u32),
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
