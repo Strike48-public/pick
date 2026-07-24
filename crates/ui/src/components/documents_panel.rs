@@ -108,9 +108,9 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
 
     rsx! {
         div { class: "easy-docs",
-            div { class: "easy-docs-header",
-                span { "Reports" }
-            }
+            // No in-content "Reports" header: the overlay title bar already
+            // labels this screen "Reports" (see EasyModeShell), so a second
+            // heading here is redundant.
             if loading() {
                 div { class: "easy-docs-empty", "Loading reports..." }
             } else if let Some(err) = error() {

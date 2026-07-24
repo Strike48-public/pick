@@ -1125,6 +1125,11 @@ body {
     transition: transform 0.2s ease;
 }
 .easy-toggle.easy-toggle-on .easy-toggle-track { background: var(--em-brand); }
-.easy-toggle.easy-toggle-on .easy-toggle-track::before { transform: translateX(18px); }
+.easy-toggle.easy-toggle-on .easy-toggle-track::before {
+    transform: translateX(18px);
+    /* On the sage track a white thumb is low-contrast; use the same dark ink
+       we put on the brand fills (Scan button glyph/text) so it reads clearly. */
+    background: var(--em-on-primary);
+}
 /* The global button:hover green fill would fight the switch — keep it flat. */
 .easy-toggle:hover { background: none; color: inherit; }
