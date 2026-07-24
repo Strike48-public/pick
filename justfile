@@ -369,6 +369,13 @@ build-android:
     export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
     export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
 
+    # dx normally post-processes cargo's output and, on failure, prints only
+    # "cargo build finished with errors" — swallowing the actual rustc diagnostic.
+    # Set PICK_DX_RAW_DIAGNOSTICS=1 to pass --raw-json-diagnostics so cargo's raw
+    # JSON (incl. the real error) reaches the log for debugging a hidden failure.
+    dx_diag=""
+    if [ -n "${PICK_DX_RAW_DIAGNOSTICS:-}" ]; then dx_diag="--raw-json-diagnostics"; fi
+
     # Build each Rust target. Without --target, dx builds only the host arch
     # (x86_64) and gradle silently packages stale arm64 .so files left over
     # from previous successful builds — physical devices then run obsolete
@@ -376,7 +383,7 @@ build-android:
     targets="${ANDROID_TARGETS:-aarch64-linux-android x86_64-linux-android}"
     for target in $targets; do
         echo "==> Building Rust for $target..."
-        {{dx}} build --platform android --package pentest-mobile --target "$target"
+        {{dx}} build --platform android --package pentest-mobile --target "$target" $dx_diag
     done
 
     # Re-inject AFTER dx (which regenerates settings.gradle and build.gradle.kts).

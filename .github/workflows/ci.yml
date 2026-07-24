@@ -185,4 +185,12 @@ jobs:
       # SDK/NDK, dx, build-tools and aapt2 as local `just build-android`.
       - uses: DeterminateSystems/nix-installer-action@main
       - name: Build debug APK (arm64)
+        # PICK_DX_RAW_DIAGNOSTICS surfaces cargo's raw error JSON (dx otherwise
+        # hides it behind "cargo build finished with errors") while we diagnose a
+        # mid-stream arm64 build failure that doesn't reproduce locally.
+        env:
+          PICK_DX_RAW_DIAGNOSTICS: "1"
+          # Diagnostic run: build only arm64 to reach the failing target faster
+          # and keep the raw-diagnostics log focused. Restore both once fixed.
+          ANDROID_TARGETS: "aarch64-linux-android"
         run: nix develop --command just build-android
