@@ -358,6 +358,16 @@ build-android:
     export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
     echo "PICK_EASY_MODE=$PICK_EASY_MODE"
 
+    # Keep peak compiler memory under the ~7GB GitHub-hosted runner ceiling. The
+    # arm64 cross-build OOM-killed rustc mid-codegen (heavy deps: syntect, ravif,
+    # exr, png) — dx swallows the SIGKILL and only reports "cargo build finished
+    # with errors". Two levers: cap concurrent rustc jobs (fewer processes = lower
+    # peak) and drop debuginfo (a large memory + disk cost the APK doesn't need).
+    # Overridable via CARGO_BUILD_JOBS. Local builds (more RAM) are unaffected in
+    # practice; correctness is identical.
+    export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
+    export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
+
     # Build each Rust target. Without --target, dx builds only the host arch
     # (x86_64) and gradle silently packages stale arm64 .so files left over
     # from previous successful builds — physical devices then run obsolete
@@ -411,6 +421,11 @@ build-android-release:
     # build-android recipe). Override with PICK_EASY_MODE=false.
     export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
     echo "PICK_EASY_MODE=$PICK_EASY_MODE"
+
+    # Cap concurrent rustc jobs to keep peak memory under the CI runner ceiling
+    # (see build-android debug for the OOM detail). Release codegen is heavier, so
+    # this matters here too. Overridable via CARGO_BUILD_JOBS.
+    export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
 
     # Build each Rust target. See build-android comment for why this loop matters.
     targets="${ANDROID_TARGETS:-aarch64-linux-android x86_64-linux-android}"
