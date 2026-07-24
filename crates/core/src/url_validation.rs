@@ -290,8 +290,7 @@ fn is_localhost_ipv6(ip: Ipv6Addr) -> bool {
 /// Extract an IPv4 address embedded in an IPv6 representation, if any.
 ///
 /// SSRF defenses must not be bypassable by re-encoding a blocked IPv4 target as
-/// IPv6. Two well-known encodings smuggle an IPv4 address through the IPv6
-/// classifier:
+/// IPv6. Four encodings smuggle an IPv4 address through the IPv6 classifier:
 ///
 /// * **IPv4-mapped** `::ffff:a.b.c.d` (`::ffff:0:0/96`) — dual-stack sockets
 ///   route these straight to the v4 address, so `::ffff:169.254.169.254`
@@ -299,19 +298,27 @@ fn is_localhost_ipv6(ip: Ipv6Addr) -> bool {
 /// * **NAT64** `64:ff9b::a.b.c.d` (well-known prefix `64:ff9b::/96`, RFC 6052) —
 ///   a NAT64 gateway translates these to the embedded v4 destination.
 ///
-/// Both carry the IPv4 in the low 32 bits. `Ipv6Addr::to_ipv4_mapped()` handles
-/// the mapped form; the NAT64 prefix is matched explicitly. (The deprecated
-/// IPv4-*compatible* `::a.b.c.d` form via `to_ipv4()` is intentionally NOT
-/// treated as embedded IPv4 — for `::1`/`::` that would misclassify loopback and
-/// unspecified, which are handled by their own predicates.)
+/// * **IPv4-compatible** `::a.b.c.d` (top 96 bits zero) — the deprecated
+///   (RFC 4291) sibling of the mapped form. Formally not auto-routed to IPv4
+///   everywhere, but a defense-in-depth SSRF guard must not let `::169.254.169.254`
+///   through when the bare and mapped spellings of the same address are blocked.
+/// * **6to4** `2002:a.b.c.d::/48` (`2002::/16`, RFC 3056) — embeds the v4 in
+///   segments 1..3; a 6to4 relay translates to the embedded destination.
+///
+/// All carry the IPv4 in a fixed slot. `Ipv6Addr::to_ipv4_mapped()` handles the
+/// mapped form; the NAT64, IPv4-compatible, and 6to4 forms are matched
+/// explicitly. `::` (unspecified) and `::1` (loopback) are the two IPv4-compatible
+/// literals that must NOT be reinterpreted as embedded IPv4 — they have dedicated
+/// predicates (and `::1` must classify as loopback, not slip through the
+/// `is_lan_private_ipv4` allow path as `0.0.0.1`), so they are excluded here.
 fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
     // IPv4-mapped ::ffff:a.b.c.d
     if let Some(v4) = ip.to_ipv4_mapped() {
         return Some(v4);
     }
+    let seg = ip.segments();
     // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052): first 6 segments are
     // 0064:ff9b:0000:0000:0000:0000, low 32 bits carry the IPv4.
-    let seg = ip.segments();
     if seg[0] == 0x0064
         && seg[1] == 0xff9b
         && seg[2] == 0
@@ -319,11 +326,36 @@ fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
         && seg[4] == 0
         && seg[5] == 0
     {
-        let a = (seg[6] >> 8) as u8;
-        let b = (seg[6] & 0xff) as u8;
-        let c = (seg[7] >> 8) as u8;
-        let d = (seg[7] & 0xff) as u8;
-        return Some(Ipv4Addr::new(a, b, c, d));
+        return Some(Ipv4Addr::new(
+            (seg[6] >> 8) as u8,
+            (seg[6] & 0xff) as u8,
+            (seg[7] >> 8) as u8,
+            (seg[7] & 0xff) as u8,
+        ));
+    }
+    // IPv4-compatible ::a.b.c.d (top 96 bits zero), excluding :: and ::1 which
+    // their own predicates handle. `to_ipv4()` also matches the mapped form, but
+    // that already returned above, so a match here is the compatible form.
+    if seg[0] == 0 && seg[1] == 0 && seg[2] == 0 && seg[3] == 0 && seg[4] == 0 && seg[5] == 0 {
+        let v4 = Ipv4Addr::new(
+            (seg[6] >> 8) as u8,
+            (seg[6] & 0xff) as u8,
+            (seg[7] >> 8) as u8,
+            (seg[7] & 0xff) as u8,
+        );
+        // Exclude ::/::1 (0.0.0.0 / 0.0.0.1): unspecified + loopback.
+        if v4 != Ipv4Addr::UNSPECIFIED && v4 != Ipv4Addr::new(0, 0, 0, 1) {
+            return Some(v4);
+        }
+    }
+    // 6to4 2002:a.b.c.d::/48 (RFC 3056): v4 in segments[1..3].
+    if seg[0] == 0x2002 {
+        return Some(Ipv4Addr::new(
+            (seg[1] >> 8) as u8,
+            (seg[1] & 0xff) as u8,
+            (seg[2] >> 8) as u8,
+            (seg[2] & 0xff) as u8,
+        ));
     }
     None
 }
@@ -1127,11 +1159,53 @@ mod tests {
             embedded_ipv4("64:ff9b::10.0.0.1".parse().unwrap()),
             Some(Ipv4Addr::new(10, 0, 0, 1))
         );
+        // IPv4-compatible ::a.b.c.d (top 96 bits zero) — the deprecated sibling
+        // of the mapped form. `::169.254.169.254` and its hex spelling both
+        // decode to the metadata address.
+        assert_eq!(
+            embedded_ipv4("::169.254.169.254".parse().unwrap()),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
+        assert_eq!(
+            embedded_ipv4("::a9fe:a9fe".parse().unwrap()),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
+        assert_eq!(
+            embedded_ipv4("::10.0.0.1".parse().unwrap()),
+            Some(Ipv4Addr::new(10, 0, 0, 1))
+        );
+        // 6to4 2002:a.b.c.d::/48 embeds the v4 in segments 1..3.
+        assert_eq!(
+            embedded_ipv4("2002:a9fe:a9fe::".parse().unwrap()),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
         // A genuine global IPv6 address has no embedded IPv4.
         assert_eq!(embedded_ipv4("2001:db8::1".parse().unwrap()), None);
-        // Loopback / unspecified are NOT treated as IPv4-compatible embeds.
+        // Loopback / unspecified are NOT treated as IPv4-compatible embeds —
+        // they must fall through to their own predicates (`::1` -> loopback).
         assert_eq!(embedded_ipv4("::1".parse().unwrap()), None);
         assert_eq!(embedded_ipv4("::".parse().unwrap()), None);
+    }
+
+    #[test]
+    fn test_production_blocks_ipv4_compatible_and_6to4_metadata() {
+        // #289: the IPv4-compatible (`::a.b.c.d`) and 6to4 (`2002::/16`)
+        // encodings of the metadata address are the same re-encoding class as
+        // the mapped/NAT64 forms and must not slip through as "public".
+        for host in [
+            "wss://[::169.254.169.254]:443", // IPv4-compatible metadata
+            "wss://[::a9fe:a9fe]:443",       // same, hex segments
+            "wss://[2002:a9fe:a9fe::]:443",  // 6to4 metadata
+        ] {
+            assert!(
+                validate_url(host, ValidationMode::Production, None).is_err(),
+                "{host} must be BLOCKED in Production"
+            );
+            assert!(
+                validate_url(host, ValidationMode::PrivateNetwork, None).is_err(),
+                "{host} must be BLOCKED in PrivateNetwork too"
+            );
+        }
     }
 
     #[test]
