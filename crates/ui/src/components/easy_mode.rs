@@ -333,19 +333,25 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
             // Co-brand top bar: hamburger (left) + Strike48 "S" badge + "Pick".
             // Navigation lives entirely in the slide-over drawer (crux parity).
             div { class: "easy-brandbar",
-                button {
-                    class: "easy-icon-btn easy-menu-btn",
-                    "aria-label": "Menu",
-                    // Refresh the recent-chats list into the shared ctx snapshot
-                    // (fetch-only — NOT on_toggle_history, which would open
-                    // ChatPanel's own dropdown and stack it on top of the drawer).
-                    onclick: move |_| {
-                        if let Some(c) = chat_header_ctx.peek().as_ref() {
-                            c.on_refresh_conversations.call(());
-                        }
-                        drawer_open.set(true);
-                    },
-                    Menu { size: 22 }
+                // Hide the drawer handle until we're signed in (no chat token yet
+                // = browser sign-in pending): there are no conversations/reports to
+                // navigate to, and the drawer's Logout/Settings would act on a
+                // half-connected state. Matches the hidden Scan card below.
+                if !auth_token().is_empty() {
+                    button {
+                        class: "easy-icon-btn easy-menu-btn",
+                        "aria-label": "Menu",
+                        // Refresh the recent-chats list into the shared ctx snapshot
+                        // (fetch-only — NOT on_toggle_history, which would open
+                        // ChatPanel's own dropdown and stack it on top of the drawer).
+                        onclick: move |_| {
+                            if let Some(c) = chat_header_ctx.peek().as_ref() {
+                                c.on_refresh_conversations.call(());
+                            }
+                            drawer_open.set(true);
+                        },
+                        Menu { size: 22 }
+                    }
                 }
                 span { class: "easy-brand-badge", dangerous_inner_html: STRIKE48_S_BADGE_SVG }
                 span { class: "easy-brand-word", "Pick" }

@@ -271,6 +271,31 @@ where
 #[cfg(feature = "browser-auth")]
 const NATIVE_OAUTH_SCHEME: &str = "com.strike48.pentest";
 
+/// Sage-themed "signed in" page served by the loopback OAuth callback once the
+/// token is captured. Matches the easy-mode app (brand #9cbfae, dark ink, "S"
+/// badge) and tells the user to return to Pick. Self-contained (no external
+/// assets) since it renders in the user's system browser.
+#[cfg(feature = "browser-auth")]
+const SIGNED_IN_HTML: &str = r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Signed in to Pick</title>
+<style>
+  :root { --sage:#9cbfae; --ink:#17201b; --bg:#1b211e; --surface:#242b27; --text:#e9eeeb; --muted:rgba(233,238,235,0.62); }
+  * { box-sizing:border-box; }
+  body { font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; margin:0; min-height:100vh;
+         display:flex; align-items:center; justify-content:center; background:var(--bg); color:var(--text); }
+  .card { text-align:center; padding:40px 28px; max-width:420px; }
+  .badge { width:56px; height:56px; border-radius:16px; background:var(--sage); color:var(--ink);
+           display:flex; align-items:center; justify-content:center; margin:0 auto 20px;
+           font-size:30px; font-weight:700; }
+  h1 { font-size:1.35rem; font-weight:600; margin:0 0 8px; }
+  p { font-size:0.95rem; color:var(--muted); line-height:1.5; margin:0; }
+</style></head>
+<body><div class="card">
+  <div class="badge">S</div>
+  <h1>You are signed in</h1>
+  <p>You can close this tab and return to Pick to start scanning.</p>
+</div></body></html>"#;
+
 /// Deliver an Android native-OAuth callback URL into the in-flight login.
 ///
 /// `OAuthCallbackActivity` calls this (via its JNI export in the app's native
@@ -741,8 +766,9 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
         log('[CALLBACK] Token present (len=' + token.length + '), sending to /token');
         var localResp = await fetch('/token?access_token=' + encodeURIComponent(token));
         log('[CALLBACK] Local /token response: ' + localResp.status);
-        s.textContent = 'Login successful!';
-        d.textContent = 'You can close this tab and return to the app.';
+        s.textContent = 'You are signed in';
+        d.textContent = 'You can close this tab and return to Pick to start scanning.';
+        document.getElementById('card').classList.add('done');
         log('[CALLBACK] SUCCESS via cross-origin fetch');
         return;
       }}
@@ -811,14 +837,7 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
                                 if let Some(sender) = tx.lock().await.take() {
                                     let _ = sender.send(token.clone());
                                 }
-                                return axum::response::Html(
-                                    "<html><body style='background:#1e1e2e;color:#cdd6f4;\
-                                     text-align:center;margin-top:60px;font-family:system-ui'>\
-                                     <h2>Login successful!</h2>\
-                                     <p>You can close this tab and return to the app.</p>\
-                                     </body></html>"
-                                        .to_string(),
-                                );
+                                return axum::response::Html(SIGNED_IN_HTML.to_string());
                             }
                         }
                         tracing::info!(
@@ -855,14 +874,7 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
                                         "[BROWSER_AUTH] Channel sender already consumed!"
                                     );
                                 }
-                                return axum::response::Html(
-                                    "<html><body style='background:#1e1e2e;color:#cdd6f4;\
-                                     text-align:center;margin-top:60px;font-family:system-ui'>\
-                                     <h2>Login successful!</h2>\
-                                     <p>You can close this tab and return to the app.</p>\
-                                     </body></html>"
-                                        .to_string(),
-                                );
+                                return axum::response::Html(SIGNED_IN_HTML.to_string());
                             } else {
                                 tracing::warn!("[BROWSER_AUTH] access_token is empty");
                             }
