@@ -281,6 +281,38 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         }
     };
 
+    // Load the recent-conversations list as soon as an agent is selected, not
+    // only when the drawer/history dropdown opens. The Easy Mode drawer and the
+    // conversation view both render from this list, so it must be warm before
+    // either is opened. Keyed on the agent id (via a last-loaded guard) so it
+    // fetches once per agent rather than on every unrelated re-render; the
+    // drawer's on_refresh_conversations still re-syncs on demand.
+    {
+        let make_client = make_client.clone();
+        let mut last_loaded_agent = use_signal(|| None::<String>);
+        use_effect(move || {
+            let Some(agent_id) = selected_agent.read().as_ref().map(|a| a.id.clone()) else {
+                return;
+            };
+            if last_loaded_agent.peek().as_deref() == Some(agent_id.as_str()) {
+                return; // already loaded for this agent
+            }
+            last_loaded_agent.set(Some(agent_id.clone()));
+            let client = make_client();
+            history_loading.set(true);
+            spawn(async move {
+                match client.list_conversations(Some(&agent_id)).await {
+                    Ok(mut list) => {
+                        list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                        conversation_list.set(list);
+                    }
+                    Err(e) => tracing::warn!("Failed to load conversation list on select: {}", e),
+                }
+                history_loading.set(false);
+            });
+        });
+    }
+
     // -----------------------------------------------------------------------
     // One-time initialisations
     // -----------------------------------------------------------------------
