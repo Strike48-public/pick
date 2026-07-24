@@ -127,8 +127,14 @@
           just
         ]);
 
-        # Native build deps
-        nativeBuildInputs = with pkgs; [ pkg-config protobuf ];
+        # Native build deps. libclang is for bindgen (rquickjs-sys ships no
+        # pre-generated bindings and runs bindgen in its build script); without
+        # a Nix libclang, bindgen falls back to the runner's system
+        # /usr/lib/llvm-18/lib/libclang-18.so.1, which cannot resolve
+        # libstdc++.so.6 under the restricted `nix develop` loader path and
+        # panics ("Unable to find libclang"). Nix's libclang has an RPATH to its
+        # own libstdc++, so it loads cleanly and deterministically.
+        nativeBuildInputs = with pkgs; [ pkg-config protobuf libclang ];
         buildInputs = with pkgs; [ openssl libpcap gtk3 dbus webkitgtk_4_1 libsoup_3 xdotool ];
 
         env = {
@@ -152,6 +158,11 @@
           # Cargo linkers for the Android targets.
           CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = "${ndkBin}/aarch64-linux-android28-clang";
           CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER = "${ndkBin}/x86_64-linux-android28-clang";
+
+          # Pin bindgen (rquickjs-sys build script) to the Nix libclang so it
+          # never loads the runner's system libclang, which fails to resolve
+          # libstdc++.so.6 under `nix develop`. Mirrors the darwin shell.
+          LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
         };
 
         shellHook = ''

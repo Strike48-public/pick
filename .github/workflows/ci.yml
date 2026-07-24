@@ -161,36 +161,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      # The arm64 rustc cross-build both spikes memory (LLVM codegen of heavy deps
-      # ravif/exr/syntect) AND needs lots of disk (target/ is ~14G per arch, plus
-      # the nix store + gradle). The default ubuntu-latest runner is tight on both,
-      # and dx swallows the underlying SIGKILL/ENOSPC — surfacing only "cargo build
-      # finished with errors" at a random crate. Reclaim the large preinstalled
-      # toolchains we don't use (~30G+) BEFORE building, then add swap headroom for
-      # the codegen spikes. `build-android` also serializes rustc (-j1).
-      - name: Free disk + add swap
+      # The Android cross-build's target/ is ~14G per arch on top of the nix
+      # store and gradle caches — tight on the default ubuntu-latest runner.
+      # Reclaim the large preinstalled toolchains we don't use (~30G+) first.
+      - name: Free disk space
         run: |
-          echo "before:"; df -h / ; free -h
+          echo "before:"; df -h /
           sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL \
             /usr/local/lib/android/sdk/ndk /usr/local/.ghcup /usr/lib/jvm \
             /usr/local/share/powershell /usr/share/swift || true
-          sudo swapoff -a || true
-          sudo rm -f /mnt/swapfile /swapfile || true
-          sudo fallocate -l 10G /mnt/swapfile
-          sudo chmod 600 /mnt/swapfile
-          sudo mkswap /mnt/swapfile
-          sudo swapon /mnt/swapfile
-          echo "after:"; df -h / ; free -h
+          echo "after:"; df -h /
       # Build through the nix flake so PR CI uses the exact same toolchain,
       # SDK/NDK, dx, build-tools and aapt2 as local `just build-android`.
       - uses: DeterminateSystems/nix-installer-action@main
-      - name: Build debug APK (arm64)
-        # PICK_DX_RAW_DIAGNOSTICS surfaces cargo's raw error JSON (dx otherwise
-        # hides it behind "cargo build finished with errors") while we diagnose a
-        # mid-stream arm64 build failure that doesn't reproduce locally.
-        env:
-          PICK_DX_RAW_DIAGNOSTICS: "1"
-          # Diagnostic run: build only arm64 to reach the failing target faster
-          # and keep the raw-diagnostics log focused. Restore both once fixed.
-          ANDROID_TARGETS: "aarch64-linux-android"
+      - name: Build debug APK
         run: nix develop --command just build-android

@@ -358,23 +358,9 @@ build-android:
     export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
     echo "PICK_EASY_MODE=$PICK_EASY_MODE"
 
-    # Keep peak compiler memory under the ~7GB GitHub-hosted runner ceiling. The
-    # arm64 cross-build OOM-killed rustc mid-codegen (heavy deps: syntect, ravif,
-    # exr, png) — dx swallows the SIGKILL and only reports "cargo build finished
-    # with errors". Serialize rustc (CARGO_BUILD_JOBS=1) so at most one heavy
-    # codegen runs at a time — a -j2 run still OOM'd when two heavy crates
-    # overlapped — and drop dev debuginfo (large memory + disk the APK doesn't
-    # need). Overridable; output correctness is unchanged. Local builds (more RAM)
-    # can pass CARGO_BUILD_JOBS to go faster.
-    export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
+    # Drop dev debuginfo — large disk the APK doesn't need. Overridable; output
+    # correctness is unchanged.
     export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
-
-    # dx normally post-processes cargo's output and, on failure, prints only
-    # "cargo build finished with errors" — swallowing the actual rustc diagnostic.
-    # Set PICK_DX_RAW_DIAGNOSTICS=1 to pass --raw-json-diagnostics so cargo's raw
-    # JSON (incl. the real error) reaches the log for debugging a hidden failure.
-    dx_diag=""
-    if [ -n "${PICK_DX_RAW_DIAGNOSTICS:-}" ]; then dx_diag="--raw-json-diagnostics"; fi
 
     # Build each Rust target. Without --target, dx builds only the host arch
     # (x86_64) and gradle silently packages stale arm64 .so files left over
@@ -383,7 +369,7 @@ build-android:
     targets="${ANDROID_TARGETS:-aarch64-linux-android x86_64-linux-android}"
     for target in $targets; do
         echo "==> Building Rust for $target..."
-        {{dx}} build --platform android --package pentest-mobile --target "$target" $dx_diag
+        {{dx}} build --platform android --package pentest-mobile --target "$target"
     done
 
     # Re-inject AFTER dx (which regenerates settings.gradle and build.gradle.kts).
@@ -430,9 +416,9 @@ build-android-release:
     export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
     echo "PICK_EASY_MODE=$PICK_EASY_MODE"
 
-    # Cap concurrent rustc jobs to keep peak memory under the CI runner ceiling
-    # (see build-android debug for the OOM detail). Release codegen is heavier, so
-    # this matters here too. Overridable via CARGO_BUILD_JOBS.
+    # Release codegen (fat LTO, opt-level z, codegen-units=1) is memory-heavy;
+    # cap concurrent rustc jobs to keep peak memory under the CI runner ceiling.
+    # Overridable via CARGO_BUILD_JOBS.
     export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
 
     # Build each Rust target. See build-android comment for why this loop matters.
