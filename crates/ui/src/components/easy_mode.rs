@@ -310,7 +310,7 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                     div { class: "easy-doc-screen easy-overlay",
                         div { class: "easy-signin",
                             p { class: "easy-signin-title", "Sign in to connect to Strike48" }
-                            p { class: "easy-signin-sub", "We could not complete sign-in. Tap retry to try again." }
+                            p { class: "easy-signin-sub", "Sign in to register this connector and start scanning. We'll open your browser to complete sign-in." }
                             button {
                                 class: "action-card",
                                 onclick: move |_| {
@@ -321,7 +321,7 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                                     needs_sign_in.set(false);
                                     retry_tick.set(retry_tick() + 1);
                                 },
-                                span { class: "action-card-label", "Retry sign-in" }
+                                span { class: "action-card-label", "Sign in" }
                             }
                         }
                     }

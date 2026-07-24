@@ -840,6 +840,24 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         }
     });
 
+    // Easy mode never shows the expert ConfigForm. When we land disconnected and
+    // are NOT going to auto-connect (a fresh relaunch after logout), flip
+    // needs_sign_in so EasyModeShell shows its sign-in overlay instead of falling
+    // through to the connect form. needs_sign_in isn't persisted, so this must run
+    // on launch. Gated on !initial_auto_connect so a normal auto-connect (which
+    // briefly passes through Disconnected before Connecting) doesn't flash the
+    // sign-in screen — a failed auto-connect sets needs_sign_in via its own error
+    // handlers.
+    {
+        let mut needs_sign_in = needs_sign_in;
+        use_effect(move || {
+            let disconnected = matches!(*status.read(), ConnectorStatus::Disconnected);
+            if resolved_easy && !initial_auto_connect && disconnected && !*needs_sign_in.peek() {
+                needs_sign_in.set(true);
+            }
+        });
+    }
+
     // ---- disconnect handler ----
     let on_disconnect = move |_: ()| {
         let mut s = load_settings();
@@ -1022,12 +1040,13 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         {css_block}
 
         div { class: "{container_class}",
-            // Easy mode PLG sign-in retry override: when the OAuth flow fails,
-            // needs_sign_in is set but status is Disconnected (routes to Connect
-            // form). The friendly retry overlay lives in EasyModeShell, which is
-            // only rendered under Connected. Short-circuit early so the overlay
-            // is reachable. Does not affect expert mode.
-            if easy_mode() && *needs_sign_in.read() {
+            // Easy mode never shows the expert ConfigForm. Whenever we're not
+            // connected/connecting — a failed OAuth (needs_sign_in), a logout, or
+            // a relaunch with no auto-connect (needs_sign_in resets to false on a
+            // fresh launch, so status alone must gate this) — render EasyModeShell,
+            // whose sign-in overlay is the easy-mode entry point. Only the
+            // Connected and Connecting screens fall through to the match below.
+            if easy_mode() && !matches!(screen, AppScreen::Connected(_) | AppScreen::Connecting(_)) {
                 {
                     let host = config.read().host.clone();
                     let chat_api_url = {
