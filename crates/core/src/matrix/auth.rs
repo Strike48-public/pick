@@ -664,11 +664,32 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
     // -----------------------------------------------------------------------
     let callback_html = format!(
         r#"<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Logging in…</title></head>
-<body style="font-family:system-ui;text-align:center;margin-top:60px;background:#1e1e2e;color:#cdd6f4">
-<h2 id="status">Completing login…</h2>
-<p id="detail">Fetching access token from server.</p>
-<pre id="debug" style="text-align:left;background:#2e2e3e;padding:10px;margin:20px;font-size:10px;max-height:300px;overflow:auto;"></pre>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Signing in to Pick</title>
+<style>
+  :root {{ --sage:#9cbfae; --ink:#17201b; --bg:#1b211e; --surface:#242b27; --text:#e9eeeb; --muted:rgba(233,238,235,0.62); }}
+  * {{ box-sizing:border-box; }}
+  body {{ font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; margin:0; min-height:100vh;
+         display:flex; align-items:center; justify-content:center; background:var(--bg); color:var(--text); }}
+  .card {{ text-align:center; padding:40px 28px; max-width:420px; }}
+  .badge {{ width:56px; height:56px; border-radius:16px; background:var(--sage); color:var(--ink);
+            display:flex; align-items:center; justify-content:center; margin:0 auto 20px;
+            font-size:30px; font-weight:700; }}
+  #status {{ font-size:1.35rem; font-weight:600; margin:0 0 8px; }}
+  #detail {{ font-size:0.95rem; color:var(--muted); line-height:1.5; margin:0; }}
+  .spinner {{ width:28px; height:28px; margin:22px auto 0; border:3px solid var(--surface);
+              border-top-color:var(--sage); border-radius:50%; animation:spin 0.8s linear infinite; }}
+  @keyframes spin {{ to {{ transform:rotate(360deg); }} }}
+  .done .spinner {{ display:none; }}
+  #debug {{ display:none; }}
+</style></head>
+<body>
+<div class="card" id="card">
+  <div class="badge">S</div>
+  <h1 id="status">Completing sign-in…</h1>
+  <p id="detail">Fetching your access token from Strike48.</p>
+  <div class="spinner"></div>
+</div>
+<pre id="debug"></pre>
 <script>
 (async function() {{
   var s = document.getElementById('status');
@@ -694,8 +715,9 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
       log('[CALLBACK] Got token from URL param (len=' + urlToken.length + ')');
       var localResp = await fetch('/token?access_token=' + encodeURIComponent(urlToken));
       log('[CALLBACK] Local /token response: ' + localResp.status);
-      s.textContent = 'Login successful!';
-      d.textContent = 'You can close this tab and return to the app.';
+      s.textContent = 'You are signed in';
+      d.textContent = 'You can close this tab and return to Pick to start scanning.';
+      document.getElementById('card').classList.add('done');
       return;
     }}
 

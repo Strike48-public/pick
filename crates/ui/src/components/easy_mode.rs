@@ -350,9 +350,12 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                 span { class: "easy-brand-badge", dangerous_inner_html: STRIKE48_S_BADGE_SVG }
                 span { class: "easy-brand-word", "Pick" }
             }
-            // Scan card: only shown on an empty chat; once a conversation starts
-            // it hides, and New Chat brings it back.
-            if !conversation_active() {
+            // Scan card: only shown on an empty chat once we're signed in. Hidden
+            // once a conversation starts (New Chat brings it back), and while the
+            // browser sign-in is still pending (no chat token yet) — the ChatPanel
+            // shows the "complete sign-in in the browser" message in that window,
+            // and a Scan button there would do nothing.
+            if !conversation_active() && !auth_token().is_empty() {
                 div { class: "action-grid",
                     div {
                         class: "action-card",
