@@ -21,9 +21,11 @@
         document.head.appendChild(es);
     }
 
-    // Chart processor: finds unprocessed code blocks and renders them
-    window.__processChatCharts = function() {
-        var container = document.querySelector('.chat-messages');
+    // Chart processor: finds unprocessed code blocks and renders them.
+    // Optional `sel` overrides the default chat container so other surfaces
+    // (e.g. the Easy Mode document viewer) can render mermaid/echarts too.
+    window.__processChatCharts = function(sel) {
+        var container = document.querySelector(sel || '.chat-messages');
         if (!container) return;
 
         // Mermaid

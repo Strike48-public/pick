@@ -197,11 +197,11 @@
      * Trigger chart post-processing (mermaid + echarts) on the next animation frame.
      * Calls window.__processChatCharts if it has been defined by chart_processor.js.
      */
-    window.triggerChartPostProcess = function() {
+    window.triggerChartPostProcess = function(sel) {
         requestAnimationFrame(function() {
             setTimeout(function() {
                 if (typeof window.__processChatCharts === 'function') {
-                    window.__processChatCharts();
+                    window.__processChatCharts(sel);
                 }
             }, 50);
         });

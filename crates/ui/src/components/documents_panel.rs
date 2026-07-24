@@ -18,6 +18,13 @@ use pentest_core::matrix::{DocumentSummary, MatrixChatClient};
 use pentest_core::rendering::render_markdown_raw;
 use pentest_core::social_share::{share_intent_url, SocialNetwork};
 
+/// Shared client-side helpers + chart/mermaid post-processor (the same assets
+/// the chat panel injects). The document viewer renders report markdown that can
+/// contain ```mermaid``` / ```echarts``` fences, so it needs these loaded and
+/// then triggered against its own container.
+const UTILS_JS: &str = include_str!("../assets/utils.js");
+const CHART_PROCESSOR_JS: &str = include_str!("../assets/chart_processor.js");
+
 /// Build the JS snippet that copies `url` to the clipboard. `serde_json`
 /// produces a spec-valid JS string literal (safe for any input), unlike
 /// `{:?}` which emits `\u{..}` brace-escapes that are invalid JavaScript.
@@ -280,7 +287,22 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
             spawn(async move {
                 let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
                 match client.get_document_content(&conv, &doc_id).await {
-                    Ok(md) => html.set(render_markdown_raw(&md)),
+                    Ok(md) => {
+                        html.set(render_markdown_raw(&md));
+                        // Load the shared chart/mermaid libs (idempotent) then
+                        // render any ```mermaid```/```echarts``` fences inside the
+                        // viewer's own container. The chat panel does the same for
+                        // `.chat-messages`; here we target the doc body.
+                        let _ = document::eval(UTILS_JS).await;
+                        let _ = document::eval(CHART_PROCESSOR_JS).await;
+                        if let Err(e) = document::eval(
+                            "triggerChartPostProcess('.easy-doc-viewer-body')",
+                        )
+                        .await
+                        {
+                            tracing::warn!("doc viewer chart post-process failed: {e}");
+                        }
+                    }
                     Err(e) => load_error.set(Some(format!("Couldn't load report: {e}"))),
                 }
             });
