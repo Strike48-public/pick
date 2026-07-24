@@ -138,7 +138,7 @@ pub fn generate_recommendations(
             Recommendation {
                 priority: Priority::Critical,
                 title: "Multiple Critical Issues Detected".to_string(),
-                description: "Multiple security checks failed. This network is likely malicious or severely compromised.".to_string(),
+                description: "Multiple checks failed for this network environment, so it is likely unsafe to operate from. (This is about the network you are connected to, not your own device.)".to_string(),
                 action: Some("Disconnect immediately and use a mobile hotspot or trusted network.".to_string()),
             },
         );
@@ -174,10 +174,13 @@ pub fn generate_recommendations(
 pub fn format_report(result: &super::types::SafetyCheckResult) -> String {
     let mut output = String::new();
 
-    // Headline verdict with a one-line, non-technical gloss.
+    // Headline verdict with a one-line, non-technical gloss. The verdict is
+    // explicitly scoped to the *network environment* - never the user's own
+    // device - so an "UNSAFE" headline is not misread as "you have been
+    // compromised". Pick assesses the network it operates from, not the host.
     output.push_str("## Network Safety Check\n\n");
     output.push_str(&format!(
-        "### Verdict: {} {}\n\n",
+        "### Network environment: {} {}\n\n",
         status_indicator(result.status),
         result.status
     ));
@@ -289,7 +292,10 @@ fn status_gloss(status: super::types::SafetyStatus) -> &'static str {
         // surfaced in the recommendations below, so this stays general.
         MostlySafe => "Nothing harmful was found, but this network could not be fully verified - likely a busy or shared network. Probably fine; see the notes below before doing anything sensitive.",
         Caution => "This network has the normal unknowns of a public network. Take basic precautions like using a VPN and avoiding sensitive logins.",
-        Unsafe => "We found an active problem with this network. Avoid sensitive activity (banking, passwords) and consider disconnecting or switching to a mobile hotspot.",
+        // Scoped to the network, not the device: this verdict means the network
+        // you are connected to looks risky to operate from - it does NOT mean
+        // your own machine has been compromised.
+        Unsafe => "We found an active problem with the network you are connected to (not your own device). Avoid sensitive activity (banking, passwords) and consider disconnecting or switching to a mobile hotspot.",
     }
 }
 
@@ -418,6 +424,42 @@ mod tests {
     }
 
     #[test]
+    fn multi_critical_recommendation_does_not_imply_host_compromise() {
+        // Two Critical failures trigger the "Multiple Critical Issues" advice.
+        // Its wording must stay scoped to the NETWORK and must not tell the user
+        // their machine is "compromised" - that phrasing is the exact false
+        // "you've been hacked" misread this fix removes.
+        let checks = vec![
+            CheckResult {
+                name: "DNS Integrity".to_string(),
+                status: CheckStatus::Failed,
+                details: "no connectivity".to_string(),
+                severity: Severity::Critical,
+            },
+            CheckResult {
+                name: "Router Threat Intelligence".to_string(),
+                status: CheckStatus::Failed,
+                details: "flagged".to_string(),
+                severity: Severity::Critical,
+            },
+        ];
+
+        let recs = generate_recommendations(&checks, &None);
+        let multi = recs
+            .iter()
+            .find(|r| r.title == "Multiple Critical Issues Detected")
+            .expect("multi-critical recommendation should be present");
+
+        assert!(
+            !multi.description.contains("compromised"),
+            "verdict copy must not imply the host is compromised: {:?}",
+            multi.description
+        );
+        // It should make the network-vs-device distinction explicit.
+        assert!(multi.description.contains("not your own device"));
+    }
+
+    #[test]
     fn test_recommendations_sorted_by_priority() {
         let checks = vec![
             CheckResult {
@@ -473,7 +515,9 @@ mod tests {
     fn test_format_report_is_markdown_with_verdict() {
         let report = format_report(&sample_result(SafetyStatus::MostlySafe, None));
         assert!(report.contains("## Network Safety Check"));
-        assert!(report.contains("### Verdict"));
+        // Verdict is scoped to the network environment (not the user's device),
+        // so an UNSAFE headline is not misread as "you have been compromised".
+        assert!(report.contains("### Network environment:"));
         assert!(report.contains("MOSTLY SAFE"));
         // Status table headers present.
         assert!(report.contains("| Check | Result | Details |"));

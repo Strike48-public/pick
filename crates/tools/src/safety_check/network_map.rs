@@ -3,8 +3,8 @@
 use super::oui;
 use super::types::{Device, NetworkMap, ThreatLevel};
 use anyhow::Context;
-use pentest_platform::NetworkOps;
-use std::collections::HashMap;
+use pentest_platform::{NetworkOps, SystemInfo};
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::Stdio;
 use tokio::process::Command;
@@ -89,24 +89,50 @@ pub async fn discover_network() -> anyhow::Result<NetworkMap> {
         host_ips.len()
     );
 
+    // Self-attribution: collect every IP that belongs to THIS host, across all
+    // interfaces (VPN tun, docker0/virbr0, mesh like Tailscale, a second NIC),
+    // so Pick never reports its own addresses back as foreign "devices" on the
+    // network. `get_gateway_and_local_ip` only knows the default-route address;
+    // a multi-interface operator box has many more. Best-effort - if interface
+    // enumeration fails we fall back to excluding just the default local IP.
+    let mut own_ips = collect_own_ips().await;
+    own_ips.insert(local_ip);
+
     // Build device list, enriching gateway and local device too.
     let gateway = build_device(gateway_ip, &arp_info);
     let your_device = build_device(local_ip, &arp_info);
 
-    let mut other_devices = Vec::new();
-    for ip in host_ips {
-        // Skip gateway and local IP (rendered separately).
-        if ip == gateway_ip || ip == local_ip {
-            continue;
-        }
-        other_devices.push(build_device(ip, &arp_info));
-    }
+    let other_devices = filter_foreign_hosts(host_ips, gateway_ip, &own_ips)
+        .into_iter()
+        .map(|ip| build_device(ip, &arp_info))
+        .collect();
 
     Ok(NetworkMap {
         gateway,
         your_device,
         other_devices,
     })
+}
+
+/// Pure helper: from a discovered host set, keep only genuinely foreign hosts.
+///
+/// Excludes the gateway (rendered separately) and every address that belongs to
+/// this host (`own_ips` - all local interfaces, not just the default one). This
+/// is the self-reflection fix: without excluding the full `own_ips` set, a
+/// multi-interface box (VPN/container/mesh) surfaces its own other addresses as
+/// foreign "devices". Kept free of I/O so the exclusion is unit-testable.
+fn filter_foreign_hosts<I>(
+    host_ips: I,
+    gateway_ip: IpAddr,
+    own_ips: &HashSet<IpAddr>,
+) -> Vec<IpAddr>
+where
+    I: IntoIterator<Item = IpAddr>,
+{
+    host_ips
+        .into_iter()
+        .filter(|ip| *ip != gateway_ip && !own_ips.contains(ip))
+        .collect()
 }
 
 /// Build an enriched [`Device`] for an IP using ARP data and OUI lookup.
@@ -141,6 +167,14 @@ fn build_device(ip: IpAddr, arp_info: &HashMap<IpAddr, ArpInfo>) -> Device {
 /// by threat-intelligence enrichment (handled in the threat-intel check), not
 /// here. With no port data yet (Phase 1 does no per-host port scan) every host
 /// is Safe; the threshold is wired in for when port enrichment lands.
+///
+// TODO(self-attribution): when per-host port scanning lands, this will scan
+// THIS host too and flag the listeners Pick's own installed tools opened (msf
+// handlers, BloodHound Neo4j 7474/7687, etc.) as Suspicious. Before enabling
+// port enrichment, subtract Pick-owned listeners via the installer registry +
+// provenance (crates/core/src/provenance.rs) - the same self-filter applied to
+// local IPs in `collect_own_ips`. See memory note
+// `project-safety-check-self-reflection` for the full rationale.
 fn classify_threat(open_ports: &[u16]) -> ThreatLevel {
     if open_ports.len() >= SUSPICIOUS_PORT_THRESHOLD {
         ThreatLevel::Suspicious
@@ -183,6 +217,48 @@ async fn collect_arp_info() -> HashMap<IpAddr, ArpInfo> {
         );
     }
     map
+}
+
+/// Collect every IP address that belongs to this host, across all interfaces.
+///
+/// Uses the platform's interface enumeration (already implemented per-OS) so
+/// the safety check can subtract Pick's own footprint before rendering the
+/// network map. Without this, a VPN/container/mesh interface makes the host
+/// see its own other addresses as foreign devices (self-reflection).
+///
+/// Best-effort: returns an empty set on any failure - the caller still excludes
+/// the default local IP, so a failure just means a less-complete self-filter,
+/// never an error. Loopback interfaces are skipped (never part of a LAN map).
+async fn collect_own_ips() -> HashSet<IpAddr> {
+    let platform = pentest_platform::get_platform();
+    let interfaces = match platform.get_network_interfaces().await {
+        Ok(ifaces) => ifaces,
+        Err(e) => {
+            tracing::debug!("Interface enumeration unavailable for self-filter: {}", e);
+            return HashSet::new();
+        }
+    };
+
+    let mut own = HashSet::new();
+    for iface in interfaces {
+        if iface.is_loopback {
+            continue;
+        }
+        for ip_str in iface.ip_addresses {
+            // Interface addresses may carry a CIDR suffix (e.g. "192.168.1.42/24")
+            // depending on the platform backend; strip it before parsing.
+            let addr = ip_str.split('/').next().unwrap_or(ip_str.as_str());
+            if let Ok(ip) = addr.parse::<IpAddr>() {
+                own.insert(ip);
+            }
+        }
+    }
+
+    tracing::info!(
+        "Self-filter: {} local address(es) will be excluded",
+        own.len()
+    );
+    own
 }
 
 /// Get gateway and local IP address, plus the local IPv4 prefix length.
@@ -409,6 +485,60 @@ mod tests {
             subnet_cidr_v4(Ipv4Addr::new(10, 1, 2, 3), 16),
             "10.1.0.0/16"
         );
+    }
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn foreign_filter_excludes_all_own_interface_ips_not_just_default() {
+        // The self-reflection bug: a host's OTHER interface addresses (VPN,
+        // docker, mesh) show up in the discovered host set. They must be
+        // excluded as our own, not surfaced as foreign devices.
+        let gateway = ip("192.168.50.1");
+        let default_local = ip("192.168.50.100");
+        let own: HashSet<IpAddr> = [
+            default_local,
+            ip("172.17.0.1"),    // docker0
+            ip("192.168.122.1"), // virbr0
+            ip("100.64.0.1"),    // mesh VPN e.g. tailscale (CGNAT range)
+        ]
+        .into_iter()
+        .collect();
+
+        let discovered = vec![
+            gateway,
+            default_local,
+            ip("172.17.0.1"),    // our own - must be dropped
+            ip("100.64.0.1"),    // our own - must be dropped
+            ip("192.168.50.55"), // a genuine peer - must stay
+            ip("192.168.50.56"), // a genuine peer - must stay
+        ];
+
+        let foreign = filter_foreign_hosts(discovered, gateway, &own);
+
+        // Only the two genuine peers survive.
+        assert_eq!(foreign.len(), 2, "own IPs and gateway must be excluded");
+        assert!(foreign.contains(&ip("192.168.50.55")));
+        assert!(foreign.contains(&ip("192.168.50.56")));
+        // Guard: none of our own addresses leaked through as "devices".
+        assert!(!foreign.contains(&ip("172.17.0.1")));
+        assert!(!foreign.contains(&ip("100.64.0.1")));
+        assert!(!foreign.contains(&gateway));
+    }
+
+    #[test]
+    fn foreign_filter_keeps_peers_when_only_default_ip_is_known() {
+        // Degraded path (interface enumeration failed): own_ips has just the
+        // default local IP. Real peers must still be reported.
+        let gateway = ip("192.168.1.1");
+        let own: HashSet<IpAddr> = [ip("192.168.1.100")].into_iter().collect();
+        let discovered = vec![gateway, ip("192.168.1.100"), ip("192.168.1.50")];
+
+        let foreign = filter_foreign_hosts(discovered, gateway, &own);
+
+        assert_eq!(foreign, vec![ip("192.168.1.50")]);
     }
 
     #[test]

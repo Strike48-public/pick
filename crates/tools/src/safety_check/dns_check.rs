@@ -74,7 +74,10 @@ pub async fn check_dns_integrity() -> anyhow::Result<CheckResult> {
         }
     }
 
-    // Detect captive portal: all domains resolve to same IP
+    // Detect captive portal: all domains resolve to same IP. This is a
+    // *corroborated* signal (multiple independent domains collapsing to one
+    // address), so unlike a lone unexpected-IP it is strong enough to fail.
+    let mut captive_portal = false;
     if connectivity_resolutions.len() >= 2 {
         let first_ip = connectivity_resolutions
             .values()
@@ -86,6 +89,7 @@ pub async fn check_dns_integrity() -> anyhow::Result<CheckResult> {
                 .values()
                 .all(|ips| ips.contains(&first));
             if all_same {
+                captive_portal = true;
                 issues.push(format!(
                     "Captive portal detected: all domains resolve to {}",
                     first
@@ -94,14 +98,15 @@ pub async fn check_dns_integrity() -> anyhow::Result<CheckResult> {
         }
     }
 
-    // Determine status
-    let (status, severity) = if !connectivity_ok || !issues.is_empty() {
-        (CheckStatus::Failed, Severity::Critical)
-    } else if validated_domains < 3 {
-        (CheckStatus::Warning, Severity::Medium)
-    } else {
-        (CheckStatus::Passed, Severity::Info)
-    };
+    // Classify the outcome into a (status, severity). Extracted to a pure
+    // helper so the severity calibration is unit-testable without live DNS.
+    let has_only_soft_anomalies = connectivity_ok && !captive_portal && !issues.is_empty();
+    let (status, severity) = classify_dns_outcome(
+        connectivity_ok,
+        captive_portal,
+        !issues.is_empty(),
+        validated_domains,
+    );
 
     let details = if issues.is_empty() {
         format!(
@@ -110,6 +115,13 @@ pub async fn check_dns_integrity() -> anyhow::Result<CheckResult> {
         )
     } else if !connectivity_ok {
         "No DNS connectivity - unable to resolve any domains. Check network connection.".to_string()
+    } else if has_only_soft_anomalies {
+        format!(
+            "DNS returned unexpected results for some domains. This is common on VPNs, \
+             filtered DNS (Pi-hole/NextDNS), or corporate networks and is usually benign, \
+             but verify if unexpected:\n{}",
+            issues.join("\n")
+        )
     } else {
         format!("DNS integrity issues detected:\n{}", issues.join("\n"))
     };
@@ -120,6 +132,38 @@ pub async fn check_dns_integrity() -> anyhow::Result<CheckResult> {
         details,
         severity,
     })
+}
+
+/// Classify DNS check signals into a (status, severity) verdict.
+///
+/// Severity is calibrated to operator reality: a VPN, split-horizon DNS, a
+/// Pi-hole/NextDNS filter, or a corporate resolver routinely makes a
+/// "known-good" domain resolve to an unexpected IP. Treating that lone,
+/// uncorroborated anomaly as `Failed/Critical` produces an alarming
+/// "network is compromised" verdict for an ordinary, safe setup - the exact
+/// false positive this fix removes.
+///
+/// Hard failure (`Failed/Critical`) is reserved for corroborated signals:
+///   - total loss of DNS connectivity (nothing resolved at all), or
+///   - a captive portal (multiple independent domains collapsing to one IP).
+///
+/// An uncorroborated anomaly, or too few validated domains, is only a
+/// `Warning/Medium` (which the aggregator maps to `Caution`, not `Unsafe`).
+fn classify_dns_outcome(
+    connectivity_ok: bool,
+    captive_portal: bool,
+    has_anomalies: bool,
+    validated_domains: usize,
+) -> (CheckStatus, Severity) {
+    const MIN_VALIDATED_DOMAINS: usize = 3;
+
+    if !connectivity_ok || captive_portal {
+        (CheckStatus::Failed, Severity::Critical)
+    } else if has_anomalies || validated_domains < MIN_VALIDATED_DOMAINS {
+        (CheckStatus::Warning, Severity::Medium)
+    } else {
+        (CheckStatus::Passed, Severity::Info)
+    }
 }
 
 /// Resolve a domain to its IP addresses.
@@ -174,6 +218,52 @@ mod tests {
         let expected = &["8.8.8.8", "1.1.1.1"];
 
         assert!(!any_ip_matches(&resolved, expected));
+    }
+
+    #[test]
+    fn uncorroborated_anomaly_is_caution_not_critical() {
+        // The core fix: an unexpected-IP anomaly with working connectivity and
+        // NO captive portal (the common VPN/filtered-DNS case) must be a soft
+        // Warning, NOT a Failed/Critical that reads as "compromised".
+        let (status, severity) = classify_dns_outcome(
+            /* connectivity_ok */ true, /* captive_portal  */ false,
+            /* has_anomalies    */ true, /* validated_domains*/ 5,
+        );
+        assert_eq!(status, CheckStatus::Warning);
+        assert_eq!(severity, Severity::Medium);
+        // Explicitly guard against the pre-fix behavior.
+        assert_ne!(status, CheckStatus::Failed);
+        assert_ne!(severity, Severity::Critical);
+    }
+
+    #[test]
+    fn captive_portal_stays_critical() {
+        // A corroborated captive portal is a genuine hard failure and must
+        // remain Failed/Critical even though connectivity technically "works".
+        let (status, severity) = classify_dns_outcome(true, true, true, 5);
+        assert_eq!(status, CheckStatus::Failed);
+        assert_eq!(severity, Severity::Critical);
+    }
+
+    #[test]
+    fn no_connectivity_stays_critical() {
+        // Total DNS failure is still a hard Critical failure.
+        let (status, severity) = classify_dns_outcome(false, false, true, 0);
+        assert_eq!(status, CheckStatus::Failed);
+        assert_eq!(severity, Severity::Critical);
+    }
+
+    #[test]
+    fn clean_resolution_passes() {
+        let (status, severity) = classify_dns_outcome(true, false, false, 5);
+        assert_eq!(status, CheckStatus::Passed);
+        assert_eq!(severity, Severity::Info);
+    }
+
+    #[test]
+    fn too_few_validated_domains_is_warning() {
+        let (status, _severity) = classify_dns_outcome(true, false, false, 2);
+        assert_eq!(status, CheckStatus::Warning);
     }
 
     #[tokio::test]
