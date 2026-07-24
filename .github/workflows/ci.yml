@@ -161,19 +161,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      # The arm64 rustc cross-build spikes memory during LLVM codegen of heavy
-      # deps (ravif/exr/syntect) and OOM-killed on the ~7GB runner. `build-android`
-      # already serializes rustc (-j1) to cap peak; add generous swap as a safety
-      # margin so a single heavy crate can't trip the OOM killer. Reclaim disk
-      # first (default runners are tight) so the swapfile fits.
-      - name: Add swap space
+      # The arm64 rustc cross-build both spikes memory (LLVM codegen of heavy deps
+      # ravif/exr/syntect) AND needs lots of disk (target/ is ~14G per arch, plus
+      # the nix store + gradle). The default ubuntu-latest runner is tight on both,
+      # and dx swallows the underlying SIGKILL/ENOSPC — surfacing only "cargo build
+      # finished with errors" at a random crate. Reclaim the large preinstalled
+      # toolchains we don't use (~30G+) BEFORE building, then add swap headroom for
+      # the codegen spikes. `build-android` also serializes rustc (-j1).
+      - name: Free disk + add swap
         run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android/sdk/ndk || true
-          sudo fallocate -l 12G /mnt/swapfile
+          echo "before:"; df -h / ; free -h
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL \
+            /usr/local/lib/android/sdk/ndk /usr/local/.ghcup /usr/lib/jvm \
+            /usr/local/share/powershell /usr/share/swift || true
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile /swapfile || true
+          sudo fallocate -l 10G /mnt/swapfile
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
-          free -h
+          echo "after:"; df -h / ; free -h
       # Build through the nix flake so PR CI uses the exact same toolchain,
       # SDK/NDK, dx, build-tools and aapt2 as local `just build-android`.
       - uses: DeterminateSystems/nix-installer-action@main
