@@ -405,6 +405,9 @@ pub fn theme_css() -> &'static str {
 
         button:hover {
             background-color: var(--ring);
+            /* Keep label legible on the (often light/sage) ring fill — without
+               this the text stays its default light color → white-on-light. */
+            color: var(--primary-foreground);
         }
 
         button:disabled {
@@ -1310,6 +1313,9 @@ const BASE_COMPONENT_STYLES: &str = r#"
 
         button:hover {
             background-color: var(--ring);
+            /* Keep label legible on the (often light/sage) ring fill — without
+               this the text stays its default light color → white-on-light. */
+            color: var(--primary-foreground);
         }
 
         button:disabled {
