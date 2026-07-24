@@ -161,16 +161,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      # The Android cross-build's target/ is ~14G per arch on top of the nix
-      # store and gradle caches — tight on the default ubuntu-latest runner.
-      # Reclaim the large preinstalled toolchains we don't use (~30G+) first.
-      - name: Free disk space
-        run: |
-          echo "before:"; df -h /
-          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL \
-            /usr/local/lib/android/sdk/ndk /usr/local/.ghcup /usr/lib/jvm \
-            /usr/local/share/powershell /usr/share/swift || true
-          echo "after:"; df -h /
       # Build through the nix flake so PR CI uses the exact same toolchain,
       # SDK/NDK, dx, build-tools and aapt2 as local `just build-android`.
       - uses: DeterminateSystems/nix-installer-action@main
