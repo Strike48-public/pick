@@ -917,9 +917,16 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // Easy Mode drawer's Settings and the expert SettingsPage so it's never a
     // one-way trap.
     let on_easy_mode_change = move |on: bool| {
-        let mut s = load_settings();
-        s.easy_mode = Some(on);
-        let _ = save_settings(&s);
+        // Update the in-memory `settings` signal, NOT just a fresh load_settings().
+        // Other handlers (connect-with-remember, shell mode, telemetry) persist by
+        // cloning this signal; if we only wrote a detached copy to disk, the next
+        // signal-based save_settings would clobber easy_mode back to None. Writing
+        // the signal keeps it authoritative so the choice survives.
+        {
+            let mut s = settings.write();
+            s.easy_mode = Some(on);
+            let _ = save_settings(&s);
+        }
         easy_mode.set(on);
     };
 
