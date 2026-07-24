@@ -293,9 +293,14 @@ _verify-android-apk apk:
         exit 1
     fi
     # APKs split classes across classes.dex, classes2.dex, etc. — scan all of them.
+    # NOTE: use `grep -c` (counts, reads to EOF), NOT `grep -q`. `grep -q` exits on
+    # the first match and closes the pipe, killing the upstream `strings` with
+    # SIGPIPE (exit 141); under `set -o pipefail` that turns a *successful* match on
+    # a large dex into a pipeline failure, so a correctly-built APK was reported as
+    # missing ConnectorBridge. Counting consumes the whole stream, so no SIGPIPE.
     found=0
     for dex in $(unzip -l "{{apk}}" 2>/dev/null | awk '/classes[0-9]*\.dex/ {print $4}'); do
-        if unzip -p "{{apk}}" "$dex" 2>/dev/null | strings | grep -q "ConnectorBridge"; then
+        if [[ "$(unzip -p "{{apk}}" "$dex" 2>/dev/null | strings | grep -c "ConnectorBridge")" -gt 0 ]]; then
             found=1
             break
         fi
