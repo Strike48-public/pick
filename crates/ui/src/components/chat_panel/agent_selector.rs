@@ -200,9 +200,18 @@ pub struct ChatHeaderCtx {
     pub show_history: bool,
     pub api_url_empty: bool,
     pub token_empty: bool,
+    /// Recent conversations for the selected agent, so surfaces outside the chat
+    /// panel (e.g. the Easy Mode drawer's "Recent chats") can list and open them
+    /// without re-querying.
+    pub conversations: Vec<ConversationInfo>,
     pub on_agent_select: EventHandler<String>,
     pub on_new_chat: EventHandler<()>,
     pub on_toggle_history: EventHandler<()>,
+    /// Refresh the recent-conversations list WITHOUT opening the history
+    /// dropdown (for the Easy Mode drawer, which renders its own list).
+    pub on_refresh_conversations: EventHandler<()>,
+    /// Open a past conversation by id (drives the same path as the history list).
+    pub on_select_conversation: EventHandler<String>,
     pub on_validate_findings: EventHandler<()>,
     pub on_generate_report: EventHandler<()>,
 }

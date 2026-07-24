@@ -4,9 +4,9 @@
 //! component that accepts `size: usize` (among other props).
 
 pub use lucide_dioxus::{
-    Bolt, ChevronDown, CircleQuestionMark, Download, FileText, Folder, History, House, Info,
-    LayoutGrid, Lock, Menu, MessageCircle, MessageSquare, Network, Palette, Plus, ScrollText,
-    Search, Settings, Shield, Terminal, User, Wifi, Wrench, X,
+    Bolt, ChevronDown, ChevronLeft, CircleQuestionMark, Download, FileText, Folder, History, House,
+    Info, LayoutGrid, Lock, LogOut, Menu, MessageCircle, MessageSquare, Network, Palette, Plus,
+    ScrollText, Search, Settings, Shield, Terminal, User, Wifi, Wrench, X,
 };
 
 // ---------------------------------------------------------------------------

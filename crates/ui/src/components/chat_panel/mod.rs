@@ -900,6 +900,32 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         }
     });
 
+    // Handler: refresh the conversation list WITHOUT opening the history
+    // dropdown. Used by the Easy Mode drawer, which renders its own "Recent
+    // chats" from the ctx snapshot — it needs the list fetched but must not
+    // toggle ChatPanel's `show_history` UI (that would stack a second list on
+    // top of the drawer).
+    let on_refresh_conversations = EventHandler::new({
+        let make_client = make_client.clone();
+        move |_: ()| {
+            if let Some(agent) = selected_agent.peek().as_ref() {
+                let agent_id = agent.id.clone();
+                let client = make_client();
+                history_loading.set(true);
+                spawn(async move {
+                    match client.list_conversations(Some(&agent_id)).await {
+                        Ok(mut list) => {
+                            list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                            conversation_list.set(list);
+                        }
+                        Err(e) => tracing::warn!("Failed to refresh conversation list: {}", e),
+                    }
+                    history_loading.set(false);
+                });
+            }
+        }
+    });
+
     // Handler: validate findings.
     //
     // The Validator round-trip that sits between evidence collection and
@@ -1251,9 +1277,12 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 show_history: show_history(),
                 api_url_empty,
                 token_empty,
+                conversations: conversation_list.read().clone(),
                 on_agent_select,
                 on_new_chat,
                 on_toggle_history,
+                on_refresh_conversations,
+                on_select_conversation,
                 on_validate_findings,
                 on_generate_report,
             };
