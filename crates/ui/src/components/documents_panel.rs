@@ -8,9 +8,9 @@
 //! list's slot. External sharing always uses the public `/s/:token` link so
 //! recipients without an account can view.
 //!
-//! On launch the most recent *existing* report is shown under a muted "Previous
-//! report" label so it isn't mistaken for the current run's output; once a newer
-//! report appears (after a scan + reload) the label clears.
+//! The Reports overlay ([`DocumentsPanel`]) lists every report the agent has
+//! written, newest first. The bottom chat strip ([`ConversationDocs`]) is scoped
+//! to the current conversation.
 
 use dioxus::document;
 use dioxus::prelude::*;
@@ -61,15 +61,10 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
     let auth_token = props.auth_token.clone();
     let agent_id = props.agent_id;
 
-    // Easy Mode shows only the single most-recently-created report (repeated
-    // scans each write a new document, so a full list accumulates duplicates).
-    let mut latest = use_signal(|| None::<DocumentSummary>);
+    // The Reports overlay lists every report the agent has written, newest first.
+    let mut docs = use_signal(Vec::<DocumentSummary>::new);
     let mut loading = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
-    // Timestamp of the report present at the first successful load this session.
-    // While the shown report still matches it, it's a *previous* report; once a
-    // newer report replaces it the label clears.
-    let mut baseline_ts = use_signal(|| None::<String>);
 
     // Keep the report list current automatically: reload when token/agent change,
     // then poll on an interval so a scan's new report appears on its own — no
@@ -89,19 +84,15 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
             error.set(None);
             spawn(async move {
                 // Poll every 5s. Each pass rebuilds a lightweight client and
-                // updates `latest`; the first pass clears the loading state.
+                // updates `docs`; the first pass clears the loading state.
                 loop {
                     let client =
                         MatrixChatClient::new(api_url.clone()).with_auth_token(auth_token.clone());
                     match client.list_documents(aid.as_deref()).await {
-                        Ok(list) => {
-                            let doc = pentest_core::matrix::latest_document(list);
-                            if baseline_ts.peek().is_none() {
-                                if let Some(ref d) = doc {
-                                    baseline_ts.set(Some(d.timestamp.clone()));
-                                }
-                            }
-                            latest.set(doc);
+                        Ok(mut list) => {
+                            // Newest first (timestamp is ISO-8601, so lexical sort works).
+                            list.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+                            docs.set(list);
                             error.set(None);
                         }
                         Err(e) => error.set(Some(format!("Couldn't load reports: {e}"))),
@@ -113,11 +104,7 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
         });
     }
 
-    // Is the currently-shown report the pre-existing one from session start?
-    let is_previous = match (latest(), baseline_ts()) {
-        (Some(doc), Some(base)) => doc.timestamp == base,
-        _ => false,
-    };
+    let items = docs();
 
     rsx! {
         div { class: "easy-docs",
@@ -128,24 +115,23 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                 div { class: "easy-docs-empty", "Loading reports..." }
             } else if let Some(err) = error() {
                 div { class: "easy-docs-error", "{err}" }
-            } else if let Some(doc) = latest() {
-                {
-                    let title = doc.title.clone();
-                    let open_doc = doc.clone();
-                    rsx! {
-                        if is_previous {
-                            div { class: "easy-docs-prev-label", "Previous report" }
-                        }
-                        div {
-                            class: "easy-docs-row easy-docs-row-tappable",
-                            onclick: move |_| props.on_open.call(open_doc.clone()),
-                            span { class: "easy-docs-title", "{title}" }
-                            span { class: "easy-docs-chevron", "›" }
+            } else if items.is_empty() {
+                div { class: "easy-docs-empty", "Run a scan to generate your first report." }
+            } else {
+                for doc in items {
+                    {
+                        let title = doc.title.clone();
+                        let open_doc = doc.clone();
+                        rsx! {
+                            div {
+                                class: "easy-docs-row easy-docs-row-tappable",
+                                onclick: move |_| props.on_open.call(open_doc.clone()),
+                                span { class: "easy-docs-title", "{title}" }
+                                span { class: "easy-docs-chevron", "›" }
+                            }
                         }
                     }
                 }
-            } else {
-                div { class: "easy-docs-empty", "Run a scan to generate your first report." }
             }
         }
     }
