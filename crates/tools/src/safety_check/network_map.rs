@@ -228,17 +228,44 @@ async fn collect_arp_info() -> HashMap<IpAddr, ArpInfo> {
 ///
 /// Best-effort: returns an empty set on any failure - the caller still excludes
 /// the default local IP, so a failure just means a less-complete self-filter,
-/// never an error. Loopback interfaces are skipped (never part of a LAN map).
+/// never an error. On failure we log at `warn`, not `debug`: an incomplete
+/// self-filter silently weakens the whole check (the host's other-interface IPs
+/// can reappear as foreign "devices"), so the degradation must be observable.
 async fn collect_own_ips() -> HashSet<IpAddr> {
     let platform = pentest_platform::get_platform();
-    let interfaces = match platform.get_network_interfaces().await {
-        Ok(ifaces) => ifaces,
-        Err(e) => {
-            tracing::debug!("Interface enumeration unavailable for self-filter: {}", e);
-            return HashSet::new();
+    match platform.get_network_interfaces().await {
+        Ok(interfaces) => {
+            let own = own_ips_from_interfaces(interfaces);
+            tracing::info!(
+                "Self-filter: {} local address(es) will be excluded",
+                own.len()
+            );
+            own
         }
-    };
+        Err(e) => {
+            tracing::warn!(
+                "Interface enumeration failed ({}); self-filter is INCOMPLETE - only the \
+                 default local IP will be excluded, so VPN/container/mesh addresses may \
+                 appear as foreign devices",
+                e
+            );
+            HashSet::new()
+        }
+    }
+}
 
+/// Pure helper: reduce a set of network interfaces to this host's own IPs.
+///
+/// Extracted from [`collect_own_ips`] so the parsing/filtering rules are
+/// unit-testable without live interface enumeration. Rules:
+/// - loopback interfaces are skipped (never part of a LAN map);
+/// - a CIDR suffix on the address string (e.g. "192.168.1.42/24") is stripped;
+/// - loopback and IPv6 link-local (`fe80::/10`) addresses are excluded even if
+///   the interface's `is_loopback` flag is unset or the backend mislabels them
+///   (defense-in-depth against a buggy per-platform backend);
+/// - a malformed address is dropped with a `debug` breadcrumb rather than
+///   silently vanishing.
+fn own_ips_from_interfaces(interfaces: Vec<pentest_platform::NetworkInterface>) -> HashSet<IpAddr> {
     let mut own = HashSet::new();
     for iface in interfaces {
         if iface.is_loopback {
@@ -248,17 +275,39 @@ async fn collect_own_ips() -> HashSet<IpAddr> {
             // Interface addresses may carry a CIDR suffix (e.g. "192.168.1.42/24")
             // depending on the platform backend; strip it before parsing.
             let addr = ip_str.split('/').next().unwrap_or(ip_str.as_str());
-            if let Ok(ip) = addr.parse::<IpAddr>() {
-                own.insert(ip);
+            match addr.parse::<IpAddr>() {
+                Ok(ip) if is_own_addressable(&ip) => {
+                    own.insert(ip);
+                }
+                Ok(_) => {
+                    // Loopback / link-local: real but never a foreign LAN host,
+                    // so no need to carry it in the self-filter set.
+                }
+                Err(e) => {
+                    tracing::debug!("Ignoring malformed interface address {:?}: {}", ip_str, e);
+                }
             }
         }
     }
-
-    tracing::info!(
-        "Self-filter: {} local address(es) will be excluded",
-        own.len()
-    );
     own
+}
+
+/// True if an address is a routable/LAN address worth excluding as "ours".
+///
+/// Filters out loopback and IPv6 link-local (`fe80::/10`) - addresses that
+/// cannot appear as a distinct foreign host on the LAN map, so they never need
+/// to be in the self-filter set.
+fn is_own_addressable(ip: &IpAddr) -> bool {
+    if ip.is_loopback() {
+        return false;
+    }
+    if let IpAddr::V6(v6) = ip {
+        // IPv6 link-local fe80::/10.
+        if (v6.segments()[0] & 0xffc0) == 0xfe80 {
+            return false;
+        }
+    }
+    true
 }
 
 /// Get gateway and local IP address, plus the local IPv4 prefix length.
@@ -479,6 +528,16 @@ mod tests {
     }
 
     #[test]
+    fn absurd_prefix_clamps_to_32() {
+        // Unreachable from a real Ipv4Net, but guard the defensive >32 clamp
+        // so it can never panic on the left-shift.
+        assert_eq!(
+            subnet_cidr_v4(Ipv4Addr::new(10, 0, 0, 1), 99),
+            "10.0.0.1/32"
+        );
+    }
+
+    #[test]
     fn exactly_16_is_not_clamped() {
         // Boundary: /16 is the cap itself, so it passes through unchanged.
         assert_eq!(
@@ -526,6 +585,72 @@ mod tests {
         assert!(!foreign.contains(&ip("172.17.0.1")));
         assert!(!foreign.contains(&ip("100.64.0.1")));
         assert!(!foreign.contains(&gateway));
+    }
+
+    fn iface(name: &str, is_loopback: bool, ips: &[&str]) -> pentest_platform::NetworkInterface {
+        pentest_platform::NetworkInterface {
+            name: name.to_string(),
+            ip_addresses: ips.iter().map(|s| s.to_string()).collect(),
+            mac_address: None,
+            is_up: true,
+            is_loopback,
+        }
+    }
+
+    #[test]
+    fn own_ips_strips_cidr_suffix_ipv4_and_ipv6() {
+        let ifaces = vec![
+            iface("eth0", false, &["192.168.1.42/24"]),
+            iface("eth1", false, &["10.0.0.5"]),  // no suffix
+            iface("wg0", false, &["fd00::1/64"]), // ULA v6 with suffix
+        ];
+        let own = own_ips_from_interfaces(ifaces);
+        assert!(own.contains(&ip("192.168.1.42")));
+        assert!(own.contains(&ip("10.0.0.5")));
+        assert!(own.contains(&ip("fd00::1")));
+    }
+
+    #[test]
+    fn own_ips_skips_loopback_interface_and_loopback_addr() {
+        // A loopback *interface* is skipped wholesale...
+        let via_iface = own_ips_from_interfaces(vec![iface("lo", true, &["127.0.0.1", "::1"])]);
+        assert!(via_iface.is_empty());
+        // ...and a loopback *address* on a non-loopback iface is excluded too
+        // (defense against a backend that mislabels is_loopback).
+        let via_addr = own_ips_from_interfaces(vec![iface("eth0", false, &["127.0.0.1"])]);
+        assert!(
+            via_addr.is_empty(),
+            "loopback addr must not enter self-filter"
+        );
+    }
+
+    #[test]
+    fn own_ips_excludes_ipv6_link_local() {
+        // fe80::/10 is per-interface local, never a distinct foreign LAN host.
+        let own = own_ips_from_interfaces(vec![iface(
+            "eth0",
+            false,
+            &["fe80::1343:2e71:941d:6935", "192.168.1.10"],
+        )]);
+        assert!(!own.iter().any(|i| i.to_string().starts_with("fe80")));
+        assert!(own.contains(&ip("192.168.1.10")));
+    }
+
+    #[test]
+    fn own_ips_drops_malformed_without_panicking() {
+        let own = own_ips_from_interfaces(vec![iface(
+            "eth0",
+            false,
+            &["192.168.1.256", "not-an-ip", "10.0.0.9"],
+        )]);
+        // Only the one valid address survives; malformed entries are dropped.
+        assert_eq!(own.len(), 1);
+        assert!(own.contains(&ip("10.0.0.9")));
+    }
+
+    #[test]
+    fn own_ips_empty_interface_list_is_empty_set() {
+        assert!(own_ips_from_interfaces(vec![]).is_empty());
     }
 
     #[test]

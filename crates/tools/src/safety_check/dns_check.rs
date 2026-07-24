@@ -266,6 +266,13 @@ mod tests {
         assert_eq!(status, CheckStatus::Warning);
     }
 
+    #[test]
+    fn exactly_min_validated_domains_passes() {
+        // Boundary: exactly MIN_VALIDATED_DOMAINS (3) with no anomalies passes.
+        let (status, _severity) = classify_dns_outcome(true, false, false, 3);
+        assert_eq!(status, CheckStatus::Passed);
+    }
+
     #[tokio::test]
     async fn test_dns_check_runs() {
         // This is an integration test - it requires network connectivity
