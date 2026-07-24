@@ -17,6 +17,10 @@ const DESKTOP_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
     extra_init_messages: &[],
     create_tools: pentest_tools::create_tool_registry,
     set_sandbox: Some(pentest_platform::set_use_sandbox),
+    // Per-app fallback default. The effective mode is resolved at runtime as
+    // persisted-setting > build-time PICK_EASY_MODE env > this literal, so a
+    // desktop build can ship easy-mode-first via PICK_EASY_MODE=true without
+    // editing code, and the in-app Settings toggle overrides either.
     easy_mode: false,
 };
 
@@ -40,6 +44,9 @@ fn main() {
     dioxus::LaunchBuilder::desktop()
         .with_cfg(
             Config::default()
+                // No native menu bar — Dioxus adds a default Window/Edit/Help
+                // menu otherwise, which is noise for this single-view app.
+                .with_menu(None)
                 .with_window(
                     WindowBuilder::new()
                         .with_title("Pentest Connector")

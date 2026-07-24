@@ -34,6 +34,12 @@ use crate::{
 
 /// Platform-specific configuration for the shared connector app.
 ///
+/// Context newtype wrapping the "force a fresh browser sign-in" flag, so it can
+/// be provided/consumed by type without colliding with the `needs_sign_in`
+/// `Signal<bool>` context. Set true by the Easy Mode retry overlay.
+#[derive(Clone, Copy)]
+pub struct ForceSignIn(pub Signal<bool>);
+
 /// All fields are `Copy` so the config can be freely captured in closures.
 #[derive(Clone, Copy)]
 pub struct ConnectorAppConfig {
@@ -120,6 +126,12 @@ pub struct ConnectorPagesProps {
     /// Callback when the user toggles usage analytics.
     #[props(default)]
     on_telemetry_change: EventHandler<bool>,
+    /// Whether Easy Mode is currently active (for the Settings toggle).
+    #[props(default)]
+    easy_mode_on: bool,
+    /// Callback when the user toggles Easy Mode in Settings.
+    #[props(default)]
+    on_easy_mode_change: EventHandler<bool>,
     /// Matrix API URL for chat.
     api_url: String,
     /// Auth token for chat.
@@ -236,6 +248,8 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                     on_density_change: move |d: Density| props.on_density_change.call(d),
                     telemetry_enabled: props.telemetry_enabled,
                     on_telemetry_change: move |v: bool| props.on_telemetry_change.call(v),
+                    easy_mode_on: props.easy_mode_on,
+                    on_easy_mode_change: move |v: bool| props.on_easy_mode_change.call(v),
                     on_theme_imported: move |_| {
                         // Theme imported - could trigger UI refresh here if needed
                         tracing::info!("Custom theme imported successfully");
@@ -282,12 +296,22 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     });
     let device_id = settings.peek().device_id.clone();
 
+    // ---- easy mode resolution ----
+    // The effective Easy Mode flag: persisted Settings choice > build-time
+    // PICK_EASY_MODE env > per-app compile default. `resolved_easy` is the
+    // startup value used for one-time setup (telemetry tag, PLG env seed,
+    // auto-connect). `easy_mode` is a reactive signal the render branch reads and
+    // the Settings toggle flips, so switching modes swaps the shell immediately.
+    let resolved_easy =
+        pentest_core::config::resolve_easy_mode(settings.peek().easy_mode, cfg.easy_mode);
+    let mut easy_mode = use_signal(|| resolved_easy);
+
     // ---- telemetry (#278) ----
     // Initialize once for the app lifetime (the client guard is retained inside
     // the telemetry module). No-op when the user opted out or no DSN was baked in.
     use_hook(|| {
         let enabled = settings.peek().telemetry_enabled;
-        pentest_core::telemetry::init(enabled, &device_id, cfg.easy_mode);
+        pentest_core::telemetry::init(enabled, &device_id, resolved_easy);
     });
 
     // Easy-mode default PLG connection (#283): when there's no saved config,
@@ -298,7 +322,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // token → the existing post-approval flow. If no build-time host is present
     // we fall through to Default (empty host) and the connect form still shows —
     // that form is the override/escape hatch. Nothing is hardcoded in the repo.
-    let easy_mode_env_config = if cfg.easy_mode {
+    let easy_mode_env_config = if resolved_easy {
         ConnectorConfig::from_baked_or_env().filter(|c| !c.host.is_empty())
     } else {
         None
@@ -323,7 +347,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // has an env-provided PLG host to connect to. Easy mode with no env host
     // still shows the connect form.
     let initial_auto_connect = settings.peek().auto_connect
-        || (cfg.easy_mode && !has_saved_config && easy_mode_env_config.is_some());
+        || (resolved_easy && !has_saved_config && easy_mode_env_config.is_some());
 
     // ---- signals ----
     let mut status = use_signal(|| ConnectorStatus::Disconnected);
@@ -344,6 +368,14 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // tokenless connect.
     let needs_sign_in = use_context_provider(|| Signal::new(false));
     let retry_tick = use_context_provider(|| Signal::new(0u32));
+    // Set by the "Retry sign-in" overlay: forces the next auto-connect to take
+    // the fresh-browser SignIn path even when connector credentials exist on
+    // disk. Without this, a broken chat session (needs a NEW browser token) but
+    // valid connector creds routes to the Silent path, which reconnects the
+    // connector but never re-opens the browser — an infinite retry loop.
+    // Wrapped in a newtype so it doesn't collide with the `needs_sign_in`
+    // `Signal<bool>` context (Dioxus resolves context by type).
+    let force_sign_in = use_context_provider(|| ForceSignIn(Signal::new(false))).0;
 
     // download state
     let mut download_progress: Signal<Option<f64>> =
@@ -499,7 +531,8 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         // Easy mode routes connect failures to the friendly retry overlay and
         // discards the single-use OTT, rather than dropping to the raw form.
         let mut needs_sign_in = needs_sign_in;
-        let easy_mode = cfg.easy_mode;
+        // Read the live mode so a runtime toggle is honored on the next connect.
+        let easy_mode = easy_mode();
 
         // Clone identity fields before we consume `new_config` in the
         // spawned connector task — we still need them for the first-run
@@ -744,7 +777,8 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
 
     // ---- auto-connect ----
     let easy_mode_autoconnect_config = easy_mode_env_config.clone();
-    let easy_mode_flag = cfg.easy_mode;
+    let easy_mode_flag = easy_mode();
+    let device_id_autoconnect = device_id.clone();
     use_effect(move || {
         let _ = retry_tick();
         if !initial_auto_connect {
@@ -753,7 +787,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         // Pick the config we would connect with (saved config wins, else PLG env).
         let candidate = settings.read().last_config.clone().or_else(|| {
             easy_mode_autoconnect_config.clone().map(|mut c| {
-                c.instance_id = device_id.clone();
+                c.instance_id = device_id_autoconnect.clone();
                 c
             })
         });
@@ -765,14 +799,28 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         // scoped id too, otherwise the check looks at the wrong filename, never
         // finds creds, and forces a fresh OAuth sign-in on every launch.
         let scoped_instance_id = pentest_core::config::ConnectorConfig::env_scoped_instance_id(
-            &device_id,
+            &device_id_autoconnect,
             &candidate.host,
         );
+        // An explicit "Retry sign-in" tap forces a fresh browser login even when
+        // connector creds exist: the failure was a dead CHAT session, which only
+        // a new browser token fixes. Treating creds-present as "Silent" here
+        // would reconnect the connector but never re-open the browser → loop.
+        let mut force_sign_in = force_sign_in;
+        let forced = force_sign_in();
+        if forced {
+            force_sign_in.set(false);
+        }
         let creds = pentest_core::config::ConnectorConfig::credentials_present(
             &candidate.connector_name,
             &scoped_instance_id,
         );
-        match pentest_core::config::plg_connect_decision(easy_mode_flag, creds) {
+        let decision = if forced {
+            pentest_core::config::PlgConnectStep::SignIn
+        } else {
+            pentest_core::config::plg_connect_decision(easy_mode_flag, creds)
+        };
+        match decision {
             pentest_core::config::PlgConnectStep::SignIn => {
                 terminal_lines.write().push(TerminalLine::info(
                     "Easy mode: signing in to your Strike48 workspace...",
@@ -815,7 +863,66 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         });
     };
 
+    // ---- logout handler (easy mode) ----
+    // Full sign-out: drop the chat session token (secure store + process cache),
+    // delete the SDK connector credentials so the next launch does a fresh OTT
+    // registration, shut the connector down, and route back to the sign-in
+    // overlay. Distinct from `on_disconnect`, which only stops the connector but
+    // keeps credentials for a silent reconnect.
+    let on_logout = {
+        let device_id = device_id.clone();
+        move |_: ()| {
+            let cfg_now = config.peek().clone();
+            let scoped_instance_id =
+                pentest_core::config::ConnectorConfig::env_scoped_instance_id(
+                    &device_id,
+                    &cfg_now.host,
+                );
+            pentest_core::config::ConnectorConfig::clear_credentials(
+                &cfg_now.connector_name,
+                &scoped_instance_id,
+            );
+            crate::session::clear_matrix_token();
+            crate::session::set_auth_token("");
+            pentest_core::matrix::clear_browser_token_cache();
+            pentest_core::matrix::clear_staged_ott();
+
+            // Stop auto-connect so we land on sign-in, not a silent reconnect.
+            let mut s = load_settings();
+            s.auto_connect = false;
+            let _ = save_settings(&s);
+
+            let connector = connector;
+            let mut status = status;
+            let mut matrix_auth_token = matrix_auth_token;
+            let mut needs_sign_in = needs_sign_in;
+            let mut connecting_step = connecting_step;
+            spawn(async move {
+                if let Some(conn) = connector.peek().as_ref() {
+                    let conn = conn.read().await;
+                    conn.shutdown();
+                }
+                matrix_auth_token.set(String::new());
+                connecting_step.set(None);
+                status.set(ConnectorStatus::Disconnected);
+                needs_sign_in.set(true);
+            });
+        }
+    };
+
     // ---- setup handler ----
+    // ---- easy-mode toggle (Settings) ----
+    // Persist the explicit choice and flip the reactive signal so the shell
+    // swaps (easy <-> expert) immediately, no relaunch. Reachable from both the
+    // Easy Mode drawer's Settings and the expert SettingsPage so it's never a
+    // one-way trap.
+    let on_easy_mode_change = move |on: bool| {
+        let mut s = load_settings();
+        s.easy_mode = Some(on);
+        let _ = save_settings(&s);
+        easy_mode.set(on);
+    };
+
     let on_start_download = move |_: ()| {
         let mut download_progress = download_progress;
         let mut terminal_lines = terminal_lines;
@@ -913,7 +1020,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             // form). The friendly retry overlay lives in EasyModeShell, which is
             // only rendered under Connected. Short-circuit early so the overlay
             // is reachable. Does not affect expert mode.
-            if cfg.easy_mode && *needs_sign_in.read() {
+            if easy_mode() && *needs_sign_in.read() {
                 {
                     let host = config.read().host.clone();
                     let chat_api_url = {
@@ -933,6 +1040,8 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                             tenant_id: config.read().tenant_id.clone(),
                             chat_mailbox,
                             conversation_mailbox,
+                            on_logout: on_logout,
+                            on_easy_mode_change: on_easy_mode_change,
                         }
                     }
                 }
@@ -994,7 +1103,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                         }
                     };
 
-                    if cfg.easy_mode {
+                    if easy_mode() {
                         rsx! {
                             EasyModeShell {
                                 api_url: chat_api_url.clone(),
@@ -1002,6 +1111,8 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                 tenant_id: config.read().tenant_id.clone(),
                                 chat_mailbox,
                                 conversation_mailbox,
+                                on_logout: on_logout,
+                                on_easy_mode_change: on_easy_mode_change,
                             }
                         }
                     } else {
@@ -1074,6 +1185,8 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                         // off re-inits. No relaunch needed.
                                         pentest_core::telemetry::set_enabled(v);
                                     },
+                                    easy_mode_on: easy_mode(),
+                                    on_easy_mode_change: on_easy_mode_change,
                                     on_disconnect: move |_| on_disconnect(()),
                                     on_start_download: on_start_download,
                                     settings_shell_mode: settings.read().shell_mode,

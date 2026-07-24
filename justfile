@@ -297,6 +297,14 @@ build-android arch="aarch64-linux-android":
     # Unset global CC/CXX that would override the target-specific ones
     unset CC CXX
 
+    # Mobile is easy-mode-first: bake PICK_EASY_MODE at build time (mobile has no
+    # runtime env, and apps/mobile carries a neutral `easy_mode: false` literal so
+    # the env is the single source of the default). Override by exporting
+    # PICK_EASY_MODE=false before the build. The in-app Settings toggle wins over
+    # either at runtime.
+    export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
+    echo "PICK_EASY_MODE=$PICK_EASY_MODE"
+
     # dx preserves the generated Gradle project between builds and does NOT
     # clean jniLibs, so a previously-built ABI (app + native tool libs) would
     # otherwise be bundled alongside the arch we're building now. Wipe it so the

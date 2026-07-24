@@ -19,7 +19,7 @@ pub mod view_transitions;
 
 pub use components::*;
 #[cfg(feature = "connector")]
-pub use connector_app::{connector_app, ConnectorAppConfig};
+pub use connector_app::{connector_app, ConnectorAppConfig, ForceSignIn};
 #[cfg(feature = "connector")]
 pub use liveview_connector::{ConnectorEvent, LiveViewConnector};
 pub use liveview_server::*;

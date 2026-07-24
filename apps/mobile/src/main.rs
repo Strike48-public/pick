@@ -15,7 +15,13 @@ const MOBILE_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
     extra_init_messages: &[],
     create_tools: pentest_tools::create_tool_registry,
     set_sandbox: None,
-    easy_mode: true,
+    // Per-app fallback default only. The effective mode is resolved at runtime
+    // as persisted-setting > build-time PICK_EASY_MODE env > this literal, so the
+    // mobile builds turn easy mode on via PICK_EASY_MODE=true (see the just
+    // build recipe) rather than hardcoding it, and the in-app Settings toggle
+    // overrides either. Mobile has no runtime env, so PICK_EASY_MODE must be
+    // baked at build time — same mechanism as STRIKE48_HOST / the Sentry DSN.
+    easy_mode: false,
 };
 
 fn main() {

@@ -34,6 +34,10 @@ pub fn SettingsPage(
     // Telemetry opt-out (#278). Defaults on; toggling saves the setting.
     #[props(default = true)] telemetry_enabled: bool,
     #[props(default)] on_telemetry_change: EventHandler<bool>,
+    // Easy Mode toggle. Off in the expert shell; turning it on swaps to the
+    // simplified scan+chat view immediately.
+    #[props(default)] easy_mode_on: bool,
+    #[props(default)] on_easy_mode_change: EventHandler<bool>,
 ) -> Element {
     // -----------------------------------------------------------------------
     // Auto-save on toggle with visual feedback
@@ -491,6 +495,38 @@ pub fn SettingsPage(
                                 button {
                                     class: if !telemetry_enabled { "toggle-btn active" } else { "toggle-btn" },
                                     onclick: move |_| on_telemetry_change.call(false),
+                                    "Off"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Interface Mode card (Easy Mode toggle)
+            div { class: "settings-card dashboard-card",
+                div { class: "settings-card-header",
+                    span { class: "settings-card-icon", Settings { size: 16 } }
+                    h2 { "Interface Mode" }
+                }
+                div { class: "settings-card-body",
+                    div { class: "setting-row",
+                        div { class: "setting-label",
+                            div { class: "setting-name", "Easy Mode" }
+                            div { class: "text-dim-xs",
+                                "Simplified scan + chat view for quick assessments. Turn off for the full expert interface (dashboard, tools, shell, files)."
+                            }
+                        }
+                        div { class: "setting-controls",
+                            div { class: "setting-toggle",
+                                button {
+                                    class: if easy_mode_on { "toggle-btn active" } else { "toggle-btn" },
+                                    onclick: move |_| on_easy_mode_change.call(true),
+                                    "On"
+                                }
+                                button {
+                                    class: if !easy_mode_on { "toggle-btn active" } else { "toggle-btn" },
+                                    onclick: move |_| on_easy_mode_change.call(false),
                                     "Off"
                                 }
                             }

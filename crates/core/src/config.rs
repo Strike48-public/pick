@@ -552,6 +552,21 @@ impl ConnectorConfig {
             .exists()
     }
 
+    /// Delete the SDK's persisted connector credentials for this identity, if
+    /// present. Used by "Log out" so the next launch does a fully fresh OTT
+    /// registration rather than silently reconnecting the old connector.
+    /// Best-effort: a missing file or unset HOME is a no-op.
+    pub fn clear_credentials(connector_name: &str, instance_id: &str) {
+        let Ok(home) = std::env::var("HOME") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(home)
+            .join(".strike48")
+            .join("credentials")
+            .join(format!("{connector_name}_{instance_id}.json"));
+        let _ = std::fs::remove_file(path);
+    }
+
     /// Split a Strike48-style URL (accepts anything [`normalize_host`] produces
     /// plus bare hosts) into `(hostname, port)`.
     ///
@@ -726,6 +741,34 @@ pub struct AppSettings {
     /// it lives in the OS secure store (iOS Keychain / Android Keystore).
     #[serde(default)]
     pub matrix_api_url: String,
+
+    /// User's Easy Mode preference. `None` means "never chosen" — fall through to
+    /// the build-time / per-app default (see [`resolve_easy_mode`]). `Some(b)` is
+    /// an explicit in-app Settings choice that overrides the default.
+    #[serde(default)]
+    pub easy_mode: Option<bool>,
+}
+
+/// Resolve the effective Easy Mode flag from all sources, most-specific first:
+///  1. the user's persisted Settings choice (`settings_easy_mode`), if set;
+///  2. the BUILD-TIME `PICK_EASY_MODE` env (baked via `option_env!`, the only
+///     source that reaches mobile) — `true`/`1` or `false`/`0`;
+///  3. the per-app compile-time default (`app_default`, from `ConnectorAppConfig`).
+///
+/// This lets a build ship easy-mode-first (`PICK_EASY_MODE=true`) without code
+/// edits, while the in-app toggle still wins.
+pub fn resolve_easy_mode(settings_easy_mode: Option<bool>, app_default: bool) -> bool {
+    if let Some(choice) = settings_easy_mode {
+        return choice;
+    }
+    if let Some(v) = option_env!("PICK_EASY_MODE") {
+        match v.trim() {
+            "true" | "1" => return true,
+            "false" | "0" => return false,
+            _ => {}
+        }
+    }
+    app_default
 }
 
 /// Telemetry is opt-out: enabled by default so PLG usage analytics work, with a
@@ -750,6 +793,7 @@ impl Default for AppSettings {
             wifi_adapter: None,
             telemetry_enabled: default_telemetry_enabled(),
             matrix_api_url: String::new(),
+            easy_mode: None,
         }
     }
 }

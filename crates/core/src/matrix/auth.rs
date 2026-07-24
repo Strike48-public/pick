@@ -282,12 +282,22 @@ const NATIVE_OAUTH_SCHEME: &str = "com.strike48.pentest";
 /// browser backgrounds the app and the OS suspends the callback server.
 ///
 /// Returns `true` when a login was waiting and a token was delivered.
+///
+/// The token is ALSO cached in [`BROWSER_TOKEN_CACHE`] unconditionally, so a
+/// callback that arrives after the awaiting login timed out (a slow interactive
+/// browser sign-in can exceed the wait) is not lost: the next
+/// [`fetch_matrix_token_browser`] serves it from cache with no second browser
+/// round-trip.
 #[cfg(feature = "browser-auth")]
 pub fn deliver_native_oauth_callback(callback_url: &str) -> bool {
     let Some(token) = token_from_callback_url(callback_url) else {
         tracing::warn!("[BROWSER_AUTH] native OAuth callback URL contained no access_token");
         return false;
     };
+    // Cache first so a late callback (past the await timeout) still lands.
+    if let Ok(mut cache) = BROWSER_TOKEN_CACHE.lock() {
+        *cache = Some(token.clone());
+    }
     let sender = match NATIVE_OAUTH_TX.lock() {
         Ok(mut guard) => guard.take(),
         Err(_) => {
@@ -298,8 +308,12 @@ pub fn deliver_native_oauth_callback(callback_url: &str) -> bool {
     match sender {
         Some(tx) => tx.send(token).is_ok(),
         None => {
-            tracing::warn!("[BROWSER_AUTH] native OAuth callback with no login in flight");
-            false
+            // No login awaiting (it timed out, or the app relaunched). The token
+            // is cached above, so a subsequent sign-in reuses it immediately.
+            tracing::info!(
+                "[BROWSER_AUTH] native OAuth callback cached; no login in flight (will reuse)"
+            );
+            true
         }
     }
 }
@@ -430,9 +444,13 @@ async fn try_native_android_oauth(base: &str) -> crate::error::Result<Option<Str
     tracing::info!("[BROWSER_AUTH] Android: opening browser for native OAuth -> {login_url}");
     open_url_via_opener(&login_url);
 
-    // Wait for the Activity to deliver the token (or time out). 120s matches the
-    // loopback flow's overall budget and comfortably covers an interactive login.
-    const OAUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+    // Wait for the Activity to deliver the token (or time out). A first-time
+    // interactive browser sign-in (Keycloak form + consent, on a cold browser)
+    // can take well over two minutes, so give it a generous 5-minute window;
+    // observed real logins landed at ~2m20s and were lost under the old 120s cap.
+    // A late callback past even this is still recovered from BROWSER_TOKEN_CACHE
+    // (see `deliver_native_oauth_callback`).
+    const OAUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
     let token = match tokio::time::timeout(OAUTH_TIMEOUT, rx).await {
         Ok(Ok(token)) => token,
         Ok(Err(_)) => {
@@ -1178,7 +1196,10 @@ mod browser_token_tests {
 
 #[cfg(all(test, feature = "browser-auth"))]
 mod native_oauth_tests {
-    use super::{deliver_native_oauth_callback, NATIVE_OAUTH_TX};
+    use super::{
+        cached_browser_token, clear_browser_token_cache, deliver_native_oauth_callback,
+        NATIVE_OAUTH_TX,
+    };
 
     // All cases live in one test: they share the NATIVE_OAUTH_TX process-global,
     // so running them as separate #[test]s would race under the default
@@ -1213,13 +1234,24 @@ mod native_oauth_tests {
             NATIVE_OAUTH_TX.lock().unwrap().take();
         }
 
-        // A callback with no login in flight is a no-op that reports failure.
+        // A callback with no login in flight still succeeds by caching the token
+        // (recovers a late/post-timeout callback for the next sign-in).
         {
             NATIVE_OAUTH_TX.lock().unwrap().take();
+            clear_browser_token_cache();
             let delivered = deliver_native_oauth_callback(
                 "com.strike48.pentest://oauth/callback?access_token=orphan",
             );
-            assert!(!delivered, "delivery with no login in flight should fail");
+            assert!(
+                delivered,
+                "delivery with no login in flight should still cache + report success"
+            );
+            assert_eq!(
+                cached_browser_token().as_deref(),
+                Some("orphan"),
+                "token must be cached for the next sign-in to reuse"
+            );
+            clear_browser_token_cache();
         }
     }
 }
