@@ -187,15 +187,11 @@ impl PentestTool for NmapTool {
 
             // Port specification (skip for ping scan)
             if scan_type != "ping" {
-                match ports.as_str() {
-                    "top100" => builder = builder.arg("--top-ports", "100"),
-                    "top1000" => {} // Default, no flag needed
-                    "all" => builder = builder.flag("-p-"),
-                    _ => {
-                        // Validate custom port specification
-                        let validated_ports = validate_port_spec(&ports)?;
-                        builder = builder.arg("-p", &validated_ports);
-                    }
+                for (flag, value) in resolve_port_args(&ports)? {
+                    builder = match value {
+                        Some(v) => builder.arg(flag, &v),
+                        None => builder.flag(flag),
+                    };
                 }
             }
 
@@ -776,11 +772,14 @@ fn calculate_timeout(
     // Estimate number of target hosts
     let host_count = estimate_host_count(target);
 
-    // Estimate number of ports
-    let port_count = match ports {
+    // Estimate number of ports. Fold the keyword/full-range synonyms the same
+    // way resolve_port_args does (#257) so a full scan requested as "-" /
+    // "1-65535" / "ALL" is sized as 65535 ports, not mis-estimated as 1 and
+    // clamped to the 60s floor (which would kill the scan mid-run).
+    let port_count = match ports.trim().to_ascii_lowercase().as_str() {
         "top100" => 100,
         "top1000" => 1000,
-        "all" => 65535,
+        "all" | "-" | "1-65535" => 65535,
         _ => {
             // Parse custom port spec (e.g., "80,443", "1-1000", "80-443,8000-9000")
             parse_port_count(ports)
@@ -856,6 +855,40 @@ fn estimate_host_count(target: &str) -> usize {
 
     // Single host or hostname
     1
+}
+
+/// Resolve the `ports` param into nmap CLI arg(s).
+///
+/// Returns a list of `(flag, Option<value>)` the caller appends to the builder:
+/// a `Some(value)` becomes `arg(flag, value)` (e.g. `-p 80,443`), a `None`
+/// becomes a bare `flag` (e.g. `-p-`). Kept pure (no builder, no I/O) so the
+/// port-spec decision is unit-testable without executing nmap.
+///
+/// Full-port-range synonyms all map to `-p-` (#257): the structured `"all"`,
+/// the bare `"-"` that the legacy `-p-` normalizer produces (`-p` + spec `-`),
+/// and the explicit `"1-65535"`. Before this, only `"all"` hit the `-p-` arm;
+/// `"-"` fell through to `validate_port_spec("-")`, which split on `-` into
+/// `["",""]` and errored with "Invalid port number", so a model emitting `-p-`
+/// (which the tool description advertises) got a validation failure instead of
+/// a full scan.
+///
+/// The keyword synonyms (`top100` / `top1000` / `all`) are matched
+/// case-insensitively: the schema advertises them lowercase, but the LLM emits
+/// case variants (`"ALL"`, `"Top100"`), which would otherwise fall through to
+/// `validate_port_spec` and error. A custom numeric spec is left verbatim for
+/// `validate_port_spec` (digits/commas/dashes have no case to fold).
+fn resolve_port_args(ports: &str) -> Result<Vec<(&'static str, Option<String>)>> {
+    let trimmed = ports.trim();
+    match trimmed.to_ascii_lowercase().as_str() {
+        "top100" => Ok(vec![("--top-ports", Some("100".to_string()))]),
+        "top1000" => Ok(vec![]), // nmap default: no port flag
+        // Full-range synonyms -> -p- (scan all 65535 ports).
+        "all" | "-" | "1-65535" => Ok(vec![("-p-", None)]),
+        _ => {
+            let validated = validate_port_spec(trimmed)?;
+            Ok(vec![("-p", Some(validated))])
+        }
+    }
 }
 
 /// Parse port count from custom port specification
@@ -1045,6 +1078,100 @@ mod tests {
     }
 
     // ========================================
+    // Tests for resolve_port_args() — #257 full-port-range synonyms
+    // ========================================
+
+    #[test]
+    fn resolve_ports_full_range_synonyms_map_to_dash_p_dash() {
+        // The bug (#257): a full-scan request expressed as `-p-` normalizes to
+        // ports="-", which used to hit validate_port_spec("-") and error. All
+        // three full-range spellings must now emit the bare `-p-` flag.
+        for spec in ["all", "-", "1-65535"] {
+            assert_eq!(
+                resolve_port_args(spec).unwrap(),
+                vec![("-p-", None)],
+                "ports={spec:?} should map to the -p- full-scan flag"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_ports_dash_does_not_error() {
+        // Direct regression on the reported failure: ports="-" must NOT return
+        // Err("Invalid port number").
+        assert!(
+            resolve_port_args("-").is_ok(),
+            "ports=\"-\" must resolve, not fail validation"
+        );
+    }
+
+    #[test]
+    fn resolve_ports_top_variants_and_default() {
+        assert_eq!(
+            resolve_port_args("top100").unwrap(),
+            vec![("--top-ports", Some("100".to_string()))]
+        );
+        // top1000 is nmap's default: no port flag emitted.
+        assert_eq!(resolve_port_args("top1000").unwrap(), vec![]);
+    }
+
+    #[test]
+    fn resolve_ports_custom_spec_is_validated_and_passed() {
+        assert_eq!(
+            resolve_port_args("80,443").unwrap(),
+            vec![("-p", Some("80,443".to_string()))]
+        );
+        assert_eq!(
+            resolve_port_args("1-1000").unwrap(),
+            vec![("-p", Some("1-1000".to_string()))]
+        );
+    }
+
+    #[test]
+    fn resolve_ports_still_rejects_genuinely_invalid() {
+        // The fix must not blanket-accept: a real bad spec still errors.
+        assert!(resolve_port_args("not-a-port").is_err());
+        assert!(resolve_port_args("99999").is_err());
+    }
+
+    #[test]
+    fn resolve_ports_keyword_synonyms_are_case_insensitive() {
+        // The schema advertises lowercase keywords, but the LLM emits case
+        // variants; they must resolve, not fall through to validate_port_spec
+        // and error (adversarial-review finding on #257).
+        assert_eq!(resolve_port_args("ALL").unwrap(), vec![("-p-", None)]);
+        assert_eq!(resolve_port_args("All").unwrap(), vec![("-p-", None)]);
+        assert_eq!(
+            resolve_port_args("TOP100").unwrap(),
+            vec![("--top-ports", Some("100".to_string()))]
+        );
+        assert_eq!(resolve_port_args("Top1000").unwrap(), vec![]);
+        // Whitespace around a keyword is also tolerated (trim happens first).
+        assert_eq!(resolve_port_args("  all  ").unwrap(), vec![("-p-", None)]);
+    }
+
+    #[test]
+    fn flags_dash_p_dash_folds_to_full_scan_end_to_end() {
+        // The end-to-end shapes from the issue: both the string and array
+        // `flags` forms must fold to ports="-", which resolve_port_args then
+        // turns into a full scan. This covers the whole chain the LLM triggers.
+        for flags in [json!("-p-"), json!(["-p-"])] {
+            let folded = fold_flags(json!({"target": "10.0.0.5", "flags": flags}));
+            assert_eq!(
+                folded["ports"],
+                json!("-"),
+                "flags={flags} should fold to ports=\"-\""
+            );
+            let ports = folded["ports"].as_str().unwrap();
+            assert_eq!(
+                resolve_port_args(ports).unwrap(),
+                vec![("-p-", None)],
+                "folded ports from flags={flags} should map to -p-"
+            );
+        }
+    }
+
+    // ========================================
     // Tests for calculate_timeout()
     // ========================================
 
@@ -1085,6 +1212,25 @@ mod tests {
             all_ports,
             top1000
         );
+    }
+
+    #[test]
+    fn full_range_synonyms_get_the_same_timeout_as_all() {
+        // Regression (#257): the full-port-range synonyms resolve_port_args accepts
+        // ("-", "1-65535", case variants) must estimate the same 65535-port workload
+        // as "all". Before, calculate_timeout only knew the literal "all" and fell
+        // through to parse_port_count, which returned 1 for "-"/"ALL" -> the full scan
+        // was clamped to the 60s minimum and killed mid-scan.
+        let target = "10.0.4.0/24";
+        let all = calculate_timeout(target, "all", "connect", 4, false);
+        for synonym in ["-", "1-65535", "ALL", "  all  "] {
+            assert_eq!(
+                calculate_timeout(target, synonym, "connect", 4, false),
+                all,
+                "ports={:?} should time out like a full scan, not the 60s floor",
+                synonym
+            );
+        }
     }
 
     #[test]
