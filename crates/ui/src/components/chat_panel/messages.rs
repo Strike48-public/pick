@@ -35,6 +35,11 @@ pub struct MessageListProps {
     /// red-team suggestions (the big "Scan My Network" card is the primary action).
     #[props(default)]
     pub easy_mode: bool,
+    /// True while the browser OAuth for the chat token is in flight (opened, not
+    /// yet returned). The empty state then tells the user to finish sign-in in
+    /// the browser rather than the misleading "Select an agent to begin".
+    #[props(default)]
+    pub awaiting_auth: bool,
 }
 
 /// Scrollable message list, thinking indicator, and scroll-to-bottom FAB.
@@ -107,8 +112,15 @@ pub fn MessageList(props: MessageListProps) -> Element {
                         easy_mode: props.easy_mode,
                     }
                 } else if selected_agent.read().is_none() {
-                    div { class: "chat-empty",
-                        p { "Select an agent to begin" }
+                    if props.awaiting_auth {
+                        div { class: "chat-empty chat-empty-auth",
+                            p { class: "chat-empty-auth-title", "Complete your sign-in in the browser" }
+                            p { class: "chat-empty-auth-sub", "We opened your browser to sign in to Strike48. Come back here once you're done — this will update automatically." }
+                        }
+                    } else {
+                        div { class: "chat-empty",
+                            p { "Select an agent to begin" }
+                        }
                     }
                 }
 

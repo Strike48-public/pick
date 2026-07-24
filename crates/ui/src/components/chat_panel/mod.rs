@@ -399,6 +399,11 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         });
     }
 
+    // Browser OAuth for the chat token has been opened but hasn't returned yet
+    // (no token, agents not loaded). Drives the "finish sign-in in the browser"
+    // empty state so the user isn't shown a misleading "Select an agent".
+    let awaiting_auth = browser_auth_attempted() && effective_token.is_empty() && !agents_loaded();
+
     // -----------------------------------------------------------------------
     // Fetch agents when we have a token
     // -----------------------------------------------------------------------
@@ -1493,6 +1498,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 conversation_list: conversation_list,
                 on_select_conversation: on_select_conversation,
                 easy_mode: props.full_page,
+                awaiting_auth: awaiting_auth,
             }
 
             // Inline notice — quieter than `chat-error`, sits above the input.

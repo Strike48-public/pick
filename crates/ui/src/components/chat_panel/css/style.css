@@ -439,6 +439,23 @@
     gap: 16px;
 }
 
+/* "Complete sign-in in the browser" empty state (browser OAuth in flight). */
+.chat-empty-auth {
+    gap: 8px;
+    max-width: 34ch;
+    margin: 0 auto;
+}
+.chat-empty-auth-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--foreground);
+}
+.chat-empty-auth-sub {
+    font-size: 0.8rem;
+    color: var(--muted-foreground);
+    line-height: 1.4;
+}
+
 .chat-greeting {
     font-style: italic;
     color: var(--muted-foreground);
