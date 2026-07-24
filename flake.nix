@@ -125,6 +125,8 @@
         ] ++ (with pkgs; [
           bubblewrap
           just
+          unzip           # _verify-android-apk inspects the APK's dex entries
+          patchelf        # android-crux-refresh-so sets the .so SONAME
         ]);
 
         # Native build deps. libclang is for bindgen (rquickjs-sys ships no

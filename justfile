@@ -776,7 +776,52 @@ crux-typegen out="crates/crux-core/generated":
 # Sets a SONAME so the JNI shim records "libpick_crux_ffi.so" (not a host path)
 # as its DT_NEEDED. Run `just crux-ffi-android-x86_64` first.
 android-crux-refresh-so:
+    mkdir -p apps/android-crux/app/src/main/jniLibs/x86_64
     cp target/x86_64-linux-android/release-ffi/libpick_crux_ffi.so \
         apps/android-crux/app/src/main/jniLibs/x86_64/libpick_crux_ffi.so
     patchelf --set-soname libpick_crux_ffi.so \
         apps/android-crux/app/src/main/jniLibs/x86_64/libpick_crux_ffi.so
+
+# Build the android-crux Compose shell end-to-end (debug APK, x86_64/emulator).
+# Chains the three steps the app needs: cross-compile the crux-ffi .so, refresh
+# it into jniLibs with a stable SONAME, then assemble the APK. The generated
+# shared types and the C header are committed, so no typegen/cbindgen here.
+# STRIKE48_HOST is read by app/build.gradle.kts (BuildConfig); defaults to the
+# dev PLG cluster when unset.
+build-android-crux:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    NDK_BIN=$(just _android-ndk-bin)
+    export PATH="$NDK_BIN:$PATH"
+    export CC_x86_64_linux_android="$NDK_BIN/x86_64-linux-android28-clang"
+    export CXX_x86_64_linux_android="$NDK_BIN/x86_64-linux-android28-clang++"
+    export AR_x86_64_linux_android="$NDK_BIN/llvm-ar"
+    unset CC CXX
+    just crux-ffi-android-x86_64
+    just android-crux-refresh-so
+    pushd apps/android-crux > /dev/null
+    ./gradlew clean assembleDebug
+    popd > /dev/null
+
+# Build the ios-crux SwiftUI shell end-to-end (debug, iOS simulator). Run on the
+# Mac build host inside `nix develop`. Cross-compiles the crux-ffi static lib the
+# xcodeproj links (-lpick_crux_ffi from target/aarch64-apple-ios-sim/release-ffi),
+# then xcodebuild against the committed scheme + generated PickShared SPM package.
+# STRIKE48_HOST flows into the app via the xcodeproj build setting -> Info.plist.
+build-ios-crux:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just crux-ffi-ios-sim
+    # crux-ffi-ios-sim builds only the arm64 simulator slice (the Apple-silicon
+    # host's native sim arch), and the xcodeproj's LIBRARY_SEARCH_PATHS points at
+    # target/aarch64-apple-ios-sim/release-ffi. Pin ARCHS=arm64 so xcodebuild
+    # doesn't also try the x86_64 sim slice, which would fail to link -lpick_crux_ffi.
+    xcodebuild \
+        -project apps/ios-crux/PickCrux.xcodeproj \
+        -scheme PickCrux \
+        -sdk iphonesimulator \
+        -configuration Debug \
+        -destination 'generic/platform=iOS Simulator' \
+        ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
+        STRIKE48_HOST="${STRIKE48_HOST:-https://plg.strike48.test}" \
+        build

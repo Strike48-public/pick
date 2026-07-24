@@ -165,4 +165,34 @@ jobs:
       # SDK/NDK, dx, build-tools and aapt2 as local `just build-android`.
       - uses: DeterminateSystems/nix-installer-action@main
       - name: Build debug APK
+        env:
+          STRIKE48_HOST: https://studio.strike48.com
         run: nix develop --command just build-android
+
+  android-crux:
+    name: Android Crux Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # Same nix flake as the Android Build job: cross-compiles the crux-ffi .so,
+      # refreshes it into jniLibs (patchelf SONAME), then assembles the APK.
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Build android-crux debug APK
+        env:
+          STRIKE48_HOST: https://studio.strike48.com
+        run: nix develop --command just build-android-crux
+
+  ios-crux:
+    name: iOS Crux Build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      # macOS runner ships Xcode; the nix flake's darwin devShell supplies the
+      # fenix Rust toolchain (+ aarch64-apple-ios-sim std) and just, mirroring the
+      # local Mac build host. build-ios-crux cross-compiles the crux-ffi static lib
+      # the xcodeproj links, then xcodebuild against the committed scheme.
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Build ios-crux (simulator)
+        env:
+          STRIKE48_HOST: https://studio.strike48.com
+        run: nix develop --command just build-ios-crux
