@@ -51,8 +51,10 @@ unsafe fn walk_ifaddrs(ifap: *mut libc::ifaddrs) -> Vec<NetworkInterface> {
     let mut ifaces: Vec<NetworkInterface> = Vec::new();
     let mut cur = ifap;
 
-    while !cur.is_null() {
-        let ifa = &*cur;
+    // `as_ref` null-checks each node before forming the reference, so the
+    // walk never dereferences a null/invalid pointer (the list terminates
+    // when `ifa_next` is null).
+    while let Some(ifa) = cur.as_ref() {
         cur = ifa.ifa_next;
 
         if ifa.ifa_name.is_null() {

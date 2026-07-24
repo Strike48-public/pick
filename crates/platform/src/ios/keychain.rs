@@ -157,14 +157,19 @@ pub fn get(account: &str) -> Result<Option<String>, String> {
         )
     };
     match status {
-        ERR_SEC_SUCCESS if !result.is_null() => {
-            // SAFETY: on success with return-data, result is a CFDataRef.
-            let data: &NSData = unsafe { &*(result as *const NSData) };
-            let bytes = data.to_vec();
-            String::from_utf8(bytes)
-                .map(Some)
-                .map_err(|e| format!("Keychain value not UTF-8: {e}"))
-        }
+        // SAFETY: on success with return-data, result is a retained CFDataRef
+        // (toll-free bridged to NSData). `as_ref` null-checks the out-param
+        // before forming a reference, so a null/invalid pointer is never
+        // dereferenced (a missing item reads as `None`).
+        ERR_SEC_SUCCESS => match unsafe { (result as *const NSData).as_ref() } {
+            Some(data) => {
+                let bytes = data.to_vec();
+                String::from_utf8(bytes)
+                    .map(Some)
+                    .map_err(|e| format!("Keychain value not UTF-8: {e}"))
+            }
+            None => Ok(None),
+        },
         ERR_SEC_ITEM_NOT_FOUND => Ok(None),
         s => Err(format!("Keychain SecItemCopyMatching failed: {s}")),
     }
