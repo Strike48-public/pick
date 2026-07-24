@@ -108,12 +108,10 @@ async fn map_operation_inner(api: &dyn MatrixApi, op: PentestOperation) -> Pente
         PentestOperation::SendMessage {
             conversation_id,
             text,
-        } => {
-            match api.send(conversation_id, text).await {
-                Ok(c) => PentestOutcome::ScanQueued { conversation_id: c },
-                Err(m) => PentestOutcome::Error { message: m },
-            }
-        }
+        } => match api.send(conversation_id, text).await {
+            Ok(c) => PentestOutcome::ScanQueued { conversation_id: c },
+            Err(m) => PentestOutcome::Error { message: m },
+        },
         PentestOperation::PollConversation { conversation_id } => {
             match api.poll(conversation_id).await {
                 Ok(d) => PentestOutcome::Delta(d),
@@ -537,26 +535,28 @@ impl MatrixApi for CoreMatrixApi {
         // separate signal from `agent_status` because a hard ConversationServer
         // crash reports IDLE, not ERROR — the durable message-level metadata is
         // the reliable terminal marker.
-        let notice = if matches!(state.agent_status, AgentStatus::Error)
-            || state.stream_error.is_some()
-        {
-            let built = pentest_core::matrix::build_error_notice(&client).await;
-            // Also capture the failure as a Sentry ISSUE (usage traces don't
-            // cover errors). Classify: a mid-stream drop vs a token-limit vs a
-            // generic upstream error. `detail` stays non-PII (kind + reason).
-            let kind = if state.stream_error.is_some() {
-                "stream_error"
-            } else if matches!(built.kind, pentest_core::matrix::ChatNoticeKind::TokenLimit) {
-                "token_limit"
+        let notice =
+            if matches!(state.agent_status, AgentStatus::Error) || state.stream_error.is_some() {
+                let built = pentest_core::matrix::build_error_notice(&client).await;
+                // Also capture the failure as a Sentry ISSUE (usage traces don't
+                // cover errors). Classify: a mid-stream drop vs a token-limit vs a
+                // generic upstream error. `detail` stays non-PII (kind + reason).
+                let kind = if state.stream_error.is_some() {
+                    "stream_error"
+                } else if matches!(built.kind, pentest_core::matrix::ChatNoticeKind::TokenLimit) {
+                    "token_limit"
+                } else {
+                    "upstream"
+                };
+                let detail = state
+                    .stream_error
+                    .clone()
+                    .unwrap_or_else(|| built.title.clone());
+                pentest_core::telemetry::capture_agent_error(kind, &detail);
+                Some(notice_to_view(built))
             } else {
-                "upstream"
+                None
             };
-            let detail = state.stream_error.clone().unwrap_or_else(|| built.title.clone());
-            pentest_core::telemetry::capture_agent_error(kind, &detail);
-            Some(notice_to_view(built))
-        } else {
-            None
-        };
         let delta = state_to_delta(state, notice);
         tracing::info!(
             "[poll] conv={} msgs={} tool_calls={} done={}",

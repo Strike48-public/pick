@@ -11,7 +11,7 @@ const DESKTOP_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
     platform_name: "Desktop",
     container_class: "mobile-app",
     shell_route_mode: ShellMode::Native,
-    default_proot: false,
+    default_proot: true,
     start_liveview_server: true,
     inject_css: false,
     extra_init_messages: &[],

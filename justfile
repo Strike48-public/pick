@@ -47,7 +47,7 @@ matrix_api := env_var_or_default("MATRIX_API_URL", "https://studio.strike48.test
 matrix_tenant := env_var_or_default("MATRIX_TENANT_ID", "*")
 
 # Run headless agent in dev mode against studio.strike48.test
-dev STRIKE48_HOST="wss://studio.strike48.test" MATRIX_API_URL="https://studio.strike48.test" MATRIX_TENANT_ID="*" INSTANCE_ID="pick-dev" MATRIX_TLS_INSECURE="true" RUST_LOG="debug" STRIKE48_ACCEPT_INVALID_CERTS="true" *ARGS="":
+dev STRIKE48_HOST="wss://studio.strike48.test" MATRIX_API_URL="https://studio.strike48.test" MATRIX_TENANT_ID="*" INSTANCE_ID="pick-dev" MATRIX_TLS_INSECURE="true" RUST_LOG="debug,hyper_util=warn,hyper=warn" STRIKE48_ACCEPT_INVALID_CERTS="true" *ARGS="":
     #!/usr/bin/env bash
     set -euo pipefail
     export STRIKE48_HOST="{{STRIKE48_HOST}}"
@@ -215,12 +215,38 @@ emulator-list:
 # Inject android-lib AAR module into a dx-generated Gradle project.
 # Symlinks the module, registers it in settings.gradle, and adds the dependency.
 # Idempotent — safe to call on every build.
+#
+# IMPORTANT: `dx build` regenerates settings.gradle and app/build.gradle.kts
+# on every run, wiping out our additions. Therefore this MUST be called AFTER
+# every `dx build` and BEFORE every gradle invocation. The recipe verifies the
+# additions are actually present and aborts loudly if not — silently dropping
+# the kotlin module produces a runtime ClassNotFoundException for
+# `com.strike48.pentest_connector.ConnectorBridge` that's painful to diagnose.
 _inject-android-lib proj:
     #!/usr/bin/env bash
     set -euo pipefail
     ln -sfn "$(pwd)/android-lib" "{{proj}}/android-lib"
-    grep -q "android-lib" "{{proj}}/settings.gradle" 2>/dev/null || \
-        echo "include ':android-lib'" >> "{{proj}}/settings.gradle"
+
+    settings_file="{{proj}}/settings.gradle"
+    build_file="{{proj}}/app/build.gradle.kts"
+
+    grep -q "android-lib" "$settings_file" 2>/dev/null || \
+        echo "include ':android-lib'" >> "$settings_file"
+    grep -q "android-lib" "$build_file" 2>/dev/null || \
+        echo 'dependencies { implementation(project(":android-lib")) }' >> "$build_file"
+
+    # Verify injection took. If `dx build` regenerated the files between
+    # the grep check and the echo (race), or if the project layout changed,
+    # we want to know now — not at runtime.
+    if ! grep -q "android-lib" "$settings_file" 2>/dev/null; then
+        echo "ERROR: failed to inject android-lib into $settings_file" >&2
+        exit 1
+    fi
+    if ! grep -q "android-lib" "$build_file" 2>/dev/null; then
+        echo "ERROR: failed to inject android-lib dependency into $build_file" >&2
+        exit 1
+    fi
+
     # Opt out of Android 15's forced edge-to-edge. dx regenerates styles.xml on
     # every build with a plain NoActionBar theme; on targetSdk 35 (Android 15)
     # that makes the WebView draw UNDER the status bar, so the OS clock/battery
@@ -242,8 +268,7 @@ _inject-android-lib proj:
     </resources>
     XML
     fi
-    grep -q "android-lib" "{{proj}}/app/build.gradle.kts" 2>/dev/null || \
-        echo 'dependencies { implementation(project(":android-lib")) }' >> "{{proj}}/app/build.gradle.kts"
+
     # Copy proot, busybox, and dependencies into jniLibs
     for arch in android-jniLibs/*/; do
         abi=$(basename "$arch")
@@ -253,6 +278,35 @@ _inject-android-lib proj:
         cp -n "$arch"lib*.so "$dest/" 2>/dev/null || true
         cp -n "$arch"lib*.so.* "$dest/" 2>/dev/null || true
     done
+
+# Verify the produced APK contains the kotlin bridge class.
+#
+# A silently-stripped `ConnectorBridge` class causes the app to crash on first
+# JNI call (FetchTokenFallback → setOAuthCallbackPort →
+# java.lang.ClassNotFoundException). This check catches the regression in
+# seconds instead of after a 5-minute install + manual test cycle.
+_verify-android-apk apk:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -f "{{apk}}" ]]; then
+        echo "ERROR: APK not found: {{apk}}" >&2
+        exit 1
+    fi
+    # APKs split classes across classes.dex, classes2.dex, etc. — scan all of them.
+    found=0
+    for dex in $(unzip -l "{{apk}}" 2>/dev/null | awk '/classes[0-9]*\.dex/ {print $4}'); do
+        if unzip -p "{{apk}}" "$dex" 2>/dev/null | strings | grep -q "ConnectorBridge"; then
+            found=1
+            break
+        fi
+    done
+    if [[ "$found" -ne 1 ]]; then
+        echo "ERROR: ConnectorBridge class not found in any classes*.dex in {{apk}}" >&2
+        echo "       This usually means _inject-android-lib didn't take. The app will" >&2
+        echo "       crash with ClassNotFoundException on first JNI call." >&2
+        exit 1
+    fi
+    echo "OK: ConnectorBridge present in APK"
 
 # Helper to set up Android NDK environment - prints the NDK bin path
 _android-ndk-bin:
@@ -270,12 +324,11 @@ _android-ndk-bin:
     fi
     echo "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
-# Build mobile app for Android (debug). Defaults to arm64 (physical devices);
-# pass `arch=x86_64-linux-android` for an emulator build.
-# SDK versions come from apps/mobile/Dioxus.toml; the Nix devshell provides the
-# NDK/SDK, the build-tools shim, and the patched aapt2 (see flake.nix), so
-# `dx build` succeeds on its own with no post-generation patching.
-build-android arch="aarch64-linux-android":
+# Build mobile app for Android (debug)
+#
+# By default builds both arm64 (physical devices) and x86_64 (emulators).
+# Override with: ANDROID_TARGETS="aarch64-linux-android" just build-android
+build-android:
     #!/usr/bin/env bash
     set -euo pipefail
     # Avoid Nix header conflicts
@@ -305,20 +358,34 @@ build-android arch="aarch64-linux-android":
     export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
     echo "PICK_EASY_MODE=$PICK_EASY_MODE"
 
-    # dx preserves the generated Gradle project between builds and does NOT
-    # clean jniLibs, so a previously-built ABI (app + native tool libs) would
-    # otherwise be bundled alongside the arch we're building now. Wipe it so the
-    # APK contains exactly one architecture.
-    rm -rf target/dx/pentest-mobile/debug/android/app/app/src/main/jniLibs
+    # Build each Rust target. Without --target, dx builds only the host arch
+    # (x86_64) and gradle silently packages stale arm64 .so files left over
+    # from previous successful builds — physical devices then run obsolete
+    # native code.
+    targets="${ANDROID_TARGETS:-aarch64-linux-android x86_64-linux-android}"
+    for target in $targets; do
+        echo "==> Building Rust for $target..."
+        {{dx}} build --platform android --package pentest-mobile --target "$target"
+    done
 
-    {{dx}} build --platform android --package pentest-mobile --target {{arch}}
+    # Re-inject AFTER dx (which regenerates settings.gradle and build.gradle.kts).
     just _inject-android-lib target/dx/pentest-mobile/debug/android/app
-    cd target/dx/pentest-mobile/debug/android/app && ./gradlew assembleDebug
 
-# Build mobile app for Android (release). Defaults to arm64; pass
-# `arch=x86_64-linux-android` for an emulator build. Produces an UNSIGNED APK —
-# see [android.signing] in Dioxus.toml to sign for distribution.
-build-android-release arch="aarch64-linux-android":
+    # `clean` is required: gradle's incremental task cache doesn't notice when
+    # `_inject-android-lib` adds the kotlin module (settings.gradle changes
+    # don't invalidate downstream task fingerprints), so without clean it can
+    # silently package a stale APK that omits ConnectorBridge.
+    pushd target/dx/pentest-mobile/debug/android/app > /dev/null
+    ./gradlew clean assembleDebug
+    popd > /dev/null
+
+    just _verify-android-apk target/dx/pentest-mobile/debug/android/app/app/build/outputs/apk/debug/app-debug.apk
+
+# Build mobile app for Android (release)
+#
+# By default builds both arm64 (physical devices) and x86_64 (emulators).
+# Override with: ANDROID_TARGETS="aarch64-linux-android" just build-android-release
+build-android-release:
     #!/usr/bin/env bash
     set -euo pipefail
     # Avoid Nix header conflicts
@@ -340,15 +407,27 @@ build-android-release arch="aarch64-linux-android":
     # Unset global CC/CXX that would override the target-specific ones
     unset CC CXX
 
-    # dx preserves the generated Gradle project between builds and does NOT
-    # clean jniLibs, so a previously-built ABI (app + native tool libs) would
-    # otherwise be bundled alongside the arch we're building now. Wipe it so the
-    # APK contains exactly one architecture.
-    rm -rf target/dx/pentest-mobile/release/android/app/app/src/main/jniLibs
+    # Mobile is easy-mode-first: bake PICK_EASY_MODE at build time (see the debug
+    # build-android recipe). Override with PICK_EASY_MODE=false.
+    export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
+    echo "PICK_EASY_MODE=$PICK_EASY_MODE"
 
-    {{dx}} build --platform android --package pentest-mobile --release --target {{arch}}
+    # Build each Rust target. See build-android comment for why this loop matters.
+    targets="${ANDROID_TARGETS:-aarch64-linux-android x86_64-linux-android}"
+    for target in $targets; do
+        echo "==> Building Rust for $target (release)..."
+        {{dx}} build --platform android --package pentest-mobile --release --target "$target"
+    done
+
+    # Re-inject AFTER dx (which regenerates settings.gradle and build.gradle.kts).
     just _inject-android-lib target/dx/pentest-mobile/release/android/app
-    cd target/dx/pentest-mobile/release/android/app && ./gradlew assembleRelease
+
+    # See build-android comment for why `clean` is required.
+    pushd target/dx/pentest-mobile/release/android/app > /dev/null
+    ./gradlew clean assembleRelease
+    popd > /dev/null
+
+    just _verify-android-apk target/dx/pentest-mobile/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk
 
 # Build, install, and launch Android app on connected device/emulator
 run-android:

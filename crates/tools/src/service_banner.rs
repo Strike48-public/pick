@@ -251,10 +251,13 @@ impl ServiceBannerTool {
 
         // Read banner (max 4KB)
         let mut buffer = vec![0u8; 4096];
-        let bytes_read = timeout(Duration::from_millis(timeout_ms), read_half.read(&mut buffer))
-            .await
-            .map_err(|_| Error::Timeout("Banner read timed out".into()))?
-            .map_err(|e| Error::Network(format!("Failed to read banner: {}", e)))?;
+        let bytes_read = timeout(
+            Duration::from_millis(timeout_ms),
+            read_half.read(&mut buffer),
+        )
+        .await
+        .map_err(|_| Error::Timeout("Banner read timed out".into()))?
+        .map_err(|e| Error::Network(format!("Failed to read banner: {}", e)))?;
 
         let banner = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
 

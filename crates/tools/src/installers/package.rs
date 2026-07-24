@@ -8,7 +8,6 @@
 
 use super::{InstallEvent, ProgressSink, ToolInstaller};
 use pentest_core::error::{Error, Result};
-use pentest_platform::{get_platform, CommandExec};
 use std::time::Duration;
 
 use crate::installers::sandbox_enabled;
@@ -74,12 +73,7 @@ impl ToolInstaller for PackageInstaller {
     }
 
     async fn is_installed(&self) -> bool {
-        let platform = get_platform();
-        platform
-            .execute_command("which", &[self.binary_name], Duration::from_secs(5))
-            .await
-            .map(|r| r.exit_code == 0)
-            .unwrap_or(false)
+        super::binary_on_path(self.binary_name).await
     }
 
     async fn install(&self, progress: &ProgressSink) -> Result<()> {
@@ -105,21 +99,9 @@ impl ToolInstaller for PackageInstaller {
             self.display_name, self.pacman_package
         )));
 
-        let platform = get_platform();
-        let result = platform
-            .execute_command(
-                "pacman",
-                &["-S", "--noconfirm", self.pacman_package],
-                Duration::from_secs(600),
-            )
-            .await?;
-
-        if result.exit_code != 0 {
-            return Err(Error::ToolExecution(format!(
-                "Failed to install {}: {}",
-                self.pacman_package, result.stderr
-            )));
-        }
+        // -Sy refreshes the package DBs first; a bare -S fails on a rootfs whose
+        // sync DBs have gone stale (see installers::pacman).
+        super::pacman::install(self.pacman_package, Duration::from_secs(600)).await?;
 
         if !self.is_installed().await {
             return Err(Error::ToolExecution(format!(

@@ -347,6 +347,12 @@ fn drain_is_safe_under_concurrent_tool_execution() {
 /// second passed the gate silently.
 #[tokio::test]
 async fn failed_tool_is_flagged_and_ungrounded_finding_cannot_reach_report() {
+    // Run host-direct. With the sandbox enabled and no backend (CI runner), the
+    // command below falls through to download_proot + rootfs extraction, which
+    // hangs a non-root runner. Disabling the sandbox takes the host path — CI
+    // also sets DISABLE_SANDBOX=true, this covers a bare local `cargo test`.
+    pentest_platform::set_use_sandbox(false);
+
     // (1) Run a real command that exits nonzero with empty stdout. On a host
     // without command exec this returns Skipped; either way the outcome must
     // NOT be a trustworthy `Ran`, and `success` must be false. This half

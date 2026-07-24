@@ -11,8 +11,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[repr(C)]
 pub enum MarkdownBlock {
-    Heading { level: u8, spans: Vec<Span> },
-    Paragraph { spans: Vec<Span> },
+    Heading {
+        level: u8,
+        spans: Vec<Span>,
+    },
+    Paragraph {
+        spans: Vec<Span>,
+    },
     /// A list item. `number` is 0 for unordered items.
     ListItem {
         ordered: bool,
@@ -22,10 +27,15 @@ pub enum MarkdownBlock {
     /// A fenced/indented code block. Its text is verbatim, never styled inline.
     /// `lang` is the fence info-string lowercased (empty for indented blocks or
     /// bare fences); shells key on it (e.g. `"mermaid"`) to pick a renderer.
-    CodeBlock { text: String, lang: String },
+    CodeBlock {
+        text: String,
+        lang: String,
+    },
     /// A Mermaid diagram (```mermaid fenced block). `code` is the verbatim
     /// diagram source; shells render it via an embedded Mermaid runtime.
-    Mermaid { code: String },
+    Mermaid {
+        code: String,
+    },
 }
 
 /// The inline style applied to a span of text. Bold+italic collapses to Bold.

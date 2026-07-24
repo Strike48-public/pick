@@ -426,7 +426,9 @@ async fn try_native_android_oauth(base: &str) -> crate::error::Result<Option<Str
     let mut login_url = reqwest::Url::parse(base)
         .map_err(|e| crate::error::Error::Matrix(format!("invalid Matrix base URL: {e}")))?;
     login_url.set_path("/auth/login");
-    login_url.query_pairs_mut().append_pair("redirect", &redirect);
+    login_url
+        .query_pairs_mut()
+        .append_pair("redirect", &redirect);
     let login_url = login_url.to_string();
 
     // Register the oneshot BEFORE opening the browser so a fast callback can't

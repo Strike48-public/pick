@@ -113,7 +113,9 @@ pub enum Event {
     /// Seed persisted settings at startup from the shell's native store. Sent
     /// once before the user interacts, so the ViewModel + telemetry reflect the
     /// saved opt-out choice.
-    SeedSettings { telemetry_enabled: bool },
+    SeedSettings {
+        telemetry_enabled: bool,
+    },
     /// Toggle usage telemetry at runtime (Settings). Flips the core flag and
     /// enables/disables the Sentry client immediately; the shell persists it.
     SetTelemetryEnabled(bool),

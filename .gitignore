@@ -37,6 +37,10 @@ logs/
 .env
 .env.local
 .env.*.local
+# Backups/copies of .env - secret-bearing, never commit (e.g. .env.bak-238).
+.env.bak
+.env.bak-*
+.env.*.bak
 
 # AI tooling local overlays — private, operator-specific, never committed.
 # See CLAUDE.md "Local Overrides" section.

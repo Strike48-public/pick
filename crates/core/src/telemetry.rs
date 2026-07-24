@@ -36,7 +36,6 @@ static GUARD: Mutex<Option<sentry::ClientInitGuard>> = Mutex::new(None);
 /// back on within a session.
 static IDENTITY: Mutex<Option<(String, bool)>> = Mutex::new(None);
 
-
 /// Metadata keys under which the backend forwards distributed-trace headers in
 /// the tool-request frame, so a connector-side tool span can join the backend's
 /// conversation trace. The connector copies these from the inbound request's
@@ -253,10 +252,7 @@ pub fn capture_agent_error(kind: &str, detail: &str) {
             scope.set_tag("error.kind", kind);
         },
         || {
-            sentry::capture_message(
-                &format!("agent error: {kind}"),
-                sentry::Level::Error,
-            );
+            sentry::capture_message(&format!("agent error: {kind}"), sentry::Level::Error);
         },
     );
     tracing::warn!("captured agent error to sentry: kind={kind} detail={detail}");

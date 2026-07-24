@@ -2,6 +2,7 @@
 //!
 //! Spawns a native or sandboxed shell session via portable-pty.
 
+use super::sandbox::config::SandboxBackend;
 use pentest_core::config::ShellMode;
 use pentest_core::error::{Error, Result};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -14,6 +15,53 @@ use std::path::Path;
 pub struct PtyShell {
     pair: portable_pty::PtyPair,
     child: Box<dyn portable_pty::Child + Send + Sync>,
+}
+
+/// Return true if a `portable_pty` spawn error was caused by `EACCES`
+/// (`Permission denied`, os error 13).
+///
+/// `portable_pty` returns `anyhow::Error`; on Unix the underlying cause when a
+/// spawn is rejected is a `std::io::Error`, so we downcast through the error
+/// chain and inspect `io::ErrorKind::PermissionDenied` precisely. We deliberately
+/// do NOT fall back to substring-matching the message: a message that merely
+/// mentions "Permission denied" for an unrelated reason must not silently swap
+/// the sandbox backend under the user. If no typed `io::Error` is present, we
+/// treat it as "not EACCES" and surface the original error instead of guessing.
+fn spawn_err_is_permission_denied(err: &anyhow::Error) -> bool {
+    err.chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|io_err| io_err.kind() == std::io::ErrorKind::PermissionDenied)
+}
+
+/// The interchangeable namespace sibling of a sandbox backend, if any.
+///
+/// bwrap and proot both give a fake-root BlackArch shell for the unprivileged
+/// interactive case, so either can substitute for the other. WSL and Docker
+/// have no such sibling.
+fn namespace_sibling(backend: SandboxBackend) -> Option<SandboxBackend> {
+    match backend {
+        SandboxBackend::Proot => Some(SandboxBackend::Bwrap),
+        SandboxBackend::Bwrap => Some(SandboxBackend::Proot),
+        SandboxBackend::Wsl | SandboxBackend::Docker => None,
+    }
+}
+
+/// Given the backend whose spawn just failed and the spawn error, return the
+/// sibling backend to retry with — or `None` if no retry applies.
+///
+/// One #238 failure mode is a healthy sandbox backend that `portable_pty` can't
+/// spawn in this process context, surfacing as an `EACCES` spawn error. On such
+/// an error we retry with the namespace sibling (proot<->bwrap). Only EACCES
+/// qualifies: a missing binary or bad rootfs would fail identically under the
+/// sibling and must surface as-is. (The *other* #238 mode — a backend that
+/// spawns but dies immediately during init — is handled separately via
+/// `wait_for_early_exit`, since it is not a spawn error.) Pure function so the
+/// decision is unit-testable without a live PTY.
+fn fallback_backend_for(backend: SandboxBackend, err: &anyhow::Error) -> Option<SandboxBackend> {
+    if !spawn_err_is_permission_denied(err) {
+        return None;
+    }
+    namespace_sibling(backend)
 }
 
 impl PtyShell {
@@ -64,7 +112,7 @@ impl PtyShell {
 
     /// Spawn a sandboxed interactive shell using bwrap, proot, or WSL.
     async fn spawn_sandboxed(cols: u16, rows: u16, cwd: Option<&Path>) -> Result<Self> {
-        use super::sandbox::{config::SandboxBackend, get_sandbox_manager, proot::ProotExecutor};
+        use super::sandbox::get_sandbox_manager;
 
         tracing::info!("[PtyShell::spawn_sandboxed] Starting sandboxed shell spawn");
 
@@ -179,6 +227,222 @@ impl PtyShell {
             })
             .map_err(|e| Error::ToolExecution(format!("Failed to open PTY: {e}")))?;
 
+        let cmd = Self::build_cmd_for_backend(backend, config, cwd).await?;
+
+        let mut child = match pair.slave.spawn_command(cmd) {
+            Ok(child) => child,
+            Err(e) => {
+                // Symmetric fallback (#238), spawn-error path: a namespace backend
+                // (bwrap/proot) can fail to spawn under portable-pty with EACCES
+                // depending on the host process context, even when its binary and
+                // rootfs are healthy. bwrap and proot are interchangeable for the
+                // unprivileged interactive shell, so on EACCES we retry with the
+                // sibling backend instead of hard-failing.
+                if let Some(fallback) = fallback_backend_for(backend, &e) {
+                    if let Some(shell) = Self::try_fallback_spawn(
+                        pair,
+                        backend,
+                        fallback,
+                        config,
+                        cwd,
+                        rows,
+                        cols,
+                        &format!("spawn hit EACCES ({e})"),
+                    )
+                    .await?
+                    {
+                        return Ok(shell);
+                    }
+                    // fallback unavailable: fall through to the hard error below.
+                }
+
+                tracing::error!(
+                    "[PtyShell::spawn_sandboxed] spawn_command failed: {e} (backend={backend:?})"
+                );
+                return Err(Error::ToolExecution(format!(
+                    "Failed to spawn sandboxed shell: {e}"
+                )));
+            }
+        };
+
+        // Symmetric fallback (#238), early-exit path: some backends spawn
+        // successfully but die during init — e.g. bwrap exits non-zero with
+        // "setting up uid map: Permission denied" when the process already sits
+        // in a user namespace (nested VM/container). That is not a spawn error,
+        // so the arm above never sees it; instead we briefly watch whether the
+        // child dies almost immediately with a non-zero status and, if so, retry
+        // with the sibling backend. A healthy interactive shell stays alive well
+        // past this window, so it is never mis-detected as a failure — but note
+        // this poll costs up to EARLY_EXIT_WINDOW (~500ms) on the common
+        // (healthy) path, since try_wait returns None until the window elapses.
+        // The one-time cost at shell-open is an accepted trade for detecting
+        // silent init failures; see wait_for_early_exit.
+        if let Some(status) = Self::wait_for_early_exit(&mut child).await {
+            if !status.success() {
+                if let Some(fallback) = namespace_sibling(backend) {
+                    if let Some(shell) = Self::try_fallback_spawn(
+                        pair,
+                        backend,
+                        fallback,
+                        config,
+                        cwd,
+                        rows,
+                        cols,
+                        &format!("exited immediately during init ({status:?})"),
+                    )
+                    .await?
+                    {
+                        return Ok(shell);
+                    }
+                }
+                // No usable sibling: surface the early failure rather than
+                // handing back a shell that already died.
+                tracing::error!(
+                    "[PtyShell::spawn_sandboxed] {backend:?} shell exited immediately ({status:?}) and no fallback is available"
+                );
+                return Err(Error::ToolExecution(format!(
+                    "Sandboxed shell ({backend:?}) exited immediately during startup ({status:?})"
+                )));
+            }
+        }
+
+        tracing::info!("Sandboxed shell spawned successfully");
+
+        Ok(Self { pair, child })
+    }
+
+    /// Window during which a sandbox child that exits is treated as an
+    /// initialization failure eligible for the sibling-backend fallback.
+    /// Backend-init failures (uid_map/seccomp) die in well under this; a healthy
+    /// interactive shell stays alive far longer.
+    const EARLY_EXIT_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
+
+    /// Poll a freshly spawned child for up to [`Self::EARLY_EXIT_WINDOW`],
+    /// returning its exit status if it dies within the window, or `None` if it
+    /// is still running (the healthy case).
+    ///
+    /// Cost: a child that dies returns as soon as the next 20ms poll observes
+    /// it, but a healthy child makes this block for the full window (~500ms) —
+    /// `try_wait` returns `None` on every poll until the loop times out. That
+    /// added latency is paid once per sandboxed shell open. Kept simple
+    /// (polling, not event-driven) deliberately; revisit if shell-open latency
+    /// becomes a concern.
+    async fn wait_for_early_exit(
+        child: &mut Box<dyn portable_pty::Child + Send + Sync>,
+    ) -> Option<portable_pty::ExitStatus> {
+        let poll_interval = std::time::Duration::from_millis(20);
+        let mut elapsed = std::time::Duration::ZERO;
+        while elapsed < Self::EARLY_EXIT_WINDOW {
+            match child.try_wait() {
+                Ok(Some(status)) => return Some(status),
+                Ok(None) => {}
+                // If we can't tell, don't block the shell — assume it's alive.
+                Err(_) => return None,
+            }
+            tokio::time::sleep(poll_interval).await;
+            elapsed += poll_interval;
+        }
+        None
+    }
+
+    /// Retry the sandboxed shell on the sibling backend after the primary failed
+    /// (either a spawn EACCES or an immediate init exit). Opens a *fresh* PTY —
+    /// portable_pty does not guarantee a slave is reusable after a failed/dead
+    /// spawn — and returns:
+    /// - `Ok(Some(shell))` on a successful fallback spawn,
+    /// - `Ok(None)` if the fallback backend is unavailable (caller surfaces the
+    ///   original failure),
+    /// - `Err(_)` if the fallback was attempted but itself failed.
+    #[allow(clippy::too_many_arguments)]
+    async fn try_fallback_spawn(
+        primary_pair: portable_pty::PtyPair,
+        backend: SandboxBackend,
+        fallback: SandboxBackend,
+        config: &super::sandbox::config::SandboxConfig,
+        cwd: Option<&Path>,
+        rows: u16,
+        cols: u16,
+        reason: &str,
+    ) -> Result<Option<Self>> {
+        if !Self::backend_is_available(fallback, config).await {
+            tracing::warn!(
+                "[PtyShell::spawn_sandboxed] {backend:?} {reason}, but fallback {fallback:?} is unavailable"
+            );
+            return Ok(None);
+        }
+
+        // Log at warn (not error): this is expected and recoverable.
+        tracing::warn!(
+            "[PtyShell::spawn_sandboxed] {backend:?} {reason}; falling back to {fallback:?}"
+        );
+
+        // Drop the primary pair before opening a fresh one for the retry.
+        // Open the PTY through a locally-created PtySystem: the `Box<dyn
+        // PtySystem>` it returns is not Sync, so it must not be threaded in as a
+        // borrow that would be held across the `.await` below (breaks callers in
+        // async/Send contexts like the liveview server). Opening here keeps it a
+        // short-lived local that is dropped before the await.
+        drop(primary_pair);
+        let retry_pair = native_pty_system()
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| {
+                Error::ToolExecution(format!(
+                    "Failed to open PTY for {fallback:?} fallback (after {backend:?} {reason}): {e}"
+                ))
+            })?;
+
+        let fallback_cmd = Self::build_cmd_for_backend(fallback, config, cwd).await?;
+        let mut child = retry_pair.slave.spawn_command(fallback_cmd).map_err(|e2| {
+            tracing::error!(
+                "[PtyShell::spawn_sandboxed] {fallback:?} fallback also failed: {e2} (original {backend:?} {reason})"
+            );
+            Error::ToolExecution(format!(
+                "Failed to spawn sandboxed shell ({backend:?} {reason}; {fallback:?} fallback also failed: {e2})"
+            ))
+        })?;
+
+        // The fallback child can also die during init (e.g. a nested-userns box
+        // where neither backend can set up its uid map). Apply the same
+        // early-exit poll the primary path uses, so we never hand back an
+        // already-dead PTY as a successful fallback. This is terminal: there is
+        // no further sibling to try, so an early exit here is a hard error.
+        if let Some(status) = Self::wait_for_early_exit(&mut child).await {
+            if !status.success() {
+                tracing::error!(
+                    "[PtyShell::spawn_sandboxed] {fallback:?} fallback shell exited immediately ({status:?}) (original {backend:?} {reason})"
+                );
+                return Err(Error::ToolExecution(format!(
+                    "Sandboxed shell fallback ({fallback:?}) exited immediately during startup ({status:?}); original {backend:?} {reason}"
+                )));
+            }
+        }
+
+        tracing::info!(
+            "Sandboxed shell spawned successfully ({fallback:?} fallback after {backend:?} {reason})"
+        );
+        Ok(Some(Self {
+            pair: retry_pair,
+            child,
+        }))
+    }
+
+    /// Build the interactive-shell `CommandBuilder` for a specific backend.
+    ///
+    /// Shared by the primary spawn and the symmetric EACCES fallback so both
+    /// paths construct commands identically. proot needs an async binary-path
+    /// lookup, hence the `async` signature.
+    async fn build_cmd_for_backend(
+        backend: SandboxBackend,
+        config: &super::sandbox::config::SandboxConfig,
+        cwd: Option<&Path>,
+    ) -> Result<CommandBuilder> {
+        use super::sandbox::proot::ProotExecutor;
+
         let cmd = match backend {
             SandboxBackend::Bwrap => {
                 tracing::info!("Building bwrap command for PTY shell");
@@ -216,18 +480,24 @@ impl PtyShell {
             }
         };
 
-        let child = pair.slave.spawn_command(cmd).map_err(|e| {
-            tracing::error!(
-                "[PtyShell::spawn_sandboxed] spawn_command failed: {} (backend={:?})",
-                e,
-                backend,
-            );
-            Error::ToolExecution(format!("Failed to spawn sandboxed shell: {e}"))
-        })?;
+        Ok(cmd)
+    }
 
-        tracing::info!("Sandboxed shell spawned successfully");
+    /// Check whether a given backend is currently usable, used to gate the
+    /// EACCES fallback retry before we commit to swapping backends.
+    async fn backend_is_available(
+        backend: SandboxBackend,
+        config: &super::sandbox::config::SandboxConfig,
+    ) -> bool {
+        use super::sandbox::{bwrap::BwrapExecutor, proot::ProotExecutor};
 
-        Ok(Self { pair, child })
+        match backend {
+            SandboxBackend::Bwrap => BwrapExecutor::is_available().await,
+            SandboxBackend::Proot => ProotExecutor::is_available(config).await,
+            // Only bwrap/proot are valid fallback targets (see
+            // `fallback_backend_for`); other backends never reach here.
+            SandboxBackend::Wsl | SandboxBackend::Docker => false,
+        }
     }
 
     /// Build a `CommandBuilder` for a bwrap interactive shell.
@@ -356,9 +626,17 @@ impl PtyShell {
             },
         ]);
 
-        // Environment variables (proot uses process env)
+        // Environment variables — set them *inside* the guest via `env KEY=VAL`
+        // rather than on the host proot process. Injecting these as host process
+        // env (e.g. HOME=/root, a path that does not exist on the host) makes
+        // portable-pty's spawn fail with EACCES when it resolves the child's
+        // context, so the shell never starts. Passing them to a guest `env`
+        // wrapper is how the WSL builder already does it and matches bwrap's
+        // `--setenv`. proot maps the host rootfs, so `/usr/bin/env` resolves
+        // inside the BlackArch rootfs.
+        cmd.arg("/usr/bin/env");
         for (key, value) in &config.env_vars {
-            cmd.env(key, value);
+            cmd.arg(format!("{key}={value}"));
         }
 
         // Interactive login shell
@@ -497,6 +775,116 @@ mod tests {
             .iter()
             .map(|os| os.to_string_lossy().into_owned())
             .collect()
+    }
+
+    // ------------------------------------------------------------------
+    // EACCES detection for the proot -> bwrap fallback (#238)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn permission_denied_detected_from_io_error_source() {
+        let io_err = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let wrapped = anyhow::Error::new(io_err).context("spawn_command");
+        assert!(spawn_err_is_permission_denied(&wrapped));
+    }
+
+    #[test]
+    fn permission_denied_detected_deep_in_error_chain() {
+        // The io::Error may be several context layers down; the chain walk must
+        // still find it.
+        let io_err = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let wrapped = anyhow::Error::new(io_err)
+            .context("spawn_command")
+            .context("PtyShell::spawn_sandboxed");
+        assert!(spawn_err_is_permission_denied(&wrapped));
+    }
+
+    #[test]
+    fn message_only_permission_denied_is_not_flagged() {
+        // No typed io::Error in the chain: we must NOT guess from the message
+        // string (that could wrongly swap a user's chosen backend). Treat it as
+        // not-EACCES and let the caller surface the original error.
+        let err = anyhow::anyhow!("Permission denied (os error 13)");
+        assert!(!spawn_err_is_permission_denied(&err));
+    }
+
+    #[test]
+    fn non_permission_error_is_not_flagged() {
+        let io_err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let wrapped = anyhow::Error::new(io_err).context("spawn_command");
+        assert!(!spawn_err_is_permission_denied(&wrapped));
+
+        let other = anyhow::anyhow!("no such file or directory");
+        assert!(!spawn_err_is_permission_denied(&other));
+    }
+
+    // ------------------------------------------------------------------
+    // Symmetric fallback-decision predicate (#238): bwrap <-> proot on EACCES
+    // ------------------------------------------------------------------
+
+    fn eacces() -> anyhow::Error {
+        anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    }
+
+    #[test]
+    fn proot_eacces_falls_back_to_bwrap() {
+        assert_eq!(
+            fallback_backend_for(SandboxBackend::Proot, &eacces()),
+            Some(SandboxBackend::Bwrap)
+        );
+    }
+
+    #[test]
+    fn bwrap_eacces_falls_back_to_proot() {
+        // The prefer-bwrap default means bwrap is the common primary backend; a
+        // runtime EACCES on a host where bwrap passed is_available() but can't
+        // spawn must degrade to proot rather than hard-failing the shell.
+        assert_eq!(
+            fallback_backend_for(SandboxBackend::Bwrap, &eacces()),
+            Some(SandboxBackend::Proot)
+        );
+    }
+
+    #[test]
+    fn no_fallback_for_non_eacces() {
+        // A non-permission failure (e.g. binary missing, bad rootfs) would fail
+        // identically under the sibling, so surface it as-is rather than swapping.
+        let not_found = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert_eq!(
+            fallback_backend_for(SandboxBackend::Proot, &not_found),
+            None
+        );
+        assert_eq!(
+            fallback_backend_for(SandboxBackend::Bwrap, &not_found),
+            None
+        );
+    }
+
+    #[test]
+    fn no_fallback_for_backends_without_a_namespace_sibling() {
+        // WSL and Docker have no bwrap/proot sibling to swap to.
+        assert_eq!(fallback_backend_for(SandboxBackend::Wsl, &eacces()), None);
+        assert_eq!(
+            fallback_backend_for(SandboxBackend::Docker, &eacces()),
+            None
+        );
+    }
+
+    #[test]
+    fn namespace_sibling_pairs_bwrap_and_proot() {
+        // The early-exit path (#238) reuses namespace_sibling directly, so it
+        // must pair the two namespace backends and reject the others regardless
+        // of any error.
+        assert_eq!(
+            namespace_sibling(SandboxBackend::Proot),
+            Some(SandboxBackend::Bwrap)
+        );
+        assert_eq!(
+            namespace_sibling(SandboxBackend::Bwrap),
+            Some(SandboxBackend::Proot)
+        );
+        assert_eq!(namespace_sibling(SandboxBackend::Wsl), None);
+        assert_eq!(namespace_sibling(SandboxBackend::Docker), None);
     }
 
     /// Build a SandboxConfig pointing at a temporary directory with a fake
@@ -666,12 +1054,20 @@ mod tests {
         assert_eq!(*tail[1], "-l");
         assert_eq!(*tail[2], "/bin/bash");
 
-        // Environment variables should be set via cmd.env(), not as args.
-        // Verify they are NOT in argv:
-        assert!(!argv.contains(&"--setenv".to_string()));
-        // But they should be accessible through get_env:
-        assert_eq!(cmd.get_env("TERM"), Some(OsStr::new("xterm-256color")));
-        assert_eq!(cmd.get_env("HOME"), Some(OsStr::new("/root")));
+        // Environment variables are passed *inside* the guest via `/usr/bin/env
+        // KEY=VAL ...`, NOT as host process env (cmd.env), because host env
+        // injection (HOME=/root) breaks portable-pty spawn with EACCES (#238).
+        assert!(argv.iter().any(|a| a == "/usr/bin/env"));
+        assert!(argv.iter().any(|a| a == "TERM=xterm-256color"));
+        assert!(argv.iter().any(|a| a == "HOME=/root"));
+        // The builder must NOT override host process env with the sandbox values
+        // (CommandBuilder inherits the parent env by default; the point is that
+        // build_proot_cmd does not *set* HOME=/root on the host process).
+        assert_ne!(cmd.get_env("HOME"), Some(OsStr::new("/root")));
+        // `env` must come before the shell it wraps.
+        let env_idx = argv.iter().position(|a| a == "/usr/bin/env").unwrap();
+        let bash_idx = argv.iter().position(|a| a == "/bin/bash").unwrap();
+        assert!(env_idx < bash_idx, "env wrapper must precede /bin/bash");
     }
 
     #[test]
@@ -1089,6 +1485,92 @@ mod tests {
             Err(e) => {
                 panic!("Proot PTY spawn failed: {:?}", e);
             }
+        }
+    }
+
+    /// End-to-end #238 regression: a sandboxed shell must come back *alive*, no
+    /// matter which namespace backend the host actually supports. This is the
+    /// real-world check for the early-exit fallback — on a host nested in a user
+    /// namespace (VM/container), bwrap spawns but dies with "setting up uid map:
+    /// Permission denied", and the shell must transparently fall back to proot
+    /// (or vice versa) rather than hand back a dead PTY.
+    ///
+    /// Ignored: needs a provisioned rootfs and at least one working backend.
+    #[tokio::test]
+    #[ignore]
+    async fn sandboxed_shell_is_alive_after_backend_fallback() {
+        use super::super::sandbox::get_sandbox_manager;
+        use std::io::Write;
+
+        let manager = get_sandbox_manager()
+            .await
+            .expect("Failed to get sandbox manager");
+        if manager.ensure_ready().await.is_err() {
+            println!("Skipping: rootfs not provisioned");
+            return;
+        }
+        println!("Primary backend selected: {:?}", manager.backend());
+
+        // Drive the real entry point in sandboxed mode.
+        let mut shell = PtyShell::spawn(80, 24, None, None, ShellMode::Proot)
+            .await
+            .expect("sandboxed shell should spawn on a working backend (with fallback)");
+
+        // The core assertion: after the early-exit window the shell is still
+        // alive. Before the fix, a uid_map-failing bwrap returned Ok here and
+        // then died, so this would observe an early non-zero exit.
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        assert!(
+            matches!(shell.try_wait(), Ok(None)),
+            "shell must still be running after startup, not exited"
+        );
+
+        // And it should actually run a command.
+        let mut writer = shell.take_writer().expect("take writer");
+        let mut reader = shell.try_clone_reader().expect("clone reader");
+        writer.write_all(b"echo SHELL_LIVE\n").expect("write");
+        writer.flush().expect("flush");
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        let mut buf = [0u8; 2048];
+        let n = reader.read(&mut buf).unwrap_or(0);
+        let out = String::from_utf8_lossy(&buf[..n]);
+        assert!(out.contains("SHELL_LIVE"), "shell did not echo: {out:?}");
+        println!("✓ Sandboxed shell is alive and responsive after fallback");
+    }
+}
+#[cfg(test)]
+mod full_fallback_probe {
+    use super::super::sandbox::get_sandbox_manager;
+    use super::*;
+    use portable_pty::{native_pty_system, PtySize};
+
+    #[tokio::test]
+    #[ignore]
+    async fn probe_real_proot_cmd_spawn() {
+        let m = get_sandbox_manager().await.unwrap();
+        m.ensure_ready().await.unwrap();
+        let cfg = m.config();
+        println!("env_vars = {:?}", cfg.env_vars);
+        // Build the EXACT proot cmd the fallback builds
+        let cmd = PtyShell::build_cmd_for_backend(SandboxBackend::Proot, cfg, None)
+            .await
+            .unwrap();
+        println!("argv = {:?}", cmd.get_argv());
+        let pty = native_pty_system();
+        let pair = pty
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        match pair.slave.spawn_command(cmd) {
+            Ok(mut c) => {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                println!("REAL-PROOT-CMD spawn Ok, early-exit={:?}", c.try_wait());
+            }
+            Err(e) => println!("REAL-PROOT-CMD spawn ERR: {e:#}"),
         }
     }
 }

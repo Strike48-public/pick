@@ -25,5 +25,8 @@ fn bridge_serializes_view_and_processes_events() {
     bridge
         .update(&event, &mut reqs_out)
         .expect("update processes the event across FFI");
-    assert!(!reqs_out.is_empty(), "StartScan produced effect request bytes");
+    assert!(
+        !reqs_out.is_empty(),
+        "StartScan produced effect request bytes"
+    );
 }

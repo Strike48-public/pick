@@ -74,14 +74,26 @@ pub struct ConversationDelta {
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[repr(C)]
 pub enum PentestOutcome {
-    SignedIn { token: String },
+    SignedIn {
+        token: String,
+    },
     Connected,
-    ScanQueued { conversation_id: String },
+    ScanQueued {
+        conversation_id: String,
+    },
     Delta(ConversationDelta),
-    Conversations { list: Vec<ConversationRef> },
-    LoadedMessages { messages: Vec<MessageView> },
-    Documents { list: Vec<DocRef> },
-    DocumentContent { markdown: String },
+    Conversations {
+        list: Vec<ConversationRef>,
+    },
+    LoadedMessages {
+        messages: Vec<MessageView>,
+    },
+    Documents {
+        list: Vec<DocRef>,
+    },
+    DocumentContent {
+        markdown: String,
+    },
     SharedLink {
         url: String,
         /// Browser-preview transform of `url` (`?preview=1`), precomputed in the
@@ -90,7 +102,9 @@ pub enum PentestOutcome {
         /// Per-network share destinations built from `url` + the document title.
         social_links: Vec<SocialLink>,
     },
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 impl Operation for PentestOperation {

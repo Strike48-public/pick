@@ -271,10 +271,18 @@ mod tests {
     #[tokio::test]
     async fn execute_emits_provenance_structure() {
         // Verifies the provenance contract: structure is always present when
-        // the tool runs, regardless of whether the underlying sandbox lets
-        // the command succeed. Output content is inherently environment-
-        // dependent (sandbox may reject, binary may be absent, etc.), so we
-        // assert on the reproducibility metadata itself, not the payload.
+        // the tool runs. Output content is inherently environment-dependent
+        // (binary may be absent, etc.), so we assert on the reproducibility
+        // metadata itself, not the payload.
+        //
+        // Run host-direct (sandbox disabled). With the sandbox enabled and no
+        // system proot, execute_command now DOWNLOADS the pinned proot binary
+        // and sets up the BlackArch rootfs — on a CI runner that path hangs
+        // (multi-GB rootfs / stalled fetch), timing the job out after hours.
+        // Since #256 an enabled-but-unavailable sandbox also fails closed (Err,
+        // no provenance). Disabling the sandbox takes the explicit host path,
+        // matching the pentest-core integration tests (connector_execute.rs).
+        pentest_platform::set_use_sandbox(false);
         let tool = ExecuteCommandTool;
         let ctx = ToolContext::default();
         let params = json!({ "command": "echo", "args": ["hello-provenance"] });
@@ -295,6 +303,11 @@ mod tests {
 
     #[tokio::test]
     async fn execute_redacts_secrets_in_effective_command() {
+        // Host-direct: same rationale as execute_emits_provenance_structure —
+        // with the sandbox enabled and no system proot, execute_command would
+        // download proot + set up the rootfs and hang on a CI runner (and since
+        // #256 an unavailable sandbox also fails closed with no provenance).
+        pentest_platform::set_use_sandbox(false);
         let tool = ExecuteCommandTool;
         let ctx = ToolContext::default();
         let params = json!({

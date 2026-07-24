@@ -312,9 +312,29 @@ set -e
             changed = true;
         }
 
+        // Force an external downloader (#248/#252). pacman 7's internal parallel
+        // downloader is a silent no-op under proot — it reports success but the
+        // synced DBs are never usable — so DB/package fetches must go through
+        // curl to be deterministic. Only add it once, under [options].
+        if !content.contains("XferCommand") {
+            let xfer = "XferCommand = /usr/bin/curl -L -f -o %o %u";
+            if let Some(idx) = content.find("[options]") {
+                // Insert right after the [options] header line.
+                let insert_at = content[idx..]
+                    .find('\n')
+                    .map(|nl| idx + nl + 1)
+                    .unwrap_or(content.len());
+                content.insert_str(insert_at, &format!("{xfer}\n"));
+            } else {
+                // No [options] section (unexpected) — append a minimal one.
+                content.push_str(&format!("\n[options]\n{xfer}\n"));
+            }
+            changed = true;
+        }
+
         if changed {
             tokio::fs::write(&pacman_conf, content).await?;
-            tracing::info!("pacman.conf updated");
+            tracing::info!("pacman.conf updated (DownloadUser + curl XferCommand)");
         }
 
         Ok(())

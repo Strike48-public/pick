@@ -9,9 +9,10 @@ use crate::aggression::AggressionLevel;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ShellMode {
     /// Run commands directly on the host machine (native shell)
-    #[default]
     Native,
-    /// Run commands inside the proot BlackArch environment
+    /// Run commands inside the sandboxed BlackArch environment (bwrap/proot).
+    /// Default: the connector sandboxes tool execution out of the box.
+    #[default]
     Proot,
 }
 
@@ -208,14 +209,62 @@ impl ConnectorConfig {
             return Err("Tenant ID is required".to_string());
         }
 
-        // Validate host URL for SSRF protection
-        use crate::url_validation::{validate_url, ValidationMode};
+        // Validate host URL for SSRF protection.
+        use crate::url_validation::validate_url;
 
-        let validation_mode = ValidationMode::default();
+        let validation_mode = Self::resolve_validation_mode(
+            std::env::var("PENTEST_ALLOW_PRIVATE_IPS").ok().as_deref(),
+        );
         validate_url(&self.host, validation_mode, None)
             .map_err(|e| format!("Invalid host URL: {}", e))?;
 
         Ok(())
+    }
+
+    /// Select the SSRF [`ValidationMode`] for the connector host from the
+    /// `PENTEST_ALLOW_PRIVATE_IPS` opt-in.
+    ///
+    /// In-cluster/local dev connects to the platform over a private ClusterIP
+    /// (e.g. `connectors-studio-grpc.default.svc:50061` -> `10.x`), which the
+    /// default Production guard blocks as SSRF. Setting
+    /// `PENTEST_ALLOW_PRIVATE_IPS=true|1` selects [`ValidationMode::PrivateNetwork`],
+    /// which permits RFC-1918 / loopback targets but STILL blocks the
+    /// cloud-metadata / link-local range (169.254.0.0/16) — a deliberately
+    /// narrower relaxation than full Development mode.
+    ///
+    /// Secure by default: any other value (including unset) falls back to
+    /// [`ValidationMode::default()`], which is Production in release builds.
+    /// Pure (no I/O) so it can be unit-tested independent of the build profile.
+    fn resolve_validation_mode(env_val: Option<&str>) -> crate::url_validation::ValidationMode {
+        use crate::url_validation::ValidationMode;
+
+        match env_val.map(|v| v.trim().to_ascii_lowercase()) {
+            Some(v) if v == "true" || v == "1" => {
+                // Loud, auditable: an operator (or a leaked env var) has relaxed
+                // the SSRF guard. Emitted once per validate() call, not per request.
+                tracing::warn!(
+                    "PENTEST_ALLOW_PRIVATE_IPS is set: connector host SSRF validation \
+                     relaxed to PrivateNetwork mode (RFC-1918/loopback allowed; \
+                     link-local/metadata still blocked). Do NOT use in production."
+                );
+                ValidationMode::PrivateNetwork
+            }
+            // Set, but NOT a recognized truthy value (e.g. a typo like "ture",
+            // or "yes"/"on"/"0"/"false"). Fall back to the secure default, but
+            // WARN so the operator isn't left debugging a "private IP blocked"
+            // failure with no hint that their opt-in was silently ignored.
+            Some(v) if !v.is_empty() => {
+                tracing::warn!(
+                    "PENTEST_ALLOW_PRIVATE_IPS is set to an unrecognized value ({:?}); \
+                     expected \"true\" or \"1\". Ignoring and using the secure default \
+                     (private IPs blocked in release builds).",
+                    v
+                );
+                ValidationMode::default()
+            }
+            // Unset or empty: secure default, silently.
+            _ => ValidationMode::default(),
+        }
     }
 
     /// Check if this config has authentication
@@ -1012,6 +1061,17 @@ impl AppSettings {
 mod tests {
     use super::*;
 
+    /// Serialises every test that mutates a process-global env var — the
+    /// tenant vars (`TENANT_ENV_VARS`) AND `HOME` (the credential-file tests set
+    /// it to a tempdir). All must share ONE lock: env vars are process-global,
+    /// so a `HOME`-mutating test racing a tenant test (or the two `HOME` tests
+    /// racing each other) lets one test's `set_var`/`remove_var` leak into
+    /// another's view. Per-test locks provide no mutual exclusion. Symptoms seen
+    /// on CI: `..._prefers_matrix_tenant_id` flipping `..._returns_none...`'s
+    /// assertion, and `read_credentials_tenant_id_extracts_uuid`'s `HOME` being
+    /// cleared mid-read by a sibling's restore (its `assert_eq!` on the UUID).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn preserves_explicit_wss_with_port() {
         let n = ConnectorConfig::normalize_host("wss://studio.example.com:443").unwrap();
@@ -1157,10 +1217,9 @@ mod tests {
 
     #[test]
     fn tenant_uuid_from_env_prefers_matrix_tenant_id() {
-        // Serialise all tenant-env manipulation on a single lock so parallel
+        // Serialise all tenant-env manipulation on the shared lock so parallel
         // tests can't leak into each other's env-var view.
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let previous: Vec<(&str, Option<String>)> = ConnectorConfig::TENANT_ENV_VARS
             .iter()
@@ -1192,8 +1251,7 @@ mod tests {
 
     #[test]
     fn tenant_uuid_from_env_returns_none_when_only_slugs_present() {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let previous: Vec<(&str, Option<String>)> = ConnectorConfig::TENANT_ENV_VARS
             .iter()
@@ -1221,6 +1279,10 @@ mod tests {
 
     #[test]
     fn read_credentials_tenant_id_extracts_uuid() {
+        // Serialise with every other env-mutating config test: this test sets
+        // HOME (process-global), and a concurrent test's set/remove of HOME (or
+        // the tenant tests) would otherwise flip the read below. See ENV_LOCK.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Isolate HOME so the test doesn't touch the real credentials dir.
         let tmp = tempfile::tempdir().expect("tempdir");
         let creds_dir = tmp.path().join(".strike48").join("credentials");
@@ -1246,6 +1308,8 @@ mod tests {
 
     #[test]
     fn read_credentials_tenant_id_returns_none_when_missing() {
+        // Serialise with every other env-mutating config test (sets HOME). See ENV_LOCK.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         let prev = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", tmp.path()) };
@@ -1354,5 +1418,81 @@ mod tests {
         // Expert mode is handled by the existing path; decision is Silent.
         assert_eq!(plg_connect_decision(false, false), PlgConnectStep::Silent);
         assert_eq!(plg_connect_decision(false, true), PlgConnectStep::Silent);
+    }
+
+    // The SSRF-mode selection is a pure function of the env-var value, so it is
+    // tested directly — no env manipulation, and (crucially) the assertions run
+    // in CI's debug build, unlike anything gated on `debug_assertions`.
+    use crate::url_validation::ValidationMode;
+
+    #[test]
+    fn resolve_validation_mode_opts_in_on_truthy_values() {
+        // "true"/"1", case-insensitive, whitespace-tolerant → PrivateNetwork.
+        for v in ["true", "1", "TRUE", "True", "  true  ", "\t1\n"] {
+            assert_eq!(
+                ConnectorConfig::resolve_validation_mode(Some(v)),
+                ValidationMode::PrivateNetwork,
+                "{v:?} should opt in to PrivateNetwork"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_validation_mode_secure_default_otherwise() {
+        // Anything non-truthy, and unset, falls back to the default (Production
+        // in release builds). Asserting equality with default() makes the test
+        // build-profile-independent and meaningful in CI's debug run.
+        for v in [
+            Some("false"),
+            Some("0"),
+            Some("yes"),
+            Some(""),
+            Some("nope"),
+            Some("ture"),
+            None,
+        ] {
+            assert_eq!(
+                ConnectorConfig::resolve_validation_mode(v),
+                ValidationMode::default(),
+                "{v:?} must NOT opt in (secure default)"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_validation_mode_never_returns_development() {
+        // The opt-in must select the NARROW PrivateNetwork mode, never full
+        // Development (which would also unblock link-local / cloud-metadata).
+        assert_ne!(
+            ConnectorConfig::resolve_validation_mode(Some("true")),
+            ValidationMode::Development
+        );
+    }
+
+    #[test]
+    fn validate_allows_private_cluster_ip_via_private_network_mode() {
+        // End-to-end: PrivateNetwork mode accepts an in-cluster ClusterIP but
+        // still rejects the cloud-metadata endpoint. Uses validate_url directly
+        // with the mode resolve_validation_mode would pick, so it is stable in
+        // both debug and release.
+        use crate::url_validation::validate_url;
+        assert!(
+            validate_url(
+                "grpc://10.109.18.109:50061",
+                ValidationMode::PrivateNetwork,
+                None
+            )
+            .is_ok(),
+            "ClusterIP must be allowed in PrivateNetwork mode"
+        );
+        assert!(
+            validate_url(
+                "http://169.254.169.254:80",
+                ValidationMode::PrivateNetwork,
+                None
+            )
+            .is_err(),
+            "cloud-metadata endpoint must stay blocked in PrivateNetwork mode"
+        );
     }
 }

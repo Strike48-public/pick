@@ -55,6 +55,14 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    # CI runners have no BlackArch sandbox backend (no bwrap/proot installed).
+    # With the sandbox enabled, tests that run a real command fall through to
+    # download_proot + rootfs extraction, which hangs a non-root runner (tar
+    # cannot create the CA-cert symlinks) until the 6-hour job timeout. Disable
+    # the sandbox for the whole run so command execution takes the host path —
+    # the same reason the pentest-core integration tests call set_use_sandbox(false).
+    env:
+      DISABLE_SANDBOX: "true"
     steps:
       - uses: actions/checkout@v5
       - name: Install system dependencies
@@ -68,6 +76,10 @@ jobs:
   check-macos:
     name: Check (macOS)
     runs-on: macos-latest
+    # Same rationale as the Test job: no sandbox backend on the runner, so keep
+    # command execution on the host path and out of download_proot/rootfs.
+    env:
+      DISABLE_SANDBOX: "true"
     steps:
       - uses: actions/checkout@v5
       - name: Install protobuf

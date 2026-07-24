@@ -9,10 +9,26 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 /// URL validation mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValidationMode {
-    /// Development mode - allows localhost and private IPs
+    /// Development mode - allows EVERYTHING (localhost, private IPs, link-local,
+    /// cloud-metadata). No SSRF protection at all; only for local iteration.
     Development,
-    /// Production mode - blocks localhost and private IPs
+    /// Production mode - blocks localhost and all private/internal ranges.
     Production,
+    /// PrivateNetwork mode - allows RFC-1918 private ranges (10/8, 172.16/12,
+    /// 192.168/16), loopback, and IPv6 ULA/loopback so an in-cluster connector
+    /// can reach the platform over a private ClusterIP — while still blocking
+    /// the cloud-metadata / link-local range in its canonical forms
+    /// (169.254.0.0/16, fe80::/10) and other non-LAN reserved ranges (multicast,
+    /// broadcast, docs, CGN, etc.). This is the narrow relaxation for in-cluster
+    /// dev: unlike Development mode it does not broadly expose the metadata
+    /// service (169.254.169.254).
+    ///
+    /// Caveat (shared with Production mode, not specific to this variant):
+    /// IPv6-encoded IPv4 forms of link-local — IPv4-mapped `::ffff:169.254.x.x`
+    /// and NAT64 `64:ff9b::a9fe:x` — are NOT canonicalized by `is_private_ipv6`,
+    /// so they classify as public. See the follow-up to canonicalize embedded
+    /// IPv4 in `is_private_ipv6` (benefits Production too).
+    PrivateNetwork,
     /// Strict mode - only allows explicitly allowlisted hosts
     Strict,
 }
@@ -83,6 +99,23 @@ pub fn validate_url(
     // In Development mode, allow everything
     if mode == ValidationMode::Development {
         return Ok(url.to_string());
+    }
+
+    // In PrivateNetwork mode, allow LAN-private ranges + loopback (the
+    // in-cluster ClusterIP case) but still reject the dangerous non-LAN ranges
+    // — chiefly link-local / cloud-metadata (169.254.0.0/16, fe80::/10). Only
+    // hosts that are literal IPs or resolve to LAN-private IPs are accepted;
+    // everything else falls through to the standard Production checks below.
+    if mode == ValidationMode::PrivateNetwork {
+        match classify_lan_private(&host) {
+            LanClass::LanPrivate => return Ok(url.to_string()),
+            LanClass::BlockedInternal(reason) => {
+                return Err(Error::PermissionDenied(reason));
+            }
+            // Public (or a hostname resolving to public IPs): fall through to
+            // the Production path so public targets are validated identically.
+            LanClass::Public => {}
+        }
     }
 
     // In Production mode, validate against SSRF patterns
@@ -270,6 +303,134 @@ fn classify_host(host: &str) -> HostClass {
 #[cfg(test)]
 fn is_private_ip(host: &str) -> bool {
     !matches!(classify_host(host), HostClass::Public)
+}
+
+/// Classification for [`ValidationMode::PrivateNetwork`].
+///
+/// * `LanPrivate` — a LAN-private target we permit (RFC-1918 / loopback /
+///   IPv6 ULA / IPv6 loopback).
+/// * `BlockedInternal` — an internal/reserved address we still refuse even in
+///   PrivateNetwork mode (link-local / cloud-metadata, multicast, broadcast,
+///   documentation, CGN, benchmark, etc.). Carries the operator-facing reason.
+/// * `Public` — not a private/internal literal; caller should apply the normal
+///   Production validation (handles public IPs and hostname DNS resolution).
+#[derive(Debug)]
+enum LanClass {
+    LanPrivate,
+    BlockedInternal(String),
+    Public,
+}
+
+/// Classify a host for [`ValidationMode::PrivateNetwork`].
+///
+/// Handles both literal IPs and hostnames. A hostname (e.g. an in-cluster
+/// `*.svc.cluster.local` ClusterIP name — the documented deployment case) is
+/// resolved and admitted ONLY if EVERY resolved IP is LAN-private/loopback.
+/// This supports the DNS-name deployment while preserving the DNS-rebinding
+/// defense: a name resolving to any public, link-local, or cloud-metadata IP is
+/// NOT admitted into the allow-set, so an attacker cannot rebind a name into
+/// 169.254.169.254 via PrivateNetwork.
+fn classify_lan_private(host: &str) -> LanClass {
+    // localhost literal (string form) is loopback → allowed.
+    if is_localhost(host) {
+        return LanClass::LanPrivate;
+    }
+
+    // Literal IP: classify directly.
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return classify_lan_private_ip(ip);
+    }
+
+    // Hostname: resolve and require ALL resolved IPs to be LAN-private.
+    match resolve_hostname_to_ips(host) {
+        Ok(ips) => {
+            let mut saw_lan_private = false;
+            for ip in ips {
+                match classify_lan_private_ip(ip) {
+                    LanClass::LanPrivate => saw_lan_private = true,
+                    // Any non-LAN-private resolved IP disqualifies the whole
+                    // name — defer to Production (public) or block (internal).
+                    other => return other,
+                }
+            }
+            if saw_lan_private {
+                LanClass::LanPrivate
+            } else {
+                LanClass::Public
+            }
+        }
+        // Unresolvable: don't admit here; the Production path fails it closed
+        // with an accurate "could not resolve" reason.
+        Err(_) => LanClass::Public,
+    }
+}
+
+/// Classify a single resolved/literal IP for [`ValidationMode::PrivateNetwork`].
+fn classify_lan_private_ip(ip: IpAddr) -> LanClass {
+    match ip {
+        IpAddr::V4(v4) => {
+            if is_lan_private_ipv4(v4) {
+                LanClass::LanPrivate
+            } else if is_private_ipv4(v4) {
+                // Private per the full guard but NOT in the LAN allow-set:
+                // link-local/metadata, multicast, broadcast, docs, CGN, etc.
+                LanClass::BlockedInternal(format!(
+                    "Address {v4} is an internal/reserved range not permitted even in private-network mode (e.g. link-local/metadata 169.254.0.0/16)"
+                ))
+            } else {
+                LanClass::Public
+            }
+        }
+        IpAddr::V6(v6) => {
+            if is_lan_private_ipv6(v6) {
+                LanClass::LanPrivate
+            } else if is_private_ipv6(v6) {
+                LanClass::BlockedInternal(format!(
+                    "Address {v6} is an internal/reserved range not permitted even in private-network mode (e.g. link-local fe80::/10)"
+                ))
+            } else {
+                LanClass::Public
+            }
+        }
+    }
+}
+
+/// LAN-private IPv4 allow-set for PrivateNetwork mode: the three RFC-1918
+/// ranges plus loopback. Deliberately EXCLUDES link-local (169.254/16) and all
+/// other reserved ranges that [`is_private_ipv4`] also treats as private.
+fn is_lan_private_ipv4(ip: Ipv4Addr) -> bool {
+    let o = ip.octets();
+    // 10.0.0.0/8
+    if o[0] == 10 {
+        return true;
+    }
+    // 172.16.0.0/12
+    if o[0] == 172 && (16..=31).contains(&o[1]) {
+        return true;
+    }
+    // 192.168.0.0/16
+    if o[0] == 192 && o[1] == 168 {
+        return true;
+    }
+    // 127.0.0.0/8 (loopback)
+    if o[0] == 127 {
+        return true;
+    }
+    false
+}
+
+/// LAN-private IPv6 allow-set for PrivateNetwork mode: unique-local (fc00::/7)
+/// and loopback (::1). Excludes link-local (fe80::/10) and multicast.
+fn is_lan_private_ipv6(ip: Ipv6Addr) -> bool {
+    // Loopback ::1
+    if ip == Ipv6Addr::LOCALHOST {
+        return true;
+    }
+    // Unique local addresses fc00::/7
+    if (ip.segments()[0] & 0xfe00) == 0xfc00 {
+        return true;
+    }
+    false
 }
 
 /// Resolve a hostname to all its IP addresses (A and AAAA records)
@@ -462,6 +623,89 @@ mod tests {
                 // No internet connectivity, skip test
                 println!("Skipping test - no internet connectivity");
             }
+        }
+    }
+
+    #[test]
+    fn test_private_network_mode_allows_rfc1918_and_loopback() {
+        // The in-cluster ClusterIP case: RFC-1918 ranges + loopback are allowed.
+        for host in [
+            "grpc://10.109.18.109:50061", // k8s service range (10/8)
+            "grpc://10.244.0.14:50061",   // k8s pod range
+            "wss://192.168.1.1:443",
+            "wss://172.16.0.1:443",
+            "wss://172.31.255.255:443",
+            "ws://127.0.0.1:50061",
+            "ws://localhost:50061",
+            "grpc://[::1]:50061",
+            "grpc://[fd00::1]:50061", // IPv6 ULA
+        ] {
+            assert!(
+                validate_url(host, ValidationMode::PrivateNetwork, None).is_ok(),
+                "{host} should be allowed in PrivateNetwork mode"
+            );
+        }
+    }
+
+    #[test]
+    fn test_private_network_mode_still_blocks_link_local_and_metadata() {
+        // The whole point of the narrow mode: the cloud-metadata / link-local
+        // range stays blocked even though other private ranges are allowed.
+        for host in [
+            "http://169.254.169.254:80", // AWS/GCP metadata service
+            "http://169.254.170.2:80",   // ECS task metadata
+            "wss://169.254.1.1:443",     // link-local generally
+            "wss://[fe80::1]:443",       // IPv6 link-local
+            "wss://224.0.0.1:443",       // multicast
+            "wss://255.255.255.255:443", // broadcast
+            "wss://0.0.0.0:443",         // this-network
+        ] {
+            assert!(
+                validate_url(host, ValidationMode::PrivateNetwork, None).is_err(),
+                "{host} must be BLOCKED in PrivateNetwork mode"
+            );
+        }
+    }
+
+    #[test]
+    fn test_private_network_mode_allows_public_ips() {
+        // Public literals still pass (they fall through to the Production path).
+        assert!(validate_url("wss://8.8.8.8:443", ValidationMode::PrivateNetwork, None).is_ok());
+        assert!(validate_url("wss://1.1.1.1:443", ValidationMode::PrivateNetwork, None).is_ok());
+    }
+
+    #[test]
+    fn test_private_network_mode_allows_hostname_resolving_to_private() {
+        // The documented deployment case: an in-cluster ClusterIP given by DNS
+        // NAME (e.g. connectors-studio-grpc.default.svc). `localhost` is the
+        // deterministic, offline-safe stand-in — it resolves to loopback
+        // (127.0.0.1 / ::1), which is in the LAN-private allow-set, so a
+        // hostname resolving entirely to private IPs must be ALLOWED. (Regression
+        // guard: PrivateNetwork previously blocked ALL DNS names, breaking the
+        // documented `.svc` deployment.)
+        assert!(
+            validate_url(
+                "grpc://localhost:50061",
+                ValidationMode::PrivateNetwork,
+                None
+            )
+            .is_ok(),
+            "a hostname resolving to a private/loopback IP must be allowed in PrivateNetwork"
+        );
+    }
+
+    #[test]
+    fn test_private_network_mode_hostname_to_public_not_admitted() {
+        // DNS-rebinding defense preserved: a hostname resolving to a PUBLIC IP is
+        // not admitted into the LAN allow-set — it falls through to Production,
+        // which allows public hosts, so the net result is still Ok, but via the
+        // Production path (not the private allow-set). Skip if offline.
+        match resolve_hostname_to_ips("google.com") {
+            Ok(_) => assert!(
+                validate_url("wss://google.com:443", ValidationMode::PrivateNetwork, None).is_ok(),
+                "public hostname should pass via the Production fall-through"
+            ),
+            Err(_) => println!("Skipping - no internet connectivity"),
         }
     }
 

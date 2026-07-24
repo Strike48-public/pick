@@ -66,7 +66,48 @@ pub struct CatalogEntry {
     pub state: InstallState,
 }
 
+/// Rough expected install duration, in seconds, for a dependency. Used only to
+/// drive the UI's elapsed-vs-estimate progress bar — it is a soft hint, never a
+/// guarantee. The command layer runs installs to completion without streaming
+/// byte-level progress, so a true percentage is not available; a labeled
+/// estimate is the honest signal we can give.
+///
+/// Values are deliberately generous (a bar that fills slightly slow reads
+/// better than one that pins at 100% and keeps spinning). The default covers a
+/// single `pacman`/`apt` package fetch on a warm mirror; heavyweight custom
+/// installers override by `id`.
+pub fn estimated_install_secs(method: &InstallMethod, binary_name: &str) -> u32 {
+    // Sensible per-mechanism defaults.
+    let base = match method {
+        // Manual installs are operator-driven; no automated timer applies.
+        InstallMethod::Manual { .. } => 0,
+        // A single package plus the -Sy DB refresh on the sandbox rootfs.
+        InstallMethod::Pacman => 90,
+        InstallMethod::AptHost => 60,
+        // Bespoke installers vary widely; refined by binary below.
+        InstallMethod::Custom { .. } => 120,
+    };
+
+    // Per-tool overrides for the installers whose real-world duration is far
+    // from the mechanism default. Keyed by the catalog binary name.
+    match binary_name {
+        // Metasploit pulls a very large package set + Ruby gems.
+        "msfconsole" => 360,
+        // ZAP downloads a sizable Java app bundle.
+        "zaproxy" | "zap" => 150,
+        // webwright installs a Python env plus a Playwright Chromium download.
+        "webwright" => 180,
+        _ => base,
+    }
+}
+
 impl CatalogEntry {
+    /// Rough expected install duration in seconds. See
+    /// [`estimated_install_secs`]. `0` means no automated install (manual).
+    pub fn estimated_install_secs(&self) -> u32 {
+        estimated_install_secs(&self.install_method, &self.binary_name)
+    }
+
     /// Whether this entry can be installed automatically in the current mode.
     pub fn is_auto_installable(&self) -> bool {
         match &self.install_method {
@@ -89,6 +130,14 @@ impl CatalogEntry {
     }
 }
 
+/// Binaries that are install prerequisites for other tools rather than
+/// operator-facing tools in their own right. They are hidden from the catalog
+/// UI (no one "installs Python" as a pentest tool), but remain real
+/// `external_dependency` declarations so the tools that need them still pull
+/// them in through their own installer: `python3`/`playwright` for webwright,
+/// `node` (Node.js) for the CyberChef recipe runner.
+const HIDDEN_CATALOG_BINARIES: &[&str] = &["python3", "playwright", "node"];
+
 /// Collect the unique external dependencies declared across all registered
 /// tools, mapping each `binary_name` to its dependency plus the tools that use
 /// it. Uses a `BTreeMap` for deterministic ordering.
@@ -103,6 +152,9 @@ fn collect_dependencies() -> BTreeMap<String, (ExternalDependency, Vec<String>)>
     // advertised/executed, not here. See #183.
     for schema in registry.schemas() {
         for dep in &schema.external_dependencies {
+            if HIDDEN_CATALOG_BINARIES.contains(&dep.binary_name.as_str()) {
+                continue;
+            }
             let entry = deps
                 .entry(dep.binary_name.clone())
                 .or_insert_with(|| (dep.clone(), Vec::new()));
@@ -129,11 +181,22 @@ fn collect_dependencies() -> BTreeMap<String, (ExternalDependency, Vec<String>)>
     deps
 }
 
-/// Probe whether a single binary is present on PATH (cheap `which`).
+/// Probe whether a single binary is present on PATH.
+///
+/// Uses the POSIX `command -v` shell builtin, not the `which` binary: the
+/// minimal BlackArch sandbox rootfs does not ship `which`, so a `which` probe
+/// reports every tool as Missing even when installed (certipy/kerbrute landed
+/// in `/usr/sbin` but read as absent). `command -v` is a shell builtin and
+/// works in both the sandbox and on the host. The binary name is passed as a
+/// positional arg (`$1`), never interpolated, so no shell-escaping is needed.
 async fn binary_present(binary: &str) -> InstallState {
     let platform = get_platform();
     match platform
-        .execute_command("which", &[binary], Duration::from_secs(5))
+        .execute_command(
+            "sh",
+            &["-c", "command -v \"$1\" > /dev/null 2>&1", "sh", binary],
+            Duration::from_secs(5),
+        )
         .await
     {
         Ok(r) if r.exit_code == 0 => InstallState::Installed,
@@ -233,24 +296,13 @@ async fn install_pacman(entry: &CatalogEntry, progress: &ProgressSink) -> Result
         "Installing {} via pacman...",
         entry.display_name
     )));
-    let platform = get_platform();
     // package_name is keyed by binary in the catalog; look it up fresh from the
     // dependency to get the real package name.
     let pkg = pacman_package_for(&entry.binary_name).unwrap_or_else(|| entry.binary_name.clone());
     validate_package_name(&pkg)?;
-    let result = platform
-        .execute_command(
-            "pacman",
-            &["-S", "--noconfirm", &pkg],
-            Duration::from_secs(600),
-        )
-        .await?;
-    if result.exit_code != 0 {
-        return Err(Error::ToolExecution(format!(
-            "Failed to install {pkg}: {}",
-            result.stderr
-        )));
-    }
+    // -Sy refreshes the package DBs first; a bare -S fails on a rootfs whose
+    // sync DBs have gone stale (see installers::pacman).
+    crate::installers::pacman::install(&pkg, Duration::from_secs(600)).await?;
     progress(InstallEvent::step(format!(
         "{} installed",
         entry.display_name
@@ -294,7 +346,13 @@ async fn install_apt_host(entry: &CatalogEntry, progress: &ProgressSink) -> Resu
 /// metacharacters that could matter on the sandbox's shell-escaped exec path.
 /// Allows the conservative set of characters real package names use.
 fn validate_package_name(pkg: &str) -> Result<()> {
+    // A leading '-' would be parsed by pacman/apt-get as a flag rather than a
+    // package (argument injection): a name like "-Syu" or "--purge" would
+    // change the command's behavior. Real package names never start with '-',
+    // so reject it explicitly. This matters most on the uninstall path, where
+    // "--purge" would escalate `apt-get remove` into config deletion.
     if pkg.is_empty()
+        || pkg.starts_with('-')
         || !pkg
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+'))
@@ -319,21 +377,68 @@ fn pacman_package_for(binary: &str) -> Option<String> {
 /// caller can report partial success. Already-installed entries are skipped.
 pub async fn install_all_recommended(progress: &ProgressSink) -> Vec<(String, String)> {
     let catalog = build_catalog().await;
-    let mut failures = Vec::new();
+    let selected: Vec<CatalogEntry> = catalog
+        .into_iter()
+        .filter(|e| e.recommended && e.state != InstallState::Installed && e.is_auto_installable())
+        .collect();
+    install_entries(&selected, progress).await
+}
 
-    for entry in catalog {
-        if !entry.recommended
-            || entry.state == InstallState::Installed
-            || !entry.is_auto_installable()
-        {
-            continue;
-        }
-        if let Err(e) = install_entry(&entry, progress).await {
+/// Install a pre-selected set of entries, aggregating per-entry failures as
+/// `(binary_name, error)` so the caller can report partial success. Shared by
+/// [`install_all_recommended`] and [`install_all_in_category`] so the loop and
+/// its failure-aggregation are defined (and tested) once.
+async fn install_entries(
+    entries: &[CatalogEntry],
+    progress: &ProgressSink,
+) -> Vec<(String, String)> {
+    let mut failures = Vec::new();
+    for entry in entries {
+        if let Err(e) = install_entry(entry, progress).await {
             failures.push((entry.binary_name.clone(), e.to_string()));
         }
     }
-
     failures
+}
+
+/// The auto-installable, not-yet-installed entries in a category, as
+/// `(binary_name, estimated_secs)`. Lets the UI preview how many tools an
+/// "Install all" for that category will fetch (and their summed time estimate)
+/// before the operator commits — the count/size confirm for category installs.
+/// `category` is the stable snake_case key (e.g. "network"), matching
+/// [`CatalogItem::category`].
+pub async fn pending_installs_in_category(category: &str) -> Vec<(String, u32)> {
+    build_catalog()
+        .await
+        .into_iter()
+        .filter(|e| {
+            category_key(e.category) == category
+                && e.state != InstallState::Installed
+                && e.is_auto_installable()
+        })
+        .map(|e| (e.binary_name.clone(), e.estimated_install_secs()))
+        .collect()
+}
+
+/// Install every auto-installable, not-yet-installed tool in one category.
+/// Mirrors [`install_all_recommended`] but scopes to a single category key
+/// (the "Install all" action on a category header). Already-installed and
+/// non-auto-installable entries are skipped; returns `(binary, error)` for any
+/// that failed so the caller can report partial success.
+pub async fn install_all_in_category(
+    category: &str,
+    progress: &ProgressSink,
+) -> Vec<(String, String)> {
+    let catalog = build_catalog().await;
+    let selected: Vec<CatalogEntry> = catalog
+        .into_iter()
+        .filter(|e| {
+            category_key(e.category) == category
+                && e.state != InstallState::Installed
+                && e.is_auto_installable()
+        })
+        .collect();
+    install_entries(&selected, progress).await
 }
 
 /// A flat, serializable, UI-facing view of one catalog entry. The Dioxus
@@ -353,10 +458,18 @@ pub struct CatalogItem {
     pub recommended: bool,
     /// Whether an Install button should be offered (auto-installable in mode).
     pub auto_installable: bool,
+    /// Whether the UI should offer to uninstall this tool (removable in the
+    /// current mode). Only meaningful when `state == "installed"`.
+    #[serde(default)]
+    pub uninstallable: bool,
     /// Manual instructions to show when not auto-installable.
     pub manual_instructions: Option<String>,
     /// Tools that declared this dependency.
     pub used_by: Vec<String>,
+    /// Rough expected install duration in seconds, for the UI's
+    /// elapsed-vs-estimate progress bar. `0` for manual-only entries. Soft hint.
+    #[serde(default)]
+    pub estimated_secs: u32,
 }
 
 impl From<&CatalogEntry> for CatalogItem {
@@ -379,8 +492,10 @@ impl From<&CatalogEntry> for CatalogItem {
             state: state.to_string(),
             recommended: e.recommended,
             auto_installable: e.is_auto_installable(),
+            uninstallable: is_uninstallable(&e.install_method),
             manual_instructions: e.manual_instructions(),
             used_by: e.used_by.clone(),
+            estimated_secs: e.estimated_install_secs(),
         }
     }
 }
@@ -413,6 +528,32 @@ pub struct ToolOverviewItem {
     pub category: String,
 }
 
+/// Stable lowercase key for a [`ToolCategory`], matching its serde rename.
+///
+/// This is the single source of truth for category string keys shared by the
+/// catalog and the read-only overview. It is an exhaustive match on purpose:
+/// adding a `ToolCategory` variant without a key here is a compile error, so a
+/// new category can never silently fall through to a wrong bucket.
+fn category_key(cat: ToolCategory) -> &'static str {
+    match cat {
+        ToolCategory::Network => "network",
+        ToolCategory::Web => "web",
+        ToolCategory::WebDiscovery => "web_discovery",
+        ToolCategory::Proxy => "proxy",
+        ToolCategory::ActiveDirectory => "active_directory",
+        ToolCategory::Credentials => "credentials",
+        ToolCategory::Exploitation => "exploitation",
+        ToolCategory::PostExploit => "post_exploit",
+        ToolCategory::Sniffing => "sniffing",
+        ToolCategory::Wireless => "wireless",
+        ToolCategory::Recon => "recon",
+        ToolCategory::Crypto => "crypto",
+        ToolCategory::Forensics => "forensics",
+        ToolCategory::Utilities => "utilities",
+        ToolCategory::Other => "other",
+    }
+}
+
 /// Map a tool's name + its (optional) declared category to a display category.
 ///
 /// Tools that declare an `ExternalDependency` carry an explicit
@@ -421,18 +562,11 @@ pub struct ToolOverviewItem {
 /// sensibly rather than dumping everything in "other".
 fn overview_category(name: &str, declared: Option<ToolCategory>) -> &'static str {
     if let Some(cat) = declared {
-        // Reuse the serde rename for a stable key.
-        return match cat {
-            ToolCategory::Network => "network",
-            ToolCategory::Web => "web",
-            ToolCategory::ActiveDirectory => "active_directory",
-            ToolCategory::Credentials => "credentials",
-            ToolCategory::PostExploit => "post_exploit",
-            ToolCategory::Wireless => "wireless",
-            ToolCategory::Recon => "recon",
-            ToolCategory::Forensics => "forensics",
-            ToolCategory::Other => "other",
-        };
+        // Reuse the serde rename for a stable key. Deriving it from serde
+        // (rather than a hand-written match) keeps this in lockstep with the
+        // enum: new `ToolCategory` variants are covered automatically and can
+        // never silently fall through.
+        return category_key(cat);
     }
     // Heuristic for built-ins with no declared category.
     match name {
@@ -522,6 +656,95 @@ pub async fn install_by_binary(binary_name: &str, progress: &ProgressSink) -> Re
     install_entry(entry, progress).await
 }
 
+/// Whether a catalog entry can be uninstalled from the UI in the current mode.
+///
+/// Mirrors [`CatalogEntry::is_auto_installable`]: we only offer removal for
+/// mechanisms we can actually drive here.
+/// - `Pacman`: only inside the sandbox (that's where the package lives).
+/// - `AptHost`: only in native mode (the host's package manager).
+/// - `Custom`: never (bespoke installers have no standard teardown; a future
+///   `ToolInstaller::uninstall` could enable this per-installer).
+/// - `Manual`: never (we didn't install it, so we won't remove it).
+pub fn is_uninstallable(method: &InstallMethod) -> bool {
+    match method {
+        InstallMethod::Pacman => sandbox_enabled(),
+        InstallMethod::AptHost => !sandbox_enabled(),
+        InstallMethod::Custom { .. } | InstallMethod::Manual { .. } => false,
+    }
+}
+
+/// Remove a single catalog entry, routing by its install method. Emits progress
+/// through `progress`. Refuses methods that [`is_uninstallable`] rejects rather
+/// than attempting a removal it cannot safely perform.
+pub async fn uninstall_entry(entry: &CatalogEntry, progress: &ProgressSink) -> Result<()> {
+    if !is_uninstallable(&entry.install_method) {
+        return Err(Error::ToolExecution(format!(
+            "{} cannot be uninstalled from here.",
+            entry.display_name
+        )));
+    }
+    match &entry.install_method {
+        InstallMethod::Pacman => uninstall_pacman(entry, progress).await,
+        InstallMethod::AptHost => uninstall_apt_host(entry, progress).await,
+        // Guarded by is_uninstallable above; unreachable in practice.
+        InstallMethod::Custom { .. } | InstallMethod::Manual { .. } => Err(Error::ToolExecution(
+            format!("{} cannot be uninstalled from here.", entry.display_name),
+        )),
+    }
+}
+
+/// Remove a Pacman entry from the sandbox via `pacman -Rns`.
+async fn uninstall_pacman(entry: &CatalogEntry, progress: &ProgressSink) -> Result<()> {
+    progress(InstallEvent::step(format!(
+        "Removing {} via pacman...",
+        entry.display_name
+    )));
+    let pkg = pacman_package_for(&entry.binary_name).unwrap_or_else(|| entry.binary_name.clone());
+    validate_package_name(&pkg)?;
+    crate::installers::pacman::uninstall(&pkg, Duration::from_secs(300)).await?;
+    progress(InstallEvent::step(format!(
+        "{} removed",
+        entry.display_name
+    )));
+    Ok(())
+}
+
+/// Remove an apt-host entry (native mode) via `apt-get remove`.
+async fn uninstall_apt_host(entry: &CatalogEntry, progress: &ProgressSink) -> Result<()> {
+    progress(InstallEvent::step(format!(
+        "Removing {} via apt-get...",
+        entry.display_name
+    )));
+    let platform = get_platform();
+    let pkg = entry.binary_name.clone();
+    validate_package_name(&pkg)?;
+    let result = platform
+        .execute_command("apt-get", &["remove", "-y", &pkg], Duration::from_secs(300))
+        .await?;
+    if result.exit_code != 0 {
+        return Err(Error::ToolExecution(format!(
+            "Failed to apt-get remove {pkg}: {}",
+            result.stderr
+        )));
+    }
+    progress(InstallEvent::step(format!(
+        "{} removed",
+        entry.display_name
+    )));
+    Ok(())
+}
+
+/// Uninstall the catalog entry keyed by `binary_name`. UI entrypoint mirroring
+/// [`install_by_binary`].
+pub async fn uninstall_by_binary(binary_name: &str, progress: &ProgressSink) -> Result<()> {
+    let catalog = build_catalog().await;
+    let entry = catalog
+        .iter()
+        .find(|e| e.binary_name == binary_name)
+        .ok_or_else(|| Error::ToolExecution(format!("Unknown tool '{binary_name}'")))?;
+    uninstall_entry(entry, progress).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,7 +790,18 @@ mod tests {
         ] {
             assert!(validate_package_name(ok).is_ok(), "should accept {ok}");
         }
-        for bad in ["pkg; rm -rf /", "a b", "$(id)", "", "pkg|nc", "../evil"] {
+        for bad in [
+            "pkg; rm -rf /",
+            "a b",
+            "$(id)",
+            "",
+            "pkg|nc",
+            "../evil",
+            // Flag injection: a leading dash would be read as a pacman/apt-get
+            // option, not a package (e.g. -Syu, --purge). Must be rejected.
+            "-Syu",
+            "--purge",
+        ] {
             assert!(validate_package_name(bad).is_err(), "should reject {bad:?}");
         }
     }
@@ -588,13 +822,19 @@ mod tests {
 
     #[tokio::test]
     async fn build_catalog_produces_entries_with_used_by() {
+        // Probe install-state on the host, not the sandbox. build_catalog runs
+        // `command -v` per tool via execute_command; with the sandbox enabled
+        // and no system proot, that triggers a proot download + rootfs setup
+        // that hangs on a CI runner (no backend, no rootfs). The host probe is
+        // equally valid for the catalog-shape assertions here.
+        pentest_platform::set_use_sandbox(false);
         let catalog = build_catalog().await;
         assert!(!catalog.is_empty());
         let nmap = catalog.iter().find(|e| e.binary_name == "nmap");
         assert!(nmap.is_some(), "nmap should be in the catalog");
         let nmap = nmap.unwrap();
         assert!(!nmap.used_by.is_empty());
-        assert_eq!(nmap.category, ToolCategory::Other); // nmap hasn't set a category yet
+        assert_eq!(nmap.category, ToolCategory::Network);
     }
 
     #[tokio::test]
@@ -618,6 +858,37 @@ mod tests {
         let result = install_entry(&entry, progress.as_ref()).await;
         assert!(result.is_err(), "manual entries must not auto-install");
         assert!(entry.manual_instructions().unwrap().contains("manually"));
+    }
+
+    #[tokio::test]
+    async fn manual_and_custom_entries_are_never_uninstallable() {
+        // We never installed Manual tools (Burp) and have no standard teardown
+        // for Custom installers, so the UI must not offer to remove them.
+        assert!(!is_uninstallable(&InstallMethod::Manual {
+            url: None,
+            instructions: "x".into(),
+        }));
+        assert!(!is_uninstallable(&InstallMethod::Custom {
+            id: "zap".into()
+        }));
+
+        // uninstall_entry must refuse a Manual entry rather than shell out.
+        let entry = CatalogEntry {
+            binary_name: "burpsuite".into(),
+            display_name: "Burp Suite".into(),
+            description: "proxy".into(),
+            category: ToolCategory::Proxy,
+            install_method: InstallMethod::Manual {
+                url: None,
+                instructions: "install manually".into(),
+            },
+            recommended: false,
+            used_by: vec![],
+            state: InstallState::Installed,
+        };
+        let progress = crate::installers::noop_progress();
+        let result = uninstall_entry(&entry, progress.as_ref()).await;
+        assert!(result.is_err(), "manual entries must not be uninstalled");
     }
 
     #[test]
@@ -651,8 +922,10 @@ mod tests {
             state: "installed".into(),
             recommended: true,
             auto_installable: true,
+            uninstallable: false,
             manual_instructions: None,
             used_by: vec!["zap".into()],
+            estimated_secs: 150,
         };
         let json = serde_json::to_string(&item).unwrap();
         let back: CatalogItem = serde_json::from_str(&json).unwrap();
@@ -744,6 +1017,107 @@ mod tests {
     }
 
     #[test]
+    fn category_key_covers_new_taxonomy_variants() {
+        // The curated taxonomy keys must match the enum's serde rename so the
+        // UI's humanize_category lookups line up.
+        assert_eq!(category_key(ToolCategory::WebDiscovery), "web_discovery");
+        assert_eq!(category_key(ToolCategory::Proxy), "proxy");
+        assert_eq!(category_key(ToolCategory::Exploitation), "exploitation");
+        assert_eq!(category_key(ToolCategory::Sniffing), "sniffing");
+        assert_eq!(category_key(ToolCategory::Crypto), "crypto");
+        assert_eq!(category_key(ToolCategory::Utilities), "utilities");
+    }
+
+    #[tokio::test]
+    async fn runtime_dep_binaries_are_hidden_from_catalog() {
+        // python3 / playwright are install prerequisites, not operator-facing
+        // tools; they must not appear as catalog entries even though tools
+        // (webwright) declare them as dependencies.
+        // Host probe: avoid the sandbox proot-download hang on CI (see
+        // build_catalog_produces_entries_with_used_by).
+        pentest_platform::set_use_sandbox(false);
+        let catalog = build_catalog().await;
+        for hidden in HIDDEN_CATALOG_BINARIES {
+            assert!(
+                !catalog.iter().any(|e| &e.binary_name == hidden),
+                "{hidden} should be hidden from the catalog"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_installs_in_category_scopes_to_that_category() {
+        // Every entry the "network" install-all would touch must actually be a
+        // network-category, not-installed, auto-installable tool — the exact
+        // set install_all_in_category will act on. Guards against a filter that
+        // leaks other categories (or already-installed tools) into a bulk
+        // install. The set can legitimately be empty (e.g. everything already
+        // installed, or nothing auto-installable in native mode), so we assert
+        // the scoping property, not a fixed count.
+        // Host probe: avoid the sandbox proot-download hang on CI (see
+        // build_catalog_produces_entries_with_used_by).
+        pentest_platform::set_use_sandbox(false);
+        let full = build_catalog().await;
+        let pending = pending_installs_in_category("network").await;
+        for (bin, _secs) in &pending {
+            let entry = full
+                .iter()
+                .find(|e| &e.binary_name == bin)
+                .unwrap_or_else(|| panic!("{bin} not in catalog"));
+            assert_eq!(category_key(entry.category), "network", "{bin} not network");
+            assert_ne!(
+                entry.state,
+                InstallState::Installed,
+                "{bin} already installed"
+            );
+            assert!(entry.is_auto_installable(), "{bin} not auto-installable");
+        }
+        // A category with no matching tools yields an empty set (not an error).
+        assert!(pending_installs_in_category("no_such_category")
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn install_entries_aggregates_per_entry_failures() {
+        // The shared bulk-install loop (used by both install_all_recommended
+        // and install_all_in_category) must collect a (binary, error) entry for
+        // each failure and skip the rest silently. A Manual entry fails
+        // deterministically in install_entry without shelling out, so it's the
+        // stable way to exercise the failure-aggregation offline.
+        let progress = crate::installers::noop_progress();
+
+        // Empty input -> no failures.
+        assert!(install_entries(&[], progress.as_ref()).await.is_empty());
+
+        // One Manual entry -> exactly one failure, keyed by its binary name.
+        let manual = CatalogEntry {
+            binary_name: "burpsuite".into(),
+            display_name: "Burp Suite".into(),
+            description: "proxy".into(),
+            category: ToolCategory::Proxy,
+            install_method: InstallMethod::Manual {
+                url: None,
+                instructions: "install manually".into(),
+            },
+            recommended: false,
+            used_by: vec![],
+            state: InstallState::Manual,
+        };
+        let failures = install_entries(std::slice::from_ref(&manual), progress.as_ref()).await;
+        assert_eq!(
+            failures.len(),
+            1,
+            "manual entry must be reported as a failure"
+        );
+        assert_eq!(failures[0].0, "burpsuite", "failure keyed by binary name");
+        assert!(
+            !failures[0].1.is_empty(),
+            "failure must carry a non-empty error message"
+        );
+    }
+
+    #[test]
     fn tools_overview_categories_are_distinct_and_ordered() {
         let overview = tools_overview();
         let cats = tools_overview_categories(&overview);
@@ -753,8 +1127,97 @@ mod tests {
         assert!(cats.iter().any(|c| c == "active_directory"));
     }
 
+    #[test]
+    fn estimated_secs_defaults_by_method_and_overrides_by_binary() {
+        // Mechanism defaults.
+        assert_eq!(
+            estimated_install_secs(&InstallMethod::Pacman, "nmap"),
+            90,
+            "pacman default"
+        );
+        assert_eq!(
+            estimated_install_secs(&InstallMethod::AptHost, "some-apt-tool"),
+            60,
+            "apt default"
+        );
+        assert_eq!(
+            estimated_install_secs(
+                &InstallMethod::Custom {
+                    id: "certipy".into()
+                },
+                "certipy"
+            ),
+            120,
+            "custom default"
+        );
+        // Manual has no automated timer.
+        assert_eq!(
+            estimated_install_secs(
+                &InstallMethod::Manual {
+                    url: None,
+                    instructions: "x".into()
+                },
+                "burpsuite"
+            ),
+            0,
+            "manual = 0"
+        );
+        // Heavyweight per-binary overrides beat the mechanism default.
+        assert_eq!(
+            estimated_install_secs(
+                &InstallMethod::Custom {
+                    id: "metasploit".into()
+                },
+                "msfconsole"
+            ),
+            360,
+            "metasploit override"
+        );
+        assert_eq!(
+            estimated_install_secs(
+                &InstallMethod::Custom {
+                    id: "webwright".into()
+                },
+                "webwright"
+            ),
+            180,
+            "webwright override (Python env + Playwright Chromium download)"
+        );
+        assert!(
+            estimated_install_secs(&InstallMethod::Custom { id: "zap".into() }, "zaproxy")
+                > estimated_install_secs(&InstallMethod::Pacman, "nmap"),
+            "zap should estimate longer than a plain pacman package"
+        );
+    }
+
+    #[tokio::test]
+    async fn ad_suite_is_not_in_recommended_default_set() {
+        // Specialized AD-engagement tooling must not be swept in by the bulk
+        // "install all recommended" action (the operator installs it on demand).
+        // Host probe: avoid the sandbox proot-download hang on CI (see
+        // build_catalog_produces_entries_with_used_by).
+        pentest_platform::set_use_sandbox(false);
+        let catalog = build_catalog().await;
+        for bin in ["bloodhound-python", "certipy", "kerbrute", "nxc"] {
+            // Assert the entry EXISTS before checking its flag: without this the
+            // test would pass vacuously if a rename/refactor dropped the binary
+            // from the catalog, silently retiring the regression guard.
+            let entry = catalog
+                .iter()
+                .find(|e| e.binary_name == bin)
+                .unwrap_or_else(|| panic!("{bin} should be present in the catalog"));
+            assert!(
+                !entry.recommended,
+                "{bin} must be opt-in, not part of the recommended default set"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn build_catalog_items_is_sorted_and_nonempty() {
+        // Host probe: avoid the sandbox proot-download hang on CI (see
+        // build_catalog_produces_entries_with_used_by).
+        pentest_platform::set_use_sandbox(false);
         let items = build_catalog_items().await;
         assert!(!items.is_empty());
         // Sorted by (category, display_name).

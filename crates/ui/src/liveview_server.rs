@@ -315,7 +315,10 @@ pub async fn start_liveview_server(
     // event handlers to work in the LiveView context.
     let router = Router::new()
         .with_app("/", LiveViewApp)
-        .route("/health", get(|| async { "OK" }))
+        // NOTE: /health is registered on a separate state-carrying router merged in
+        // via `extra_routes` (see api_routes::create_health_route, pick#295) so it can
+        // report real connector transport state. It MUST NOT also be defined here —
+        // axum panics on duplicate routes at merge time.
         .route(
             "/connector/info",
             get(|| async {

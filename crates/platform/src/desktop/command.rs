@@ -88,12 +88,24 @@ pub async fn execute_command_in_dir(
         full_cmd
     );
 
-    // Try sandboxed execution first
+    // Try sandboxed execution. The sandbox is enabled, so the operator expects
+    // the command to run *inside* it. We fail closed: a sandbox init or execution
+    // error is surfaced to the caller rather than silently retried on the host.
+    // Dropping to the host here would be a fail-open — a command the operator
+    // believed was contained could run against the host with only a `warn!` as
+    // signal (GitHub issue #256). The deliberate host path lives above, behind
+    // the `!is_sandbox_enabled()` check (Native shell mode / DISABLE_SANDBOX).
+    //
+    // Note the executors return `Ok(CommandResult)` even for a nonzero exit or a
+    // timeout (a command that *ran* but failed); `Err(SandboxError)` is reserved
+    // for infrastructure failures (rootfs missing, spawn failure, no backend). So
+    // failing closed here only rejects genuine sandbox breakage, never a
+    // legitimate tool run that exited nonzero.
     tracing::info!(
         "[execute_command] Sandbox enabled, attempting to get sandbox manager for: {}",
         cmd
     );
-    match sandbox::get_sandbox_manager().await {
+    let attempt = match sandbox::get_sandbox_manager().await {
         Ok(manager) => {
             tracing::info!("[execute_command] Sandbox manager obtained, backend={}, is_ready={}, executing: {}",
                 manager.backend(), manager.is_ready(), cmd);
@@ -101,42 +113,77 @@ pub async fn execute_command_in_dir(
                 .execute(&full_cmd, timeout_duration, working_dir)
                 .await
             {
-                Ok(result) => {
-                    tracing::info!("[execute_command] Sandbox execution succeeded for: {}", cmd);
-                    return Ok(result);
-                }
-                Err(e) => {
-                    tracing::warn!("[execute_command] Sandbox execution failed for '{}': {}, falling back to direct", cmd, e);
-                    // Fall through to direct execution as last resort
-                }
+                Ok(result) => SandboxAttempt::Executed(result),
+                Err(e) => SandboxAttempt::ExecFailed(e.to_string()),
             }
         }
-        Err(e) => {
-            tracing::warn!(
-                "[execute_command] Sandbox manager initialization failed for '{}': {}, falling back to direct execution",
-                cmd, e
-            );
-            // Fall through to direct execution
-        }
-    }
+        Err(e) => SandboxAttempt::InitFailed(e.to_string()),
+    };
 
-    // Fallback: direct execution (only if sandbox fails)
-    tracing::warn!(
-        "[execute_command] Using direct host execution fallback for: {}",
-        cmd
-    );
-    execute_command_direct(cmd, args, timeout_duration, working_dir).await
+    resolve_enabled_attempt(cmd, attempt)
 }
 
-/// Direct command execution (used as fallback or for internal operations).
+/// Outcome of a sandboxed execution attempt when the sandbox is enabled.
+enum SandboxAttempt {
+    /// The sandbox ran the command (the `CommandResult` may still carry a
+    /// nonzero exit code or a timeout — that is a *successful* sandbox run).
+    Executed(CommandResult),
+    /// The sandbox manager was obtained but executing the command failed
+    /// (rootfs not set up, backend spawn failure, ...).
+    ExecFailed(String),
+    /// The sandbox manager could not be initialized (no backend available, ...).
+    InitFailed(String),
+}
+
+/// Decide the result of an enabled-sandbox attempt, failing closed.
 ///
-/// This always runs on the **host**, so the Linux-only `which` binary-probe is
+/// A successful sandbox run (even one that exited nonzero) is returned as-is.
+/// An init or execution *failure* is surfaced as an [`Error::ToolExecution`]
+/// rather than falling back to host execution. This is the fail-closed
+/// containment guarantee for issue #256; the corresponding fail-open behavior
+/// used to `warn!` and run `execute_command_direct` on the host.
+fn resolve_enabled_attempt(cmd: &str, attempt: SandboxAttempt) -> Result<CommandResult> {
+    match attempt {
+        SandboxAttempt::Executed(result) => {
+            tracing::info!("[execute_command] Sandbox execution succeeded for: {}", cmd);
+            Ok(result)
+        }
+        SandboxAttempt::ExecFailed(e) => {
+            tracing::error!(
+                "[execute_command] Sandbox execution failed for '{}': {} — failing closed (not running on host)",
+                cmd, e
+            );
+            Err(Error::ToolExecution(format!(
+                "sandbox execution failed for '{cmd}': {e}. Refusing to run on the host; \
+                 switch to Native shell mode (or set DISABLE_SANDBOX=true) to run unsandboxed."
+            )))
+        }
+        SandboxAttempt::InitFailed(e) => {
+            tracing::error!(
+                "[execute_command] Sandbox manager initialization failed for '{}': {} — failing closed (not running on host)",
+                cmd, e
+            );
+            Err(Error::ToolExecution(format!(
+                "sandbox unavailable for '{cmd}': {e}. Refusing to run on the host; \
+                 switch to Native shell mode (or set DISABLE_SANDBOX=true) to run unsandboxed."
+            )))
+        }
+    }
+}
+
+/// Direct command execution on the **host**.
+///
+/// Reached only via the deliberate host path in [`execute_command_in_dir`]:
+/// when the sandbox is disabled (Native shell mode / `DISABLE_SANDBOX=true`).
+/// A sandbox *failure* no longer falls back here — the enabled path fails closed
+/// (see [`resolve_enabled_attempt`] and GitHub issue #256), so this function is
+/// never a silent host escape hatch for an enabled sandbox.
+///
+/// Because it always runs on the host, the Linux-only `which` binary-probe is
 /// rewritten to the host-appropriate command (`where` on Windows) via
 /// [`crate::common::host_which_command`]. The sandbox *success* path does not
 /// come through here — it sends the command into a Linux environment
-/// (WSL2/proot/bwrap) where `which` is correct. A sandbox *failure* does fall
-/// back to this function (see [`execute_command_in_dir`]), but that fallback
-/// executes on the host, so the rewrite is still correct. See GitHub issue #183.
+/// (WSL2/proot/bwrap) where `which` is correct. See GitHub issue #183.
 pub(crate) async fn execute_command_direct(
     cmd: &str,
     args: &[&str],
@@ -219,5 +266,68 @@ mod tests {
         assert_eq!(shell_escape("with'quote"), "'with'\\''quote'");
         assert_eq!(shell_escape("-flag"), "-flag");
         assert_eq!(shell_escape("path/to/file.txt"), "path/to/file.txt");
+    }
+
+    // ── Fail-closed containment (GitHub issue #256) ──────────────────────
+    //
+    // These guard the enabled-sandbox decision: an init or execution failure
+    // must be surfaced to the caller, never silently retried on the host.
+    // Guard check: replacing either error arm below with a host result (the
+    // old fail-open behavior) turns `sandbox_exec_failure_fails_closed` and
+    // `sandbox_init_failure_fails_closed` red.
+
+    #[test]
+    fn sandbox_exec_failure_fails_closed() {
+        let result = resolve_enabled_attempt(
+            "nmap",
+            SandboxAttempt::ExecFailed("rootfs not initialized".to_string()),
+        );
+        let err = result.expect_err("sandbox exec failure must not run on the host");
+        // Fail-closed: surfaced as a tool-execution error, not an Ok result.
+        assert!(matches!(err, Error::ToolExecution(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("nmap") && msg.contains("Refusing to run on the host"),
+            "error should name the command and state host refusal, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn sandbox_init_failure_fails_closed() {
+        let result = resolve_enabled_attempt(
+            "masscan",
+            SandboxAttempt::InitFailed("No sandbox backend available".to_string()),
+        );
+        let err = result.expect_err("sandbox init failure must not run on the host");
+        assert!(matches!(err, Error::ToolExecution(_)));
+        assert!(err.to_string().contains("masscan"));
+    }
+
+    #[test]
+    fn successful_sandbox_run_passes_through() {
+        let cr = CommandResult::success("out".into(), String::new(), 0, 5);
+        let result = resolve_enabled_attempt("id", SandboxAttempt::Executed(cr));
+        let out = result.expect("a successful sandbox run must pass through");
+        assert_eq!(out.exit_code, 0);
+        assert_eq!(out.stdout, "out");
+    }
+
+    #[test]
+    fn nonzero_exit_is_a_successful_run_not_a_sandbox_failure() {
+        // A command that *ran* in the sandbox but exited nonzero (or timed out)
+        // is a successful sandbox run: the executor returns Ok(CommandResult),
+        // so it must pass through unchanged and NOT be treated as a fail-closed
+        // error. This is why the enabled path keys off Err(SandboxError), not
+        // the exit code.
+        let cr = CommandResult::success(String::new(), "boom".into(), 2, 5);
+        let result = resolve_enabled_attempt("false", SandboxAttempt::Executed(cr));
+        let out = result.expect("nonzero-exit run is still a successful sandbox run");
+        assert_eq!(out.exit_code, 2);
+        assert!(!out.timed_out);
+
+        let timed_out = CommandResult::timeout(String::new(), "slow".into(), 100);
+        let result = resolve_enabled_attempt("sleep", SandboxAttempt::Executed(timed_out));
+        let out = result.expect("a sandbox timeout is still a successful sandbox run");
+        assert!(out.timed_out);
     }
 }

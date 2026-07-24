@@ -226,9 +226,9 @@ impl PentestTool for PortScanTool {
                         "total_scanned": r.ports.len(),
                         "duration_ms": r.duration_ms,
                     })),
-                    Err((host, e)) => Err(pentest_core::error::Error::Network(format!(
-                        "{host}: {e}"
-                    ))),
+                    Err((host, e)) => {
+                        Err(pentest_core::error::Error::Network(format!("{host}: {e}")))
+                    }
                 };
             }
 

@@ -143,7 +143,17 @@ async fn get_network_interfaces_fallback() -> Result<Vec<NetworkInterface>> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        Ok(Vec::new())
+        // Reachable only in a misconfigured build: the default `desktop` feature
+        // ships the cross-platform `network-interface` impl. Returning an empty
+        // Vec here is a silent lie — an empty interface list flows into
+        // check_wifi_connection_status -> total_adapters=0 -> safe_to_scan=true,
+        // a wrong "not on WiFi" negative the agent trusts. Fail loudly instead,
+        // mirroring ssdp_discover's compiled-out arm (#202).
+        Err(Error::PlatformNotSupported(
+            "network interface enumeration on non-Linux requires the 'network-interface' \
+             feature (enabled by the default 'desktop' feature)"
+                .into(),
+        ))
     }
 }
 

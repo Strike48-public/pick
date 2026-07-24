@@ -740,25 +740,26 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 // the SDK at it (STRIKE48_REGISTRATION_TOKEN_FILE) via the shared
                 // orchestration so the Dioxus app and crux FFI register the same
                 // way.
-                let ott = match pentest_core::connector_registration::prepare_connector_registration(
-                    &api_url,
-                    &jwt,
-                    &base_config.connector_name,
-                )
-                .await
-                {
-                    Ok(o) => o,
-                    Err(e) => {
-                        tracing::error!("[CONNECT] prepare_connector_registration failed: {e}");
-                        terminal_lines
-                            .write()
-                            .push(TerminalLine::error(format!("Pre-approval failed: {e}")));
-                        status.set(ConnectorStatus::Disconnected);
-                        connecting_step.set(None);
-                        needs_sign_in.set(true);
-                        return;
-                    }
-                };
+                let ott =
+                    match pentest_core::connector_registration::prepare_connector_registration(
+                        &api_url,
+                        &jwt,
+                        &base_config.connector_name,
+                    )
+                    .await
+                    {
+                        Ok(o) => o,
+                        Err(e) => {
+                            tracing::error!("[CONNECT] prepare_connector_registration failed: {e}");
+                            terminal_lines
+                                .write()
+                                .push(TerminalLine::error(format!("Pre-approval failed: {e}")));
+                            status.set(ConnectorStatus::Disconnected);
+                            connecting_step.set(None);
+                            needs_sign_in.set(true);
+                            return;
+                        }
+                    };
 
                 // Adopt the authoritative tenant so the connector registers under
                 // the personal tenant.
@@ -873,11 +874,10 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         let device_id = device_id.clone();
         move |_: ()| {
             let cfg_now = config.peek().clone();
-            let scoped_instance_id =
-                pentest_core::config::ConnectorConfig::env_scoped_instance_id(
-                    &device_id,
-                    &cfg_now.host,
-                );
+            let scoped_instance_id = pentest_core::config::ConnectorConfig::env_scoped_instance_id(
+                &device_id,
+                &cfg_now.host,
+            );
             pentest_core::config::ConnectorConfig::clear_credentials(
                 &cfg_now.connector_name,
                 &scoped_instance_id,

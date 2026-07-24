@@ -295,10 +295,8 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
                         // `.chat-messages`; here we target the doc body.
                         let _ = document::eval(UTILS_JS).await;
                         let _ = document::eval(CHART_PROCESSOR_JS).await;
-                        if let Err(e) = document::eval(
-                            "triggerChartPostProcess('.easy-doc-viewer-body')",
-                        )
-                        .await
+                        if let Err(e) =
+                            document::eval("triggerChartPostProcess('.easy-doc-viewer-body')").await
                         {
                             tracing::warn!("doc viewer chart post-process failed: {e}");
                         }

@@ -235,8 +235,18 @@ impl ToolchainEngine {
         let start = Instant::now();
 
         match self.registry.get(&step.tool) {
-            Some(tool) => {
-                match tool.execute(params, &self.context).await {
+            Some(_) => {
+                // Dispatch through registry.execute() rather than calling
+                // tool.execute() directly, so an OS-incompatible tool hits the
+                // #208 PlatformNotSupported guard and fails loudly (flowing into
+                // the alternatives path below) instead of running and failing
+                // cryptically deep in its own body. The tool is known-present
+                // (we matched Some), so this never takes execute()'s None arm.
+                match self
+                    .registry
+                    .execute(&step.tool, params, &self.context)
+                    .await
+                {
                     Ok(result) => {
                         let duration_ms = start.elapsed().as_millis() as u64;
                         execution.complete(result.data.clone(), duration_ms);

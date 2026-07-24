@@ -142,11 +142,7 @@ impl RecordSet {
                         self.instances.push(target);
                     }
                 }
-                Record::Srv {
-                    name,
-                    port,
-                    target,
-                } => {
+                Record::Srv { name, port, target } => {
                     self.srv.insert(name, (port, target));
                 }
                 Record::A { name, addr } => {
@@ -405,7 +401,9 @@ mod tests {
     #[test]
     fn parse_txt_splits_key_value() {
         // "path=/" then "flag"
-        let rdata = [6u8, b'p', b'a', b't', b'h', b'=', b'/', 4, b'f', b'l', b'a', b'g'];
+        let rdata = [
+            6u8, b'p', b'a', b't', b'h', b'=', b'/', 4, b'f', b'l', b'a', b'g',
+        ];
         let map = parse_txt(&rdata);
         assert_eq!(map.get("path").map(String::as_str), Some("/"));
         assert_eq!(map.get("flag").map(String::as_str), Some(""));
@@ -415,7 +413,8 @@ mod tests {
     fn read_name_handles_simple_name() {
         // 3www 7example 3com 0
         let buf = [
-            3, b'w', b'w', b'w', 7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm', 0,
+            3, b'w', b'w', b'w', 7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm',
+            0,
         ];
         let (name, next) = read_name(&buf, 0).expect("parse");
         assert_eq!(name, "www.example.com.");

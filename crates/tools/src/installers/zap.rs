@@ -8,7 +8,6 @@
 
 use super::{InstallEvent, ProgressSink, ToolInstaller};
 use pentest_core::error::{Error, Result};
-use pentest_platform::{get_platform, CommandExec};
 use std::time::Duration;
 
 use crate::installers::sandbox_enabled;
@@ -25,14 +24,8 @@ pub struct ZapInstaller;
 
 impl ZapInstaller {
     async fn launcher_present() -> bool {
-        let platform = get_platform();
         for bin in ZAP_BINARIES {
-            if platform
-                .execute_command("which", &[bin], Duration::from_secs(5))
-                .await
-                .map(|r| r.exit_code == 0)
-                .unwrap_or(false)
-            {
+            if super::binary_on_path(bin).await {
                 return true;
             }
         }
@@ -69,21 +62,9 @@ impl ToolInstaller for ZapInstaller {
         progress(InstallEvent::step(
             "Installing OWASP ZAP via pacman (zaproxy)...",
         ));
-        let platform = get_platform();
-        let result = platform
-            .execute_command(
-                "pacman",
-                &["-S", "--noconfirm", "zaproxy"],
-                Duration::from_secs(600),
-            )
-            .await?;
-
-        if result.exit_code != 0 {
-            return Err(Error::ToolExecution(format!(
-                "Failed to install zaproxy: {}",
-                result.stderr
-            )));
-        }
+        // -Sy refreshes the package DBs first; a bare -S fails on a rootfs whose
+        // sync DBs have gone stale (see installers::pacman).
+        super::pacman::install("zaproxy", Duration::from_secs(600)).await?;
 
         if !Self::launcher_present().await {
             return Err(Error::ToolExecution(

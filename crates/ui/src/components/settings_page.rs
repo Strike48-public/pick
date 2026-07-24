@@ -4,8 +4,10 @@
 use dioxus::prelude::*;
 use pentest_core::config::{BorderRadius, Density, ShellMode, Theme};
 use pentest_platform::WifiConnectionStatus;
+use std::collections::HashSet;
 
-use super::icons::{Download, Palette, Settings, Wifi};
+use super::icons::{ChevronDown, Download, Palette, Settings, Wifi};
+use super::tool_category::{category_icon, humanize_category};
 use crate::platform_helper;
 use pentest_core::seed::{SeedManager, SeedProgress, SeedTier};
 
@@ -84,11 +86,38 @@ pub fn SettingsPage(
     // Tools catalog state
     let mut catalog_items = use_signal(|| None::<Vec<pentest_tools::catalog::CatalogItem>>);
     let mut catalog_loading = use_signal(|| false);
-    // binary_name currently installing, or the "__all__" sentinel for the bulk
-    // install, or None when idle.
+    // Category keys the operator has expanded. Categories are collapsed by
+    // default (empty set) so the panel stays compact even as the catalog grows;
+    // a collapsed category renders only its header, not its cards.
+    let mut expanded_categories = use_signal(HashSet::<String>::new);
+    // binary_name currently installing, the "__all__" sentinel for the bulk
+    // install, or a "cat:<key>" sentinel for a category "install all"; None when
+    // idle. Any Some(..) value disables the other install buttons.
     let mut installing = use_signal(|| None::<String>);
     let mut install_message = use_signal(String::new);
     let mut install_error = use_signal(|| None::<String>);
+    // A pending category "Install all", if any: (category_key, count,
+    // total_estimated_secs). Some(..) shows the confirm dialog so a bulk install
+    // is never kicked off without the operator seeing how many tools it fetches.
+    let mut category_install_confirm = use_signal(|| None::<(String, usize, u32)>);
+    // Seconds elapsed since the current install began, ticked once a second by a
+    // background task while `installing` is Some. Drives the elapsed-vs-estimate
+    // progress bar so the operator can see how long an install is taking.
+    let mut install_elapsed = use_signal(|| 0u32);
+    // Expected duration (seconds) for the current install; 0 hides the estimate.
+    let mut install_estimate = use_signal(|| 0u32);
+    // Monotonic id for the current install session, bumped each time an install
+    // starts. A ticker captures the generation it was spawned for and stops as
+    // soon as a newer session begins, so a stale ticker can't advance the clock
+    // for a later install — even a restart of the same tool, where `installing`
+    // would otherwise look unchanged.
+    let mut install_generation = use_signal(|| 0u64);
+    // The tool pending an uninstall confirmation, if any. Some(item) shows the
+    // confirm dialog; cleared to None on cancel or after removal completes.
+    let mut uninstall_confirm = use_signal(|| None::<pentest_tools::catalog::CatalogItem>);
+    // binary_name currently being uninstalled, or None when idle. Disables the
+    // trash-cans and shows a per-card "Removing..." state.
+    let mut uninstalling = use_signal(|| None::<String>);
 
     // Load seed status on mount
     use_effect(move || {
@@ -106,6 +135,32 @@ pub fn SettingsPage(
             let items = pentest_tools::catalog::build_catalog_items().await;
             catalog_items.set(Some(items));
             catalog_loading.set(false);
+        });
+    });
+
+    // Tick the install elapsed clock once a second while an install is running.
+    // Reads `installing`/`install_generation` reactively, so the effect re-runs
+    // whenever an install starts, stops, or is replaced. The spawned loop
+    // captures the generation it was started for and exits as soon as a newer
+    // session begins; because a fresh session always bumps the generation, a
+    // stale ticker cannot advance the clock for a later install (including a
+    // restart of the same tool). The clock is reset here so the reset is atomic
+    // with the ticker spawn rather than racing the onclick handlers.
+    use_effect(move || {
+        if installing().is_none() {
+            return;
+        }
+        let generation = install_generation();
+        install_elapsed.set(0);
+        spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                // Stop if this session was superseded or the install finished.
+                if install_generation() != generation || installing().is_none() {
+                    break;
+                }
+                install_elapsed.set(install_elapsed() + 1);
+            }
         });
     });
 
@@ -280,10 +335,23 @@ pub fn SettingsPage(
 
                     // Install all recommended (bulk) action
                     if installing() == Some("__all__".to_string()) {
-                        div { class: "sidebar-download-status",
-                            span { "Installing recommended tools... {install_message}" }
-                            div { class: "download-progress",
-                                div { class: "download-progress-fill indeterminate" }
+                        {
+                            let (fraction, label) = install_progress(install_elapsed(), install_estimate());
+                            rsx! {
+                                div { class: "sidebar-download-status",
+                                    span { "Installing recommended tools... {install_message}" }
+                                    div { class: "download-progress",
+                                        if install_estimate() > 0 {
+                                            div {
+                                                class: "download-progress-fill",
+                                                style: "width: {fraction * 100.0}%",
+                                            }
+                                        } else {
+                                            div { class: "download-progress-fill indeterminate" }
+                                        }
+                                    }
+                                    div { class: "text-dim-xs", "{label}" }
+                                }
                             }
                         }
                     } else {
@@ -291,8 +359,27 @@ pub fn SettingsPage(
                             class: "sidebar-download-btn",
                             disabled: installing().is_some(),
                             onclick: move |_| {
+                                // Estimate the bulk install as the sum of the
+                                // pending recommended, auto-installable entries.
+                                let estimate = catalog_items()
+                                    .map(|items| {
+                                        items
+                                            .iter()
+                                            .filter(|i| {
+                                                i.recommended
+                                                    && i.auto_installable
+                                                    && i.state != "installed"
+                                            })
+                                            .map(|i| i.estimated_secs)
+                                            .sum::<u32>()
+                                    })
+                                    .unwrap_or(0);
                                 spawn(async move {
                                     use tokio::sync::mpsc;
+                                    // Bump the session id so any stale ticker
+                                    // stops; the ticker effect resets the clock.
+                                    install_generation.set(install_generation() + 1);
+                                    install_estimate.set(estimate);
                                     installing.set(Some("__all__".to_string()));
                                     install_error.set(None);
                                     install_message.set(String::new());
@@ -330,89 +417,423 @@ pub fn SettingsPage(
                         div { class: "text-dim-xs", style: "margin-top: 12px;", "Loading tools..." }
                     } else if let Some(items) = catalog_items() {
                         for category in tool_categories(&items) {
-                            div { class: "tool-category", style: "margin-top: 12px;",
-                                div { class: "text-dim-xs", style: "font-weight: 600; margin-bottom: 4px;",
-                                    {humanize_category(&category)}
-                                }
-                                for item in items.iter().filter(|i| i.category == category).cloned() {
-                                    div { class: "tool-row",
-                                        style: "display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0;",
-                                        div { style: "min-width: 0;",
-                                            div { "{item.display_name}" }
-                                            // Status chip
-                                            if item.state == "installed" {
-                                                span { class: "text-success text-dim-xs",
-                                                    "\u{2713} Installed"
+                            {
+                                let count = items.iter().filter(|i| i.category == category).count();
+                                let is_expanded = expanded_categories().contains(&category);
+                                let toggle_category = category.clone();
+                                // Tools in this category that an "Install all" would fetch:
+                                // not yet installed and auto-installable in the current mode.
+                                let pending: Vec<_> = items
+                                    .iter()
+                                    .filter(|i| {
+                                        i.category == category
+                                            && i.state != "installed"
+                                            && i.auto_installable
+                                    })
+                                    .collect();
+                                let pending_count = pending.len();
+                                let pending_secs: u32 =
+                                    pending.iter().map(|i| i.estimated_secs).sum();
+                                rsx! {
+                            div { class: "settings-tools-section",
+                                div {
+                                    class: "settings-tools-header",
+                                    role: "button",
+                                    tabindex: 0,
+                                    "aria-expanded": "{is_expanded}",
+                                    onclick: move |_| {
+                                        let mut set = expanded_categories.write();
+                                        if !set.remove(&toggle_category) {
+                                            set.insert(toggle_category.clone());
+                                        }
+                                    },
+                                    onkeydown: {
+                                        let key_category = category.clone();
+                                        move |evt: Event<KeyboardData>| {
+                                            let key = evt.key();
+                                            if key == Key::Enter
+                                                || matches!(key, Key::Character(ref c) if c == " ")
+                                            {
+                                                evt.prevent_default();
+                                                let mut set = expanded_categories.write();
+                                                if !set.remove(&key_category) {
+                                                    set.insert(key_category.clone());
                                                 }
-                                            } else if item.state == "missing" {
-                                                span { class: "text-dim-xs", "Not installed" }
-                                            } else if item.state == "manual" {
-                                                span { class: "text-dim-xs", "Manual" }
-                                            } else {
-                                                span { class: "text-dim-xs", "Unknown" }
                                             }
                                         }
-                                        // Action
-                                        if item.state == "installed" {
-                                            // No action; chip shown above.
-                                        } else if item.auto_installable {
-                                            if installing() == Some(item.binary_name.clone()) {
-                                                div { style: "flex: 1; max-width: 240px;",
-                                                    div { class: "text-dim-xs",
-                                                        "Installing... {install_message}"
+                                    },
+                                    span {
+                                        class: if is_expanded { "settings-tools-caret expanded" } else { "settings-tools-caret" },
+                                        ChevronDown { size: 14 }
+                                    }
+                                    span { class: "settings-tools-icon", {category_icon(&category)} }
+                                    h3 { class: "settings-tools-title", "{humanize_category(&category)}" }
+                                    span { class: "settings-tools-count", "{count}" }
+                                    // "Install all" for the category: shown only when
+                                    // something is actually installable. Opens a confirm
+                                    // dialog (count + estimate) rather than installing on
+                                    // the first click. stop_propagation so it doesn't also
+                                    // toggle the header's expand/collapse.
+                                    if pending_count > 0 {
+                                        button {
+                                            class: "settings-tools-install-all",
+                                            r#type: "button",
+                                            disabled: installing().is_some(),
+                                            title: "Install the {pending_count} not-installed tool(s) in this category",
+                                            onclick: {
+                                                let cat = category.clone();
+                                                move |evt: Event<MouseData>| {
+                                                    evt.stop_propagation();
+                                                    category_install_confirm.set(Some((
+                                                        cat.clone(),
+                                                        pending_count,
+                                                        pending_secs,
+                                                    )));
+                                                }
+                                            },
+                                            "\u{2193} Install all"
+                                        }
+                                    }
+                                }
+                                if is_expanded {
+                                div { class: "tools-grid",
+                                    for item in items.iter().filter(|i| i.category == category).cloned() {
+                                        {
+                                            let desc = item.description.clone();
+                                            if item.state == "installed" {
+                                                let removing = uninstalling() == Some(item.binary_name.clone());
+                                                rsx! {
+                                                    div { class: "tool-status-card installed",
+                                                        // Trash-can (top-right) opens the confirm
+                                                        // dialog. Only shown when the tool can
+                                                        // actually be removed in this mode.
+                                                        if item.uninstallable {
+                                                            button {
+                                                                class: "tool-uninstall-btn",
+                                                                r#type: "button",
+                                                                disabled: uninstalling().is_some(),
+                                                                title: "Uninstall {item.display_name}",
+                                                                "aria-label": "Uninstall {item.display_name}",
+                                                                onclick: {
+                                                                    let confirm_item = item.clone();
+                                                                    move |evt: Event<MouseData>| {
+                                                                        evt.stop_propagation();
+                                                                        uninstall_confirm.set(Some(confirm_item.clone()));
+                                                                    }
+                                                                },
+                                                                "\u{1F5D1}"
+                                                            }
+                                                        }
+                                                        div { class: "tool-status-card-name", "{item.display_name}" }
+                                                        if !desc.is_empty() {
+                                                            div { class: "tool-status-card-desc", title: "{desc}", "{desc}" }
+                                                        }
+                                                        if removing {
+                                                            div { class: "tool-status-card-status muted", "Removing..." }
+                                                        } else {
+                                                            div { class: "tool-status-card-status installed",
+                                                                "\u{2713} Installed"
+                                                            }
+                                                        }
                                                     }
-                                                    div { class: "download-progress",
-                                                        div { class: "download-progress-fill indeterminate" }
+                                                }
+                                            } else if item.auto_installable {
+                                                // Missing but installable. The card is a
+                                                // div[role=button] (not a <button>) because it
+                                                // holds block-level children — a <button> may only
+                                                // contain phrasing content. tabindex + onkeydown
+                                                // restore the keyboard/AT affordances a native
+                                                // button would provide.
+                                                let installing_this =
+                                                    installing() == Some(item.binary_name.clone());
+                                                let disabled = installing().is_some();
+                                                // Shared install action, invoked from both click
+                                                // and Enter/Space. Guards on `installing` so only
+                                                // one install runs at a time (mirrors the old
+                                                // `disabled` on every button).
+                                                let start_install = {
+                                                    let bin = item.binary_name.clone();
+                                                    let estimate = item.estimated_secs;
+                                                    move || {
+                                                        if installing().is_some() {
+                                                            return;
+                                                        }
+                                                        let bin = bin.clone();
+                                                        spawn(async move {
+                                                            use tokio::sync::mpsc;
+                                                            // Bump the session id so any stale
+                                                            // ticker stops; the ticker effect
+                                                            // resets the clock.
+                                                            install_generation.set(install_generation() + 1);
+                                                            install_estimate.set(estimate);
+                                                            installing.set(Some(bin.clone()));
+                                                            install_error.set(None);
+                                                            install_message.set(String::new());
+                                                            let (tx, mut rx) = mpsc::unbounded_channel();
+                                                            spawn(async move {
+                                                                while let Some(msg) = rx.recv().await {
+                                                                    install_message.set(msg);
+                                                                }
+                                                            });
+                                                            let progress = move |evt: pentest_tools::installers::InstallEvent| {
+                                                                let _ = tx.send(evt.message);
+                                                            };
+                                                            match pentest_tools::catalog::install_by_binary(&bin, &progress).await {
+                                                                Ok(()) => {
+                                                                    let items = pentest_tools::catalog::build_catalog_items().await;
+                                                                    catalog_items.set(Some(items));
+                                                                }
+                                                                Err(e) => install_error.set(Some(e.to_string())),
+                                                            }
+                                                            installing.set(None);
+                                                        });
+                                                    }
+                                                };
+                                                rsx! {
+                                                    div {
+                                                        class: "tool-status-card missing",
+                                                        role: "button",
+                                                        tabindex: if disabled { -1 } else { 0 },
+                                                        "aria-disabled": "{disabled}",
+                                                        onclick: {
+                                                            let start = start_install.clone();
+                                                            move |_| start()
+                                                        },
+                                                        onkeydown: {
+                                                            let start = start_install.clone();
+                                                            move |evt: Event<KeyboardData>| {
+                                                                let key = evt.key();
+                                                                if key == Key::Enter
+                                                                    || matches!(key, Key::Character(ref c) if c == " ")
+                                                                {
+                                                                    evt.prevent_default();
+                                                                    start();
+                                                                }
+                                                            }
+                                                        },
+                                                        div { class: "tool-status-card-name", "{item.display_name}" }
+                                                        if !desc.is_empty() {
+                                                            div { class: "tool-status-card-desc", title: "{desc}", "{desc}" }
+                                                        }
+                                                        if installing_this {
+                                                            {
+                                                                let (fraction, label) = install_progress(install_elapsed(), install_estimate());
+                                                                rsx! {
+                                                                    div { class: "tool-status-card-status action",
+                                                                        "Installing... {install_message}"
+                                                                    }
+                                                                    div { class: "download-progress",
+                                                                        if install_estimate() > 0 {
+                                                                            div {
+                                                                                class: "download-progress-fill",
+                                                                                style: "width: {fraction * 100.0}%",
+                                                                            }
+                                                                        } else {
+                                                                            div { class: "download-progress-fill indeterminate" }
+                                                                        }
+                                                                    }
+                                                                    div { class: "tool-status-card-status muted", "{label}" }
+                                                                }
+                                                            }
+                                                        } else {
+                                                            div { class: "tool-status-card-status action",
+                                                                "\u{2193} Install"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            } else if let Some(instructions) = item.manual_instructions.clone() {
+                                                rsx! {
+                                                    div { class: "tool-status-card manual",
+                                                        div { class: "tool-status-card-name", "{item.display_name}" }
+                                                        div { class: "tool-status-card-status muted", "Manual install" }
+                                                        div {
+                                                            class: "tool-status-card-instructions",
+                                                            title: "{instructions}",
+                                                            "{instructions}"
+                                                        }
                                                     }
                                                 }
                                             } else {
-                                                button {
-                                                    class: "sidebar-download-btn",
-                                                    disabled: installing().is_some(),
-                                                    onclick: {
-                                                        let bin = item.binary_name.clone();
-                                                        move |_| {
-                                                            let bin = bin.clone();
-                                                            spawn(async move {
-                                                                use tokio::sync::mpsc;
-                                                                installing.set(Some(bin.clone()));
-                                                                install_error.set(None);
-                                                                install_message.set(String::new());
-                                                                let (tx, mut rx) = mpsc::unbounded_channel();
-                                                                spawn(async move {
-                                                                    while let Some(msg) = rx.recv().await {
-                                                                        install_message.set(msg);
-                                                                    }
-                                                                });
-                                                                let progress = move |evt: pentest_tools::installers::InstallEvent| {
-                                                                    let _ = tx.send(evt.message);
-                                                                };
-                                                                match pentest_tools::catalog::install_by_binary(&bin, &progress).await {
-                                                                    Ok(()) => {
-                                                                        let items = pentest_tools::catalog::build_catalog_items().await;
-                                                                        catalog_items.set(Some(items));
-                                                                    }
-                                                                    Err(e) => install_error.set(Some(e.to_string())),
-                                                                }
-                                                                installing.set(None);
-                                                            });
+                                                let status_text = if item.state == "manual" {
+                                                    "Manual"
+                                                } else if item.state == "missing" {
+                                                    "Not installed"
+                                                } else {
+                                                    "Unknown"
+                                                };
+                                                rsx! {
+                                                    div { class: "tool-status-card manual",
+                                                        div { class: "tool-status-card-name", "{item.display_name}" }
+                                                        if !desc.is_empty() {
+                                                            div { class: "tool-status-card-desc", title: "{desc}", "{desc}" }
                                                         }
-                                                    },
-                                                    "Install"
+                                                        div { class: "tool-status-card-status muted", "{status_text}" }
+                                                    }
                                                 }
-                                            }
-                                        } else if let Some(instructions) = item.manual_instructions.clone() {
-                                            div { class: "setup-error-message", white_space: "pre-wrap",
-                                                style: "flex: 1; max-width: 240px;",
-                                                "{instructions}"
                                             }
                                         }
                                     }
+                                }
+                                }
+                            }
                                 }
                             }
                         }
                     } else {
                         div { class: "text-dim-xs", style: "margin-top: 12px;", "No tools available" }
+                    }
+                }
+            }
+
+            // Uninstall confirmation dialog. Destructive action, so it is always
+            // gated behind an explicit confirm that names the package and warns
+            // about other tools that share the dependency (blast radius).
+            if let Some(target) = uninstall_confirm() {
+                {
+                    let bin = target.binary_name.clone();
+                    // Other tools that declared this same binary dependency. pacman
+                    // -Rns keeps deps still needed by another package, but removing a
+                    // shared binary can still break sibling tools, so surface them.
+                    let shared_with: Vec<String> = target
+                        .used_by
+                        .iter()
+                        .filter(|t| **t != target.display_name && **t != target.binary_name)
+                        .cloned()
+                        .collect();
+                    rsx! {
+                        div { class: "uninstall-dialog-overlay",
+                            onclick: move |_| uninstall_confirm.set(None),
+                            div { class: "uninstall-dialog",
+                                onclick: move |evt: Event<MouseData>| evt.stop_propagation(),
+                                h3 { class: "uninstall-dialog-title", "Uninstall {target.display_name}?" }
+                                div { class: "uninstall-dialog-body",
+                                    "This removes the "
+                                    span { class: "uninstall-dialog-pkg", "{target.binary_name}" }
+                                    " package and its unneeded dependencies."
+                                }
+                                if !shared_with.is_empty() {
+                                    div { class: "uninstall-dialog-warning",
+                                        "Heads up: this dependency is also used by "
+                                        strong { "{shared_with.join(\", \")}" }
+                                        ". Removing it may affect those tools."
+                                    }
+                                }
+                                div { class: "uninstall-dialog-actions",
+                                    button {
+                                        class: "settings-discard-btn",
+                                        r#type: "button",
+                                        onclick: move |_| uninstall_confirm.set(None),
+                                        "Cancel"
+                                    }
+                                    button {
+                                        class: "uninstall-dialog-confirm-btn",
+                                        r#type: "button",
+                                        disabled: uninstalling().is_some(),
+                                        onclick: move |_| {
+                                            let bin = bin.clone();
+                                            uninstall_confirm.set(None);
+                                            spawn(async move {
+                                                use tokio::sync::mpsc;
+                                                uninstalling.set(Some(bin.clone()));
+                                                install_error.set(None);
+                                                let (tx, mut rx) = mpsc::unbounded_channel();
+                                                spawn(async move {
+                                                    while let Some(msg) = rx.recv().await {
+                                                        install_message.set(msg);
+                                                    }
+                                                });
+                                                let progress = move |evt: pentest_tools::installers::InstallEvent| {
+                                                    let _ = tx.send(evt.message);
+                                                };
+                                                match pentest_tools::catalog::uninstall_by_binary(&bin, &progress).await {
+                                                    Ok(()) => {
+                                                        let items = pentest_tools::catalog::build_catalog_items().await;
+                                                        catalog_items.set(Some(items));
+                                                    }
+                                                    Err(e) => install_error.set(Some(e.to_string())),
+                                                }
+                                                uninstalling.set(None);
+                                            });
+                                        },
+                                        "Uninstall"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Category "Install all" confirmation. A bulk install can fetch
+            // several packages, so it is always gated behind a confirm that
+            // states the count and an estimated time before anything downloads.
+            if let Some((cat, n, secs)) = category_install_confirm() {
+                {
+                    let label = humanize_category(&cat);
+                    rsx! {
+                        div { class: "settings-dialog-overlay",
+                            onclick: move |_| category_install_confirm.set(None),
+                            div { class: "settings-dialog",
+                                onclick: move |evt: Event<MouseData>| evt.stop_propagation(),
+                                h3 { class: "settings-dialog-title", "Install all {label} tools?" }
+                                div { class: "settings-dialog-body",
+                                    "This will install "
+                                    span { class: "settings-dialog-emph", "{n}" }
+                                    if n == 1 { " tool" } else { " tools" }
+                                    " in this category (est. ~{format_duration(secs)})."
+                                }
+                                div { class: "settings-dialog-actions",
+                                    button {
+                                        class: "settings-discard-btn",
+                                        r#type: "button",
+                                        onclick: move |_| category_install_confirm.set(None),
+                                        "Cancel"
+                                    }
+                                    button {
+                                        class: "sidebar-download-btn",
+                                        r#type: "button",
+                                        disabled: installing().is_some(),
+                                        onclick: move |_| {
+                                            let cat = cat.clone();
+                                            category_install_confirm.set(None);
+                                            spawn(async move {
+                                                use tokio::sync::mpsc;
+                                                install_generation.set(install_generation() + 1);
+                                                install_estimate.set(secs);
+                                                installing.set(Some(format!("cat:{cat}")));
+                                                install_error.set(None);
+                                                install_message.set(String::new());
+                                                let (tx, mut rx) = mpsc::unbounded_channel();
+                                                spawn(async move {
+                                                    while let Some(msg) = rx.recv().await {
+                                                        install_message.set(msg);
+                                                    }
+                                                });
+                                                let progress = move |evt: pentest_tools::installers::InstallEvent| {
+                                                    let _ = tx.send(evt.message);
+                                                };
+                                                let failures = pentest_tools::catalog::install_all_in_category(&cat, &progress).await;
+                                                if !failures.is_empty() {
+                                                    let detail = failures
+                                                        .iter()
+                                                        .map(|(bin, err)| format!("{bin}: {err}"))
+                                                        .collect::<Vec<_>>()
+                                                        .join("\n");
+                                                    install_error.set(Some(format!(
+                                                        "Some tools failed to install:\n{detail}"
+                                                    )));
+                                                }
+                                                let items = pentest_tools::catalog::build_catalog_items().await;
+                                                catalog_items.set(Some(items));
+                                                installing.set(None);
+                                            });
+                                        },
+                                        "Install {n}"
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1439,6 +1860,39 @@ pub fn SettingsPage(
     }
 }
 
+/// Turn elapsed and estimated install seconds into a progress fraction
+/// (`0.0..=0.95`) and a human label like `"0:42 elapsed · ~2:00 expected"`.
+///
+/// The fraction is capped below `1.0` while an install is running so the bar
+/// never claims completion before the install actually finishes; if the install
+/// overruns its estimate the bar holds near-full rather than resetting or
+/// looking stuck. When no estimate is available the fraction is `0.0` (callers
+/// render an indeterminate bar) and the label shows elapsed time only.
+fn install_progress(elapsed_secs: u32, estimate_secs: u32) -> (f64, String) {
+    let elapsed_label = format_duration(elapsed_secs);
+    if estimate_secs == 0 {
+        return (0.0, format!("{elapsed_label} elapsed"));
+    }
+    let fraction = (elapsed_secs as f64 / estimate_secs as f64).min(0.95);
+    let label = format!(
+        "{elapsed_label} elapsed \u{00b7} ~{} expected",
+        format_duration(estimate_secs)
+    );
+    (fraction, label)
+}
+
+/// Format a whole-second duration as `M:SS` (or `H:MM:SS` once past an hour).
+fn format_duration(secs: u32) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
 /// Helper function to count how many resources in a tier are already seeded
 fn count_seeded_in_tier(status: &[(String, bool)], tier_resources: &[&str]) -> String {
     let seeded = tier_resources
@@ -1473,25 +1927,40 @@ fn tool_categories(items: &[pentest_tools::catalog::CatalogItem]) -> Vec<String>
     seen
 }
 
-/// Turn a stable category key (e.g. "active_directory") into a display label.
-fn humanize_category(category: &str) -> String {
-    match category {
-        "active_directory" => "Active Directory".to_string(),
-        "web" => "Web".to_string(),
-        "network" => "Network".to_string(),
-        "post_exploit" => "Post Exploitation".to_string(),
-        "other" => "Other".to_string(),
-        // Fallback: replace underscores and capitalize each word.
-        _ => category
-            .split('_')
-            .map(|word| {
-                let mut chars = word.chars();
-                match chars.next() {
-                    Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
-                    None => String::new(),
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_duration_renders_minutes_and_hours() {
+        assert_eq!(format_duration(0), "0:00");
+        assert_eq!(format_duration(9), "0:09");
+        assert_eq!(format_duration(75), "1:15");
+        assert_eq!(format_duration(600), "10:00");
+        assert_eq!(format_duration(3661), "1:01:01");
+    }
+
+    #[test]
+    fn install_progress_with_no_estimate_is_indeterminate() {
+        let (fraction, label) = install_progress(42, 0);
+        assert_eq!(fraction, 0.0, "no estimate => indeterminate (0.0)");
+        assert_eq!(label, "0:42 elapsed");
+    }
+
+    #[test]
+    fn install_progress_fills_toward_estimate() {
+        let (fraction, label) = install_progress(30, 120);
+        assert!((fraction - 0.25).abs() < 1e-9, "30/120 = 0.25");
+        assert_eq!(label, "0:30 elapsed \u{00b7} ~2:00 expected");
+    }
+
+    #[test]
+    fn install_progress_caps_below_full_when_overrunning() {
+        // Elapsed past the estimate must not claim 100% (or overflow past it).
+        let (fraction, _) = install_progress(600, 120);
+        assert!(
+            (fraction - 0.95).abs() < 1e-9,
+            "overrun must cap at 0.95, got {fraction}"
+        );
     }
 }

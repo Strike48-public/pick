@@ -25,6 +25,7 @@ mod licenses_page;
 pub mod loading_spinner;
 mod log_filter_bar;
 mod matrix_rain;
+pub mod pane_boundary;
 // router module requires dioxus-router dependency — kept as scaffolding reference
 // #[cfg(feature = "liveview")]
 // pub mod router;
@@ -38,6 +39,7 @@ pub mod status_bar;
 mod terminal;
 pub mod text_input;
 mod toast;
+mod tool_category;
 pub mod tools_page;
 mod wifi_warning_dialog;
 #[cfg(feature = "liveview")]
@@ -68,6 +70,7 @@ pub use licenses_page::LicensesPage;
 pub use loading_spinner::{LoadingSpinner, SpinnerSize};
 pub use log_filter_bar::LogFilterBar;
 pub use matrix_rain::{matrix_rain_css, MatrixRainOverlay};
+pub use pane_boundary::PaneBoundary;
 // #[cfg(feature = "liveview")]
 // pub use router::{Route, WorkspaceRouter};
 pub use icons::STRIKE48_SIDEBAR_LOGO_SVG;

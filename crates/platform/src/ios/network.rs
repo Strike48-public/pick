@@ -100,9 +100,8 @@ fn parse_rt_messages(buf: &[u8]) -> Vec<ArpEntry> {
 
     while offset + hdr_size <= buf.len() {
         // SAFETY: bounds checked above; read the header by copy (unaligned-safe).
-        let rtm: libc::rt_msghdr = unsafe {
-            std::ptr::read_unaligned(buf[offset..].as_ptr() as *const libc::rt_msghdr)
-        };
+        let rtm: libc::rt_msghdr =
+            unsafe { std::ptr::read_unaligned(buf[offset..].as_ptr() as *const libc::rt_msghdr) };
 
         let msglen = rtm.rtm_msglen as usize;
         // A zero/short msglen would loop forever or overrun; stop defensively.

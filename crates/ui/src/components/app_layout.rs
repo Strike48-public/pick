@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 
 use super::chat_panel::{ChatHeaderActions, ChatHeaderCtx};
 use super::icons::{Menu, STRIKE48_SIDEBAR_LOGO_SVG};
+use super::pane_boundary::PaneBoundary;
 use super::sidebar::{NavPage, Sidebar};
 use super::status_bar::StatusBar;
 
@@ -63,20 +64,24 @@ pub fn AppLayout(
                 }
             }
 
-            // Sidebar / Drawer
-            Sidebar {
-                active_page,
-                on_navigate,
-                sidebar_open: *sidebar_open.read(),
-                sidebar_collapsed: *sidebar_collapsed.read(),
-                on_close,
-                on_toggle_collapse,
-                unread_logs,
-                connected,
-                host: host.clone(),
-                api_url,
-                auth_token,
-                on_open_conversation,
+            // Sidebar / Drawer — wrapped so a render panic in the sidebar
+            // (e.g. a bad conversation title, #287) is contained and does not
+            // blank the main content (#288).
+            PaneBoundary { name: "sidebar".to_string(),
+                Sidebar {
+                    active_page,
+                    on_navigate,
+                    sidebar_open: *sidebar_open.read(),
+                    sidebar_collapsed: *sidebar_collapsed.read(),
+                    on_close,
+                    on_toggle_collapse,
+                    unread_logs,
+                    connected,
+                    host: host.clone(),
+                    api_url,
+                    auth_token,
+                    on_open_conversation,
+                }
             }
 
             // Main column (header + content + status bar)
@@ -116,9 +121,13 @@ pub fn AppLayout(
                     }
                 }
 
-                // Content area
+                // Content area — wrapped so a render panic in the active page
+                // or ChatPanel is contained to the content region, leaving the
+                // sidebar and header usable (#288).
                 div { class: "content-area",
-                    {children}
+                    PaneBoundary { name: "page".to_string(),
+                        {children}
+                    }
                 }
 
                 // Status bar

@@ -87,11 +87,7 @@ impl NetworkOps for IosPlatform {
         network::ssdp_discover(timeout_ms).await
     }
 
-    async fn mdns_discover(
-        &self,
-        service_type: &str,
-        timeout_ms: u64,
-    ) -> Result<Vec<MdnsService>> {
+    async fn mdns_discover(&self, service_type: &str, timeout_ms: u64) -> Result<Vec<MdnsService>> {
         network::mdns_discover(service_type, timeout_ms).await
     }
 }

@@ -216,20 +216,32 @@ pub enum InstallMethod {
 pub enum ToolCategory {
     /// Host/port/service discovery and network mapping.
     Network,
-    /// Web application scanning and fuzzing.
+    /// Web application scanning and exploitation (nikto, sqlmap, nuclei, ...).
     Web,
+    /// Web content/endpoint discovery and fuzzing (gobuster, ffuf, katana, ...).
+    WebDiscovery,
+    /// Intercepting/scanning web proxies (Burp Suite, OWASP ZAP).
+    Proxy,
     /// Active Directory, SMB, Kerberos, LDAP.
     ActiveDirectory,
-    /// Credential attacks: cracking, spraying, dumping.
+    /// Credential attacks: cracking, spraying, wordlist generation.
     Credentials,
+    /// Exploitation frameworks and exploit lookup (Metasploit, searchsploit).
+    Exploitation,
     /// Post-exploitation, C2, lateral movement, payload generation.
     PostExploit,
+    /// Traffic sniffing and network spoofing/poisoning.
+    Sniffing,
     /// Wireless.
     Wireless,
     /// OSINT and reconnaissance.
     Recon,
+    /// TLS/SSL and cryptography analysis.
+    Crypto,
     /// Forensics and evidence handling.
     Forensics,
+    /// General-purpose networking/support utilities (socat, ncat, exiftool).
+    Utilities,
     /// Anything that doesn't fit a more specific group.
     #[default]
     Other,
@@ -370,7 +382,28 @@ impl ToolSchema {
 
     /// Restrict the desktop OSes this tool runs on (e.g. `[DesktopOs::Linux]`
     /// for tools that shell out to Linux-only binaries). See #183.
+    ///
+    /// An empty vec is almost certainly a mistake: `is_supported()` would then
+    /// return false for *every* desktop OS, so the tool is advertised nowhere
+    /// and silently vanishes from the host tool list. (A likely cause is
+    /// reaching for `.os(vec![])` when `.platforms(vec![])` was meant.) We warn
+    /// loudly rather than change the value — the "supported nowhere" footgun in
+    /// #197. Tools that should run everywhere simply omit `.os(...)` and take
+    /// the [`ALL_DESKTOP_OS`] default.
     pub fn os(mut self, os: Vec<DesktopOs>) -> Self {
+        if os.is_empty() {
+            debug_assert!(
+                false,
+                "ToolSchema::os(vec![]) leaves '{}' supported on no desktop OS; \
+                 omit .os(...) for all-OS, or did you mean .platforms(vec![])?",
+                self.name
+            );
+            tracing::warn!(
+                tool = %self.name,
+                "ToolSchema::os(vec![]) sets an empty supported_os: this tool will be \
+                 advertised on NO desktop OS. Omit .os(...) for the all-OS default."
+            );
+        }
         self.supported_os = os;
         self
     }
@@ -825,7 +858,7 @@ impl ToolRegistry {
     pub fn supported_schemas(&self) -> Vec<ToolSchema> {
         self.tools
             .values()
-            .filter(|t| t.is_supported())
+            .filter(|t| self.is_supported_logged(t.as_ref()))
             .map(|t| t.schema())
             .collect()
     }
@@ -845,6 +878,24 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// `is_supported()` with an observability side-effect: when a tool is
+    /// filtered *out* of the advertised set, emit a `debug` line naming the
+    /// tool and the host platform/OS. Per the epic's "fail loudly, no silent
+    /// empties" principle (#198), an operator debugging a missing capability can
+    /// then see *why* it was excluded instead of it silently disappearing.
+    fn is_supported_logged(&self, tool: &dyn PentestTool) -> bool {
+        let supported = tool.is_supported();
+        if !supported {
+            tracing::debug!(
+                tool = %tool.name(),
+                platform = ?Platform::current(),
+                desktop_os = ?DesktopOs::current(),
+                "tool filtered from advertised set (unsupported on this host)"
+            );
+        }
+        supported
+    }
+
     /// Get tool names
     pub fn names(&self) -> Vec<&str> {
         self.tools.keys().map(|s| s.as_str()).collect()
@@ -855,7 +906,7 @@ impl ToolRegistry {
     pub fn supported_names(&self) -> Vec<&str> {
         self.tools
             .values()
-            .filter(|t| t.is_supported())
+            .filter(|t| self.is_supported_logged(t.as_ref()))
             .map(|t| t.name())
             .collect()
     }
@@ -868,6 +919,26 @@ impl ToolRegistry {
         ctx: &ToolContext,
     ) -> Result<ToolResult> {
         match self.get(name) {
+            Some(tool) if !tool.is_supported() => {
+                // The tool is registered but not supported on this host's OS
+                // (tools are registered unconditionally; the OS gate is at
+                // advertise/execute time — see #183). Without this arm, an
+                // OS-incompatible tool would run and fail cryptically deep in
+                // its own logic. Fail early with a message that says *why*
+                // (required OS vs current OS), not a generic "not found" (#208).
+                let required = tool.supported_os();
+                let current = DesktopOs::current();
+                tracing::error!(
+                    tool = %name,
+                    ?required,
+                    ?current,
+                    "tool exists but is not supported on this OS"
+                );
+                Err(crate::error::Error::PlatformNotSupported(format!(
+                    "Tool '{name}' exists but is not supported on this OS \
+                     (required: {required:?}, current: {current:?})"
+                )))
+            }
             Some(tool) => {
                 // Telemetry (#278): time the tool run as a Sentry span WITH
                 // DURATION — opened before execute(), finished after — so it
@@ -885,8 +956,12 @@ impl ToolRegistry {
                         ("tool", name),
                         ("network_check", if is_net { "true" } else { "false" }),
                     ],
-                    ctx.metadata.get(crate::telemetry::SENTRY_TRACE_HEADER).map(String::as_str),
-                    ctx.metadata.get(crate::telemetry::BAGGAGE_HEADER).map(String::as_str),
+                    ctx.metadata
+                        .get(crate::telemetry::SENTRY_TRACE_HEADER)
+                        .map(String::as_str),
+                    ctx.metadata
+                        .get(crate::telemetry::BAGGAGE_HEADER)
+                        .map(String::as_str),
                 );
                 let result = tool.execute(params, ctx).await;
                 let outcome = if result.is_ok() { "ok" } else { "error" };
@@ -1404,6 +1479,90 @@ mod os_capability_tests {
         assert_eq!(tool.supported_os(), vec![DesktopOs::Linux]);
         let expect_supported = matches!(DesktopOs::current(), Some(DesktopOs::Linux) | None);
         assert_eq!(tool.is_supported(), expect_supported);
+    }
+
+    /// A registered tool supported on no desktop OS a CI runner ever reports
+    /// (`Other` = BSD/unknown; Linux/macOS/Windows all map to their own
+    /// variant). Lets us exercise the unsupported-on-this-OS execute path
+    /// deterministically on Linux, macOS, and Windows CI alike.
+    struct NowhereTool;
+    #[async_trait]
+    impl PentestTool for NowhereTool {
+        fn name(&self) -> &str {
+            "nowhere"
+        }
+        fn description(&self) -> &str {
+            "supported only on DesktopOs::Other"
+        }
+        fn supported_os(&self) -> Vec<DesktopOs> {
+            vec![DesktopOs::Other]
+        }
+        async fn execute(&self, _params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+            // Must NOT be reached on a Linux/macOS/Windows host: the registry
+            // gate should reject before dispatch. Panics prove the gate ran.
+            panic!("execute() must not run for an OS-unsupported tool");
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_os_unsupported_tool_with_clear_error() {
+        // #208: a registered-but-unsupported tool must fail early with a
+        // PlatformNotSupported error that names the required + current OS,
+        // NOT run its body and NOT return a generic "not found".
+        // (Skip on an exotic Other host, where `nowhere` would be supported.)
+        if matches!(DesktopOs::current(), Some(DesktopOs::Other)) {
+            return;
+        }
+        let mut registry = ToolRegistry::new();
+        registry.register(NowhereTool);
+
+        let err = registry
+            .execute("nowhere", Value::Null, &ToolContext::default())
+            .await
+            .expect_err("OS-unsupported tool must not execute");
+
+        match err {
+            crate::error::Error::PlatformNotSupported(msg) => {
+                assert!(
+                    msg.contains("nowhere") && msg.contains("not supported on this OS"),
+                    "message should explain the OS incompatibility, got: {msg}"
+                );
+            }
+            other => panic!("expected PlatformNotSupported, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_unknown_tool_still_reports_not_found() {
+        // Guard the discriminator: a genuinely absent tool must remain a
+        // ToolNotFound, not get reclassified as an OS problem (#208).
+        let registry = ToolRegistry::new();
+        let err = registry
+            .execute("does_not_exist", Value::Null, &ToolContext::default())
+            .await
+            .expect_err("unknown tool must error");
+        assert!(
+            matches!(err, crate::error::Error::ToolNotFound(_)),
+            "unknown tool should be ToolNotFound, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn empty_supported_os_is_advertised_nowhere() {
+        // #197: an empty supported_os is the "supported nowhere" footgun. The
+        // builder warns (and debug_asserts), but the resulting schema must at
+        // least be observably unsupported so it can't masquerade as all-OS.
+        // Build the schema directly to bypass the debug_assert in `.os()` (which
+        // would panic this test in debug builds) while still asserting the
+        // is_supported() consequence the guard is protecting against.
+        let schema = ToolSchema {
+            supported_os: Vec::new(),
+            ..ToolSchema::new("empty_os", "no OS")
+        };
+        assert!(
+            !schema.is_supported(),
+            "empty supported_os must be supported on no desktop OS"
+        );
     }
 
     #[test]

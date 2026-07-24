@@ -70,10 +70,15 @@ pub async fn ensure_tool_installed(
         "Installing '{}' via pacman package '{}'...",
         binary_name, pacman_package
     );
+    // `-Sy` (refresh DB, then install) rather than a bare `-S`: a rootfs whose
+    // sync databases are stale or were never synced makes `-S` fail with
+    // "database file for 'core' does not exist ... target not found". `--needed`
+    // keeps re-runs idempotent. This mirrors the `installers::pacman` helper,
+    // which documents the full rationale for the sandbox installers.
     let install = platform
         .execute_command(
             "pacman",
-            &["-S", "--noconfirm", pacman_package],
+            &["-Sy", "--noconfirm", "--needed", pacman_package],
             Duration::from_secs(300),
         )
         .await?;
@@ -137,7 +142,9 @@ pub async fn install_tools_batch(platform: &impl CommandExec, packages: &[&str])
 
     info!("Batch installing {} packages...", packages.len());
 
-    let mut args = vec!["-S", "--noconfirm"];
+    // `-Sy` (refresh DB then install) so a stale/unsynced rootfs DB doesn't make
+    // the whole batch fail with "target not found" (see ensure_tool_installed).
+    let mut args = vec!["-Sy", "--noconfirm", "--needed"];
     args.extend_from_slice(packages);
 
     let install = platform

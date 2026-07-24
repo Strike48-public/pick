@@ -52,7 +52,10 @@ impl PentestTool for NetExecTool {
                     "NetExec (nxc) - network service exploitation across SMB/WinRM/LDAP/MSSQL/SSH",
                 )
                 .custom_installer("netexec")
-                .category(ToolCategory::ActiveDirectory),
+                .category(ToolCategory::ActiveDirectory)
+                // Specialized AD-engagement tooling: installed on explicit
+                // operator action, not swept in by "install all recommended".
+                .recommended(false),
             )
             .param(ToolParam::required(
                 "protocol",
