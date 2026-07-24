@@ -416,11 +416,6 @@ build-android-release:
     export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
     echo "PICK_EASY_MODE=$PICK_EASY_MODE"
 
-    # Release codegen (fat LTO, opt-level z, codegen-units=1) is memory-heavy;
-    # cap concurrent rustc jobs to keep peak memory under the CI runner ceiling.
-    # Overridable via CARGO_BUILD_JOBS.
-    export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
-
     # Build each Rust target. See build-android comment for why this loop matters.
     targets="${ANDROID_TARGETS:-aarch64-linux-android x86_64-linux-android}"
     for target in $targets; do
