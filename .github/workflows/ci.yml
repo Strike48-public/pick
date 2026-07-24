@@ -161,6 +161,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # The arm64 rustc cross-build spikes memory during LLVM codegen of heavy
+      # deps (ravif/exr/syntect) and OOM-killed on the ~7GB runner. `build-android`
+      # already serializes rustc (-j1) to cap peak; add generous swap as a safety
+      # margin so a single heavy crate can't trip the OOM killer. Reclaim disk
+      # first (default runners are tight) so the swapfile fits.
+      - name: Add swap space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android/sdk/ndk || true
+          sudo fallocate -l 12G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
       # Build through the nix flake so PR CI uses the exact same toolchain,
       # SDK/NDK, dx, build-tools and aapt2 as local `just build-android`.
       - uses: DeterminateSystems/nix-installer-action@main

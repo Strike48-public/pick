@@ -361,11 +361,12 @@ build-android:
     # Keep peak compiler memory under the ~7GB GitHub-hosted runner ceiling. The
     # arm64 cross-build OOM-killed rustc mid-codegen (heavy deps: syntect, ravif,
     # exr, png) — dx swallows the SIGKILL and only reports "cargo build finished
-    # with errors". Two levers: cap concurrent rustc jobs (fewer processes = lower
-    # peak) and drop debuginfo (a large memory + disk cost the APK doesn't need).
-    # Overridable via CARGO_BUILD_JOBS. Local builds (more RAM) are unaffected in
-    # practice; correctness is identical.
-    export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
+    # with errors". Serialize rustc (CARGO_BUILD_JOBS=1) so at most one heavy
+    # codegen runs at a time — a -j2 run still OOM'd when two heavy crates
+    # overlapped — and drop dev debuginfo (large memory + disk the APK doesn't
+    # need). Overridable; output correctness is unchanged. Local builds (more RAM)
+    # can pass CARGO_BUILD_JOBS to go faster.
+    export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
     export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
 
     # Build each Rust target. Without --target, dx builds only the host arch
