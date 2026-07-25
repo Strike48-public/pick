@@ -16,6 +16,7 @@ use pentest_core::state::ConnectorStatus;
 use pentest_core::terminal::TerminalLine;
 use pentest_core::tools::ToolRegistry;
 
+use crate::auth_flow::{reduce, AuthEvent, AuthFlow};
 use crate::components::icons::MessageCircle;
 use crate::components::{
     AppLayout, ChatPanel, ConfigForm, ConnectingScreen, ConnectingStep, Dashboard, EasyModeShell,
@@ -377,6 +378,31 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // `Signal<bool>` context (Dioxus resolves context by type).
     let force_sign_in = use_context_provider(|| ForceSignIn(Signal::new(false))).0;
 
+    // Explicit easy-mode auth state machine (replaces needs_sign_in/force_sign_in/
+    // retry_tick — see auth_flow.rs). Provided as context so EasyModeShell and
+    // ChatPanel can read it. `dispatch` (below) is the ONLY writer.
+    let flow = use_context_provider(|| Signal::new(AuthFlow::Restoring));
+
+    // Single writer for `flow`. Mirrors into the legacy `needs_sign_in` signal so
+    // the existing render/effects keep working during the incremental migration
+    // (removed in the final task once nothing reads the legacy signals).
+    let dispatch = {
+        let mut flow = flow;
+        let mut needs_sign_in = needs_sign_in;
+        let easy_mode = easy_mode;
+        let settings = settings;
+        std::rc::Rc::new(std::cell::RefCell::new(move |ev: AuthEvent| {
+            let auto = settings.peek().auto_connect;
+            let next = reduce(flow.peek().clone(), ev, easy_mode(), auto);
+            let overlay =
+                matches!(next, AuthFlow::AwaitingGesture | AuthFlow::Failed { reauth: true, .. });
+            flow.set(next);
+            if *needs_sign_in.peek() != overlay {
+                needs_sign_in.set(overlay);
+            }
+        }))
+    };
+
     // download state
     let mut download_progress: Signal<Option<f64>> =
         use_signal(crate::download_manager::get_download_progress);
@@ -429,6 +455,40 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             }
         }
     });
+
+    // Drive the AuthFlow machine's initial transition from the same inputs the
+    // legacy effects used: restored token, then creds presence. One-shot.
+    {
+        let dispatch = std::rc::Rc::clone(&dispatch);
+        let device_id = device_id.clone();
+        let easy_env = easy_mode_env_config.clone();
+        use_hook(move || {
+            let have_token = !matrix_auth_token.peek().is_empty();
+            dispatch.borrow_mut()(AuthEvent::Restored { have_token });
+            if !have_token {
+                // Mirror the auto-connect effect's candidate/creds check.
+                let candidate = settings.peek().last_config.clone().or_else(|| {
+                    easy_env.clone().map(|mut c| {
+                        c.instance_id = device_id.clone();
+                        c
+                    })
+                });
+                if let Some(candidate) = candidate {
+                    let scoped = pentest_core::config::ConnectorConfig::env_scoped_instance_id(
+                        &device_id,
+                        &candidate.host,
+                    );
+                    let creds = pentest_core::config::ConnectorConfig::credentials_present(
+                        &candidate.connector_name,
+                        &scoped,
+                    );
+                    dispatch.borrow_mut()(if creds { AuthEvent::CredsFound } else { AuthEvent::CredsAbsent });
+                } else {
+                    dispatch.borrow_mut()(AuthEvent::CredsAbsent);
+                }
+            }
+        });
+    }
 
     use_effect(move || {
         terminal_lines.write().push(TerminalLine::info(format!(
