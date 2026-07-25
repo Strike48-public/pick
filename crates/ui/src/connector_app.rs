@@ -362,7 +362,9 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     let dispatch = std::rc::Rc::new(move |ev: AuthEvent| {
         let mut flow = flow;
         let auto = settings.peek().auto_connect;
-        let next = reduce(flow.peek().clone(), ev, easy_mode(), auto);
+        let prev = flow.peek().clone();
+        let next = reduce(prev.clone(), ev.clone(), easy_mode(), auto);
+        tracing::info!("[AUTHFLOW] {:?} --{:?}--> {:?}", prev, ev, next);
         flow.set(next);
     });
 
@@ -901,6 +903,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         let device_id = device_id.clone();
         let dispatch = dispatch.clone();
         move |_: ()| {
+            tracing::info!("[AUTHFLOW] on_logout invoked");
             let cfg_now = config.peek().clone();
             let scoped_instance_id = pentest_core::config::ConnectorConfig::env_scoped_instance_id(
                 &device_id,
@@ -925,19 +928,27 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             let mut matrix_auth_token = matrix_auth_token;
             let mut connecting_step = connecting_step;
             let dispatch = dispatch.clone();
+            // Update the UI state SYNCHRONOUSLY, before the async connector
+            // shutdown. Previously these ran after `conn.read().await.shutdown()`
+            // inside the spawn; if that RwLock read blocks (the event loop can
+            // hold the lock), the token clear + LoggedOut dispatch never ran, so
+            // the shell stayed "logged in" and logout appeared to do nothing.
+            // The token was already cleared from the session store synchronously
+            // above; mirror that into the UI signals + flow here, then shut the
+            // connector down in the background.
+            matrix_auth_token.set(String::new());
+            connecting_step.set(None);
+            status.set(ConnectorStatus::Disconnected);
+            dispatch(AuthEvent::LoggedOut);
             spawn(async move {
                 // Clone the Arc out and DROP the signal borrow before awaiting.
                 // Holding `connector.peek()` across `.await` keeps the signal
-                // borrowed while `connector.set(...)` (connect path, line ~585)
-                // runs, panicking with AlreadyBorrowed on a logout->reconnect race.
+                // borrowed while `connector.set(...)` (connect path) runs,
+                // panicking with AlreadyBorrowed on a logout->reconnect race.
                 let conn_arc = connector.peek().as_ref().cloned();
                 if let Some(conn) = conn_arc {
                     conn.read().await.shutdown();
                 }
-                matrix_auth_token.set(String::new());
-                connecting_step.set(None);
-                status.set(ConnectorStatus::Disconnected);
-                dispatch(AuthEvent::LoggedOut);
             });
         }
     };
