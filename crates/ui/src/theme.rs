@@ -765,6 +765,8 @@ fn get_theme_colors(theme: Theme) -> ThemeColors {
         Theme::Matrix => matrix_theme(),
         Theme::Cyberpunk => cyberpunk_theme(),
         Theme::Nord => nord_theme(),
+        Theme::Sage => sage_theme(),
+        Theme::SageLight => sage_light_theme(),
     }
 }
 
@@ -844,6 +846,82 @@ fn strike48_theme() -> ThemeColors {
         success: "oklch(0.650 0.200 145)",        // status-resolved #10b981
         warning: "oklch(0.750 0.180 85)",         // status-in-progress #eab308
         info: "oklch(0.575 0.145 250)",           // brand-500
+    }
+}
+
+fn sage_theme() -> ThemeColors {
+    ThemeColors {
+        color_scheme: "dark",
+        background: "#141715",               // --bg
+        foreground: "#e9eeeb",               // --tx
+        card: "#242b27",                     // --surf
+        popover: "#242b27",                  // --surf
+        primary: "#9cbfae",                  // --pri
+        primary_foreground: "#151a17",       // --on-pri
+        secondary: "#2c352f",                // --surf2
+        secondary_foreground: "#e9eeeb",     // --tx
+        muted: "#1b201d",                    // --p1
+        muted_foreground: "#a7b2ab",         // --mut
+        accent: "#c9b27e",                   // --acc (gold)
+        accent_foreground: "#151a17",        // --on-pri
+        destructive: "#d99a9a",              // --err
+        border: "rgba(255,255,255,0.09)",    // --line
+        input: "#242b27",                    // --surf
+        ring: "#9cbfae",                     // --pri
+        sidebar: "#101312",                  // --p3
+        sidebar_foreground: "#e9eeeb",       // --tx
+        sidebar_primary: "#9cbfae",          // --pri
+        sidebar_primary_foreground: "#151a17", // --on-pri
+        sidebar_accent: "#2c352f",           // --surf2
+        sidebar_accent_foreground: "#e9eeeb",
+        sidebar_border: "rgba(255,255,255,0.09)", // --line
+        sidebar_ring: "#9cbfae",
+        chart_1: "#9cbfae",                  // --pri
+        chart_2: "#8fc4ab",                  // --ok
+        chart_3: "#d9b07c",                  // --warn
+        chart_4: "#9cb8bf",                  // --info
+        chart_5: "#d99a9a",                  // --err
+        success: "#8fc4ab",                  // --ok
+        warning: "#d9b07c",                  // --warn
+        info: "#9cb8bf",                     // --info
+    }
+}
+
+fn sage_light_theme() -> ThemeColors {
+    ThemeColors {
+        color_scheme: "light",
+        background: "#f2f4f1",
+        foreground: "#2a332d",
+        card: "#e5eae4",
+        popover: "#e5eae4",
+        primary: "#5f8f7a",
+        primary_foreground: "#ffffff",
+        secondary: "#dbe2da",
+        secondary_foreground: "#2a332d",
+        muted: "#ffffff",
+        muted_foreground: "#5e6a62",
+        accent: "#a08a4e",
+        accent_foreground: "#ffffff",
+        destructive: "#b56e6e",
+        border: "rgba(30,45,36,0.10)",
+        input: "#e5eae4",
+        ring: "#5f8f7a",
+        sidebar: "#edf0ec",
+        sidebar_foreground: "#2a332d",
+        sidebar_primary: "#5f8f7a",
+        sidebar_primary_foreground: "#ffffff",
+        sidebar_accent: "#dbe2da",
+        sidebar_accent_foreground: "#2a332d",
+        sidebar_border: "rgba(30,45,36,0.10)",
+        sidebar_ring: "#5f8f7a",
+        chart_1: "#5f8f7a",
+        chart_2: "#4f9377",
+        chart_3: "#b5834a",
+        chart_4: "#5f8f8f",
+        chart_5: "#b56e6e",
+        success: "#4f9377",
+        warning: "#b5834a",
+        info: "#5f8f8f",
     }
 }
 
@@ -1390,3 +1468,31 @@ const BASE_COMPONENT_STYLES: &str = r#"
             font-size: 16px;
         }
         "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pentest_core::config::{BorderRadius, Density, Theme};
+
+    #[test]
+    fn sage_dark_palette_tokens() {
+        let c = get_theme_colors(Theme::Sage);
+        assert_eq!(c.color_scheme, "dark");
+        assert_eq!(c.background, "#141715");
+        assert_eq!(c.primary, "#9cbfae");
+        assert_eq!(c.primary_foreground, "#151a17");
+        assert_eq!(c.card, "#242b27");
+        assert_eq!(c.foreground, "#e9eeeb");
+        assert_eq!(c.accent, "#c9b27e");
+    }
+
+    #[test]
+    fn sage_light_palette_tokens() {
+        let c = get_theme_colors(Theme::SageLight);
+        assert_eq!(c.color_scheme, "light");
+        assert_eq!(c.background, "#f2f4f1");
+        assert_eq!(c.primary, "#5f8f7a");
+        assert_eq!(c.primary_foreground, "#ffffff");
+        assert_eq!(c.accent, "#a08a4e");
+    }
+}
