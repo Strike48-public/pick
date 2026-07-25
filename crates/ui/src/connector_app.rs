@@ -904,31 +904,73 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         });
     }
 
-    // ---- disconnect handler ----
-    let on_disconnect = move |_: ()| {
-        let mut s = load_settings();
-        s.auto_connect = false;
-        let _ = save_settings(&s);
-
-        let connector = connector;
-        let mut status = status;
-        let mut terminal_lines = terminal_lines;
-        let mut connecting_step = connecting_step;
-
-        spawn(async move {
-            // Clone the Arc out and drop the signal borrow before awaiting (see
-            // the logout handler): holding connector.peek() across .await races
-            // connector.set(...) on reconnect and panics with AlreadyBorrowed.
-            let conn_arc = connector.peek().as_ref().cloned();
-            if let Some(conn) = conn_arc {
-                conn.read().await.shutdown();
+    // Bridge the connector event loop's status/step signals into AuthFlow events.
+    {
+        let mut last_status = use_signal(|| None::<ConnectorStatus>);
+        let dispatch = dispatch.clone();
+        use_effect(move || {
+            let s = status.read().clone();
+            if last_status.peek().as_ref() != Some(&s) {
+                last_status.set(Some(s.clone()));
+                match s {
+                    ConnectorStatus::Registered => dispatch(AuthEvent::ConnectorRegistered),
+                    ConnectorStatus::Connecting | ConnectorStatus::Reconnecting => {
+                        if let Some(step) = *connecting_step.peek() {
+                            dispatch(AuthEvent::ConnectorStep(step));
+                        }
+                    }
+                    _ => {}
+                }
             }
-            status.set(ConnectorStatus::Disconnected);
-            connecting_step.set(None);
-            terminal_lines
-                .write()
-                .push(TerminalLine::info("Disconnected"));
         });
+    }
+
+    {
+        let mut last_step = use_signal(|| None::<ConnectingStep>);
+        let dispatch = dispatch.clone();
+        use_effect(move || {
+            let step = *connecting_step.read();
+            if *last_step.peek() != step {
+                last_step.set(step);
+                if let Some(step) = step {
+                    if matches!(*flow.peek(), AuthFlow::Registering(_)) {
+                        dispatch(AuthEvent::ConnectorStep(step));
+                    }
+                }
+            }
+        });
+    }
+
+    // ---- disconnect handler ----
+    let on_disconnect = {
+        let dispatch = dispatch.clone();
+        move |_: ()| {
+            let mut s = load_settings();
+            s.auto_connect = false;
+            let _ = save_settings(&s);
+
+            let connector = connector;
+            let mut status = status;
+            let mut terminal_lines = terminal_lines;
+            let mut connecting_step = connecting_step;
+            let dispatch = dispatch.clone();
+
+            spawn(async move {
+                // Clone the Arc out and drop the signal borrow before awaiting (see
+                // the logout handler): holding connector.peek() across .await races
+                // connector.set(...) on reconnect and panics with AlreadyBorrowed.
+                let conn_arc = connector.peek().as_ref().cloned();
+                if let Some(conn) = conn_arc {
+                    conn.read().await.shutdown();
+                }
+                status.set(ConnectorStatus::Disconnected);
+                connecting_step.set(None);
+                terminal_lines
+                    .write()
+                    .push(TerminalLine::info("Disconnected"));
+                dispatch(AuthEvent::Disconnected);
+            });
+        }
     };
 
     // ---- logout handler (easy mode) ----
@@ -939,6 +981,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // keeps credentials for a silent reconnect.
     let on_logout = {
         let device_id = device_id.clone();
+        let dispatch = dispatch.clone();
         move |_: ()| {
             let cfg_now = config.peek().clone();
             let scoped_instance_id = pentest_core::config::ConnectorConfig::env_scoped_instance_id(
@@ -964,6 +1007,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             let mut matrix_auth_token = matrix_auth_token;
             let mut needs_sign_in = needs_sign_in;
             let mut connecting_step = connecting_step;
+            let dispatch = dispatch.clone();
             spawn(async move {
                 // Clone the Arc out and DROP the signal borrow before awaiting.
                 // Holding `connector.peek()` across `.await` keeps the signal
@@ -977,6 +1021,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 connecting_step.set(None);
                 status.set(ConnectorStatus::Disconnected);
                 needs_sign_in.set(true);
+                dispatch(AuthEvent::LoggedOut);
             });
         }
     };
