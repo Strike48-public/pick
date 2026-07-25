@@ -1107,6 +1107,8 @@ pub fn SettingsPage(
                                         "Matrix" => Theme::Matrix,
                                         "Cyberpunk" => Theme::Cyberpunk,
                                         "Nord" => Theme::Nord,
+                                        "Sage" => Theme::Sage,
+                                        "SageLight" => Theme::SageLight,
                                         _ => Theme::Strike48,
                                     };
                                     on_theme_change.call(new_theme);
@@ -1120,6 +1122,8 @@ pub fn SettingsPage(
                                 option { value: "Matrix", "Matrix" }
                                 option { value: "Cyberpunk", "Cyberpunk" }
                                 option { value: "Nord", "Nord" }
+                                option { value: "Sage", "Sage" }
+                                option { value: "SageLight", "Sage Light" }
                             }
                             button {
                                 class: "button button-secondary",
@@ -1136,6 +1140,8 @@ pub fn SettingsPage(
                                         Theme::Matrix,
                                         Theme::Cyberpunk,
                                         Theme::Nord,
+                                        Theme::Sage,
+                                        Theme::SageLight,
                                     ];
 
                                     // Get random theme different from current
