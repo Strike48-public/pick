@@ -42,6 +42,13 @@ logs/
 .env.bak-*
 .env.*.bak
 
+# Operator test-identities for differential-authz testing (pick#162).
+# Holds real target credentials (cookies/JWT/headers) - never commit.
+# The committed template `identities.example.json` is deliberately re-included.
+identities.json
+identities.*.json
+!identities.example.json
+
 # AI tooling local overlays — private, operator-specific, never committed.
 # See CLAUDE.md "Local Overrides" section.
 CLAUDE.local.md

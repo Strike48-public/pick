@@ -732,6 +732,27 @@ impl LiveViewConnector {
                 .and_then(|h| h.ipc_addr().cloned()),
         ));
 
+        // Load operator-provided test identities for differential-authz tools
+        // (pick#162) once at startup. A missing file yields an empty store; a
+        // malformed file is logged and treated as empty rather than blocking
+        // connector startup (the operator can fix the file and reconnect).
+        let identities = match pentest_core::identity::load_default_identities() {
+            Ok(loaded) => {
+                if !loaded.store.is_empty() {
+                    tracing::info!(
+                        "Loaded {} operator identit{} for differential-authz testing",
+                        loaded.store.len(),
+                        if loaded.store.len() == 1 { "y" } else { "ies" }
+                    );
+                }
+                loaded.store
+            }
+            Err(e) => {
+                tracing::warn!("Ignoring identities file: {e}");
+                pentest_core::identity::IdentityStore::new()
+            }
+        };
+
         // Build the PickConnector that implements BaseConnector
         let pick_connector = Arc::new(pick_connector::PickConnector {
             tools: self.tools.clone(),
@@ -748,6 +769,7 @@ impl LiveViewConnector {
             // the health handler. Starts None → /health reports "starting" until set.
             runner: self.runner.clone(),
             matrix_api_url: self.derive_matrix_api_url(),
+            identities: Arc::new(identities),
         });
 
         // Create the ConnectorRunner — it manages connection lifecycle, auth,

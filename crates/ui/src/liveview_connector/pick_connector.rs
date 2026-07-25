@@ -52,6 +52,10 @@ pub(crate) struct PickConnector {
     pub runner: Arc<RwLock<Option<Arc<strike48_connector::ConnectorRunner>>>>,
     /// Matrix API URL derived from config for tool context
     pub matrix_api_url: String,
+    /// Operator-provided test identities (pick#162), loaded once from the
+    /// gitignored identities file at construction and cloned into each tool
+    /// context. Empty when no identities file is present.
+    pub identities: Arc<pentest_core::identity::IdentityStore>,
 }
 
 impl PickConnector {
@@ -290,6 +294,10 @@ impl BaseConnector for PickConnector {
                 // Set aggression level and agent name
                 ctx = ctx.with_aggression_level(*self.aggression_level.read().await);
                 ctx = ctx.with_agent_name(self.connector_name.clone());
+
+                // Provide operator identities for differential-authz tools
+                // (pick#162). Loaded once at construction; cloned per call.
+                ctx = ctx.with_identities((*self.identities).clone());
 
                 // Create Matrix client if API URL is available
                 let api_url = self.derive_matrix_api_url();
@@ -636,6 +644,7 @@ mod tests {
             ipc_addr: Arc::new(RwLock::new(None)),
             runner: Arc::new(RwLock::new(None)),
             matrix_api_url: String::new(),
+            identities: Arc::new(pentest_core::identity::IdentityStore::new()),
         }
     }
 

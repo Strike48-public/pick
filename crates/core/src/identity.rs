@@ -31,7 +31,49 @@
 //! Population is two-pathed: standalone (operator config/UI) ships now; the
 //! StrikeKit/Matrix provisioning path is pick#312.
 
+use crate::error::{Error, Result};
+use serde::Deserialize;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use crate::specialist_spawner::{IdentityRole, TestIdentity};
+
+/// Environment variable naming the identities file, overriding the default
+/// location. Lets an operator (or `run-pentest.sh`) point at an engagement-
+/// specific file without touching the config dir.
+pub const IDENTITIES_FILE_ENV: &str = "PICK_IDENTITIES_FILE";
+
+/// One entry in the operator-provided identities file.
+///
+/// This DTO is the **one** boundary where session material legitimately enters
+/// the process from a persisted source: the file is operator-owned and
+/// gitignored (see `.gitignore` `.env*` / dedicated secrets convention). The
+/// raw `session` string is read here and immediately wrapped in the
+/// non-serializable [`SessionMaterial`]; it is never re-serialized.
+#[derive(Debug, Deserialize)]
+struct IdentityFileEntry {
+    label: String,
+    role: IdentityRole,
+    #[serde(default)]
+    tenant: Option<String>,
+    /// Raw session material (cookie/JWT/header bundle). Omitted/empty for an
+    /// anonymous identity.
+    #[serde(default)]
+    session: String,
+}
+
+/// Parsed identities file: the reference set (labels/roles/tenants) plus the
+/// connector-side store of their secrets.
+///
+/// Splitting the two is deliberate: `references` is safe to hand to the
+/// specialist context, `store` stays connector-local.
+#[derive(Debug, Default)]
+pub struct LoadedIdentities {
+    /// Reference set to place in [`SpecialistContext`](crate::specialist_spawner::SpecialistContext).
+    pub references: Vec<TestIdentity>,
+    /// Connector-local secret store.
+    pub store: IdentityStore,
+}
 
 /// Opaque session material (cookies, bearer token, or a raw header bundle) that
 /// authenticates a test identity when a specialist replays requests.
@@ -136,6 +178,68 @@ impl IdentityStore {
     }
 }
 
+/// Resolve the identities-file path: the [`IDENTITIES_FILE_ENV`] override if
+/// set, otherwise `identities.json` in the connector's config dir. The path is
+/// not required to exist - a missing file simply means no identities.
+pub fn identities_file_path() -> PathBuf {
+    if let Ok(p) = std::env::var(IDENTITIES_FILE_ENV) {
+        if !p.trim().is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    crate::settings::settings_dir().join("identities.json")
+}
+
+/// Load operator-provided identities from a JSON file.
+///
+/// A **missing** file is not an error - it yields empty [`LoadedIdentities`], so
+/// standalone runs without identities behave exactly as before. A file that
+/// exists but is malformed (bad JSON, unknown role) **fails loudly** rather than
+/// silently degrading to zero identities, which would misreport authz coverage.
+///
+/// The file schema is a JSON array of objects:
+/// `[{"label":"user_a","role":"user","tenant":null,"session":"Cookie: sid=..."}]`
+/// (`role` is one of `anonymous` | `user` | `privileged`; `tenant`/`session`
+/// optional). The file is operator-owned and must be gitignored - it holds real
+/// credentials.
+pub fn load_identities_from_file(path: &Path) -> Result<LoadedIdentities> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LoadedIdentities::default());
+        }
+        Err(e) => {
+            return Err(Error::Config(format!(
+                "failed to read identities file {}: {e}",
+                path.display()
+            )));
+        }
+    };
+
+    let entries: Vec<IdentityFileEntry> = serde_json::from_str(&contents)
+        .map_err(|e| Error::Config(format!("malformed identities file {}: {e}", path.display())))?;
+
+    let mut references = Vec::with_capacity(entries.len());
+    let mut store = IdentityStore::new();
+    for entry in entries {
+        if !entry.session.is_empty() {
+            store.insert(entry.label.clone(), SessionMaterial::new(entry.session));
+        }
+        references.push(TestIdentity {
+            label: entry.label,
+            role: entry.role,
+            tenant: entry.tenant,
+        });
+    }
+
+    Ok(LoadedIdentities { references, store })
+}
+
+/// Convenience: load from the default [`identities_file_path`].
+pub fn load_default_identities() -> Result<LoadedIdentities> {
+    load_identities_from_file(&identities_file_path())
+}
+
 /// The store never reveals its secrets through `Debug` - it reports only the
 /// set of known labels (non-sensitive) and a count, so it is safe to include in
 /// a `#[derive(Debug)]` parent (e.g. `ToolContext`).
@@ -226,5 +330,87 @@ mod tests {
         );
         // Labels are non-sensitive and useful for diagnostics.
         assert!(debug.contains("user_a") && debug.contains("admin"));
+    }
+
+    // ---- file loader ----
+
+    fn write_temp(name: &str, contents: &str) -> PathBuf {
+        // Unique-per-name temp path; tests use distinct names so no clash.
+        let path = std::env::temp_dir().join(format!("pick-identities-test-{name}.json"));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn missing_file_yields_empty_not_error() {
+        let path = std::env::temp_dir().join("pick-identities-does-not-exist-xyz.json");
+        let _ = std::fs::remove_file(&path);
+        let loaded = load_identities_from_file(&path).expect("missing file is not an error");
+        assert!(loaded.references.is_empty());
+        assert!(loaded.store.is_empty());
+    }
+
+    #[test]
+    fn valid_file_splits_references_from_secrets() {
+        let path = write_temp(
+            "valid",
+            r#"[
+                {"label":"unauth","role":"anonymous"},
+                {"label":"user_a","role":"user","tenant":"t1","session":"Cookie: sid=aaa"},
+                {"label":"admin","role":"privileged","session":"Authorization: Bearer zzz"}
+            ]"#,
+        );
+        let loaded = load_identities_from_file(&path).expect("valid file loads");
+
+        // References carry no secret and include all three identities.
+        assert_eq!(loaded.references.len(), 3);
+        let admin = loaded
+            .references
+            .iter()
+            .find(|r| r.label == "admin")
+            .unwrap();
+        assert_eq!(admin.role, IdentityRole::Privileged);
+
+        // The store holds only the two with session material.
+        assert_eq!(loaded.store.len(), 2);
+        assert_eq!(
+            loaded.store.resolve("user_a").map(SessionMaterial::expose),
+            Some("Cookie: sid=aaa")
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn anonymous_entry_has_reference_but_no_store_slot() {
+        let path = write_temp("anon", r#"[{"label":"unauth","role":"anonymous"}]"#);
+        let loaded = load_identities_from_file(&path).expect("loads");
+        assert_eq!(loaded.references.len(), 1);
+        assert!(
+            loaded.store.resolve("unauth").is_none(),
+            "anonymous identity carries no session material"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn malformed_file_fails_loudly() {
+        let path = write_temp("malformed", r#"{ not an array"#);
+        let err = load_identities_from_file(&path).expect_err("malformed file must error");
+        assert!(
+            err.to_string().contains("malformed identities file"),
+            "unexpected error: {err}"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn unknown_role_fails_loudly_not_silently_dropped() {
+        let path = write_temp(
+            "badrole",
+            r#"[{"label":"x","role":"superuser","session":"s"}]"#,
+        );
+        let err = load_identities_from_file(&path).expect_err("unknown role must error");
+        assert!(err.to_string().contains("malformed identities file"));
+        std::fs::remove_file(&path).ok();
     }
 }
