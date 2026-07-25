@@ -223,12 +223,6 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // AppLayout provides this via use_context_provider; ChatPanel writes when full_page.
     let mut chat_header_ctx: Signal<Option<ChatHeaderCtx>> = use_context();
 
-    // Easy-mode sign-in gate (provided by connector_app). Present only in easy
-    // mode; `try_consume_context` keeps ChatPanel usable elsewhere (sidebar). On a
-    // persistent auth failure we flip these to route back through the sign-in
-    // overlay instead of retrying a dead token forever.
-    let _needs_sign_in_ctx = try_consume_context::<Signal<bool>>();
-    let _retry_tick_ctx = try_consume_context::<Signal<u32>>();
     // Count consecutive auth failures so a stale restored token forces a fresh
     // sign-in (via the easy-mode overlay) rather than retrying the dead token
     // forever.

@@ -35,12 +35,6 @@ use crate::{
 
 /// Platform-specific configuration for the shared connector app.
 ///
-/// Context newtype wrapping the "force a fresh browser sign-in" flag, so it can
-/// be provided/consumed by type without colliding with the `needs_sign_in`
-/// `Signal<bool>` context. Set true by the Easy Mode retry overlay.
-#[derive(Clone, Copy)]
-pub struct ForceSignIn(pub Signal<bool>);
-
 /// All fields are `Copy` so the config can be freely captured in closures.
 #[derive(Clone, Copy)]
 pub struct ConnectorAppConfig {
@@ -328,7 +322,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     } else {
         None
     };
-    let has_saved_config = settings.peek().last_config.is_some();
 
     let initial_config = settings
         .peek()
@@ -344,12 +337,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             ..Default::default()
         });
 
-    // Auto-connect when the user opted in (saved auto_connect) OR when easy mode
-    // has an env-provided PLG host to connect to. Easy mode with no env host
-    // still shows the connect form.
-    let initial_auto_connect = settings.peek().auto_connect
-        || (resolved_easy && !has_saved_config && easy_mode_env_config.is_some());
-
     // ---- signals ----
     let mut status = use_signal(|| ConnectorStatus::Disconnected);
     let mut terminal_lines = use_signal(Vec::<TerminalLine>::new);
@@ -364,44 +351,19 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // is only rendered after a successful connection.
     let mut connect_error: Signal<Option<String>> = use_signal(|| None);
 
-    // PLG easy mode: set when OAuth-first / OTT exchange fails so EasyModeShell
-    // can show a friendly "sign in to continue" retry overlay. Never triggers a
-    // tokenless connect.
-    let needs_sign_in = use_context_provider(|| Signal::new(false));
-    let retry_tick = use_context_provider(|| Signal::new(0u32));
-    // Set by the "Retry sign-in" overlay: forces the next auto-connect to take
-    // the fresh-browser SignIn path even when connector credentials exist on
-    // disk. Without this, a broken chat session (needs a NEW browser token) but
-    // valid connector creds routes to the Silent path, which reconnects the
-    // connector but never re-opens the browser — an infinite retry loop.
-    // Wrapped in a newtype so it doesn't collide with the `needs_sign_in`
-    // `Signal<bool>` context (Dioxus resolves context by type).
-    let force_sign_in = use_context_provider(|| ForceSignIn(Signal::new(false))).0;
-    // The old retry_tick-driven effect is removed (Task 3), but EasyModeShell's
-    // retry button still bumps retry_tick. Both signals removed in Task 6.
-    let _ = (retry_tick, force_sign_in);
-
-    // Explicit easy-mode auth state machine (replaces needs_sign_in/force_sign_in/
-    // retry_tick — see auth_flow.rs). Provided as context so EasyModeShell and
-    // ChatPanel can read it. `dispatch` (below) is the ONLY writer.
+    // Explicit easy-mode auth state machine (see auth_flow.rs). Provided as
+    // context so EasyModeShell and ChatPanel can read it. `dispatch` (below) is
+    // the ONLY writer.
     let flow = use_context_provider(|| Signal::new(AuthFlow::Restoring));
 
-    // Single writer for `flow`. Mirrors into the legacy `needs_sign_in` signal so
-    // the existing render/effects keep working during the incremental migration
-    // (removed in the final task once nothing reads the legacy signals).
-    // Plain Fn (no RefCell) — signals are Copy and use interior mutability.
-    // Rebind captured signals as mut inside the closure to keep the closure an Fn.
+    // Single writer for `flow`. Plain Fn (no RefCell) — signals are Copy and
+    // use interior mutability. Rebind captured signals as mut inside the closure
+    // to keep the closure an Fn.
     let dispatch = std::rc::Rc::new(move |ev: AuthEvent| {
         let mut flow = flow;
-        let mut needs_sign_in = needs_sign_in;
         let auto = settings.peek().auto_connect;
         let next = reduce(flow.peek().clone(), ev, easy_mode(), auto);
-        let overlay =
-            matches!(next, AuthFlow::AwaitingGesture | AuthFlow::Failed { reauth: true, .. });
         flow.set(next);
-        if *needs_sign_in.peek() != overlay {
-            needs_sign_in.set(overlay);
-        }
     });
 
     // download state
@@ -597,9 +559,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         let mut terminal_lines = terminal_lines;
         let connecting_step = connecting_step;
         let mut workspace_path = workspace_path;
-        // Easy mode routes connect failures to the friendly retry overlay and
-        // discards the single-use OTT, rather than dropping to the raw form.
-        let mut needs_sign_in = needs_sign_in;
         // Read the live mode so a runtime toggle is honored on the next connect.
         let easy_mode = easy_mode();
 
@@ -726,12 +685,10 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                     if easy_mode {
                         // A staged OTT is single-use; a failed registration
                         // consumed or invalidated it, so drop it (a retry
-                        // re-mints a fresh one) and show the friendly retry
-                        // overlay instead of the raw Connect form.
+                        // re-mints a fresh one).
                         pentest_core::matrix::clear_staged_ott();
                         std::env::remove_var("STRIKE48_REGISTRATION_TOKEN_FILE");
                         status.set(ConnectorStatus::Disconnected);
-                        needs_sign_in.set(true);
                     } else {
                         // Standard shell: surface to the Connect-screen banner.
                         // status flips to Error which routes there; without this
@@ -746,7 +703,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
 
     // PLG easy-mode OAuth-first connect: obtain the user JWT, exchange it for a
     // tenant-scoped OTT, stage the OTT for the SDK, then connect. On any failure
-    // set needs_sign_in and stop — never fall back to a tokenless connect.
+    // stop — never fall back to a tokenless connect.
     let plg_sign_in_and_connect = {
         let mut on_connect_clone = on_connect;
         let dispatch = dispatch.clone();
@@ -754,13 +711,11 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             let mut connecting_step = connecting_step;
             let mut status = status;
             let mut terminal_lines = terminal_lines;
-            let mut needs_sign_in = needs_sign_in;
             let mut config = config;
             let mut matrix_auth_token = matrix_auth_token;
             let mut matrix_api_url = matrix_api_url;
             let dispatch = dispatch.clone();
             spawn(async move {
-                needs_sign_in.set(false);
                 status.set(ConnectorStatus::Connecting);
                 connecting_step.set(Some(ConnectingStep::SigningIn));
 
@@ -788,7 +743,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                             .push(TerminalLine::error(format!("Sign-in failed: {e}")));
                         status.set(ConnectorStatus::Disconnected);
                         connecting_step.set(None);
-                        needs_sign_in.set(true);
                         dispatch(AuthEvent::TokenFailed(e.to_string()));
                         return;
                     }
@@ -829,7 +783,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                 .push(TerminalLine::error(format!("Pre-approval failed: {e}")));
                             status.set(ConnectorStatus::Disconnected);
                             connecting_step.set(None);
-                            needs_sign_in.set(true);
                             return;
                         }
                     };
@@ -849,8 +802,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         }
     };
 
-    // Launch side effects on AuthFlow entry. Replaces the retry_tick effect,
-    // whose read+write of force_sign_in caused it to re-run and double-fire.
+    // Launch side effects on AuthFlow entry.
     {
         let plg_sign_in_and_connect = plg_sign_in_and_connect.clone();
         let mut launched_signin = use_signal(|| false);
@@ -886,23 +838,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         });
     }
 
-    // Easy mode never shows the expert ConfigForm. When we land disconnected and
-    // are NOT going to auto-connect (a fresh relaunch after logout), flip
-    // needs_sign_in so EasyModeShell shows its sign-in overlay instead of falling
-    // through to the connect form. needs_sign_in isn't persisted, so this must run
-    // on launch. Gated on !initial_auto_connect so a normal auto-connect (which
-    // briefly passes through Disconnected before Connecting) doesn't flash the
-    // sign-in screen — a failed auto-connect sets needs_sign_in via its own error
-    // handlers.
-    {
-        let mut needs_sign_in = needs_sign_in;
-        use_effect(move || {
-            let disconnected = matches!(*status.read(), ConnectorStatus::Disconnected);
-            if resolved_easy && !initial_auto_connect && disconnected && !*needs_sign_in.peek() {
-                needs_sign_in.set(true);
-            }
-        });
-    }
 
     // Bridge the connector event loop's status/step signals into AuthFlow events.
     {
@@ -1005,7 +940,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             let connector = connector;
             let mut status = status;
             let mut matrix_auth_token = matrix_auth_token;
-            let mut needs_sign_in = needs_sign_in;
             let mut connecting_step = connecting_step;
             let dispatch = dispatch.clone();
             spawn(async move {
@@ -1020,7 +954,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 matrix_auth_token.set(String::new());
                 connecting_step.set(None);
                 status.set(ConnectorStatus::Disconnected);
-                needs_sign_in.set(true);
                 dispatch(AuthEvent::LoggedOut);
             });
         }

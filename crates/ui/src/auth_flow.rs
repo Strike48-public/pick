@@ -1,10 +1,7 @@
 //! Explicit state machine for the easy-mode login/connection flow.
 //!
 //! This is the single source of truth for "where is the user in signing in and
-//! connecting". It replaces the scattered `needs_sign_in` / `force_sign_in` /
-//! `retry_tick` signals whose interactions caused a double-sign-in (the
-//! sign-in effect re-ran because it wrote a signal it read, and a restored
-//! dead token made the shell render logged-in while the overlay also showed).
+//! connecting".
 //!
 //! Pure and Dioxus-free so it can be unit-tested exhaustively. The UI layer
 //! (`connector_app`) holds a `Signal<AuthFlow>` and mutates it ONLY through a
