@@ -98,6 +98,21 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
         }
     });
 
+    // Easy-mode sign-in is an explicit user gesture on every platform (the
+    // expert shell's lazy browser-auth is disabled in easy mode). When the shell
+    // is up but there's no chat token yet, surface the sign-in overlay so its
+    // "Sign in" button drives the browser/native OAuth. If a token was restored
+    // (Keychain) or auto-connect is mid-flight, auth_token is non-empty and this
+    // stays dormant — so a stored session logs in without ever showing the button.
+    {
+        let mut needs_sign_in = needs_sign_in;
+        use_effect(move || {
+            if auth_token().is_empty() && !*needs_sign_in.peek() {
+                needs_sign_in.set(true);
+            }
+        });
+    }
+
     // The base shell (brand bar + scan card + chat) is ALWAYS rendered so the
     // ChatPanel — and thus the live conversation — stays mounted. The report
     // viewer, reports list, and sign-in retry are layered OVER it as overlays

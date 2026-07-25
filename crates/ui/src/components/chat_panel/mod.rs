@@ -359,8 +359,15 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // Track whether we've attempted browser auth
     let mut browser_auth_attempted = use_signal(|| false);
 
-    // If Chat panel is visible, we don't have a token, and we haven't tried browser auth yet
-    if props.visible
+    // Lazy browser-OAuth is for the EXPERT shell only. Easy mode
+    // (props.full_page) makes sign-in an explicit user gesture: the easy-mode
+    // "Sign in" button drives plg_sign_in_and_connect in connector_app, which
+    // opens the browser (desktop) or presents the native OAuth sheet (mobile,
+    // which REQUIRES a user gesture with the scene foreground-active — auto-
+    // firing here silently fails to present). So in easy mode this auto-trigger
+    // is skipped and the not-signed-in state shows the Sign in button instead.
+    if !props.full_page
+        && props.visible
         && effective_token.is_empty()
         && !api_url.is_empty()
         && !browser_auth_attempted()

@@ -46,7 +46,9 @@ define_class!(
         // UIWindow) as a retained raw pointer the objc runtime can encode.
         #[unsafe(method(presentationAnchorForWebAuthenticationSession:))]
         fn presentation_anchor(&self, _session: &ASWebAuthenticationSession) -> *mut AnyObject {
+            tracing::info!("[IOS_OAUTH] presentationAnchorForWebAuthenticationSession called");
             let window = key_window(self.mtm());
+            tracing::info!("[IOS_OAUTH] anchor window ptr={:p}", Retained::as_ptr(&window));
             // Hand ownership to the caller (objc +1 return convention for a
             // property-style getter is not expected here; the session does not
             // release it, so retain-and-leak the pointer).
@@ -64,26 +66,75 @@ impl PresentationContext {
 
 /// The app's key window (an `ASPresentationAnchor` == `UIWindow` on iOS), to
 /// anchor the auth session. Must run on the main thread.
+///
+/// Mirrors the working crux Swift impl (OAuthManager.presentationAnchor): pick
+/// the foreground-active `UIWindowScene`'s key window. The legacy
+/// `UIApplication.windows` path could return a window whose scene isn't the one
+/// the auth SafariViewService can attach to.
 fn key_window(mtm: MainThreadMarker) -> Retained<UIWindow> {
     let app = UIApplication::sharedApplication(mtm);
-    // Walk windows for the key one; fall back to the first. Raw msg_send keeps
-    // this tolerant of UIKit-binding shape across versions.
-    // SAFETY: main-thread UIKit access; `windows` returns an NSArray<UIWindow>.
+    // SAFETY: main-thread UIKit access.
     unsafe {
-        let windows: Retained<objc2_foundation::NSArray<UIWindow>> = msg_send![&app, windows];
-        let count = windows.count();
-        for i in 0..count {
-            let w = windows.objectAtIndex(i);
-            let is_key: bool = msg_send![&w, isKeyWindow];
-            if is_key {
+        // Walk connectedScenes for a foreground-active UIWindowScene, else the
+        // first UIWindowScene; within it, the key window (else first window).
+        let scenes: Retained<objc2_foundation::NSSet<AnyObject>> =
+            msg_send![&app, connectedScenes];
+        let all: Retained<objc2_foundation::NSArray<AnyObject>> = msg_send![&scenes, allObjects];
+        let scount = all.count();
+        tracing::info!("[IOS_OAUTH] key_window: connectedScenes count={scount}");
+
+        let is_window_scene = |s: &AnyObject| -> bool {
+            let cls = objc2::runtime::AnyClass::get(c"UIWindowScene");
+            match cls {
+                Some(c) => msg_send![s, isKindOfClass: c],
+                None => false,
+            }
+        };
+
+        // Prefer foreground-active scene, fall back to any window scene.
+        let mut chosen_scene: Option<Retained<AnyObject>> = None;
+        let mut first_scene: Option<Retained<AnyObject>> = None;
+        for i in 0..scount {
+            let s = all.objectAtIndex(i);
+            if !is_window_scene(&s) {
+                continue;
+            }
+            if first_scene.is_none() {
+                first_scene = Some(s.clone());
+            }
+            // UISceneActivationStateForegroundActive == 0
+            let state: isize = msg_send![&s, activationState];
+            tracing::info!("[IOS_OAUTH] key_window: scene[{i}] activationState={state}");
+            if state == 0 {
+                chosen_scene = Some(s);
+                break;
+            }
+        }
+        let scene = chosen_scene.or(first_scene);
+
+        if let Some(scene) = scene {
+            let windows: Retained<objc2_foundation::NSArray<UIWindow>> =
+                msg_send![&scene, windows];
+            let wcount = windows.count();
+            let mut first: Option<Retained<UIWindow>> = None;
+            for i in 0..wcount {
+                let w = windows.objectAtIndex(i);
+                if first.is_none() {
+                    first = Some(w.clone());
+                }
+                let is_key: bool = msg_send![&w, isKeyWindow];
+                if is_key {
+                    tracing::info!("[IOS_OAUTH] key_window: using scene key window[{i}]");
+                    return w;
+                }
+            }
+            if let Some(w) = first {
+                tracing::warn!("[IOS_OAUTH] key_window: no key window in scene, using windows[0]");
                 return w;
             }
         }
-        // No key window: return the first (still a valid anchor). If there are
-        // somehow no windows, fall through to a freshly-made one.
-        if count > 0 {
-            return windows.objectAtIndex(0);
-        }
+
+        tracing::warn!("[IOS_OAUTH] key_window: no window scene/window — detached UIWindow (cannot present!)");
         UIWindow::new(mtm)
     }
 }
@@ -163,10 +214,12 @@ fn start_session(
     // SAFETY: set the (weak) presentation-context provider via the raw selector
     // (the typed setter wants a ProtocolObject we intentionally don't construct)
     // and start the session.
+    tracing::info!("[IOS_OAUTH] starting session for url={url} scheme={callback_scheme}");
     let started = unsafe {
         let _: () = msg_send![&session, setPresentationContextProvider: &*ctx];
         session.start()
     };
+    tracing::info!("[IOS_OAUTH] session.start() returned {started}");
     if !started {
         return Err("ASWebAuthenticationSession.start() returned false".to_string());
     }

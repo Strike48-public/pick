@@ -782,7 +782,12 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     let device_id_autoconnect = device_id.clone();
     use_effect(move || {
         let _ = retry_tick();
-        if !initial_auto_connect {
+        // Proceed on auto-connect at startup OR whenever the user taps "Sign in"
+        // (force_sign_in). Without the force_sign_in escape hatch, a post-logout
+        // state (auto_connect off) would block the sign-in button entirely — the
+        // button bumps retry_tick + sets force_sign_in, and must reach
+        // plg_sign_in_and_connect below.
+        if !initial_auto_connect && !force_sign_in() {
             return;
         }
         // Pick the config we would connect with (saved config wins, else PLG env).
@@ -823,6 +828,17 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         };
         match decision {
             pentest_core::config::PlgConnectStep::SignIn => {
+                // Easy-mode sign-in is user-gesture-initiated on every platform:
+                // unless this is an explicit "Sign in" tap (forced), show the
+                // sign-in overlay and let its button drive plg_sign_in_and_connect.
+                // (On mobile the native OAuth sheet MUST come from a gesture with
+                // the scene foreground-active or it silently fails to present; on
+                // desktop we simply prefer not to pop a browser unprompted.)
+                if !forced {
+                    let mut needs_sign_in = needs_sign_in;
+                    needs_sign_in.set(true);
+                    return;
+                }
                 terminal_lines.write().push(TerminalLine::info(
                     "Easy mode: signing in to your Strike48 workspace...",
                 ));
