@@ -386,22 +386,20 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // Single writer for `flow`. Mirrors into the legacy `needs_sign_in` signal so
     // the existing render/effects keep working during the incremental migration
     // (removed in the final task once nothing reads the legacy signals).
-    let dispatch = {
+    // Plain Fn (no RefCell) — signals are Copy and use interior mutability.
+    // Rebind captured signals as mut inside the closure to keep the closure an Fn.
+    let dispatch = std::rc::Rc::new(move |ev: AuthEvent| {
         let mut flow = flow;
         let mut needs_sign_in = needs_sign_in;
-        let easy_mode = easy_mode;
-        let settings = settings;
-        std::rc::Rc::new(std::cell::RefCell::new(move |ev: AuthEvent| {
-            let auto = settings.peek().auto_connect;
-            let next = reduce(flow.peek().clone(), ev, easy_mode(), auto);
-            let overlay =
-                matches!(next, AuthFlow::AwaitingGesture | AuthFlow::Failed { reauth: true, .. });
-            flow.set(next);
-            if *needs_sign_in.peek() != overlay {
-                needs_sign_in.set(overlay);
-            }
-        }))
-    };
+        let auto = settings.peek().auto_connect;
+        let next = reduce(flow.peek().clone(), ev, easy_mode(), auto);
+        let overlay =
+            matches!(next, AuthFlow::AwaitingGesture | AuthFlow::Failed { reauth: true, .. });
+        flow.set(next);
+        if *needs_sign_in.peek() != overlay {
+            needs_sign_in.set(overlay);
+        }
+    });
 
     // download state
     let mut download_progress: Signal<Option<f64>> =
@@ -464,7 +462,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         let easy_env = easy_mode_env_config.clone();
         use_hook(move || {
             let have_token = !matrix_auth_token.peek().is_empty();
-            dispatch.borrow_mut()(AuthEvent::Restored { have_token });
+            dispatch(AuthEvent::Restored { have_token });
             if !have_token {
                 // Mirror the auto-connect effect's candidate/creds check.
                 let candidate = settings.peek().last_config.clone().or_else(|| {
@@ -482,9 +480,9 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                         &candidate.connector_name,
                         &scoped,
                     );
-                    dispatch.borrow_mut()(if creds { AuthEvent::CredsFound } else { AuthEvent::CredsAbsent });
+                    dispatch(if creds { AuthEvent::CredsFound } else { AuthEvent::CredsAbsent });
                 } else {
-                    dispatch.borrow_mut()(AuthEvent::CredsAbsent);
+                    dispatch(AuthEvent::CredsAbsent);
                 }
             }
         });
