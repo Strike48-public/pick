@@ -12,8 +12,11 @@ pub fn generate_theme_css(theme: Theme, radius: BorderRadius, density: Density) 
     let radius_value = get_radius_value(radius);
     let spacing = get_density_spacing(density);
 
-    // IBM Plex fonts for Strike48 theme
-    let (font_import, font_sans, font_mono) = if theme == Theme::Strike48 {
+    // IBM Plex fonts for Strike48 and Sage themes
+    let (font_import, font_sans, font_mono) = if matches!(
+        theme,
+        Theme::Strike48 | Theme::Sage | Theme::SageLight
+    ) {
         (
             "@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');\n",
             "'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji'",
@@ -140,6 +143,63 @@ pub fn generate_theme_css(theme: Theme, radius: BorderRadius, density: Density) 
         font_mono,
         spacing.font_size,
     ) + BASE_COMPONENT_STYLES
+        + sage_extra_tokens_css(theme)
+}
+
+/// Extra Sage-only CSS custom properties (glass surfaces, gold accent, tints,
+/// panel shades, status backgrounds) that the shared ThemeColors struct does
+/// not carry. Returns "" for any non-Sage theme so their emitted CSS is
+/// unchanged. `sage`-scoped chrome rules (see sage_theme_css) read these.
+fn sage_extra_tokens_css(theme: Theme) -> &'static str {
+    match theme {
+        Theme::Sage => {
+            r#"
+:root {
+    --sage-p1: #1b201d;
+    --sage-p3: #101312;
+    --sage-surf2: #2c352f;
+    --sage-line2: rgba(255,255,255,0.17);
+    --sage-dim: #78847d;
+    --sage-pri2: #b3d2c3;
+    --sage-gold: #c9b27e;
+    --sage-tint: rgba(156,191,174,0.16);
+    --sage-glass-bg: rgba(255,255,255,0.05);
+    --sage-glass-line: rgba(255,255,255,0.09);
+    --sage-glass-sh: 0 14px 34px rgba(6,12,9,0.3), inset 0 1px 0 rgba(255,255,255,0.06);
+    --sage-ok-bg: rgba(143,196,171,0.14);
+    --sage-warn-bg: rgba(217,176,124,0.14);
+    --sage-err-bg: rgba(217,154,154,0.14);
+    --sage-info-bg: rgba(156,184,191,0.14);
+    --sage-grad-a: rgba(156,191,174,0.13);
+    --sage-grad-b: rgba(156,191,174,0.08);
+}
+"#
+        }
+        Theme::SageLight => {
+            r#"
+:root {
+    --sage-p1: #ffffff;
+    --sage-p3: #edf0ec;
+    --sage-surf2: #dbe2da;
+    --sage-line2: rgba(30,45,36,0.18);
+    --sage-dim: #8b968e;
+    --sage-pri2: #4e7d69;
+    --sage-gold: #a08a4e;
+    --sage-tint: rgba(95,143,122,0.14);
+    --sage-glass-bg: rgba(255,255,255,0.62);
+    --sage-glass-line: rgba(255,255,255,0.75);
+    --sage-glass-sh: 0 14px 34px rgba(44,60,50,0.1), inset 0 1px 0 rgba(255,255,255,0.8);
+    --sage-ok-bg: rgba(79,147,119,0.14);
+    --sage-warn-bg: rgba(181,131,74,0.15);
+    --sage-err-bg: rgba(181,110,110,0.15);
+    --sage-info-bg: rgba(95,143,143,0.14);
+    --sage-grad-a: rgba(156,191,174,0.33);
+    --sage-grad-b: rgba(156,191,174,0.2);
+}
+"#
+        }
+        _ => "",
+    }
 }
 
 /// Legacy function for backwards compatibility - uses Dark theme defaults
@@ -1494,5 +1554,20 @@ mod tests {
         assert_eq!(c.primary, "#5f8f7a");
         assert_eq!(c.primary_foreground, "#ffffff");
         assert_eq!(c.accent, "#a08a4e");
+    }
+
+    #[test]
+    fn sage_css_has_plex_font_and_extra_tokens() {
+        let css = generate_theme_css(Theme::Sage, BorderRadius::Soft, Density::Comfortable);
+        assert!(css.contains("IBM+Plex+Sans"), "Sage should import IBM Plex");
+        assert!(css.contains("--sage-tint:"), "Sage should emit extra tokens");
+        assert!(css.contains("--sage-glass-bg:"));
+    }
+
+    #[test]
+    fn non_sage_css_has_no_sage_tokens() {
+        let css = generate_theme_css(Theme::Dark, BorderRadius::Soft, Density::Comfortable);
+        assert!(!css.contains("--sage-tint:"), "non-Sage must not emit Sage tokens");
+        assert!(!css.contains("--sage-glass-bg:"));
     }
 }
