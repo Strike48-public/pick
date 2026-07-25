@@ -19,7 +19,6 @@ pub enum ShellMode {
 /// UI theme
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Theme {
-    #[default]
     Strike48,
     Dark,
     Light,
@@ -29,6 +28,9 @@ pub enum Theme {
     Matrix,
     Cyberpunk,
     Nord,
+    #[default]
+    Sage,
+    SageLight,
 }
 
 /// Border radius style
@@ -1494,5 +1496,19 @@ mod tests {
             .is_err(),
             "cloud-metadata endpoint must stay blocked in PrivateNetwork mode"
         );
+    }
+
+    #[test]
+    fn sage_is_default_theme() {
+        assert_eq!(Theme::default(), Theme::Sage);
+    }
+
+    #[test]
+    fn sage_themes_roundtrip_serde() {
+        for t in [Theme::Sage, Theme::SageLight] {
+            let json = serde_json::to_string(&t).unwrap();
+            let back: Theme = serde_json::from_str(&json).unwrap();
+            assert_eq!(t, back);
+        }
     }
 }
