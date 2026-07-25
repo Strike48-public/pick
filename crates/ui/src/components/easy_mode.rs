@@ -92,9 +92,12 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
         let mut rx = crate::session::watch_auth_token();
         while rx.changed().await.is_ok() {
             let t = rx.borrow().clone();
-            if !t.is_empty() {
-                auth_token.set(t);
-            }
+            // Mirror BOTH directions: a new token signs in, an empty token
+            // (logout clears it) must clear the shell's copy too — otherwise the
+            // shell keeps the stale token, still looks signed in, and logout
+            // appears to do nothing. The empty case then trips the sign-in
+            // overlay effect above.
+            auth_token.set(t);
         }
     });
 

@@ -93,6 +93,17 @@ pub fn ConnectingScreen(
                     class: "connecting-hint",
                     "Open the Strike48 web UI and accept this connector."
                 }
+            } else if step == ConnectingStep::SigningIn {
+                // Sign-in opened the browser (desktop) or native OAuth sheet
+                // (mobile); tell the user to finish there so they aren't left
+                // watching a bare "Signing in..." with no next step.
+                div { class: "approval-instruction",
+                    "Complete your sign-in in the browser"
+                }
+                div {
+                    class: "connecting-hint",
+                    "We opened your browser to sign in to Strike48. Come back here once you're done."
+                }
             } else {
                 div {
                     class: "text-dim",
