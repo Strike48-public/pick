@@ -364,7 +364,9 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         let auto = settings.peek().auto_connect;
         let prev = flow.peek().clone();
         let next = reduce(prev.clone(), ev.clone(), easy_mode(), auto);
-        tracing::info!("[AUTHFLOW] {:?} --{:?}--> {:?}", prev, ev, next);
+        // Debug-level trace of every auth-flow transition — invaluable for
+        // diagnosing sign-in/logout issues; off unless RUST_LOG=debug.
+        tracing::debug!("[AUTHFLOW] {:?} --{:?}--> {:?}", prev, ev, next);
         flow.set(next);
     });
 
@@ -903,7 +905,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         let device_id = device_id.clone();
         let dispatch = dispatch.clone();
         move |_: ()| {
-            tracing::info!("[AUTHFLOW] on_logout invoked");
             let cfg_now = config.peek().clone();
             let scoped_instance_id = pentest_core::config::ConnectorConfig::env_scoped_instance_id(
                 &device_id,
