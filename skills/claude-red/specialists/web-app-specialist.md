@@ -110,12 +110,52 @@ Test the perimeter that gates everything else.
 Authorization is the highest-yield area in modern web pentests. Every endpoint
 that returns or modifies data is a candidate for IDOR.
 
-- Capture the request set as user A.
-- Replay each request as user B (same role, different identity) — does data leak?
-- Replay each request as user C (lower role) — does privilege escalation work?
-- Replay each request unauthenticated — does the endpoint require auth at all?
-- Test forced browsing to admin paths. Frameworks often gate routes by URL
-  pattern; if the gate is missing, you walk in.
+**The identity matrix.** The `identities` field of your context lists the
+operator-provided test identities, each with a `label` (e.g. `unauth`,
+`user_a`, `user_b`, `admin`), a `role` (`anonymous` / `user` / `privileged`),
+and an optional `tenant`. You do **not** hold their credentials — the connector
+does. To act as an identity, reference it by `label` in your tool calls
+(`identity_ref: "admin"`); the connector injects that identity's session
+locally. Never invent identities or credentials that are not in the matrix.
+
+Differential method — for each endpoint that returns or modifies data:
+
+- Establish the privileged baseline: request it as the highest-privilege
+  identity that legitimately has access and record the successful response.
+- Replay the same request as each **lower-privilege** identity (and as
+  `unauth`). If a weaker identity receives substantively the same successful
+  content instead of a `401`/`403`, that is broken access control:
+  - lower `role` reaching privileged content/functions → **vertical**
+    escalation (BFLA analogue).
+  - same `role`, different identity/tenant reaching another's object →
+    **horizontal** escalation (BOLA/IDOR).
+- **Object-reference swap for BOLA:** as `user_a`, take an object identifier
+  `user_a` legitimately owns, then request it as `user_b` (and vice-versa), and
+  swap tenant-scoped identifiers across `tenant` values. Getting the other
+  owner's object back is a confirmed BOLA finding — stop at first proof per
+  endpoint (see aggression limits).
+- A properly-denied replay (`401`/`403`) **confirms the control works** — do not
+  report it. Only a weaker identity that is *not* denied is a finding; this
+  differential baseline is what keeps false positives off legitimately public
+  endpoints.
+
+**Co-hosted internal paths (same host, different paths).** A common topology
+serves a public app and a privileged/internal surface from the same host on
+different paths. Discover those internal paths and test them against the matrix:
+- Content-discover privileged prefixes on the shared host (`/admin`,
+  `/internal`, `/api/internal`, `/actuator`, `/debug`, role-segmented prefixes)
+  — integrate with existing recon, do not reinvent a brute-forcer.
+- Harvest routes from client-side JS route tables / SPA route maps — the
+  internal routes a public user "should not see" are frequently shipped in JS.
+- For each discovered internal path, run the differential replay above:
+  forced-browse it as `unauth` and as each non-privileged identity.
+
+**Reduced-coverage degradation.** The differential method needs at least two
+identities. If `identities` has fewer than two, you cannot diff across the
+matrix: fall back to unauth-vs-authed forced-browsing checks on discovered
+paths, and state explicitly in your findings that authorization coverage was
+reduced for lack of a multi-identity matrix (do not silently skip Phase 3).
+
 - See OWASP WSTG section 4.5 (Authorization) and OWASP API Security Top 10
   API1:2023 (BOLA) — the API risk applies to web apps too.
 

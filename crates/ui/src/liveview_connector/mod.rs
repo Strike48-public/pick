@@ -736,7 +736,7 @@ impl LiveViewConnector {
         // (pick#162) once at startup. A missing file yields an empty store; a
         // malformed file is logged and treated as empty rather than blocking
         // connector startup (the operator can fix the file and reconnect).
-        let identities = match pentest_core::identity::load_default_identities() {
+        let loaded_identities = match pentest_core::identity::load_default_identities() {
             Ok(loaded) => {
                 if !loaded.store.is_empty() {
                     tracing::info!(
@@ -745,13 +745,29 @@ impl LiveViewConnector {
                         if loaded.store.len() == 1 { "y" } else { "ies" }
                     );
                 }
-                loaded.store
+                loaded
             }
             Err(e) => {
                 tracing::warn!("Ignoring identities file: {e}");
-                pentest_core::identity::IdentityStore::new()
+                pentest_core::identity::LoadedIdentities::default()
             }
         };
+
+        // Advertise the identity *references* (label/role/tenant only, no
+        // secrets) to the Red Team orchestrator via InstanceMetadata, the same
+        // mechanism as `host_interfaces` above (matrix#2274). The orchestrator
+        // reads this to pass identities to spawn_specialist (matrix#3354). The
+        // session material stays connector-side in the store below.
+        if let Some(value) =
+            pentest_core::identity::references_metadata_value(&loaded_identities.references)
+        {
+            sdk_config.metadata.insert(
+                pentest_core::identity::IDENTITIES_METADATA_KEY.to_string(),
+                value,
+            );
+        }
+
+        let identities = loaded_identities.store;
 
         // Build the PickConnector that implements BaseConnector
         let pick_connector = Arc::new(pick_connector::PickConnector {

@@ -240,6 +240,32 @@ pub fn load_default_identities() -> Result<LoadedIdentities> {
     load_identities_from_file(&identities_file_path())
 }
 
+/// SDK `InstanceMetadata` key under which the connector advertises available
+/// test-identity *references* to the Matrix Red Team orchestrator (matrix#3354).
+///
+/// Mirrors the `host_interfaces` self-exclusion metadata (matrix#2274): the
+/// connector reports a connector-side fact the orchestrator reads to shape its
+/// reasoning - here, which identities exist so it can pass them to
+/// `spawn_specialist`. Only references (label/role/tenant) travel; the session
+/// material never leaves the connector.
+pub const IDENTITIES_METADATA_KEY: &str = "authz_identities";
+
+/// Serialize identity *references* for the SDK metadata value (matrix#3354).
+///
+/// Emits a JSON array of `{label, role, tenant}` - the same non-secret shape
+/// `TestIdentity` serializes to. There is no session material here by
+/// construction: `TestIdentity` carries none (the secret lives in the
+/// [`IdentityStore`]). Returns `None` when there are no references, so the
+/// caller can skip inserting an empty key.
+pub fn references_metadata_value(references: &[TestIdentity]) -> Option<String> {
+    if references.is_empty() {
+        return None;
+    }
+    // TestIdentity serialization is infallible for these fields; fall back to
+    // skipping the key rather than failing startup on the unreachable error.
+    serde_json::to_string(references).ok()
+}
+
 /// The store never reveals its secrets through `Debug` - it reports only the
 /// set of known labels (non-sensitive) and a count, so it is safe to include in
 /// a `#[derive(Debug)]` parent (e.g. `ToolContext`).
@@ -411,6 +437,38 @@ mod tests {
         );
         let err = load_identities_from_file(&path).expect_err("unknown role must error");
         assert!(err.to_string().contains("malformed identities file"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ---- metadata advertisement (matrix#3354) ----
+
+    #[test]
+    fn references_metadata_is_none_when_empty() {
+        assert!(references_metadata_value(&[]).is_none());
+    }
+
+    #[test]
+    fn references_metadata_carries_refs_but_no_secret() {
+        // The metadata value advertised to the orchestrator must contain the
+        // labels/roles but never any session material - the file loader put the
+        // secret in the store, not the references, and this proves it stays out
+        // of the metadata surface too.
+        let path = write_temp(
+            "meta",
+            r#"[
+                {"label":"user_a","role":"user","session":"Cookie: sid=SECRET-DO-NOT-LEAK"},
+                {"label":"admin","role":"privileged","session":"Bearer SECRET-TOKEN"}
+            ]"#,
+        );
+        let loaded = load_identities_from_file(&path).expect("loads");
+        let value = references_metadata_value(&loaded.references).expect("some");
+
+        assert!(value.contains("user_a") && value.contains("admin"));
+        assert!(value.contains("privileged"));
+        assert!(
+            !value.contains("SECRET-DO-NOT-LEAK") && !value.contains("SECRET-TOKEN"),
+            "metadata value leaked session material: {value}"
+        );
         std::fs::remove_file(&path).ok();
     }
 }

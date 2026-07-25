@@ -982,6 +982,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn authz_specialist_prompts_wire_the_identity_matrix() {
+        // pick#162 Hop C: the WebApp and API specialist prompts must consume the
+        // injected `identities` matrix and honor reduced-coverage degradation.
+        // Guard against a future edit silently reverting the wiring (which would
+        // leave prompt text with nothing behind it).
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("crates/core/.. should resolve to repo root")
+            .to_path_buf();
+
+        for specialist in [SpecialistType::WEB_APP, SpecialistType::API] {
+            let path = repo_root.join(specialist.prompt_file());
+            let body = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("specialist prompt unreadable at {path:?}: {e}"));
+            for needle in ["`identities`", "identity_ref", "reduced"] {
+                assert!(
+                    body.contains(needle),
+                    "specialist prompt for {specialist:?} no longer wires the identity \
+                     matrix (missing {needle:?}) - pick#162 Hop C regressed"
+                );
+            }
+        }
+    }
+
     // --- Cloud specialist (pick#151) ---------------------------------------
 
     #[test]
