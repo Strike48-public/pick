@@ -184,7 +184,11 @@ body {
 
     /* -- Touch targets --------------------------------------------------- */
 
-    button,
+    /* Exclude the toggle switch: it's a fixed 46x28 pill, and a 48px min-height
+       forces it nearly square so the border-radius:999px track renders as a
+       circle. Desktop (>768px) never hit this, which is why it looked right
+       there but broke in the mobile WebView. */
+    button:not(.easy-toggle),
     .action-card,
     .tab-item {
         min-height: 48px;
