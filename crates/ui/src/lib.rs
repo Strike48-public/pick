@@ -3,6 +3,7 @@
 //! Shared Dioxus UI components for all platforms.
 
 pub mod components;
+pub mod auth_flow;
 #[cfg(feature = "connector")]
 pub mod connector_app;
 pub mod download_manager;
