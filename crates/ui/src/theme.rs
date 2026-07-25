@@ -144,6 +144,7 @@ pub fn generate_theme_css(theme: Theme, radius: BorderRadius, density: Density) 
         spacing.font_size,
     ) + BASE_COMPONENT_STYLES
         + sage_extra_tokens_css(theme)
+        + sage_theme_css(theme)
 }
 
 /// Extra Sage-only CSS custom properties (glass surfaces, gold accent, tints,
@@ -198,6 +199,17 @@ fn sage_extra_tokens_css(theme: Theme) -> &'static str {
 }
 "#
         }
+        _ => "",
+    }
+}
+
+/// Sage chrome stylesheet, scoped under `.sage`. Restyles the advanced-mode
+/// shell (sidebar, header, nav, buttons, cards, status bar) to the Sage design
+/// language. Returns "" for non-Sage themes so their CSS is unchanged; the
+/// `.sage` scoping is a second guard so the rules cannot leak even if injected.
+fn sage_theme_css(theme: Theme) -> &'static str {
+    match theme {
+        Theme::Sage | Theme::SageLight => include_str!("styles/sage.css"),
         _ => "",
     }
 }
@@ -1569,5 +1581,14 @@ mod tests {
         let css = generate_theme_css(Theme::Dark, BorderRadius::Soft, Density::Comfortable);
         assert!(!css.contains("--sage-tint:"), "non-Sage must not emit Sage tokens");
         assert!(!css.contains("--sage-glass-bg:"));
+    }
+
+    #[test]
+    fn sage_chrome_css_scoped_and_gated() {
+        let sage = generate_theme_css(Theme::Sage, BorderRadius::Soft, Density::Comfortable);
+        assert!(sage.contains(".sage .sidebar"), "Sage chrome must be present + scoped");
+        assert!(sage.contains("border-radius: 999px"), "Sage buttons are pills");
+        let dark = generate_theme_css(Theme::Dark, BorderRadius::Soft, Density::Comfortable);
+        assert!(!dark.contains(".sage .sidebar"), "non-Sage must not emit chrome rules");
     }
 }

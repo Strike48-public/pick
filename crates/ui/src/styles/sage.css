@@ -1,0 +1,80 @@
+/* Sage skin for advanced-mode chrome. Scoped under .sage so no other theme is
+   affected. Colors flow from the theme tokens the chrome already reads
+   (--card/--border/--foreground/--primary); these rules add Sage shapes, glass
+   surfaces, the gradient page background, and the gold accent. */
+
+/* Radial-gradient page background (matches the template .stage). */
+.sage .app-layout {
+    background:
+        radial-gradient(1000px 620px at 78% -12%, var(--sage-grad-a), transparent 60%),
+        radial-gradient(800px 560px at -8% 95%, var(--sage-grad-b), transparent 55%),
+        var(--background);
+}
+
+/* Glass sidebar + header. */
+.sage .sidebar {
+    background: var(--sage-glass-bg);
+    border-right: 1px solid var(--sage-glass-line);
+    backdrop-filter: blur(20px);
+    /* Opaque fallback if backdrop-filter is unsupported. */
+    background-color: var(--sidebar);
+}
+.sage .desktop-header,
+.sage .page-header {
+    background: var(--sage-glass-bg);
+    border-bottom: 1px solid var(--sage-glass-line);
+    backdrop-filter: blur(20px);
+}
+
+/* Nav items: rounded, sage tint on hover/active, mint text when active. */
+.sage .sidebar-flat-item {
+    border-radius: 10px;
+}
+.sage .sidebar-flat-item:hover {
+    background-color: var(--sage-tint);
+}
+.sage .sidebar-flat-item.active {
+    background-color: var(--sage-tint);
+    color: var(--sage-pri2);
+}
+
+/* Header icon buttons: rounded, tinted hover. */
+.sage .desktop-header-btn {
+    border-radius: 10px;
+}
+.sage .desktop-header-btn:hover {
+    background-color: var(--sage-tint);
+    color: var(--foreground);
+}
+
+/* Pill buttons (Material-3). */
+.sage .button {
+    border-radius: 999px;
+    font-family: var(--font-sans);
+}
+.sage .button[data-style="primary"] {
+    background-color: var(--primary);
+    color: var(--primary-foreground);
+}
+.sage .button[data-style="primary"]:hover {
+    filter: brightness(1.06);
+}
+
+/* Cards: 16px radius, subtle surface. */
+.sage .card {
+    border-radius: 16px;
+    background: var(--card);
+    border: 1px solid var(--border);
+}
+
+/* Settings cards + rows follow the same rounding. */
+.sage .settings-card,
+.sage .dashboard-card {
+    border-radius: 16px;
+}
+
+/* Uppercase mono section labels + status bar, matching the template. */
+.sage .status-bar {
+    font-family: var(--font-mono);
+    color: var(--sage-dim);
+}
