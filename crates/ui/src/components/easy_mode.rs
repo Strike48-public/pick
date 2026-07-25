@@ -322,11 +322,13 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
             // Co-brand top bar: hamburger (left) + Strike48 "S" badge + "Pick".
             // Navigation lives entirely in the slide-over drawer (crux parity).
             div { class: "easy-brandbar",
-                // Hide the drawer handle until we're signed in (no chat token yet
-                // = browser sign-in pending): there are no conversations/reports to
-                // navigate to, and the drawer's Logout/Settings would act on a
-                // half-connected state. Matches the hidden Scan card below.
-                if !auth_token().is_empty() {
+                // Show the drawer handle once we're Connected (the authoritative
+                // AuthFlow state — signed in AND connector registered). Gating on
+                // the local `auth_token` signal was fragile: it can diverge from
+                // the session token the chat actually uses, hiding the handle even
+                // while the chat works. Pre-Connected states (sign-in pending) have
+                // nothing to navigate to, so the handle stays hidden then.
+                if matches!(flow(), crate::auth_flow::AuthFlow::Connected { .. }) {
                     button {
                         class: "easy-icon-btn easy-menu-btn",
                         "aria-label": "Menu",
@@ -345,12 +347,13 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                 span { class: "easy-brand-badge", dangerous_inner_html: STRIKE48_S_BADGE_SVG }
                 span { class: "easy-brand-word", "Pick" }
             }
-            // Scan card: only shown on an empty chat once we're signed in. Hidden
-            // once a conversation starts (New Chat brings it back), and while the
-            // browser sign-in is still pending (no chat token yet) — the ChatPanel
-            // shows the "complete sign-in in the browser" message in that window,
-            // and a Scan button there would do nothing.
-            if !conversation_active() && !auth_token().is_empty() {
+            // Scan card: only shown on an empty chat once we're Connected. Hidden
+            // once a conversation starts (New Chat brings it back), and while
+            // sign-in is still pending — the ChatPanel shows the "complete sign-in
+            // in the browser" message then, and a Scan button would do nothing.
+            // Gated on the authoritative `flow` (not the local auth_token signal,
+            // which can diverge from the session token the chat uses).
+            if !conversation_active() && matches!(flow(), crate::auth_flow::AuthFlow::Connected { .. }) {
                 div { class: "action-grid",
                     div {
                         class: "action-card",
