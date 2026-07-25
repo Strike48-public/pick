@@ -302,7 +302,7 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                 }
             }
         }
-        if matches!(flow(), crate::auth_flow::AuthFlow::AwaitingGesture | crate::auth_flow::AuthFlow::Failed { reauth: true, .. }) {
+        if matches!(flow(), crate::auth_flow::AuthFlow::AwaitingGesture | crate::auth_flow::AuthFlow::Failed { reauth: true, .. } | crate::auth_flow::AuthFlow::Disconnected) {
             div { class: "easy-doc-screen easy-overlay",
                 div { class: "easy-signin",
                     p { class: "easy-signin-title", "Sign in to connect to Strike48" }

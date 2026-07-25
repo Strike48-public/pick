@@ -80,8 +80,11 @@ pub fn reduce(state: AuthFlow, event: AuthEvent, easy: bool, auto: bool) -> Auth
         (S::Disconnected, E::CredsAbsent) => S::AwaitingGesture,
 
         // ---- The gesture (idempotent) ------------------------------------
-        // Only AwaitingGesture advances; any other state is unchanged, so a
-        // duplicate dispatch cannot launch a second sign-in.
+        // Failed{reauth:true} and Disconnected can retry sign-in; any other
+        // state is unchanged, so a duplicate dispatch cannot launch a second
+        // sign-in from SigningIn/Connected.
+        (S::Failed { reauth: true, .. }, E::SignInRequested) => S::SigningIn,
+        (S::Disconnected, E::SignInRequested) => S::SigningIn,
         (S::AwaitingGesture, E::SignInRequested) => S::SigningIn,
         (other, E::SignInRequested) => other,
 
@@ -215,5 +218,29 @@ mod tests {
     fn token_failure_is_reauth_failure() {
         let s = reduce(AuthFlow::SigningIn, AuthEvent::TokenFailed("boom".into()), true, false);
         assert_eq!(s, AuthFlow::Failed { reason: "boom".into(), reauth: true });
+    }
+
+    // Failed { reauth } can retry sign-in (the button is not a dead-end).
+    #[test]
+    fn failed_reauth_can_retry_sign_in() {
+        assert_eq!(
+            reduce(
+                AuthFlow::Failed { reason: "expired".into(), reauth: true },
+                AuthEvent::SignInRequested,
+                true,
+                false
+            ),
+            AuthFlow::SigningIn
+        );
+    }
+
+    // Disconnected can sign in (cancel on ConnectingScreen while SigningIn
+    // dispatches Disconnected; must not be a dead-end).
+    #[test]
+    fn disconnected_can_sign_in() {
+        assert_eq!(
+            reduce(AuthFlow::Disconnected, AuthEvent::SignInRequested, true, false),
+            AuthFlow::SigningIn
+        );
     }
 }
