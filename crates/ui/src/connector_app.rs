@@ -377,6 +377,9 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // Wrapped in a newtype so it doesn't collide with the `needs_sign_in`
     // `Signal<bool>` context (Dioxus resolves context by type).
     let force_sign_in = use_context_provider(|| ForceSignIn(Signal::new(false))).0;
+    // The old retry_tick-driven effect is removed (Task 3), but EasyModeShell's
+    // retry button still bumps retry_tick. Both signals removed in Task 6.
+    let _ = (retry_tick, force_sign_in);
 
     // Explicit easy-mode auth state machine (replaces needs_sign_in/force_sign_in/
     // retry_tick — see auth_flow.rs). Provided as context so EasyModeShell and
@@ -454,24 +457,32 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         }
     });
 
+    // Extract candidate config picker (DRY for startup hook and launch effect).
+    let pick_candidate = {
+        let device_id = device_id.clone();
+        let easy_env = easy_mode_env_config.clone();
+        move || {
+            settings.peek().last_config.clone().or_else(|| {
+                easy_env.clone().map(|mut c| {
+                    c.instance_id = device_id.clone();
+                    c
+                })
+            })
+        }
+    };
+
     // Drive the AuthFlow machine's initial transition from the same inputs the
     // legacy effects used: restored token, then creds presence. One-shot.
     {
         let dispatch = std::rc::Rc::clone(&dispatch);
         let device_id = device_id.clone();
-        let easy_env = easy_mode_env_config.clone();
+        let pick_candidate = pick_candidate.clone();
         use_hook(move || {
             let have_token = !matrix_auth_token.peek().is_empty();
             dispatch(AuthEvent::Restored { have_token });
             if !have_token {
                 // Mirror the auto-connect effect's candidate/creds check.
-                let candidate = settings.peek().last_config.clone().or_else(|| {
-                    easy_env.clone().map(|mut c| {
-                        c.instance_id = device_id.clone();
-                        c
-                    })
-                });
-                if let Some(candidate) = candidate {
+                if let Some(candidate) = pick_candidate() {
                     let scoped = pentest_core::config::ConnectorConfig::env_scoped_instance_id(
                         &device_id,
                         &candidate.host,
@@ -738,6 +749,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // set needs_sign_in and stop — never fall back to a tokenless connect.
     let plg_sign_in_and_connect = {
         let mut on_connect_clone = on_connect;
+        let dispatch = dispatch.clone();
         move |base_config: ConnectorConfig| {
             let mut connecting_step = connecting_step;
             let mut status = status;
@@ -746,6 +758,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             let mut config = config;
             let mut matrix_auth_token = matrix_auth_token;
             let mut matrix_api_url = matrix_api_url;
+            let dispatch = dispatch.clone();
             spawn(async move {
                 needs_sign_in.set(false);
                 status.set(ConnectorStatus::Connecting);
@@ -776,6 +789,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                         status.set(ConnectorStatus::Disconnected);
                         connecting_step.set(None);
                         needs_sign_in.set(true);
+                        dispatch(AuthEvent::TokenFailed(e.to_string()));
                         return;
                     }
                 };
@@ -793,6 +807,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 matrix_auth_token.set(jwt.clone());
                 crate::session::set_auth_token(&jwt);
                 crate::session::persist_matrix_token(&jwt, &api_url);
+                dispatch(AuthEvent::TokenObtained);
 
                 // Exchange the JWT for a tenant-scoped OTT, stage it, and point
                 // the SDK at it (STRIKE48_REGISTRATION_TOKEN_FILE) via the shared
@@ -834,85 +849,42 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         }
     };
 
-    // ---- auto-connect ----
-    let easy_mode_autoconnect_config = easy_mode_env_config.clone();
-    let easy_mode_flag = easy_mode();
-    let device_id_autoconnect = device_id.clone();
-    use_effect(move || {
-        let _ = retry_tick();
-        // Proceed on auto-connect at startup OR whenever the user taps "Sign in"
-        // (force_sign_in). Without the force_sign_in escape hatch, a post-logout
-        // state (auto_connect off) would block the sign-in button entirely — the
-        // button bumps retry_tick + sets force_sign_in, and must reach
-        // plg_sign_in_and_connect below.
-        if !initial_auto_connect && !force_sign_in() {
-            return;
-        }
-        // Pick the config we would connect with (saved config wins, else PLG env).
-        let candidate = settings.read().last_config.clone().or_else(|| {
-            easy_mode_autoconnect_config.clone().map(|mut c| {
-                c.instance_id = device_id_autoconnect.clone();
-                c
-            })
-        });
-        let Some(candidate) = candidate else { return };
-
-        // `on_connect` registers under the ENV-SCOPED instance id
-        // (`env_scoped_instance_id(device_id, host)`), and the SDK persists
-        // credentials under that same id. Check for existing creds with the
-        // scoped id too, otherwise the check looks at the wrong filename, never
-        // finds creds, and forces a fresh OAuth sign-in on every launch.
-        let scoped_instance_id = pentest_core::config::ConnectorConfig::env_scoped_instance_id(
-            &device_id_autoconnect,
-            &candidate.host,
-        );
-        // An explicit "Retry sign-in" tap forces a fresh browser login even when
-        // connector creds exist: the failure was a dead CHAT session, which only
-        // a new browser token fixes. Treating creds-present as "Silent" here
-        // would reconnect the connector but never re-open the browser → loop.
-        let mut force_sign_in = force_sign_in;
-        let forced = force_sign_in();
-        if forced {
-            force_sign_in.set(false);
-        }
-        let creds = pentest_core::config::ConnectorConfig::credentials_present(
-            &candidate.connector_name,
-            &scoped_instance_id,
-        );
-        let decision = if forced {
-            pentest_core::config::PlgConnectStep::SignIn
-        } else {
-            pentest_core::config::plg_connect_decision(easy_mode_flag, creds)
-        };
-        match decision {
-            pentest_core::config::PlgConnectStep::SignIn => {
-                // Easy-mode sign-in is user-gesture-initiated on every platform:
-                // unless this is an explicit "Sign in" tap (forced), show the
-                // sign-in overlay and let its button drive plg_sign_in_and_connect.
-                // (On mobile the native OAuth sheet MUST come from a gesture with
-                // the scene foreground-active or it silently fails to present; on
-                // desktop we simply prefer not to pop a browser unprompted.)
-                if !forced {
-                    let mut needs_sign_in = needs_sign_in;
-                    needs_sign_in.set(true);
-                    return;
+    // Launch side effects on AuthFlow entry. Replaces the retry_tick effect,
+    // whose read+write of force_sign_in caused it to re-run and double-fire.
+    {
+        let plg_sign_in_and_connect = plg_sign_in_and_connect.clone();
+        let mut launched_signin = use_signal(|| false);
+        let mut launched_connect = use_signal(|| false);
+        let pick_candidate = pick_candidate.clone();
+        use_effect(move || {
+            match flow() {
+                AuthFlow::SigningIn => {
+                    if !*launched_signin.peek() {
+                        launched_signin.set(true);
+                        launched_connect.set(false);
+                        if let Some(c) = pick_candidate() {
+                            plg_sign_in_and_connect(c);
+                        }
+                    }
                 }
-                terminal_lines.write().push(TerminalLine::info(
-                    "Easy mode: signing in to your Strike48 workspace...",
-                ));
-                plg_sign_in_and_connect(candidate);
+                AuthFlow::Registering(_) => {
+                    // Silent auto-connect path (creds present at startup): connect
+                    // without a browser sign-in. Only when we did NOT just sign in.
+                    if !*launched_connect.peek() && !*launched_signin.peek() {
+                        launched_connect.set(true);
+                        if let Some(c) = pick_candidate() {
+                            let remember = settings.peek().last_config.is_some();
+                            on_connect((c, remember));
+                        }
+                    }
+                }
+                _ => {
+                    launched_signin.set(false);
+                    launched_connect.set(false);
+                }
             }
-            pentest_core::config::PlgConnectStep::Silent => {
-                terminal_lines
-                    .write()
-                    .push(TerminalLine::info("Auto-connecting..."));
-                // remember=true when it came from saved config, false for a
-                // build-time PLG env default (mirrors prior behaviour).
-                let remember = settings.read().last_config.is_some();
-                on_connect((candidate, remember));
-            }
-        }
-    });
+        });
+    }
 
     // Easy mode never shows the expert ConfigForm. When we land disconnected and
     // are NOT going to auto-connect (a fresh relaunch after logout), flip
