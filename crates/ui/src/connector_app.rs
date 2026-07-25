@@ -886,9 +886,12 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         let mut connecting_step = connecting_step;
 
         spawn(async move {
-            if let Some(conn) = connector.peek().as_ref() {
-                let conn = conn.read().await;
-                conn.shutdown();
+            // Clone the Arc out and drop the signal borrow before awaiting (see
+            // the logout handler): holding connector.peek() across .await races
+            // connector.set(...) on reconnect and panics with AlreadyBorrowed.
+            let conn_arc = connector.peek().as_ref().cloned();
+            if let Some(conn) = conn_arc {
+                conn.read().await.shutdown();
             }
             status.set(ConnectorStatus::Disconnected);
             connecting_step.set(None);
@@ -932,9 +935,13 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             let mut needs_sign_in = needs_sign_in;
             let mut connecting_step = connecting_step;
             spawn(async move {
-                if let Some(conn) = connector.peek().as_ref() {
-                    let conn = conn.read().await;
-                    conn.shutdown();
+                // Clone the Arc out and DROP the signal borrow before awaiting.
+                // Holding `connector.peek()` across `.await` keeps the signal
+                // borrowed while `connector.set(...)` (connect path, line ~585)
+                // runs, panicking with AlreadyBorrowed on a logout->reconnect race.
+                let conn_arc = connector.peek().as_ref().cloned();
+                if let Some(conn) = conn_arc {
+                    conn.read().await.shutdown();
                 }
                 matrix_auth_token.set(String::new());
                 connecting_step.set(None);
