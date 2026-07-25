@@ -468,48 +468,54 @@ pub fn WorkspaceApp() -> Element {
         style { {crate::view_transitions::first_paint_fade_css()} }
         style { {combined_css} }
 
-        KeyboardShortcuts {
-            on_navigate: move |nav_page: NavPage| {
-                if nav_page == NavPage::Logs {
-                    last_seen_terminal_count.set(terminal_lines.read().len());
-                }
-                active_page.set(nav_page);
-            },
-            on_toggle_help: move |_| help_visible.set(!help_visible()),
-            help_visible: *help_visible.read(),
-            chat_visible: *active_page.read() == NavPage::Chat,
-            on_close_help: move |_| help_visible.set(false),
-            on_close_chat: move |_| {},
-            on_theme_change: move |t: Theme| {
-                let mut s = settings.write();
-                s.theme = t;
-                let _ = save_settings(&s);
-                theme.set(t);
-            },
-            on_konami: move |_| {
-                // Switch to Matrix theme immediately
-                let mut s = settings.write();
-                s.theme = Theme::Matrix;
-                let _ = save_settings(&s);
-                theme.set(Theme::Matrix);
+        // Read easy_mode() at the top level of this component's rsx — NOT inside
+        // a child component's slot. KeyboardShortcuts derives PartialEq and is
+        // memoized, so a branch nested in its `children` keeps the stale subtree
+        // when easy_mode flips (the Settings/drawer toggle then appears dead).
+        // Rendering the branch here re-runs on every easy_mode change; the expert
+        // arm keeps its own KeyboardShortcuts wrapper (easy mode needs no shortcuts).
+        if easy_mode() {
+            EasyModeShell {
+                api_url: matrix_api_url.read().clone(),
+                auth_token: matrix_auth_token.read().clone(),
+                tenant_id: crate::session::get_tenant_id(),
+                chat_mailbox,
+                conversation_mailbox,
+                on_logout: move |_| {},
+                on_easy_mode_change: on_easy_mode_change,
+                on_sign_in: move |_| {},
+                on_chat_event: move |_ev| {},
+            }
+        } else {
+            KeyboardShortcuts {
+                on_navigate: move |nav_page: NavPage| {
+                    if nav_page == NavPage::Logs {
+                        last_seen_terminal_count.set(terminal_lines.read().len());
+                    }
+                    active_page.set(nav_page);
+                },
+                on_toggle_help: move |_| help_visible.set(!help_visible()),
+                help_visible: *help_visible.read(),
+                chat_visible: *active_page.read() == NavPage::Chat,
+                on_close_help: move |_| help_visible.set(false),
+                on_close_chat: move |_| {},
+                on_theme_change: move |t: Theme| {
+                    let mut s = settings.write();
+                    s.theme = t;
+                    let _ = save_settings(&s);
+                    theme.set(t);
+                },
+                on_konami: move |_| {
+                    // Switch to Matrix theme immediately
+                    let mut s = settings.write();
+                    s.theme = Theme::Matrix;
+                    let _ = save_settings(&s);
+                    theme.set(Theme::Matrix);
 
-                // Show Matrix rain overlay
-                matrix_rain_visible.set(true);
-            },
+                    // Show Matrix rain overlay
+                    matrix_rain_visible.set(true);
+                },
 
-            if easy_mode() {
-                EasyModeShell {
-                    api_url: matrix_api_url.read().clone(),
-                    auth_token: matrix_auth_token.read().clone(),
-                    tenant_id: crate::session::get_tenant_id(),
-                    chat_mailbox,
-                    conversation_mailbox,
-                    on_logout: move |_| {},
-                    on_easy_mode_change: on_easy_mode_change,
-                    on_sign_in: move |_| {},
-                    on_chat_event: move |_ev| {},
-                }
-            } else {
                 AppLayout {
                     active_page: page,
                     page_subtitle,
