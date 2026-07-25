@@ -36,10 +36,6 @@ pub enum AuthFlow {
 pub enum AuthEvent {
     /// Startup: whether a persisted chat token was restored.
     Restored { have_token: bool },
-    /// Startup: SDK connector credentials exist on disk.
-    CredsFound,
-    /// Startup: no connector credentials on disk.
-    CredsAbsent,
     /// The user tapped the "Sign in" button. The ONLY way to reach SigningIn.
     SignInRequested,
     /// A chat token was obtained (browser/native OAuth returned).
@@ -60,24 +56,22 @@ pub enum AuthEvent {
     Disconnected,
 }
 
-/// Pure transition function. `easy` is the resolved easy-mode flag and `auto`
-/// is the persisted `auto_connect` setting; together they decide the startup
-/// branch. In expert mode (`easy == false`) the caller does not route through
-/// this machine, but `reduce` still returns a sensible value.
-pub fn reduce(state: AuthFlow, event: AuthEvent, easy: bool, auto: bool) -> AuthFlow {
+/// Pure transition function. `easy` is the resolved easy-mode flag and `_auto`
+/// is the persisted `auto_connect` setting (reserved for future use). In expert
+/// mode (`easy == false`) the caller does not route through this machine, but
+/// `reduce` still returns a sensible value.
+pub fn reduce(state: AuthFlow, event: AuthEvent, easy: bool, _auto: bool) -> AuthFlow {
     use AuthEvent as E;
     use AuthFlow as S;
 
     match (state, event) {
         // ---- Startup ------------------------------------------------------
-        // A restored token is trusted optimistically: show the shell, no
-        // overlay. A later ChatAuthDead downgrades to Failed { reauth }.
-        (S::Restoring, E::Restored { have_token: true }) => S::Connected { chat_ready: false },
-        // No token: decide by creds + auto_connect (mirrors plg_connect_decision).
-        (S::Restoring, E::Restored { have_token: false }) => S::Disconnected,
-        (S::Disconnected, E::CredsFound) if auto => S::Registering(ConnectingStep::Connecting),
-        (S::Disconnected, E::CredsFound) => S::AwaitingGesture,
-        (S::Disconnected, E::CredsAbsent) => S::AwaitingGesture,
+        // The chat token gates the easy-mode UI (connector registration creds
+        // are separate and do NOT count). With a restored token we go straight
+        // to connecting the connector; without one we always show the sign-in
+        // overlay — the sign-in gesture performs OAuth AND connects together.
+        (S::Restoring, E::Restored { have_token: true }) => S::Registering(ConnectingStep::Connecting),
+        (S::Restoring, E::Restored { have_token: false }) => S::AwaitingGesture,
 
         // ---- The gesture (idempotent) ------------------------------------
         // Failed{reauth:true} and Disconnected can retry sign-in; any other
@@ -145,12 +139,12 @@ mod tests {
         );
     }
 
-    // Restored token → optimistic Connected (no overlay).
+    // Restored token → Registering (will connect the connector).
     #[test]
-    fn restored_token_is_optimistically_connected() {
+    fn restored_token_starts_registering() {
         assert_eq!(
             reduce(AuthFlow::Restoring, AuthEvent::Restored { have_token: true }, true, true),
-            AuthFlow::Connected { chat_ready: false }
+            AuthFlow::Registering(ConnectingStep::Connecting)
         );
     }
 
@@ -166,24 +160,15 @@ mod tests {
         assert!(matches!(s, AuthFlow::Failed { reauth: true, .. }));
     }
 
-    // No token at startup: creds + auto → silent connect; else → overlay.
+    // No token at startup: always show sign-in overlay.
     #[test]
-    fn startup_no_token_branches_on_creds_and_auto() {
-        let disc = reduce(AuthFlow::Restoring, AuthEvent::Restored { have_token: false }, true, true);
-        assert_eq!(disc, AuthFlow::Disconnected);
-        // creds present + auto → auto-connect
+    fn startup_no_token_awaits_gesture() {
         assert_eq!(
-            reduce(AuthFlow::Disconnected, AuthEvent::CredsFound, true, true),
-            AuthFlow::Registering(ConnectingStep::Connecting)
-        );
-        // creds present but auto off → overlay (user must tap)
-        assert_eq!(
-            reduce(AuthFlow::Disconnected, AuthEvent::CredsFound, true, false),
+            reduce(AuthFlow::Restoring, AuthEvent::Restored { have_token: false }, true, true),
             AuthFlow::AwaitingGesture
         );
-        // no creds → overlay
         assert_eq!(
-            reduce(AuthFlow::Disconnected, AuthEvent::CredsAbsent, true, true),
+            reduce(AuthFlow::Restoring, AuthEvent::Restored { have_token: false }, true, false),
             AuthFlow::AwaitingGesture
         );
     }

@@ -433,31 +433,14 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         }
     };
 
-    // Drive the AuthFlow machine's initial transition from the same inputs the
-    // legacy effects used: restored token, then creds presence. One-shot.
+    // Drive the AuthFlow machine's initial transition: the chat token alone
+    // determines the startup route (connector creds are separate and do not
+    // gate the easy-mode UI). One-shot.
     {
         let dispatch = std::rc::Rc::clone(&dispatch);
-        let device_id = device_id.clone();
-        let pick_candidate = pick_candidate.clone();
         use_hook(move || {
             let have_token = !matrix_auth_token.peek().is_empty();
             dispatch(AuthEvent::Restored { have_token });
-            if !have_token {
-                // Mirror the auto-connect effect's candidate/creds check.
-                if let Some(candidate) = pick_candidate() {
-                    let scoped = pentest_core::config::ConnectorConfig::env_scoped_instance_id(
-                        &device_id,
-                        &candidate.host,
-                    );
-                    let creds = pentest_core::config::ConnectorConfig::credentials_present(
-                        &candidate.connector_name,
-                        &scoped,
-                    );
-                    dispatch(if creds { AuthEvent::CredsFound } else { AuthEvent::CredsAbsent });
-                } else {
-                    dispatch(AuthEvent::CredsAbsent);
-                }
-            }
         });
     }
 
