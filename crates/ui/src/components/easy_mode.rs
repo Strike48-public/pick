@@ -9,7 +9,6 @@ use super::icons::{
     ChevronLeft, FileText, LogOut, Menu, Network, Plus, Settings, STRIKE48_S_BADGE_SVG,
 };
 use crate::components::{ChatPanel, ConversationDocs, DocumentViewer, DocumentsPanel};
-use crate::connector_app::ForceSignIn;
 use pentest_core::settings::{load_settings, save_settings};
 
 /// The canned chat message the Easy Mode "Scan" button sends. It instructs the
@@ -36,6 +35,10 @@ pub struct EasyModeShellProps {
     /// Toggle Easy Mode off (switches to the expert shell). Fired from the
     /// drawer's Settings. Persisted + applied immediately by the parent.
     pub on_easy_mode_change: EventHandler<bool>,
+    /// Fired when the user taps "Sign in" on the overlay.
+    pub on_sign_in: EventHandler<()>,
+    /// Fired when chat-level auth events occur (ChatReady, ChatAuthDead).
+    pub on_chat_event: EventHandler<crate::auth_flow::AuthEvent>,
 }
 
 /// The simplified Easy Mode screen: a scan action card above a full-page chat.
@@ -48,11 +51,7 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     let chat_header_ctx: Signal<Option<ChatHeaderCtx>> =
         use_context_provider(|| Signal::new(None::<ChatHeaderCtx>));
 
-    let needs_sign_in = use_context::<Signal<bool>>();
-    let retry_tick = use_context::<Signal<u32>>();
-    // Forces the next auto-connect down the fresh-browser SignIn path (set by the
-    // retry button); provided by connector_app alongside needs_sign_in.
-    let force_sign_in = use_context::<ForceSignIn>().0;
+    let flow = use_context::<Signal<crate::auth_flow::AuthFlow>>();
 
     // Track the selected agent ID for the DocumentsPanel (which self-refreshes).
     let agent_id = use_signal(|| None::<String>);
@@ -95,26 +94,10 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
             // Mirror BOTH directions: a new token signs in, an empty token
             // (logout clears it) must clear the shell's copy too — otherwise the
             // shell keeps the stale token, still looks signed in, and logout
-            // appears to do nothing. The empty case then trips the sign-in
-            // overlay effect above.
+            // appears to do nothing.
             auth_token.set(t);
         }
     });
-
-    // Easy-mode sign-in is an explicit user gesture on every platform (the
-    // expert shell's lazy browser-auth is disabled in easy mode). When the shell
-    // is up but there's no chat token yet, surface the sign-in overlay so its
-    // "Sign in" button drives the browser/native OAuth. If a token was restored
-    // (Keychain) or auto-connect is mid-flight, auth_token is non-empty and this
-    // stays dormant — so a stored session logs in without ever showing the button.
-    {
-        let mut needs_sign_in = needs_sign_in;
-        use_effect(move || {
-            if auth_token().is_empty() && !*needs_sign_in.peek() {
-                needs_sign_in.set(true);
-            }
-        });
-    }
 
     // The base shell (brand bar + scan card + chat) is ALWAYS rendered so the
     // ChatPanel — and thus the live conversation — stays mounted. The report
@@ -319,29 +302,17 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                 }
             }
         }
-        if needs_sign_in() {
-            {
-                let mut needs_sign_in = needs_sign_in;
-                let mut retry_tick = retry_tick;
-                let mut force_sign_in = force_sign_in;
-                rsx! {
-                    div { class: "easy-doc-screen easy-overlay",
-                        div { class: "easy-signin",
-                            p { class: "easy-signin-title", "Sign in to connect to Strike48" }
-                            p { class: "easy-signin-sub", "Sign in to register this connector and start scanning. We'll open your browser to complete sign-in." }
-                            button {
-                                class: "action-card",
-                                onclick: move |_| {
-                                    // Force a fresh browser login: existing connector
-                                    // creds must NOT short-circuit to a silent reconnect
-                                    // that never re-opens the browser (that loops).
-                                    force_sign_in.set(true);
-                                    needs_sign_in.set(false);
-                                    retry_tick.set(retry_tick() + 1);
-                                },
-                                span { class: "action-card-label", "Sign in" }
-                            }
-                        }
+        if matches!(flow(), crate::auth_flow::AuthFlow::AwaitingGesture | crate::auth_flow::AuthFlow::Failed { reauth: true, .. }) {
+            div { class: "easy-doc-screen easy-overlay",
+                div { class: "easy-signin",
+                    p { class: "easy-signin-title", "Sign in to connect to Strike48" }
+                    p { class: "easy-signin-sub", "Sign in to register this connector and start scanning. We'll open your browser to complete sign-in." }
+                    button {
+                        class: "action-card",
+                        onclick: move |_| {
+                            props.on_sign_in.call(());
+                        },
+                        span { class: "action-card-label", "Sign in" }
                     }
                 }
             }
@@ -411,6 +382,7 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                     selected_agent_out: Some(agent_id),
                     conversation_active_out: Some(conversation_active),
                     conversation_id_out: Some(conversation_id),
+                    on_chat_event: props.on_chat_event,
                 }
             }
             // Conversation-scoped documents strip: shows reports written in the

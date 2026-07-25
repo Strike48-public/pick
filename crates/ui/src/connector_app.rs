@@ -1138,13 +1138,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         {css_block}
 
         div { class: "{container_class}",
-            // Easy mode never shows the expert ConfigForm. Whenever we're not
-            // connected/connecting — a failed OAuth (needs_sign_in), a logout, or
-            // a relaunch with no auto-connect (needs_sign_in resets to false on a
-            // fresh launch, so status alone must gate this) — render EasyModeShell,
-            // whose sign-in overlay is the easy-mode entry point. Only the
-            // Connected and Connecting screens fall through to the match below.
-            if easy_mode() && !matches!(screen, AppScreen::Connected(_) | AppScreen::Connecting(_)) {
+            if easy_mode() {
                 {
                     let host = config.read().host.clone();
                     let chat_api_url = {
@@ -1157,16 +1151,38 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                             String::new()
                         }
                     };
-                    rsx! {
-                        EasyModeShell {
-                            api_url: chat_api_url,
-                            auth_token: matrix_auth_token.read().clone(),
-                            tenant_id: config.read().tenant_id.clone(),
-                            chat_mailbox,
-                            conversation_mailbox,
-                            on_logout: on_logout,
-                            on_easy_mode_change: on_easy_mode_change,
-                        }
+                    match flow() {
+                        AuthFlow::SigningIn => rsx! {
+                            ConnectingScreen {
+                                step: ConnectingStep::SigningIn,
+                                host: host.clone(),
+                                on_cancel: move |_| on_disconnect(()),
+                            }
+                        },
+                        AuthFlow::Registering(step) => rsx! {
+                            ConnectingScreen {
+                                step,
+                                host: host.clone(),
+                                on_cancel: move |_| on_disconnect(()),
+                            }
+                        },
+                        _ => {
+                            let d1 = dispatch.clone();
+                            let d2 = dispatch.clone();
+                            rsx! {
+                                EasyModeShell {
+                                    api_url: chat_api_url,
+                                    auth_token: matrix_auth_token.read().clone(),
+                                    tenant_id: config.read().tenant_id.clone(),
+                                    chat_mailbox,
+                                    conversation_mailbox,
+                                    on_logout: on_logout,
+                                    on_easy_mode_change: on_easy_mode_change,
+                                    on_sign_in: move |_| d1(AuthEvent::SignInRequested),
+                                    on_chat_event: move |ev| d2(ev),
+                                }
+                            }
+                        },
                     }
                 }
             } else {
@@ -1227,19 +1243,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                         }
                     };
 
-                    if easy_mode() {
-                        rsx! {
-                            EasyModeShell {
-                                api_url: chat_api_url.clone(),
-                                auth_token: matrix_auth_token.read().clone(),
-                                tenant_id: config.read().tenant_id.clone(),
-                                chat_mailbox,
-                                conversation_mailbox,
-                                on_logout: on_logout,
-                                on_easy_mode_change: on_easy_mode_change,
-                            }
-                        }
-                    } else {
+                    {
                         let page_subtitle = match page {
                             NavPage::Dashboard => Some(host.clone()),
                             NavPage::Tools => Some("12 connector tools available".to_string()),

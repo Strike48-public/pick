@@ -148,6 +148,9 @@ pub struct ChatPanelProps {
     /// Easy Mode uses this to show a documents strip scoped to THIS conversation.
     #[props(default)]
     pub conversation_id_out: Option<Signal<Option<String>>>,
+    /// Callback to emit chat-level auth events (ChatReady, ChatAuthDead).
+    #[props(default)]
+    pub on_chat_event: EventHandler<crate::auth_flow::AuthEvent>,
 }
 
 #[component]
@@ -224,8 +227,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // mode; `try_consume_context` keeps ChatPanel usable elsewhere (sidebar). On a
     // persistent auth failure we flip these to route back through the sign-in
     // overlay instead of retrying a dead token forever.
-    let needs_sign_in_ctx = try_consume_context::<Signal<bool>>();
-    let retry_tick_ctx = try_consume_context::<Signal<u32>>();
+    let _needs_sign_in_ctx = try_consume_context::<Signal<bool>>();
+    let _retry_tick_ctx = try_consume_context::<Signal<u32>>();
     // Count consecutive auth failures so a stale restored token forces a fresh
     // sign-in (via the easy-mode overlay) rather than retrying the dead token
     // forever.
@@ -523,6 +526,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 );
                                 agents.set(list);
                                 agents_loaded.set(true);
+                                props.on_chat_event.call(crate::auth_flow::AuthEvent::ChatReady);
                                 selected_agent.set(Some(updated.clone()));
                                 if let Some(mut out) = props.selected_agent_out {
                                     out.set(Some(updated.id.clone()));
@@ -535,6 +539,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 );
                                 agents.set(list);
                                 agents_loaded.set(true);
+                                props.on_chat_event.call(crate::auth_flow::AuthEvent::ChatReady);
                                 selected_agent.set(Some(agent.clone()));
                                 if let Some(mut out) = props.selected_agent_out {
                                     out.set(Some(agent.id.clone()));
@@ -555,6 +560,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 list.push(new_agent.clone());
                                 agents.set(list);
                                 agents_loaded.set(true);
+                                props.on_chat_event.call(crate::auth_flow::AuthEvent::ChatReady);
                                 selected_agent.set(Some(new_agent.clone()));
                                 if let Some(mut out) = props.selected_agent_out {
                                     out.set(Some(new_agent.id.clone()));
@@ -567,6 +573,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 );
                                 agents.set(list);
                                 agents_loaded.set(true);
+                                props.on_chat_event.call(crate::auth_flow::AuthEvent::ChatReady);
                             }
                         }
                     }
@@ -595,26 +602,19 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         // A restored/persisted token whose server session is gone
                         // (backend "session not found" -> "Not authenticated")
                         // never recovers by retrying — the token is simply dead.
-                        // After a couple of attempts, clear it and route back to
-                        // the easy-mode sign-in overlay for a fresh browser login.
-                        // Without the easy-mode context (e.g. sidebar usage) we
-                        // keep the original slow-retry behavior.
+                        // After a couple of attempts, clear it and emit ChatAuthDead
+                        // so the flow state machine routes back to the sign-in overlay.
                         let n = auth_fail_count() + 1;
                         auth_fail_count.set(n);
                         if n >= 2 {
-                            if let Some(mut needs_sign_in) = needs_sign_in_ctx {
-                                tracing::info!(
-                                    "ChatPanel: auth error persisted ({n}x); clearing stale token and prompting sign-in"
-                                );
-                                crate::session::clear_matrix_token();
-                                crate::session::set_auth_token("");
-                                pentest_core::matrix::clear_browser_token_cache();
-                                if let Some(mut retry_tick) = retry_tick_ctx {
-                                    retry_tick.set(retry_tick() + 1);
-                                }
-                                needs_sign_in.set(true);
-                                return;
-                            }
+                            tracing::info!(
+                                "ChatPanel: auth error persisted ({n}x); clearing stale token and emitting ChatAuthDead"
+                            );
+                            crate::session::clear_matrix_token();
+                            crate::session::set_auth_token("");
+                            pentest_core::matrix::clear_browser_token_cache();
+                            props.on_chat_event.call(crate::auth_flow::AuthEvent::ChatAuthDead);
+                            return;
                         }
                         tracing::info!("ChatPanel: auth error, will retry in 5s");
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
