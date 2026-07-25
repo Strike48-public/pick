@@ -420,6 +420,9 @@ pub fn WorkspaceApp() -> Element {
         crate::components::matrix_rain_css()
     );
 
+    let is_sage = matches!(*theme.read(), Theme::Sage | Theme::SageLight);
+    let root_class = if is_sage { "workspace-root sage" } else { "workspace-root" };
+
     let page = *active_page.read();
 
     // Compute error count badge for Logs (only show errors, not total unread)
@@ -468,13 +471,14 @@ pub fn WorkspaceApp() -> Element {
         style { {crate::view_transitions::first_paint_fade_css()} }
         style { {combined_css} }
 
-        // Read easy_mode() at the top level of this component's rsx — NOT inside
-        // a child component's slot. KeyboardShortcuts derives PartialEq and is
-        // memoized, so a branch nested in its `children` keeps the stale subtree
-        // when easy_mode flips (the Settings/drawer toggle then appears dead).
-        // Rendering the branch here re-runs on every easy_mode change; the expert
-        // arm keeps its own KeyboardShortcuts wrapper (easy mode needs no shortcuts).
-        if easy_mode() {
+        div { class: "{root_class}", style: "display: contents;",
+            // Read easy_mode() at the top level of this component's rsx — NOT inside
+            // a child component's slot. KeyboardShortcuts derives PartialEq and is
+            // memoized, so a branch nested in its `children` keeps the stale subtree
+            // when easy_mode flips (the Settings/drawer toggle then appears dead).
+            // Rendering the branch here re-runs on every easy_mode change; the expert
+            // arm keeps its own KeyboardShortcuts wrapper (easy mode needs no shortcuts).
+            if easy_mode() {
             EasyModeShell {
                 api_url: matrix_api_url.read().clone(),
                 auth_token: matrix_auth_token.read().clone(),
@@ -675,12 +679,13 @@ pub fn WorkspaceApp() -> Element {
             }
         }
 
-        // Matrix rain overlay — triggered by Konami code
-        MatrixRainOverlay {
-            visible: matrix_rain_visible(),
-            on_dismiss: move |_| {
-                matrix_rain_visible.set(false);
-            },
+            // Matrix rain overlay — triggered by Konami code
+            MatrixRainOverlay {
+                visible: matrix_rain_visible(),
+                on_dismiss: move |_| {
+                    matrix_rain_visible.set(false);
+                },
+            }
         }
     }
 }

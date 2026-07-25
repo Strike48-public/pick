@@ -1062,13 +1062,18 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         rsx! {}
     };
 
-    let container_class = cfg.container_class;
+    let is_sage = matches!(*theme.read(), Theme::Sage | Theme::SageLight);
+    let root_class = if is_sage {
+        format!("{} sage", cfg.container_class)
+    } else {
+        cfg.container_class.to_string()
+    };
     let platform_name = cfg.platform_name;
 
     rsx! {
         {css_block}
 
-        div { class: "{container_class}",
+        div { class: "{root_class}",
             if easy_mode() {
                 {
                     let host = config.read().host.clone();
