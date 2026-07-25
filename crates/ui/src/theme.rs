@@ -924,38 +924,38 @@ fn strike48_theme() -> ThemeColors {
 fn sage_theme() -> ThemeColors {
     ThemeColors {
         color_scheme: "dark",
-        background: "#141715",               // --bg
-        foreground: "#e9eeeb",               // --tx
-        card: "#242b27",                     // --surf
-        popover: "#242b27",                  // --surf
-        primary: "#9cbfae",                  // --pri
-        primary_foreground: "#151a17",       // --on-pri
-        secondary: "#2c352f",                // --surf2
-        secondary_foreground: "#e9eeeb",     // --tx
-        muted: "#1b201d",                    // --p1
-        muted_foreground: "#a7b2ab",         // --mut
-        accent: "#c9b27e",                   // --acc (gold)
-        accent_foreground: "#151a17",        // --on-pri
-        destructive: "#d99a9a",              // --err
-        border: "rgba(255,255,255,0.09)",    // --line
-        input: "#242b27",                    // --surf
-        ring: "#9cbfae",                     // --pri
-        sidebar: "#101312",                  // --p3
-        sidebar_foreground: "#e9eeeb",       // --tx
-        sidebar_primary: "#9cbfae",          // --pri
+        background: "#141715",                 // --bg
+        foreground: "#e9eeeb",                 // --tx
+        card: "#242b27",                       // --surf
+        popover: "#242b27",                    // --surf
+        primary: "#9cbfae",                    // --pri
+        primary_foreground: "#151a17",         // --on-pri
+        secondary: "#2c352f",                  // --surf2
+        secondary_foreground: "#e9eeeb",       // --tx
+        muted: "#1b201d",                      // --p1
+        muted_foreground: "#a7b2ab",           // --mut
+        accent: "#c9b27e",                     // --acc (gold)
+        accent_foreground: "#151a17",          // --on-pri
+        destructive: "#d99a9a",                // --err
+        border: "rgba(255,255,255,0.09)",      // --line
+        input: "#242b27",                      // --surf
+        ring: "#9cbfae",                       // --pri
+        sidebar: "#101312",                    // --p3
+        sidebar_foreground: "#e9eeeb",         // --tx
+        sidebar_primary: "#9cbfae",            // --pri
         sidebar_primary_foreground: "#151a17", // --on-pri
-        sidebar_accent: "#2c352f",           // --surf2
+        sidebar_accent: "#2c352f",             // --surf2
         sidebar_accent_foreground: "#e9eeeb",
         sidebar_border: "rgba(255,255,255,0.09)", // --line
         sidebar_ring: "#9cbfae",
-        chart_1: "#9cbfae",                  // --pri
-        chart_2: "#8fc4ab",                  // --ok
-        chart_3: "#d9b07c",                  // --warn
-        chart_4: "#9cb8bf",                  // --info
-        chart_5: "#d99a9a",                  // --err
-        success: "#8fc4ab",                  // --ok
-        warning: "#d9b07c",                  // --warn
-        info: "#9cb8bf",                     // --info
+        chart_1: "#9cbfae", // --pri
+        chart_2: "#8fc4ab", // --ok
+        chart_3: "#d9b07c", // --warn
+        chart_4: "#9cb8bf", // --info
+        chart_5: "#d99a9a", // --err
+        success: "#8fc4ab", // --ok
+        warning: "#d9b07c", // --warn
+        info: "#9cb8bf",    // --info
     }
 }
 
@@ -1572,23 +1572,38 @@ mod tests {
     fn sage_css_has_plex_font_and_extra_tokens() {
         let css = generate_theme_css(Theme::Sage, BorderRadius::Soft, Density::Comfortable);
         assert!(css.contains("IBM+Plex+Sans"), "Sage should import IBM Plex");
-        assert!(css.contains("--sage-tint:"), "Sage should emit extra tokens");
+        assert!(
+            css.contains("--sage-tint:"),
+            "Sage should emit extra tokens"
+        );
         assert!(css.contains("--sage-glass-bg:"));
     }
 
     #[test]
     fn non_sage_css_has_no_sage_tokens() {
         let css = generate_theme_css(Theme::Dark, BorderRadius::Soft, Density::Comfortable);
-        assert!(!css.contains("--sage-tint:"), "non-Sage must not emit Sage tokens");
+        assert!(
+            !css.contains("--sage-tint:"),
+            "non-Sage must not emit Sage tokens"
+        );
         assert!(!css.contains("--sage-glass-bg:"));
     }
 
     #[test]
     fn sage_chrome_css_scoped_and_gated() {
         let sage = generate_theme_css(Theme::Sage, BorderRadius::Soft, Density::Comfortable);
-        assert!(sage.contains(".sage .sidebar"), "Sage chrome must be present + scoped");
-        assert!(sage.contains("border-radius: 999px"), "Sage buttons are pills");
+        assert!(
+            sage.contains(".sage .sidebar"),
+            "Sage chrome must be present + scoped"
+        );
+        assert!(
+            sage.contains("border-radius: 999px"),
+            "Sage buttons are pills"
+        );
         let dark = generate_theme_css(Theme::Dark, BorderRadius::Soft, Density::Comfortable);
-        assert!(!dark.contains(".sage .sidebar"), "non-Sage must not emit chrome rules");
+        assert!(
+            !dark.contains(".sage .sidebar"),
+            "non-Sage must not emit chrome rules"
+        );
     }
 }

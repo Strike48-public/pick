@@ -825,7 +825,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         });
     }
 
-
     // Bridge the connector event loop's status/step signals into AuthFlow events.
     {
         let mut last_status = use_signal(|| None::<ConnectorStatus>);

@@ -292,15 +292,12 @@ pub fn WorkspaceApp() -> Element {
 
     // Easy mode: persisted Settings choice > build-time PICK_EASY_MODE > default(false).
     // Reactive so the Settings toggle swaps the shell immediately.
-    let mut easy_mode = use_signal(|| {
-        pentest_core::config::resolve_easy_mode(settings.peek().easy_mode, false)
-    });
+    let mut easy_mode =
+        use_signal(|| pentest_core::config::resolve_easy_mode(settings.peek().easy_mode, false));
     // EasyModeShell consumes a flow context; connector mode is always connected
     // (StrikeHub owns auth), so provide a fixed Connected flow. Without this the
     // shell's use_context::<Signal<AuthFlow>>() panics.
-    use_context_provider(|| {
-        Signal::new(AuthFlow::Connected { chat_ready: true })
-    });
+    use_context_provider(|| Signal::new(AuthFlow::Connected { chat_ready: true }));
 
     let mut download_progress: Signal<Option<f64>> =
         use_signal(crate::download_manager::get_download_progress);
@@ -421,7 +418,11 @@ pub fn WorkspaceApp() -> Element {
     );
 
     let is_sage = matches!(*theme.read(), Theme::Sage | Theme::SageLight);
-    let root_class = if is_sage { "workspace-root sage" } else { "workspace-root" };
+    let root_class = if is_sage {
+        "workspace-root sage"
+    } else {
+        "workspace-root"
+    };
 
     let page = *active_page.read();
 
