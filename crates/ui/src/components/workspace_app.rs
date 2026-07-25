@@ -13,6 +13,7 @@ use super::app_layout::AppLayout;
 use super::chat_panel::ChatPanel;
 use super::cyberchef_page::CyberChefPage;
 use super::dashboard::Dashboard;
+use super::easy_mode::EasyModeShell;
 use super::file_browser::FileBrowser;
 use super::help_modal::HelpModal;
 use super::icons::MessageCircle;
@@ -27,6 +28,7 @@ use super::sidebar::NavPage;
 use super::terminal::Terminal;
 use super::tools_page::ToolsPage;
 use super::WifiWarningDialog;
+use crate::auth_flow::AuthFlow;
 use crate::liveview_server::{get_terminal_lines, get_workspace_path, terminal_lines_count};
 use crate::theme::{responsive_css, tailwind_css, utils_css};
 use pentest_core::config::{BorderRadius, Density, ShellMode, Theme};
@@ -93,6 +95,12 @@ pub struct WorkspacePagesProps {
     density: Density,
     /// Callback when the user changes the density.
     on_density_change: EventHandler<Density>,
+    /// Whether easy mode is currently enabled.
+    #[props(default)]
+    easy_mode_on: bool,
+    /// Callback when the user toggles easy mode.
+    #[props(default)]
+    on_easy_mode_change: EventHandler<bool>,
 }
 
 /// Routes between Dashboard, Tools, Files, Shell, Logs, and Settings.
@@ -224,6 +232,8 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
                         // Theme imported - could trigger UI refresh here if needed
                         tracing::info!("Custom theme imported successfully");
                     },
+                    easy_mode_on: props.easy_mode_on,
+                    on_easy_mode_change: move |v: bool| props.on_easy_mode_change.call(v),
                 }
             }
 
@@ -279,6 +289,18 @@ pub fn WorkspaceApp() -> Element {
     let mut theme = use_signal(move || settings.peek().theme);
     let mut border_radius = use_signal(move || settings.peek().border_radius);
     let mut density = use_signal(move || settings.peek().density);
+
+    // Easy mode: persisted Settings choice > build-time PICK_EASY_MODE > default(false).
+    // Reactive so the Settings toggle swaps the shell immediately.
+    let mut easy_mode = use_signal(|| {
+        pentest_core::config::resolve_easy_mode(settings.peek().easy_mode, false)
+    });
+    // EasyModeShell consumes a flow context; connector mode is always connected
+    // (StrikeHub owns auth), so provide a fixed Connected flow. Without this the
+    // shell's use_context::<Signal<AuthFlow>>() panics.
+    use_context_provider(|| {
+        Signal::new(AuthFlow::Connected { chat_ready: true })
+    });
 
     let mut download_progress: Signal<Option<f64>> =
         use_signal(crate::download_manager::get_download_progress);
@@ -373,6 +395,14 @@ pub fn WorkspaceApp() -> Element {
         });
     }
 
+    // Easy mode toggle handler: persists + applies immediately
+    let on_easy_mode_change = move |v: bool| {
+        easy_mode.set(v);
+        let mut s = settings.write();
+        s.easy_mode = Some(v);
+        let _ = save_settings(&s);
+    };
+
     // Build the combined CSS (theme variables + responsive/sidebar classes + tailwind)
     // Generate CSS dynamically based on current theme settings
     let theme_val = *theme.read();
@@ -464,130 +494,146 @@ pub fn WorkspaceApp() -> Element {
                 matrix_rain_visible.set(true);
             },
 
-            AppLayout {
-                active_page: page,
-                page_subtitle,
-                page_actions,
-                on_navigate: move |nav_page: NavPage| {
-                    if nav_page == NavPage::Logs {
-                        last_seen_terminal_count.set(terminal_lines.read().len());
-                    }
-                    active_page.set(nav_page);
-                },
-                connected: true,
-                unread_logs: unread,
-                api_url: matrix_api_url.read().clone(),
-                auth_token: matrix_auth_token.read().clone(),
-                on_open_conversation: move |conv_id: String| {
-                    conversation_mailbox.set(Some(conv_id));
-                    active_page.set(NavPage::Chat);
-                },
-
-                // Page content — routed by WorkspacePages
-                WorkspacePages {
-                    active_page: page,
-                    workspace: workspace.clone(),
-                    terminal_lines,
-                    on_open_chat: move |msg: String| {
-                        if !msg.is_empty() {
-                            chat_mailbox.set(Some(msg));
-                        }
-                        active_page.set(NavPage::Chat);
-                    },
-                    on_open_shell: move |_| {
-                        active_page.set(NavPage::Shell);
-                    },
-                    blackarch_downloaded: *blackarch_downloaded.read(),
-                    download_progress: *download_progress.read(),
-                    setup_error: setup_error.read().clone(),
-                    on_start_download: {
-                        let terminal_lines = terminal_lines;
-                        move |_: ()| {
-                            let mut download_progress = download_progress;
-                            let mut terminal_lines = terminal_lines;
-
-                            setup_error.set(None);
-                            terminal_lines
-                                .write()
-                                .push(TerminalLine::info("Setting up BlackArch environment..."));
-
-                            // Set immediately so UI shows progress bar without waiting for poll.
-                            crate::download_manager::set_global_progress(Some(-1.0));
-                            download_progress.set(Some(-1.0));
-
-                            spawn(async move {
-                                #[cfg(all(feature = "shell-ws", not(any(target_os = "android", target_os = "ios"))))]
-                                {
-                                    let result = match pentest_platform::desktop::sandbox::get_sandbox_manager().await {
-                                        Ok(manager) => manager.ensure_ready().await.map_err(|e| format!("{}", e)),
-                                        Err(e) => Err(format!("{}", e)),
-                                    };
-                                    crate::download_manager::set_global_progress(None);
-                                    download_progress.set(None);
-                                    match result {
-                                        Ok(()) => {
-                                            blackarch_downloaded.set(true);
-                                            terminal_lines.write().push(TerminalLine::success(
-                                                "BlackArch environment ready.".to_string(),
-                                            ));
-                                        }
-                                        Err(e) => {
-                                            setup_error.set(Some(e.clone()));
-                                            terminal_lines.write().push(TerminalLine::error(format!(
-                                                "Setup failed: {}",
-                                                e
-                                            )));
-                                        }
-                                    }
-                                }
-                            });
-                        }
-                    },
-                    shell_mode: settings.read().shell_mode,
-                    on_shell_mode_change: move |mode: ShellMode| {
-                        let mut s = settings.write();
-                        s.shell_mode = mode;
-                        let _ = save_settings(&s);
-                        #[cfg(all(feature = "shell-ws", not(any(target_os = "android", target_os = "ios"))))]
-                        pentest_platform::set_use_sandbox(mode == ShellMode::Proot);
-                    },
-                    wifi_adapter: settings.read().wifi_adapter.clone(),
-                    on_wifi_adapter_change: move |adapter: Option<String>| {
-                        let mut s = settings.write();
-                        s.wifi_adapter = adapter;
-                        let _ = save_settings(&s);
-                    },
+            if easy_mode() {
+                EasyModeShell {
                     api_url: matrix_api_url.read().clone(),
                     auth_token: matrix_auth_token.read().clone(),
                     tenant_id: crate::session::get_tenant_id(),
                     chat_mailbox,
                     conversation_mailbox,
-                    on_wifi_warning: move |(status, action): (pentest_platform::WifiConnectionStatus, String)| {
-                        wifi_warning_status.set(Some(status));
-                        wifi_warning_action.set(Some(action));
-                        wifi_warning_visible.set(true);
+                    on_logout: move |_| {},
+                    on_easy_mode_change: on_easy_mode_change,
+                    on_sign_in: move |_| {},
+                    on_chat_event: move |_ev| {},
+                }
+            } else {
+                AppLayout {
+                    active_page: page,
+                    page_subtitle,
+                    page_actions,
+                    on_navigate: move |nav_page: NavPage| {
+                        if nav_page == NavPage::Logs {
+                            last_seen_terminal_count.set(terminal_lines.read().len());
+                        }
+                        active_page.set(nav_page);
                     },
-                    theme: *theme.read(),
-                    on_theme_change: move |t: Theme| {
-                        let mut s = settings.write();
-                        s.theme = t;
-                        let _ = save_settings(&s);
-                        theme.set(t);
+                    connected: true,
+                    unread_logs: unread,
+                    api_url: matrix_api_url.read().clone(),
+                    auth_token: matrix_auth_token.read().clone(),
+                    on_open_conversation: move |conv_id: String| {
+                        conversation_mailbox.set(Some(conv_id));
+                        active_page.set(NavPage::Chat);
                     },
-                    border_radius: *border_radius.read(),
-                    on_border_radius_change: move |r: BorderRadius| {
-                        let mut s = settings.write();
-                        s.border_radius = r;
-                        let _ = save_settings(&s);
-                        border_radius.set(r);
-                    },
-                    density: *density.read(),
-                    on_density_change: move |d: Density| {
-                        let mut s = settings.write();
-                        s.density = d;
-                        let _ = save_settings(&s);
-                        density.set(d);
-                    },
+
+                    // Page content — routed by WorkspacePages
+                    WorkspacePages {
+                        active_page: page,
+                        workspace: workspace.clone(),
+                        terminal_lines,
+                        on_open_chat: move |msg: String| {
+                            if !msg.is_empty() {
+                                chat_mailbox.set(Some(msg));
+                            }
+                            active_page.set(NavPage::Chat);
+                        },
+                        on_open_shell: move |_| {
+                            active_page.set(NavPage::Shell);
+                        },
+                        blackarch_downloaded: *blackarch_downloaded.read(),
+                        download_progress: *download_progress.read(),
+                        setup_error: setup_error.read().clone(),
+                        on_start_download: {
+                            let terminal_lines = terminal_lines;
+                            move |_: ()| {
+                                let mut download_progress = download_progress;
+                                let mut terminal_lines = terminal_lines;
+
+                                setup_error.set(None);
+                                terminal_lines
+                                    .write()
+                                    .push(TerminalLine::info("Setting up BlackArch environment..."));
+
+                                // Set immediately so UI shows progress bar without waiting for poll.
+                                crate::download_manager::set_global_progress(Some(-1.0));
+                                download_progress.set(Some(-1.0));
+
+                                spawn(async move {
+                                    #[cfg(all(feature = "shell-ws", not(any(target_os = "android", target_os = "ios"))))]
+                                    {
+                                        let result = match pentest_platform::desktop::sandbox::get_sandbox_manager().await {
+                                            Ok(manager) => manager.ensure_ready().await.map_err(|e| format!("{}", e)),
+                                            Err(e) => Err(format!("{}", e)),
+                                        };
+                                        crate::download_manager::set_global_progress(None);
+                                        download_progress.set(None);
+                                        match result {
+                                            Ok(()) => {
+                                                blackarch_downloaded.set(true);
+                                                terminal_lines.write().push(TerminalLine::success(
+                                                    "BlackArch environment ready.".to_string(),
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                setup_error.set(Some(e.clone()));
+                                                terminal_lines.write().push(TerminalLine::error(format!(
+                                                    "Setup failed: {}",
+                                                    e
+                                                )));
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        },
+                        shell_mode: settings.read().shell_mode,
+                        on_shell_mode_change: move |mode: ShellMode| {
+                            let mut s = settings.write();
+                            s.shell_mode = mode;
+                            let _ = save_settings(&s);
+                            #[cfg(all(feature = "shell-ws", not(any(target_os = "android", target_os = "ios"))))]
+                            pentest_platform::set_use_sandbox(mode == ShellMode::Proot);
+                        },
+                        wifi_adapter: settings.read().wifi_adapter.clone(),
+                        on_wifi_adapter_change: move |adapter: Option<String>| {
+                            let mut s = settings.write();
+                            s.wifi_adapter = adapter;
+                            let _ = save_settings(&s);
+                        },
+                        api_url: matrix_api_url.read().clone(),
+                        auth_token: matrix_auth_token.read().clone(),
+                        tenant_id: crate::session::get_tenant_id(),
+                        chat_mailbox,
+                        conversation_mailbox,
+                        on_wifi_warning: move |(status, action): (pentest_platform::WifiConnectionStatus, String)| {
+                            wifi_warning_status.set(Some(status));
+                            wifi_warning_action.set(Some(action));
+                            wifi_warning_visible.set(true);
+                        },
+                        theme: *theme.read(),
+                        on_theme_change: move |t: Theme| {
+                            let mut s = settings.write();
+                            s.theme = t;
+                            let _ = save_settings(&s);
+                            theme.set(t);
+                        },
+                        border_radius: *border_radius.read(),
+                        on_border_radius_change: move |r: BorderRadius| {
+                            let mut s = settings.write();
+                            s.border_radius = r;
+                            let _ = save_settings(&s);
+                            border_radius.set(r);
+                        },
+                        density: *density.read(),
+                        on_density_change: move |d: Density| {
+                            let mut s = settings.write();
+                            s.density = d;
+                            let _ = save_settings(&s);
+                            density.set(d);
+                        },
+                        easy_mode_on: easy_mode(),
+                        on_easy_mode_change: on_easy_mode_change,
+                    }
                 }
             }
         }
