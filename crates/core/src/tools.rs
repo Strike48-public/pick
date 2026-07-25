@@ -697,6 +697,14 @@ pub struct ToolContext {
     /// Name of the parent agent executing tools (e.g., "pentest-connector-red-team").
     /// Used by spawn_specialist to name spawned agents.
     agent_name: String,
+
+    /// Operator-provided test identities for differential authorization testing
+    /// (pick#162). Keyed by the `label` the LLM references in tool calls; a tool
+    /// resolves the label to session material and injects auth locally at
+    /// execution time. Connector-local and never serialized - the secret does
+    /// not cross the Matrix/LLM boundary. Empty unless identities were
+    /// provisioned for the engagement.
+    identities: crate::identity::IdentityStore,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -708,6 +716,7 @@ impl std::fmt::Debug for ToolContext {
             .field("has_matrix_client", &self.matrix_client.is_some())
             .field("aggression_level", &self.aggression_level)
             .field("agent_name", &self.agent_name)
+            .field("identities", &self.identities)
             .finish()
     }
 }
@@ -721,6 +730,7 @@ impl Default for ToolContext {
             matrix_client: None,
             aggression_level: crate::aggression::AggressionLevel::default(),
             agent_name: "pentest-connector".to_string(),
+            identities: crate::identity::IdentityStore::new(),
         }
     }
 }
@@ -750,6 +760,13 @@ impl ToolContext {
         self
     }
 
+    /// Set the operator-provided identity store for differential authorization
+    /// testing (pick#162).
+    pub fn with_identities(mut self, identities: crate::identity::IdentityStore) -> Self {
+        self.identities = identities;
+        self
+    }
+
     /// Get the Matrix client if available
     pub fn matrix_client(&self) -> Option<&Arc<crate::matrix::MatrixChatClient>> {
         self.matrix_client.as_ref()
@@ -763,6 +780,22 @@ impl ToolContext {
     /// Get the agent name
     pub fn agent_name(&self) -> &str {
         &self.agent_name
+    }
+
+    /// Resolve an identity `label` (as referenced by the LLM in a tool call) to
+    /// its session material for local auth injection (pick#162).
+    ///
+    /// Returns `None` when the label is unknown - the caller must fail loudly
+    /// rather than silently replay unauthenticated, which would misreport an
+    /// authorization result.
+    pub fn resolve_identity(&self, label: &str) -> Option<&crate::identity::SessionMaterial> {
+        self.identities.resolve(label)
+    }
+
+    /// Borrow the full identity store (e.g. to check how many identities were
+    /// provisioned before deciding differential-authz coverage).
+    pub fn identities(&self) -> &crate::identity::IdentityStore {
+        &self.identities
     }
 }
 

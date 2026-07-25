@@ -23,6 +23,7 @@ fn create_context(endpoint_count: usize) -> SpecialistContext {
             cloud_indicators: Default::default(),
             database_indicators: Default::default(),
         },
+        identities: vec![],
     }
 }
 
@@ -40,6 +41,7 @@ fn create_context_with_hints(endpoint_count: usize) -> SpecialistContext {
             cloud_indicators: Default::default(),
             database_indicators: Default::default(),
         },
+        identities: vec![],
     }
 }
 

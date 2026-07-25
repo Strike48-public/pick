@@ -335,6 +335,57 @@ impl std::fmt::Display for SpecialistType {
     }
 }
 
+/// Privilege tier of a [`TestIdentity`] in the differential authorization matrix
+/// (pick#162).
+///
+/// Ordered least- to most-privileged so a specialist can classify which
+/// direction an authorization boundary is crossed: a `User` reaching a
+/// `Privileged`-only function is vertical escalation (BFLA); two `User`s
+/// reaching each other's objects is horizontal escalation (BOLA/IDOR).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IdentityRole {
+    /// Unauthenticated - no credentials. Uses empty [`SessionMaterial`].
+    Anonymous,
+    /// An ordinary authenticated user.
+    User,
+    /// An administrative or otherwise elevated account.
+    Privileged,
+}
+
+/// A test identity *reference* used for differential authorization testing
+/// (pick#162).
+///
+/// This is a **reference only** - it names an identity (`label`) and describes
+/// its privilege (`role`) and tenant, but deliberately carries **no secret**.
+/// The raw session material (cookies/JWT/headers) lives connector-side in the
+/// [`crate::identity::IdentityStore`] (on `ToolContext`), keyed by `label`, and
+/// is resolved and injected locally at tool-execution time. This keeps the
+/// secret off the Matrix/LLM boundary: `SpecialistContext` (and thus the agent
+/// context sent via [`SpecialistSpawner::spawn`]) serializes only these
+/// references, never the material itself.
+///
+/// Identities are supplied by the operator at engagement setup - the specialist
+/// never creates accounts. The differential authz method replays the same
+/// request across a matrix of these identities and diffs the responses to find
+/// broken access control (horizontal BOLA/IDOR, vertical BFLA, forced
+/// browsing). The WebApp and API specialist prompts describe how the matrix is
+/// exercised; the LLM references an identity by `label` in its tool calls.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestIdentity {
+    /// Human-readable label, e.g. `"unauth"`, `"user_a"`, `"user_b"`, `"admin"`.
+    /// This is the key the connector-side [`crate::identity::IdentityStore`]
+    /// resolves to the real session material.
+    pub label: String,
+
+    /// Privilege tier, used to classify escalation direction.
+    pub role: IdentityRole,
+
+    /// Tenant identifier for multi-tenant horizontal checks, if applicable.
+    #[serde(default)]
+    pub tenant: Option<String>,
+}
+
 /// Context passed to specialist when spawning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpecialistContext {
@@ -349,6 +400,26 @@ pub struct SpecialistContext {
 
     /// Attack surface summary (endpoint count, technologies detected, etc.)
     pub attack_surface: AttackSurface,
+
+    /// Operator-provided identities for differential authorization testing
+    /// (pick#162). When two or more are present, the WebApp/API specialists
+    /// replay requests across the matrix to detect broken access control
+    /// (BOLA/BFLA/forced browsing); with fewer than two, they degrade to
+    /// unauth-vs-authed checks and report reduced coverage. Defaulted so
+    /// contexts serialized before pick#162 still deserialize, and so the Red
+    /// Team agent may omit it for non-authz specialist spawns.
+    #[serde(default)]
+    pub identities: Vec<TestIdentity>,
+}
+
+impl SpecialistContext {
+    /// Whether the operator supplied enough identities (two or more) for the
+    /// differential authorization matrix. Below this threshold the authz
+    /// specialists degrade to reduced-coverage forced-browsing checks rather
+    /// than cross-identity diffing.
+    pub fn has_multi_identity(&self) -> bool {
+        self.identities.len() >= 2
+    }
 }
 
 /// Attack surface summary for target.
@@ -659,6 +730,7 @@ mod tests {
                 cloud_indicators: CloudIndicators::default(),
                 database_indicators: DatabaseIndicators::default(),
             },
+            identities: vec![],
         }
     }
 
@@ -680,6 +752,7 @@ mod tests {
                 cloud_indicators: indicators,
                 database_indicators: DatabaseIndicators::default(),
             },
+            identities: vec![],
         }
     }
 
@@ -701,6 +774,7 @@ mod tests {
                 cloud_indicators: CloudIndicators::default(),
                 database_indicators: indicators,
             },
+            identities: vec![],
         }
     }
 
@@ -1619,5 +1693,92 @@ mod tests {
         let surface: AttackSurface =
             serde_json::from_str(json).expect("legacy AttackSurface must deserialize");
         assert!(!surface.database_indicators.has_any());
+    }
+
+    // ---- pick#162: differential-authz identity model ----
+
+    #[test]
+    fn context_deserializes_without_identities_field() {
+        // Backward compatibility: contexts serialized before pick#162 have no
+        // `identities` field and must still deserialize (serde default), with an
+        // empty matrix that reports single-identity coverage.
+        let json = r#"{
+            "targets": ["https://example.com"],
+            "initial_findings": [],
+            "concerns": [],
+            "attack_surface": {
+                "endpoint_count": 5,
+                "technologies": [],
+                "auth_mechanisms": [],
+                "entry_points": []
+            }
+        }"#;
+        let ctx: SpecialistContext =
+            serde_json::from_str(json).expect("legacy SpecialistContext must deserialize");
+        assert!(ctx.identities.is_empty());
+        assert!(!ctx.has_multi_identity());
+    }
+
+    #[test]
+    fn has_multi_identity_needs_two_or_more() {
+        let identity = |label: &str, role| TestIdentity {
+            label: label.to_string(),
+            role,
+            tenant: None,
+        };
+
+        let mut ctx = make_context(10, vec![]);
+        assert!(
+            !ctx.has_multi_identity(),
+            "zero identities is single-coverage"
+        );
+
+        ctx.identities = vec![identity("unauth", IdentityRole::Anonymous)];
+        assert!(!ctx.has_multi_identity(), "one identity is single-coverage");
+
+        ctx.identities
+            .push(identity("admin", IdentityRole::Privileged));
+        assert!(ctx.has_multi_identity(), "two identities enable the matrix");
+    }
+
+    #[test]
+    fn test_identity_reference_roundtrips_through_serde() {
+        let identity = TestIdentity {
+            label: "user_a".to_string(),
+            role: IdentityRole::User,
+            tenant: Some("tenant_2".to_string()),
+        };
+        let json = serde_json::to_string(&identity).unwrap();
+        let back: TestIdentity = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, identity);
+    }
+
+    #[test]
+    fn test_identity_carries_no_secret_when_serialized() {
+        // The reference must never carry session material - that lives
+        // connector-side in the IdentityStore. Guard against a future field
+        // re-introducing a secret onto the Matrix/LLM boundary.
+        let identity = TestIdentity {
+            label: "admin".to_string(),
+            role: IdentityRole::Privileged,
+            tenant: None,
+        };
+        let json = serde_json::to_string(&identity).unwrap();
+        assert_eq!(
+            json,
+            r#"{"label":"admin","role":"privileged","tenant":null}"#
+        );
+    }
+
+    #[test]
+    fn identity_role_serializes_kebab_case() {
+        assert_eq!(
+            serde_json::to_string(&IdentityRole::Anonymous).unwrap(),
+            "\"anonymous\""
+        );
+        assert_eq!(
+            serde_json::to_string(&IdentityRole::Privileged).unwrap(),
+            "\"privileged\""
+        );
     }
 }
