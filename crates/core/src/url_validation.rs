@@ -290,14 +290,19 @@ fn is_localhost_ipv6(ip: Ipv6Addr) -> bool {
 /// Extract an IPv4 address embedded in an IPv6 representation, if any.
 ///
 /// SSRF defenses must not be bypassable by re-encoding a blocked IPv4 target as
-/// IPv6. Four encodings smuggle an IPv4 address through the IPv6 classifier:
+/// IPv6. Six encodings smuggle an IPv4 address through the IPv6 classifier:
 ///
 /// * **IPv4-mapped** `::ffff:a.b.c.d` (`::ffff:0:0/96`) — dual-stack sockets
 ///   route these straight to the v4 address, so `::ffff:169.254.169.254`
 ///   reaches the real cloud-metadata service.
+/// * **IPv4-translated** `::ffff:0:a.b.c.d` (`::ffff:0:0:0/96`, RFC 2765 SIIT) —
+///   the mapped form's sibling, one segment further left. Trivially confused
+///   with the mapped prefix, and a SIIT translator resolves it to the v4.
 /// * **NAT64** `64:ff9b::a.b.c.d` (well-known prefix `64:ff9b::/96`, RFC 6052) —
 ///   a NAT64 gateway translates these to the embedded v4 destination.
-///
+/// * **NAT64 local-use** `64:ff9b:1::a.b.c.d` (`64:ff9b:1::/48`, RFC 8215) —
+///   the range reserved for deployment-chosen NAT64 prefixes. A deployment that
+///   carves a `/96` out of it translates the low 32 bits exactly as above.
 /// * **IPv4-compatible** `::a.b.c.d` (top 96 bits zero) — the deprecated
 ///   (RFC 4291) sibling of the mapped form. Formally not auto-routed to IPv4
 ///   everywhere, but a defense-in-depth SSRF guard must not let `::169.254.169.254`
@@ -306,17 +311,42 @@ fn is_localhost_ipv6(ip: Ipv6Addr) -> bool {
 ///   segments 1..3; a 6to4 relay translates to the embedded destination.
 ///
 /// All carry the IPv4 in a fixed slot. `Ipv6Addr::to_ipv4_mapped()` handles the
-/// mapped form; the NAT64, IPv4-compatible, and 6to4 forms are matched
-/// explicitly. `::` (unspecified) and `::1` (loopback) are the two IPv4-compatible
-/// literals that must NOT be reinterpreted as embedded IPv4 — they have dedicated
-/// predicates (and `::1` must classify as loopback, not slip through the
-/// `is_lan_private_ipv4` allow path as `0.0.0.1`), so they are excluded here.
+/// mapped form; the other five are matched explicitly. `::` (unspecified) and
+/// `::1` (loopback) are the two IPv4-compatible literals that must NOT be
+/// reinterpreted as embedded IPv4 — they have dedicated predicates (and `::1`
+/// must classify as loopback, not slip through the `is_lan_private_ipv4` allow
+/// path as `0.0.0.1`), so they are excluded here.
+///
+/// **Known uncovered:** RFC 6052 also defines *variable-length* embeddings for
+/// network-specific prefixes of `/32`, `/40`, `/48`, `/56`, and `/64`, which
+/// scatter the v4 octets around a zero `u` byte at bits 64-71 instead of using
+/// the low 32 bits. Decoding those requires knowing the deployment's own NSP,
+/// which this crate has no way to learn, so only the low-32 layout is decoded.
+/// An operator behind a NAT64 gateway using a non-`/96` NSP can still reach a
+/// blocked v4 by hand-encoding it; that is an accepted limit of a
+/// prefix-agnostic guard, not an oversight.
 fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    /// Decode an IPv4 address from two adjacent IPv6 segments (big-endian).
+    fn v4_from(hi: u16, lo: u16) -> Ipv4Addr {
+        Ipv4Addr::new(
+            (hi >> 8) as u8,
+            (hi & 0xff) as u8,
+            (lo >> 8) as u8,
+            (lo & 0xff) as u8,
+        )
+    }
+
     // IPv4-mapped ::ffff:a.b.c.d
     if let Some(v4) = ip.to_ipv4_mapped() {
         return Some(v4);
     }
     let seg = ip.segments();
+    let low32 = v4_from(seg[6], seg[7]);
+    // IPv4-translated ::ffff:0:a.b.c.d (::ffff:0:0:0/96, RFC 2765): the 0xffff
+    // sits one segment left of the mapped form, low 32 bits carry the IPv4.
+    if seg[0] == 0 && seg[1] == 0 && seg[2] == 0 && seg[3] == 0 && seg[4] == 0xffff && seg[5] == 0 {
+        return Some(low32);
+    }
     // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052): first 6 segments are
     // 0064:ff9b:0000:0000:0000:0000, low 32 bits carry the IPv4.
     if seg[0] == 0x0064
@@ -326,36 +356,27 @@ fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
         && seg[4] == 0
         && seg[5] == 0
     {
-        return Some(Ipv4Addr::new(
-            (seg[6] >> 8) as u8,
-            (seg[6] & 0xff) as u8,
-            (seg[7] >> 8) as u8,
-            (seg[7] & 0xff) as u8,
-        ));
+        return Some(low32);
+    }
+    // NAT64 local-use prefix 64:ff9b:1::/48 (RFC 8215). RFC 8215 reserves the
+    // whole /48 for NAT64, so no legitimate global destination lives here and a
+    // guard may decode the low 32 without inspecting segments 3..6 — erring
+    // toward blocking inside a reserved range is the safe direction.
+    if seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2] == 0x0001 {
+        return Some(low32);
     }
     // IPv4-compatible ::a.b.c.d (top 96 bits zero), excluding :: and ::1 which
     // their own predicates handle. `to_ipv4()` also matches the mapped form, but
     // that already returned above, so a match here is the compatible form.
     if seg[0] == 0 && seg[1] == 0 && seg[2] == 0 && seg[3] == 0 && seg[4] == 0 && seg[5] == 0 {
-        let v4 = Ipv4Addr::new(
-            (seg[6] >> 8) as u8,
-            (seg[6] & 0xff) as u8,
-            (seg[7] >> 8) as u8,
-            (seg[7] & 0xff) as u8,
-        );
         // Exclude ::/::1 (0.0.0.0 / 0.0.0.1): unspecified + loopback.
-        if v4 != Ipv4Addr::UNSPECIFIED && v4 != Ipv4Addr::new(0, 0, 0, 1) {
-            return Some(v4);
+        if low32 != Ipv4Addr::UNSPECIFIED && low32 != Ipv4Addr::new(0, 0, 0, 1) {
+            return Some(low32);
         }
     }
     // 6to4 2002:a.b.c.d::/48 (RFC 3056): v4 in segments[1..3].
     if seg[0] == 0x2002 {
-        return Some(Ipv4Addr::new(
-            (seg[1] >> 8) as u8,
-            (seg[1] & 0xff) as u8,
-            (seg[2] >> 8) as u8,
-            (seg[2] & 0xff) as u8,
-        ));
+        return Some(v4_from(seg[1], seg[2]));
     }
     None
 }
@@ -1179,8 +1200,30 @@ mod tests {
             embedded_ipv4("2002:a9fe:a9fe::".parse().unwrap()),
             Some(Ipv4Addr::new(169, 254, 169, 254))
         );
+        // IPv4-translated ::ffff:0:a.b.c.d (::ffff:0:0:0/96, RFC 2765) — the
+        // 0xffff sits one segment left of the mapped form.
+        assert_eq!(
+            embedded_ipv4("::ffff:0:169.254.169.254".parse().unwrap()),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
+        assert_eq!(
+            embedded_ipv4("::ffff:0:10.0.0.1".parse().unwrap()),
+            Some(Ipv4Addr::new(10, 0, 0, 1))
+        );
+        // NAT64 local-use prefix 64:ff9b:1::/48 (RFC 8215).
+        assert_eq!(
+            embedded_ipv4("64:ff9b:1::169.254.169.254".parse().unwrap()),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
+        assert_eq!(
+            embedded_ipv4("64:ff9b:1::a9fe:a9fe".parse().unwrap()),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
         // A genuine global IPv6 address has no embedded IPv4.
         assert_eq!(embedded_ipv4("2001:db8::1".parse().unwrap()), None);
+        // 64:ff9b:2:: is outside both the well-known /96 and the RFC 8215 /48,
+        // so it is a normal global address, not an embed.
+        assert_eq!(embedded_ipv4("64:ff9b:2::a9fe:a9fe".parse().unwrap()), None);
         // Loopback / unspecified are NOT treated as IPv4-compatible embeds —
         // they must fall through to their own predicates (`::1` -> loopback).
         assert_eq!(embedded_ipv4("::1".parse().unwrap()), None);
@@ -1204,6 +1247,51 @@ mod tests {
             assert!(
                 validate_url(host, ValidationMode::PrivateNetwork, None).is_err(),
                 "{host} must be BLOCKED in PrivateNetwork too"
+            );
+        }
+    }
+
+    #[test]
+    fn test_production_blocks_translated_and_local_use_nat64_metadata() {
+        // #289 follow-up: the IPv4-translated (`::ffff:0:0:0/96`, RFC 2765) and
+        // NAT64 local-use (`64:ff9b:1::/48`, RFC 8215) prefixes embed the v4 in
+        // the low 32 bits exactly as the mapped/well-known forms do. Decoding
+        // only the well-known `/96` left these reaching the metadata service.
+        for host in [
+            "wss://[::ffff:0:169.254.169.254]:443",   // IPv4-translated
+            "wss://[::ffff:0:a9fe:a9fe]:443",         // same, hex segments
+            "wss://[64:ff9b:1::169.254.169.254]:443", // NAT64 local-use /48
+            "wss://[64:ff9b:1::a9fe:a9fe]:443",       // same, hex segments
+        ] {
+            assert!(
+                validate_url(host, ValidationMode::Production, None).is_err(),
+                "{host} must be BLOCKED in Production"
+            );
+            assert!(
+                validate_url(host, ValidationMode::PrivateNetwork, None).is_err(),
+                "{host} must be BLOCKED in PrivateNetwork too"
+            );
+        }
+    }
+
+    #[test]
+    fn test_translated_and_local_use_nat64_honor_private_opt_in() {
+        // The new prefixes must classify as LAN-private (not blanket-blocked)
+        // when they embed an RFC-1918 address, matching the mapped form: allowed
+        // in PrivateNetwork, blocked in Production. A guard that hard-blocked
+        // the whole prefix would pass the metadata test above but break
+        // in-cluster targets.
+        for host in [
+            "wss://[::ffff:0:10.0.0.1]:443",
+            "wss://[64:ff9b:1::10.0.0.1]:443",
+        ] {
+            assert!(
+                validate_url(host, ValidationMode::PrivateNetwork, None).is_ok(),
+                "{host} embeds RFC-1918 and must be ALLOWED in PrivateNetwork"
+            );
+            assert!(
+                validate_url(host, ValidationMode::Production, None).is_err(),
+                "{host} embeds RFC-1918 and must be BLOCKED in Production"
             );
         }
     }
