@@ -1048,6 +1048,9 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         let toast_css = crate::components::toast_css();
         let matrix_css = crate::components::matrix_rain_css();
         rsx! {
+            // Static first-paint fade — its own node so re-injecting the
+            // theme CSS below never re-triggers the animation.
+            style { {crate::view_transitions::first_paint_fade_css()} }
             style { {css} }
             style { {mcss} }
             style { {ucss} }

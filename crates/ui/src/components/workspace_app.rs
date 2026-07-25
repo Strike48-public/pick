@@ -463,6 +463,9 @@ pub fn WorkspaceApp() -> Element {
     };
 
     rsx! {
+        // Static first-paint fade — its own node so a theme switch (which
+        // re-injects combined_css) never re-triggers the animation.
+        style { {crate::view_transitions::first_paint_fade_css()} }
         style { {combined_css} }
 
         KeyboardShortcuts {
