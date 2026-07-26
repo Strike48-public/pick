@@ -79,7 +79,12 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
 
     // Parsed frontmatter per document id (filled async after the summary list
     // loads; capped so a large report set doesn't fan out unbounded).
-    let mut meta_map = use_signal(std::collections::HashMap::<String, ReportMeta>::new);
+    // doc id -> parsed frontmatter. The value is `Option`: `Some(meta)` when the
+    // report carried a frontmatter block, `None` for a legacy report (so it is
+    // memoized as "fetched, no metadata" and its row stays title+date with no
+    // badge, rather than re-fetching every poll or showing a false "clean").
+    let mut meta_map =
+        use_signal(std::collections::HashMap::<String, Option<ReportMeta>>::new);
 
     // Keep the report list current automatically: reload when token/agent change,
     // then poll on an interval so a scan's new report appears on its own — no
@@ -164,7 +169,9 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                     {
                         let title = doc.title.clone();
                         let open_doc = doc.clone();
-                        let meta = meta_map.read().get(&doc.id).cloned();
+                        // Flatten: not-yet-fetched (None) and legacy-no-frontmatter
+                        // (Some(None)) both render as no metadata / no badge.
+                        let meta = meta_map.read().get(&doc.id).cloned().flatten();
                         rsx! {
                             div {
                                 class: "easy-docs-row easy-docs-row-tappable",

@@ -229,19 +229,30 @@ pub fn render_markdown(content: &str) -> String {
 /// The opening fence must be the first line — no leading blank lines — matching
 /// the report frontmatter format.
 pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
-    // Opening fence must be the very first line.
-    let rest = match content.strip_prefix("---\n") {
+    // Opening fence must be the very first line. Accept LF and CRLF endings so
+    // reports authored on any platform strip cleanly.
+    let rest = match content
+        .strip_prefix("---\n")
+        .or_else(|| content.strip_prefix("---\r\n"))
+    {
         Some(r) => r,
         None => return (None, content),
     };
-    // Find a closing fence line: "\n---\n" (block, body follows) or a trailing
-    // "\n---" at end of input (empty body).
-    if let Some(idx) = rest.find("\n---\n") {
+    // Find the earliest closing fence across both ending styles (block, body
+    // follows), or a trailing "\n---"/"\r\n---" at end of input (empty body).
+    let close = ["\n---\n", "\r\n---\r\n", "\n---\r\n", "\r\n---\n"]
+        .iter()
+        .filter_map(|fence| rest.find(fence).map(|idx| (idx, fence.len())))
+        .min_by_key(|(idx, _)| *idx);
+    if let Some((idx, fence_len)) = close {
         let yaml = &rest[..idx];
-        let body = &rest[idx + "\n---\n".len()..];
-        (Some(yaml.trim_matches('\n')), body)
-    } else if let Some(yaml) = rest.strip_suffix("\n---") {
-        (Some(yaml.trim_matches('\n')), "")
+        let body = &rest[idx + fence_len..];
+        (Some(yaml.trim_matches(['\n', '\r'])), body)
+    } else if let Some(yaml) = rest
+        .strip_suffix("\n---")
+        .or_else(|| rest.strip_suffix("\r\n---"))
+    {
+        (Some(yaml.trim_matches(['\n', '\r'])), "")
     } else {
         (None, content)
     }
@@ -317,5 +328,14 @@ mod frontmatter_tests {
         let (fm, body) = split_frontmatter(c);
         assert_eq!(fm, None);
         assert_eq!(body, c);
+    }
+
+    #[test]
+    fn splits_crlf_frontmatter() {
+        // Reports authored with Windows/CRLF line endings must strip too.
+        let c = "---\r\nscope: \"x\"\r\n---\r\n# Body\r\ntext";
+        let (fm, body) = split_frontmatter(c);
+        assert_eq!(fm, Some("scope: \"x\""));
+        assert_eq!(body, "# Body\r\ntext");
     }
 }

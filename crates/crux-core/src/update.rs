@@ -378,11 +378,15 @@ pub fn update(_app: &PickApp, event: Event, model: &mut Model) -> Command<Effect
                     .find(|d| d.id == doc_id)
                     .map(|d| d.title.clone())
                     .unwrap_or_else(|| "Report".into());
-                let blocks = crate::markdown::parse_markdown(&markdown);
+                // Strip any leading YAML frontmatter so it doesn't render as a
+                // literal `---` rule + heading (easy-mode reports carry it).
+                let (_fm, body) = pentest_core::rendering::split_frontmatter(&markdown);
+                let body = body.to_string();
+                let blocks = crate::markdown::parse_markdown(&body);
                 model.open_document = Some(crate::view::DocView {
                     id: doc_id,
                     title,
-                    markdown_body: markdown,
+                    markdown_body: body,
                     blocks,
                     share_url: None,
                     preview_url: None,

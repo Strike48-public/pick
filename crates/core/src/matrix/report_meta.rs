@@ -54,12 +54,15 @@ pub struct SeverityBadge {
 }
 
 impl ReportMeta {
-    /// Parse from a document's full markdown content. Returns `Default`
-    /// (all-None/empty) when there is no frontmatter or the YAML is malformed.
-    pub fn parse(content: &str) -> ReportMeta {
+    /// Parse a document's frontmatter. Returns `Some(meta)` only when the
+    /// content actually begins with a frontmatter block — malformed YAML inside
+    /// a present block degrades to `Some(Default)`, but content with NO
+    /// frontmatter returns `None`. Callers use this to distinguish a legacy
+    /// report (no badge) from a parsed-but-no-severity report ("clean" badge).
+    pub fn parse(content: &str) -> Option<ReportMeta> {
         match split_frontmatter(content) {
-            (Some(yaml), _) => serde_yml::from_str(yaml).unwrap_or_default(),
-            (None, _) => ReportMeta::default(),
+            (Some(yaml), _) => Some(serde_yml::from_str(yaml).unwrap_or_default()),
+            (None, _) => None,
         }
     }
 
@@ -112,7 +115,7 @@ mod tests {
 
     #[test]
     fn parses_full_frontmatter() {
-        let m = ReportMeta::parse(FULL);
+        let m = ReportMeta::parse(FULL).expect("frontmatter present");
         assert_eq!(m.scope.as_deref(), Some("192.168.1.0/24"));
         assert_eq!(m.source.as_deref(), Some("mbp"));
         assert_eq!(m.hosts, Some(8));
@@ -122,20 +125,23 @@ mod tests {
     }
 
     #[test]
-    fn no_frontmatter_is_default() {
-        let m = ReportMeta::parse("# just markdown");
-        assert!(m.scope.is_none() && m.hosts.is_none() && m.findings.is_empty());
+    fn no_frontmatter_is_none() {
+        // No frontmatter block -> None (legacy report, no badge).
+        assert!(ReportMeta::parse("# just markdown").is_none());
     }
 
     #[test]
-    fn malformed_yaml_is_default() {
-        let m = ReportMeta::parse("---\n: : : not yaml\n\t- broken\n---\nbody");
+    fn malformed_yaml_is_some_default() {
+        // A present-but-broken block still parses to Some(Default) so the
+        // report is treated as "had frontmatter" rather than legacy.
+        let m = ReportMeta::parse("---\n: : : not yaml\n\t- broken\n---\nbody")
+            .expect("frontmatter block present");
         assert!(m.scope.is_none() && m.findings.is_empty());
     }
 
     #[test]
     fn badge_picks_highest_bucket() {
-        let m = ReportMeta::parse("---\nseverity:\n  high: 2\n  medium: 3\n---\nx");
+        let m = ReportMeta::parse("---\nseverity:\n  high: 2\n  medium: 3\n---\nx").unwrap();
         let b = m.badge();
         assert_eq!(b.label, "2 high");
         assert!(matches!(b.kind, BadgeKind::High));
@@ -144,7 +150,7 @@ mod tests {
 
     #[test]
     fn badge_clean_when_no_severity() {
-        let m = ReportMeta::parse("---\nscope: x\n---\ny");
+        let m = ReportMeta::parse("---\nscope: x\n---\ny").unwrap();
         assert_eq!(m.badge().label, "clean");
         assert!(matches!(m.badge().kind, BadgeKind::Clean));
         assert!(!m.is_high_risk());
@@ -152,9 +158,9 @@ mod tests {
 
     #[test]
     fn finding_count_prefers_findings_then_severity_sum() {
-        let with_findings = ReportMeta::parse("---\nseverity:\n  high: 5\nfindings:\n  - title: a\n  - title: b\n---\nx");
+        let with_findings = ReportMeta::parse("---\nseverity:\n  high: 5\nfindings:\n  - title: a\n  - title: b\n---\nx").unwrap();
         assert_eq!(with_findings.finding_count(), 2);
-        let sev_only = ReportMeta::parse("---\nseverity:\n  high: 2\n  low: 1\n---\nx");
+        let sev_only = ReportMeta::parse("---\nseverity:\n  high: 2\n  low: 1\n---\nx").unwrap();
         assert_eq!(sev_only.finding_count(), 3);
     }
 }

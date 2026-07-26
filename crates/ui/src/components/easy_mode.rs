@@ -182,7 +182,9 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                     spawn(async move {
                         let client = MatrixChatClient::new(api_url).with_auth_token(token);
                         if let Ok(content) = client.get_document_content(&conv_id, &doc_id).await {
-                            report_meta.set(Some(ReportMeta::parse(&content)));
+                            // parse() is None for a legacy (no-frontmatter) report,
+                            // so no badge shows for those.
+                            report_meta.set(ReportMeta::parse(&content));
                         }
                     });
                 }
