@@ -50,6 +50,12 @@ strike48-connector = { workspace = true }
 reqwest = { workspace = true }
 futures = { workspace = true }
 
+# WebSocket transport for the Absinthe conversationEvents subscription.
+# native-tls connector matches strikehub's ws_relay so the insecure-certs
+# dev flag maps to danger_accept_invalid_certs.
+tokio-tungstenite = { workspace = true, features = ["native-tls"] }
+native-tls = "0.2"
+
 # URL encoding
 urlencoding = "2.1"
 
