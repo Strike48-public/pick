@@ -31,8 +31,19 @@ pub struct ApplyOutcome {
 pub fn apply_event(msgs: &mut Vec<ChatMessage>, ev: &ConversationStreamEvent) -> ApplyOutcome {
     match ev {
         ConversationStreamEvent::Message(m) => {
-            // Upsert by id: replace if present, else push
+            // Upsert by id: replace if present, else push.
             if let Some(pos) = msgs.iter().position(|msg| msg.id == m.id) {
+                msgs[pos] = m.clone();
+            } else if let Some(pos) = msgs.iter().position(|msg| {
+                // The server echo of the user's own turn has a fresh UUID, but
+                // we optimistically rendered it with a `local-*` id. Replace
+                // that bubble in place so the live stream does not show a
+                // duplicate "You" message (the reseed path dedups the same way).
+                msg.id.starts_with("local-")
+                    && m.sender_type == "USER"
+                    && msg.sender_type == "USER"
+                    && msg.text == m.text
+            }) {
                 msgs[pos] = m.clone();
             } else {
                 msgs.push(m.clone());
@@ -260,6 +271,37 @@ mod tests {
             text: text.to_string(),
             parts: vec![MessagePart::Text(text.to_string())],
         }
+    }
+
+    fn user_msg(id: &str, text: &str) -> ChatMessage {
+        ChatMessage {
+            id: id.to_string(),
+            sender_type: "USER".to_string(),
+            sender_name: "You".to_string(),
+            text: text.to_string(),
+            parts: vec![MessagePart::Text(text.to_string())],
+        }
+    }
+
+    #[test]
+    fn server_user_echo_replaces_optimistic_local_bubble() {
+        // Optimistic bubble rendered on send with a local-* id.
+        let mut msgs = vec![user_msg("local-0", "scan my net")];
+        // Server echoes the same turn with a real UUID during live streaming.
+        apply_event(
+            &mut msgs,
+            &ConversationStreamEvent::Message(user_msg("uuid-123", "scan my net")),
+        );
+        // Replaced in place, not duplicated.
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].id, "uuid-123");
+        // A different user turn is NOT collapsed onto the local bubble.
+        let mut msgs2 = vec![user_msg("local-0", "first")];
+        apply_event(
+            &mut msgs2,
+            &ConversationStreamEvent::Message(user_msg("uuid-9", "second")),
+        );
+        assert_eq!(msgs2.len(), 2);
     }
 
     #[test]

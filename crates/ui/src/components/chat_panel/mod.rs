@@ -123,7 +123,8 @@ async fn apply_outcome(
     error_msg: &mut Signal<Option<String>>,
     chat_notice: &mut Signal<Option<ChatNotice>>,
     pending_validator_apply: &mut Signal<Option<usize>>,
-    messages: &Signal<Vec<ChatMessage>>,
+    messages: &mut Signal<Vec<ChatMessage>>,
+    conversation_id: &str,
 ) {
     // The streamed error reason (AgentStatusEvent.error) is now available
     // directly — surface it. Polling never saw this.
@@ -151,6 +152,13 @@ async fn apply_outcome(
         let pending = *pending_validator_apply.peek();
         if let Some(pending_count) = pending {
             pending_validator_apply.set(None);
+            // The terminal AgentStatusEvent can arrive BEFORE the final
+            // Message event carrying the Validator's verdict reply. Fetch the
+            // authoritative conversation first (the old poller parsed only
+            // after a post-terminal get_conversation), so the reply is present.
+            if let Ok(state) = client.get_conversation(conversation_id).await {
+                merge_server_messages(messages, state.messages);
+            }
             let mut em = *error_msg;
             apply_validator_reply(&messages.peek(), pending_count, &mut em);
         }
@@ -896,7 +904,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                         &mut error_msg,
                                         &mut chat_notice,
                                         &mut pending_validator_apply,
-                                        &messages,
+                                        &mut messages,
+                                        &cid,
                                     )
                                     .await;
                                 }
