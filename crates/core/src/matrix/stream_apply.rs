@@ -122,6 +122,47 @@ pub fn apply_event(msgs: &mut Vec<ChatMessage>, ev: &ConversationStreamEvent) ->
             ApplyOutcome::default()
         }
 
+        ConversationStreamEvent::ToolCallStarted {
+            tool_call_id,
+            tool_name,
+        } => {
+            // Show the tool name as soon as the call starts (before any result),
+            // so a long-running tool renders "running <tool>" instead of a
+            // nameless spinner. Upsert a Running tool-call part by id.
+            let msg = match msgs.iter_mut().rev().find(|m| m.sender_type == "AGENT") {
+                Some(m) => m,
+                None => {
+                    msgs.push(ChatMessage {
+                        id: format!("tool-owner-{}", tool_call_id),
+                        sender_type: "AGENT".to_string(),
+                        sender_name: "Agent".to_string(),
+                        text: String::new(),
+                        parts: vec![],
+                    });
+                    msgs.last_mut().unwrap()
+                }
+            };
+            if let Some(part) = msg.parts.iter_mut().find_map(|p| match p {
+                MessagePart::ToolCall(tc) if tc.id == *tool_call_id => Some(tc),
+                _ => None,
+            }) {
+                // Fill the name if we somehow saw the call before its start.
+                if part.name.is_empty() {
+                    part.name.clone_from(tool_name);
+                }
+            } else {
+                msg.parts.push(MessagePart::ToolCall(ToolCallInfo {
+                    id: tool_call_id.clone(),
+                    name: tool_name.clone(),
+                    arguments: None,
+                    result: None,
+                    error: None,
+                    status: ToolCallStatus::Running,
+                }));
+            }
+            ApplyOutcome::default()
+        }
+
         ConversationStreamEvent::ToolCall {
             id,
             name,
@@ -305,6 +346,28 @@ mod tests {
             &ConversationStreamEvent::Message(user_msg("uuid-9", "second")),
         );
         assert_eq!(msgs2.len(), 2);
+    }
+
+    #[test]
+    fn tool_call_started_shows_name_while_running() {
+        let mut msgs = vec![agent_msg("m1", "working")];
+        apply_event(
+            &mut msgs,
+            &ConversationStreamEvent::ToolCallStarted {
+                tool_call_id: "t1".into(),
+                tool_name: "port_scan".into(),
+            },
+        );
+        let tc = msgs
+            .iter()
+            .flat_map(|m| &m.parts)
+            .find_map(|p| match p {
+                MessagePart::ToolCall(tc) if tc.id == "t1" => Some(tc),
+                _ => None,
+            })
+            .expect("tool call part created");
+        assert_eq!(tc.name, "port_scan");
+        assert!(matches!(tc.status, ToolCallStatus::Running));
     }
 
     #[test]

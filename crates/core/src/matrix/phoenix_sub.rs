@@ -289,6 +289,13 @@ pub enum ConversationStreamEvent {
         error: Option<String>,
         status: String,
     },
+    /// Tool call started: carries the tool name at the START of a call, before
+    /// any result. Lets the UI show "running <tool>" instead of a nameless
+    /// spinner during a long-running tool.
+    ToolCallStarted {
+        tool_call_id: String,
+        tool_name: String,
+    },
     /// Tool call streaming delta.
     ToolCallStreaming {
         tool_call_id: String,
@@ -419,6 +426,22 @@ pub fn parse_event(event: &Value) -> ConversationStreamEvent {
                 result,
                 error,
                 status,
+            }
+        }
+        "ToolCallStartedEvent" => {
+            let tool_call_id = event
+                .get("toolCallId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let tool_name = event
+                .get("toolName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            ConversationStreamEvent::ToolCallStarted {
+                tool_call_id,
+                tool_name,
             }
         }
         "ToolCallStreamingEvent" => {
