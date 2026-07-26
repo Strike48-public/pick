@@ -6,8 +6,7 @@ use std::sync::Arc;
 
 use super::chat_panel::format_relative_time;
 use super::icons::{
-    Bolt, FileText, Folder, House, MessageSquare, ScrollText, Settings, Terminal, Wrench,
-    STRIKE48_SIDEBAR_LOGO_SVG, X,
+    Bolt, FileText, Folder, House, MessageSquare, ScrollText, Settings, Terminal, Wrench, X,
 };
 use crate::text::truncate_chars;
 
@@ -146,12 +145,8 @@ pub fn Sidebar(
             // Header
             div { class: "sidebar-header",
                 div { class: "sidebar-header-brand",
-                    span {
-                        class: "header-logo",
-                        dangerous_inner_html: STRIKE48_SIDEBAR_LOGO_SVG,
-                    }
                     if !sidebar_collapsed {
-                        span { class: "sidebar-header-title", "Pentest" }
+                        span { class: "sidebar-header-title", "Pick" }
                     }
                 }
                 div { class: "sidebar-header-actions",
