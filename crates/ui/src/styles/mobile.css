@@ -758,9 +758,12 @@ body {
 .easy-docs-empty, .easy-docs-error { opacity: 0.7; font-size: 14px; padding: 8px 0; }
 .easy-docs-error { color: var(--em-error); }
 .easy-docs-toast { background: var(--em-toast-bg); color: var(--em-toast-fg); padding: 8px 12px; border-radius: var(--em-radius-control); font-size: 13px; }
-.easy-docs-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--em-hairline); }
+.easy-docs-row { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--em-hairline); }
 .easy-docs-row-tappable { cursor: pointer; }
-.easy-docs-title { flex: 1; font-weight: 500; }
+.easy-docs-row-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.easy-docs-title { font-weight: 500; }
+.easy-docs-meta { display: flex; gap: 8px; font-size: 12px; color: var(--em-text); opacity: 0.6; }
+.easy-docs-scope, .easy-docs-counts { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .easy-docs-chevron { opacity: 0.4; font-size: 20px; padding-right: 2px; }
 .easy-docs-prev-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-top: 4px; }
 

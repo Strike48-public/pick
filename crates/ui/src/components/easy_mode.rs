@@ -2,12 +2,13 @@
 
 use dioxus::prelude::*;
 
-use pentest_core::matrix::DocumentSummary;
+use pentest_core::matrix::{DocumentSummary, MatrixChatClient, ReportMeta};
 
 use super::chat_panel::{format_relative_time, ChatHeaderCtx};
 use super::icons::{
     ChevronLeft, FileText, LogOut, Menu, Network, Plus, Settings, STRIKE48_S_BADGE_SVG,
 };
+use crate::components::documents_panel::sev_badge_class;
 use crate::components::{ChatPanel, ConversationDocs, DocumentViewer, DocumentsPanel};
 use pentest_core::settings::{load_settings, save_settings};
 
@@ -77,6 +78,8 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     // affordance and the drawer Reports count. Same source as DocumentsPanel;
     // fetched here so the Home screen has it without opening the reports overlay.
     let mut docs = use_signal(Vec::<DocumentSummary>::new);
+    // Parsed frontmatter for the resume card's selected report (badge rendering).
+    let mut report_meta = use_signal(|| None::<ReportMeta>);
     // Whether the full-screen Reports list overlay is open (Docs icon).
     let mut show_docs = use_signal(|| false);
     // Left slide-over navigation drawer (hamburger).
@@ -145,6 +148,36 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
             });
+        });
+    }
+
+    // Fetch the resume card's report metadata for the severity badge.
+    {
+        let api_url = props.api_url.clone();
+        use_effect(move || {
+            let token = auth_token();
+            let all_docs = docs();
+            // Find the report for the most recent conversation (same logic as the resume card).
+            let chat_ctx = chat_header_ctx.read();
+            let recent_conv = chat_ctx.as_ref().and_then(|c| c.conversations.first());
+            let report_id = recent_conv.and_then(|conv| {
+                all_docs.iter().find(|d| d.conversation_id == conv.id).map(|d| (d.id.clone(), d.conversation_id.clone()))
+            });
+            if let Some((doc_id, conv_id)) = report_id {
+                if token.is_empty() || api_url.is_empty() {
+                    return;
+                }
+                let api_url = api_url.clone();
+                let token = token.clone();
+                spawn(async move {
+                    let client = MatrixChatClient::new(api_url).with_auth_token(token);
+                    if let Ok(content) = client.get_document_content(&conv_id, &doc_id).await {
+                        report_meta.set(Some(ReportMeta::parse(&content)));
+                    }
+                });
+            } else {
+                report_meta.set(None);
+            }
         });
     }
 
@@ -457,7 +490,17 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                                     div { class: "easy-home-card",
                                         div { class: "easy-card-eye", "Pick up where you left off" }
                                         div { class: "easy-home-card-title", "{title}" }
-                                        div { class: "easy-home-card-sub", "{sub}" }
+                                        div { class: "easy-home-card-sub",
+                                            "{sub}"
+                                            if let Some(m) = report_meta() {
+                                                {
+                                                    let b = m.badge();
+                                                    rsx! {
+                                                        span { class: "easy-sev-badge {sev_badge_class(b.kind)}", "{b.label}" }
+                                                    }
+                                                }
+                                            }
+                                        }
                                         if let Some(doc) = report {
                                             button {
                                                 class: "easy-home-card-btn",

@@ -14,7 +14,7 @@
 
 use dioxus::document;
 use dioxus::prelude::*;
-use pentest_core::matrix::{DocumentSummary, MatrixChatClient};
+use pentest_core::matrix::{BadgeKind, DocumentSummary, MatrixChatClient, ReportMeta};
 use pentest_core::rendering::render_markdown_raw;
 use pentest_core::social_share::{share_intent_url, SocialNetwork};
 
@@ -38,6 +38,17 @@ fn clipboard_js(url: &str) -> String {
 /// app build the preview link identically.
 fn preview_url(url: &str) -> String {
     pentest_core::matrix::preview_url(url)
+}
+
+/// Map a severity badge bucket to its CSS modifier class. `pub(crate)` so the
+/// easy-mode resume card can reuse it.
+pub(crate) fn sev_badge_class(kind: BadgeKind) -> &'static str {
+    match kind {
+        BadgeKind::Critical | BadgeKind::High => "sev-err",
+        BadgeKind::Medium => "sev-warn",
+        BadgeKind::Low | BadgeKind::Info => "sev-muted",
+        BadgeKind::Clean => "sev-ok",
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +76,10 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
     let mut docs = use_signal(Vec::<DocumentSummary>::new);
     let mut loading = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
+
+    // Parsed frontmatter per document id (filled async after the summary list
+    // loads; capped so a large report set doesn't fan out unbounded).
+    let mut meta_map = use_signal(std::collections::HashMap::<String, ReportMeta>::new);
 
     // Keep the report list current automatically: reload when token/agent change,
     // then poll on an interval so a scan's new report appears on its own — no
@@ -104,6 +119,33 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
         });
     }
 
+    // Fetch report metadata for the first 20 visible docs (capped fan-out).
+    {
+        let api_url = api_url.clone();
+        let auth_token = auth_token.clone();
+        use_effect(move || {
+            let list = docs();
+            if auth_token.is_empty() || api_url.is_empty() {
+                return;
+            }
+            for doc in list.into_iter().take(20) {
+                if meta_map.peek().contains_key(&doc.id) {
+                    continue;
+                }
+                let api_url = api_url.clone();
+                let auth_token = auth_token.clone();
+                spawn(async move {
+                    let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
+                    if let Ok(content) =
+                        client.get_document_content(&doc.conversation_id, &doc.id).await
+                    {
+                        meta_map.write().insert(doc.id.clone(), ReportMeta::parse(&content));
+                    }
+                });
+            }
+        });
+    }
+
     let items = docs();
 
     rsx! {
@@ -122,11 +164,32 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                     {
                         let title = doc.title.clone();
                         let open_doc = doc.clone();
+                        let meta = meta_map.read().get(&doc.id).cloned();
                         rsx! {
                             div {
                                 class: "easy-docs-row easy-docs-row-tappable",
                                 onclick: move |_| props.on_open.call(open_doc.clone()),
-                                span { class: "easy-docs-title", "{title}" }
+                                div { class: "easy-docs-row-main",
+                                    span { class: "easy-docs-title", "{title}" }
+                                    if let Some(m) = meta.as_ref() {
+                                        div { class: "easy-docs-meta",
+                                            if let Some(scope) = m.scope.as_ref() {
+                                                span { class: "easy-docs-scope", "{scope}" }
+                                            }
+                                            if let (Some(h), Some(s)) = (m.hosts, m.services) {
+                                                span { class: "easy-docs-counts", "{h} hosts · {s} services" }
+                                            }
+                                        }
+                                    }
+                                }
+                                if let Some(m) = meta.as_ref() {
+                                    {
+                                        let b = m.badge();
+                                        rsx! {
+                                            span { class: "easy-sev-badge {sev_badge_class(b.kind)}", "{b.label}" }
+                                        }
+                                    }
+                                }
                                 span { class: "easy-docs-chevron", "›" }
                             }
                         }
