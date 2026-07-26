@@ -19,6 +19,17 @@ pub fn easy_mode_scan_prompt() -> String {
     pentest_core::easy_mode_scan_prompt()
 }
 
+/// Build the resume-card sub-line. `relative` is an already-formatted
+/// relative time (e.g. "1h ago") from `format_relative_time`, so we do NOT
+/// append another "ago". Adds a report affordance hint when one exists.
+fn resume_sub_line(relative: &str, has_report: bool) -> String {
+    if has_report {
+        format!("{relative} · report attached")
+    } else {
+        relative.to_string()
+    }
+}
+
 /// Props for [`EasyModeShell`]. Mirrors the inputs the standard chat path uses.
 #[derive(Props, Clone, PartialEq)]
 pub struct EasyModeShellProps {
@@ -421,5 +432,15 @@ mod tests {
             p.contains("document_write"),
             "prompt must direct the agent to use document_write: {p}"
         );
+    }
+
+    #[test]
+    fn resume_sub_line_with_report() {
+        assert_eq!(resume_sub_line("1h ago", true), "1h ago · report attached");
+    }
+
+    #[test]
+    fn resume_sub_line_without_report() {
+        assert_eq!(resume_sub_line("3d ago", false), "3d ago");
     }
 }
