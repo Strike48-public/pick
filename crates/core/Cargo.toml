@@ -17,6 +17,7 @@ async-trait = { workspace = true }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yml = { workspace = true }
 
 # Time
 chrono = { workspace = true }

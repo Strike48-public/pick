@@ -220,6 +220,33 @@ pub fn render_markdown(content: &str) -> String {
     )
 }
 
+/// Split a leading YAML frontmatter block from markdown content.
+///
+/// Returns `(Some(yaml), body)` when `content` begins with a `---` line,
+/// contains a later `---` line on its own, and thus forms a frontmatter block;
+/// the returned `yaml` excludes both fence lines. Returns `(None, content)`
+/// otherwise (no frontmatter, `---` not at the very start, or no closing fence).
+/// The opening fence must be the first line — no leading blank lines — matching
+/// the report frontmatter format.
+pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
+    // Opening fence must be the very first line.
+    let rest = match content.strip_prefix("---\n") {
+        Some(r) => r,
+        None => return (None, content),
+    };
+    // Find a closing fence line: "\n---\n" (block, body follows) or a trailing
+    // "\n---" at end of input (empty body).
+    if let Some(idx) = rest.find("\n---\n") {
+        let yaml = &rest[..idx];
+        let body = &rest[idx + "\n---\n".len()..];
+        (Some(yaml.trim_matches('\n')), body)
+    } else if let Some(yaml) = rest.strip_suffix("\n---") {
+        (Some(yaml.trim_matches('\n')), "")
+    } else {
+        (None, content)
+    }
+}
+
 /// Format an ISO 8601 timestamp as a relative time string (e.g. "2m ago").
 ///
 /// Shared by the Dioxus chat history and the crux conversation list so both
@@ -254,4 +281,41 @@ pub fn format_relative_time(iso: &str) -> String {
     }
     let days = hours / 24;
     format!("{}d ago", days)
+}
+
+#[cfg(test)]
+mod frontmatter_tests {
+    use super::split_frontmatter;
+
+    #[test]
+    fn splits_leading_frontmatter() {
+        let c = "---\nscope: \"x\"\n---\n# Body\ntext";
+        let (fm, body) = split_frontmatter(c);
+        assert_eq!(fm, Some("scope: \"x\""));
+        assert_eq!(body, "# Body\ntext");
+    }
+
+    #[test]
+    fn no_frontmatter_returns_content() {
+        let c = "# Just markdown\ntext";
+        let (fm, body) = split_frontmatter(c);
+        assert_eq!(fm, None);
+        assert_eq!(body, c);
+    }
+
+    #[test]
+    fn hr_not_at_start_is_not_frontmatter() {
+        let c = "intro\n---\nnot fm\n---\n";
+        let (fm, body) = split_frontmatter(c);
+        assert_eq!(fm, None);
+        assert_eq!(body, c);
+    }
+
+    #[test]
+    fn unterminated_block_is_not_frontmatter() {
+        let c = "---\nscope: x\nno closing fence";
+        let (fm, body) = split_frontmatter(c);
+        assert_eq!(fm, None);
+        assert_eq!(body, c);
+    }
 }

@@ -51,6 +51,7 @@ futures = "0.3"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yml = "0.0.12"
 
 # Networking
 reqwest = { version = "0.12", features = ["json", "cookies", "stream", "rustls-tls-native-roots", "blocking"] }
