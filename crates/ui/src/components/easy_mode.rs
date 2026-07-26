@@ -151,9 +151,13 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
         });
     }
 
-    // Fetch the resume card's report metadata for the severity badge.
+    // Fetch the resume card's report metadata for the severity badge. The
+    // effect reads docs() (which the 5s poll re-identifies), so guard on the
+    // selected report's id: only refetch when the resume-card report actually
+    // changes, not on every poll tick.
     {
         let api_url = props.api_url.clone();
+        let mut fetched_report_id = use_signal(|| None::<String>);
         use_effect(move || {
             let token = auth_token();
             let all_docs = docs();
@@ -163,20 +167,31 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
             let report_id = recent_conv.and_then(|conv| {
                 all_docs.iter().find(|d| d.conversation_id == conv.id).map(|d| (d.id.clone(), d.conversation_id.clone()))
             });
-            if let Some((doc_id, conv_id)) = report_id {
-                if token.is_empty() || api_url.is_empty() {
-                    return;
-                }
-                let api_url = api_url.clone();
-                let token = token.clone();
-                spawn(async move {
-                    let client = MatrixChatClient::new(api_url).with_auth_token(token);
-                    if let Ok(content) = client.get_document_content(&conv_id, &doc_id).await {
-                        report_meta.set(Some(ReportMeta::parse(&content)));
+            match report_id {
+                Some((doc_id, conv_id)) => {
+                    if token.is_empty() || api_url.is_empty() {
+                        return;
                     }
-                });
-            } else {
-                report_meta.set(None);
+                    // Skip if we already fetched metadata for this exact report.
+                    if fetched_report_id.peek().as_deref() == Some(doc_id.as_str()) {
+                        return;
+                    }
+                    fetched_report_id.set(Some(doc_id.clone()));
+                    let api_url = api_url.clone();
+                    let token = token.clone();
+                    spawn(async move {
+                        let client = MatrixChatClient::new(api_url).with_auth_token(token);
+                        if let Ok(content) = client.get_document_content(&conv_id, &doc_id).await {
+                            report_meta.set(Some(ReportMeta::parse(&content)));
+                        }
+                    });
+                }
+                None => {
+                    if fetched_report_id.peek().is_some() {
+                        fetched_report_id.set(None);
+                        report_meta.set(None);
+                    }
+                }
             }
         });
     }
