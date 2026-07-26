@@ -96,3 +96,129 @@
 .sage .button[data-style="ghost"]:hover:not(:disabled) {
     background: var(--sage-tint);
 }
+
+/* ===========================================================================
+   Full-parity pass — align advanced-mode chrome with the StrikeHub template
+   "Sage" style guide. Template maps: card = glass + 16px + shadow + blur;
+   sans for body/nav/buttons, mono reserved for tags/status/badges; pill
+   buttons with tonal/outline/ghost variants; glass pill inputs; tinted
+   status badges; heavy-glass dialogs.
+   =========================================================================== */
+
+/* --- Typography: sans for body/nav/cards; mono stays on status + tags. ---
+   Base chrome sets --font-mono on nav rows, action cards and buttons; the
+   template uses IBM Plex Sans there and reserves mono for identifiers. */
+.sage .sidebar-flat-item,
+.sage .action-card,
+.sage .action-card-label,
+.sage .dashboard-section-title,
+.sage .button,
+.sage .settings-page .setting-name,
+.sage .settings-page .setting-toggle {
+    font-family: var(--font-sans);
+}
+
+/* --- Cards: frosted glass, 16px, soft shadow (template .card). ---
+   Covers the dashboard action tiles (the most visible surface), settings
+   cards and generic cards. */
+.sage .action-card,
+.sage .card,
+.sage .settings-card,
+.sage .dashboard-card {
+    border-radius: 16px;
+    background: var(--sage-glass-bg);
+    border: 1px solid var(--sage-glass-line);
+    box-shadow: var(--sage-glass-sh);
+    backdrop-filter: blur(16px);
+}
+.sage .action-card:hover {
+    background: var(--sage-tint);
+    border-color: color-mix(in srgb, var(--primary) 32%, transparent);
+}
+
+/* --- Buttons: pill height 40, sans 600; template variant colors. --- */
+.sage .button {
+    height: 40px;
+    padding: 0 22px;
+    font-weight: 600;
+}
+.sage .button[data-size="small"] {
+    height: 32px;
+    padding: 0 16px;
+}
+/* tonal (our "secondary"): tint fill, mint text */
+.sage .button[data-style="secondary"] {
+    background-color: var(--sage-tint);
+    color: var(--sage-pri2);
+}
+/* outline: hairline border, mint text */
+.sage .button[data-style="outline"] {
+    border-color: var(--sage-line2);
+    color: var(--sage-pri2);
+}
+/* ghost: muted, tint on hover (hover already set above) */
+.sage .button[data-style="ghost"] {
+    color: var(--muted-foreground);
+}
+.sage .button[data-style="ghost"]:hover:not(:disabled),
+.sage .button[data-style="secondary"]:hover:not(:disabled),
+.sage .button[data-style="outline"]:hover:not(:disabled) {
+    color: var(--sage-pri2);
+}
+
+/* --- Inputs: glass pill-ish field, 12px radius, sans (template .inp). --- */
+.sage .text-input {
+    height: 44px;
+    border-radius: 12px;
+    background: var(--sage-glass-bg);
+    border: 1px solid var(--sage-line2);
+    font-family: var(--font-sans);
+}
+.sage .text-input:focus {
+    border-color: var(--primary);
+}
+
+/* --- Settings toggle as a glass segmented control (template .seg). --- */
+.sage .settings-page .setting-toggle {
+    border-radius: 999px;
+    background: var(--sage-glass-bg);
+    border: 1px solid var(--sage-glass-line);
+    padding: 4px;
+    gap: 2px;
+}
+.sage .settings-page .toggle-btn {
+    border-radius: 999px;
+    padding: 8px 18px;
+}
+.sage .settings-page .toggle-btn.active {
+    background: var(--sage-tint);
+    color: var(--sage-pri2);
+    font-weight: 600;
+}
+
+/* --- Selectable list selected row: tint + mint (template row select). --- */
+.sage .selectable-list-item.selected {
+    color: var(--sage-pri2);
+    border-radius: 9px;
+}
+
+/* --- Nav tag pill (template .navlink .tag): mono, glass, hairline. --- */
+.sage .sidebar-badge {
+    font-family: var(--font-mono);
+    border-radius: 6px;
+    background: var(--sage-glass-bg);
+    border: 1px solid var(--sage-line2);
+    color: var(--sage-dim);
+}
+
+/* --- Dialogs / modals: heavy glass, generous radius (template .dialog). --- */
+.sage .help-modal,
+.sage .wifi-warning-content {
+    border-radius: 28px;
+    background: color-mix(in srgb, var(--card) 90%, transparent);
+    border: 1px solid var(--sage-glass-line);
+    box-shadow:
+        0 24px 60px rgba(0, 0, 0, 0.5),
+        inset 0 1px 0 rgba(255, 255, 255, 0.07);
+    backdrop-filter: blur(20px);
+}
