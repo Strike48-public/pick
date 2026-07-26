@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 
 use pentest_core::matrix::DocumentSummary;
 
-use super::chat_panel::ChatHeaderCtx;
+use super::chat_panel::{format_relative_time, ChatHeaderCtx};
 use super::icons::{
     ChevronLeft, FileText, LogOut, Menu, Network, Plus, Settings, STRIKE48_S_BADGE_SVG,
 };
@@ -73,6 +73,10 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     // The active conversation's ID — scopes the bottom documents strip to docs
     // written in THIS conversation (the top-bar Docs icon lists all reports).
     let conversation_id = use_signal(|| None::<String>);
+    // Reports for the current agent — powers the Home resume card's "Open report"
+    // affordance and the drawer Reports count. Same source as DocumentsPanel;
+    // fetched here so the Home screen has it without opening the reports overlay.
+    let mut docs = use_signal(Vec::<DocumentSummary>::new);
     // Whether the full-screen Reports list overlay is open (Docs icon).
     let mut show_docs = use_signal(|| false);
     // Left slide-over navigation drawer (hamburger).
@@ -109,6 +113,27 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
             auth_token.set(t);
         }
     });
+
+    {
+        let api_url = props.api_url.clone();
+        use_effect(move || {
+            let api_url = api_url.clone();
+            let token = auth_token();
+            let aid = agent_id();
+            if token.is_empty() || api_url.is_empty() {
+                return;
+            }
+            spawn(async move {
+                let client = pentest_core::matrix::MatrixChatClient::new(api_url)
+                    .with_auth_token(token);
+                if let Ok(mut list) = client.list_documents(aid.as_deref()).await {
+                    // Newest first (timestamp is ISO-8601, lexical sort works).
+                    list.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+                    docs.set(list);
+                }
+            });
+        });
+    }
 
     // The base shell (brand bar + scan card + chat) is ALWAYS rendered so the
     // ChatPanel — and thus the live conversation — stays mounted. The report
@@ -186,6 +211,14 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                 },
                 span { class: "easy-drawer-item-icon", FileText { size: 18 } }
                 "Reports"
+                {
+                    let n = docs.read().len();
+                    if n > 0 {
+                        rsx! { span { class: "easy-drawer-badge", "{n}" } }
+                    } else {
+                        rsx! {}
+                    }
+                }
             }
             button {
                 class: "easy-drawer-item",
@@ -358,28 +391,83 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                 span { class: "easy-brand-badge", dangerous_inner_html: STRIKE48_S_BADGE_SVG }
                 span { class: "easy-brand-word", "Pick" }
             }
-            // Scan card: only shown on an empty chat once we're Connected. Hidden
-            // once a conversation starts (New Chat brings it back), and while
+            // Home (hero + resume card): shown on an empty chat once we're Connected.
+            // Hidden once a conversation starts (New Chat brings it back), and while
             // sign-in is still pending — the ChatPanel shows the "complete sign-in
             // in the browser" message then, and a Scan button would do nothing.
             // Gated on the authoritative `flow` (not the local auth_token signal,
             // which can diverge from the session token the chat uses).
             if !conversation_active() && matches!(flow(), crate::auth_flow::AuthFlow::Connected { .. }) {
-                div { class: "action-grid",
-                    div {
-                        class: "action-card",
-                        onclick: move |_| {
-                            // Record scan.start tagged with its source so
-                            // button-initiated scans are distinguishable from typed
-                            // ones in the trace data.
-                            pentest_core::telemetry::record(
-                                pentest_core::telemetry::Activity::ScanStart,
-                                &[("channel", "easy"), ("source", "easy_mode_button")],
-                            );
-                            chat_mailbox.set(Some(easy_mode_scan_prompt()));
-                        },
-                        span { class: "action-card-icon", Network { size: 24 } }
-                        span { class: "action-card-label", "Scan My Network" }
+                div { class: "easy-home",
+                    div { class: "easy-home-hero",
+                        span { class: "easy-hero-badge", dangerous_inner_html: STRIKE48_S_BADGE_SVG }
+                        h1 { class: "easy-hero-title", "What's on your network?" }
+                        p { class: "easy-hero-sub",
+                            "One click enumerates every live host, its open services, and the risk they carry."
+                        }
+                        button {
+                            class: "easy-hero-scan",
+                            onclick: move |_| {
+                                pentest_core::telemetry::record(
+                                    pentest_core::telemetry::Activity::ScanStart,
+                                    &[("channel", "easy"), ("source", "easy_mode_button")],
+                                );
+                                chat_mailbox.set(Some(easy_mode_scan_prompt()));
+                            },
+                            span { class: "easy-hero-scan-icon", Network { size: 21 } }
+                            "Scan My Network"
+                        }
+                    }
+                    // Resume card — only when a recent conversation exists.
+                    {
+                        let recent = chat_header_ctx
+                            .read()
+                            .as_ref()
+                            .and_then(|c| c.conversations.first().cloned());
+                        if let Some(conv) = recent {
+                            let title = if conv.title.trim().is_empty() {
+                                "Untitled chat".to_string()
+                            } else {
+                                conv.title.clone()
+                            };
+                            let relative = format_relative_time(&conv.updated_at);
+                            // Latest report for THIS conversation, if any.
+                            let report = docs
+                                .read()
+                                .iter()
+                                .find(|d| d.conversation_id == conv.id)
+                                .cloned();
+                            let sub = resume_sub_line(&relative, report.is_some());
+                            let conv_id = conv.id.clone();
+                            rsx! {
+                                div { class: "easy-home-cards",
+                                    div { class: "easy-home-card",
+                                        div { class: "easy-card-eye", "Pick up where you left off" }
+                                        div { class: "easy-home-card-title", "{title}" }
+                                        div { class: "easy-home-card-sub", "{sub}" }
+                                        if let Some(doc) = report {
+                                            button {
+                                                class: "easy-home-card-btn",
+                                                onclick: move |_| viewing.set(Some(doc.clone())),
+                                                "Open report"
+                                            }
+                                        } else {
+                                            button {
+                                                class: "easy-home-card-btn",
+                                                onclick: move |_| {
+                                                    if let Some(c) = chat_header_ctx.peek().as_ref() {
+                                                        c.on_select_conversation.call(conv_id.clone());
+                                                    }
+                                                },
+                                                "Resume chat"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            rsx! {}
+                        }
                     }
                 }
             }
