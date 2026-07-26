@@ -63,7 +63,7 @@ pub fn easy_mode_scan_prompt() -> String {
      services (integer count enumerated), severity (a map with integer counts for \
      any of critical/high/medium/low/info), and findings (a short list, ideally 8 \
      or fewer, of items each with severity, title, and a one-to-two sentence body). \
-     Use those exact lowercase severity words. Every field is optional — include \
+     Use those exact lowercase severity words. Every field is optional; include \
      what you know. After the closing --- line, write the normal Markdown summary \
      (GFM tables are great for host/service breakdowns)."
         .to_string()
