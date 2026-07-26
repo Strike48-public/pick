@@ -148,6 +148,10 @@ async fn supervisor(
     let mut backoff = Backoff::new();
     let mut consecutive_failures: u32 = 0;
     let mut ref_counter: u64 = 0;
+    // Once we have ever reached Live, every later attempt is a *reconnect* — show
+    // "Reconnecting", never flicker back to "Connecting" (which resets on a
+    // healthy drop). Only the very first attempt shows "Connecting".
+    let mut has_connected = false;
 
     loop {
         if event_tx.is_closed() {
@@ -157,10 +161,10 @@ async fn supervisor(
         // Reflect the attempt about to happen.
         let attempt_state = if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
             ConnectionState::Failed
-        } else if consecutive_failures == 0 {
-            ConnectionState::Connecting
-        } else {
+        } else if has_connected || consecutive_failures > 0 {
             ConnectionState::Reconnecting
+        } else {
+            ConnectionState::Connecting
         };
         let _ = state_tx.send(attempt_state);
 
@@ -179,7 +183,9 @@ async fn supervisor(
             ConnectOutcome::ConsumerGone => return,
             ConnectOutcome::DisconnectedAfterLive => {
                 // A healthy connection dropped: reset failure tracking and
-                // reconnect quickly.
+                // reconnect quickly. Mark that we've been Live so the next
+                // attempt shows "Reconnecting", not "Connecting".
+                has_connected = true;
                 consecutive_failures = 0;
                 backoff.reset();
                 let _ = state_tx.send(ConnectionState::Reconnecting);
