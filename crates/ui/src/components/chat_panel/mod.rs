@@ -16,7 +16,7 @@ use dioxus::prelude::*;
 use pentest_core::matrix::{
     apply_event, build_error_notice, subscribe_conversation, AgentInfo, AgentStatus, ApplyOutcome,
     ChatClient, ChatMessage, ChatNotice, ChatNoticeKind, ConnectionState, ConversationInfo,
-    MatrixChatClient, UpdateAgentInput,
+    ConversationStreamEvent, MatrixChatClient, UpdateAgentInput,
 };
 use pentest_core::terminal::TerminalLine;
 use std::collections::HashMap;
@@ -890,6 +890,13 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         maybe_ev = sub.events.recv() => {
                             match maybe_ev {
                                 Some(ev) => {
+                                    // Re-check the active conversation AFTER the
+                                    // await: if the user switched while this event
+                                    // was in flight, drop it rather than apply the
+                                    // old conversation's event to the new one.
+                                    if conversation_id.peek().as_deref() != Some(cid.as_str()) {
+                                        break;
+                                    }
                                     // Tight write scope: never hold a signal guard
                                     // across an await (AlreadyBorrowed panic).
                                     let outcome = {
@@ -908,6 +915,17 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                         &cid,
                                     )
                                     .await;
+                                    // A final assistant Message clears the
+                                    // "Thinking…" spinner even if the terminal
+                                    // AgentStatusEvent is missed/late — otherwise
+                                    // a dropped status would leave it stuck on
+                                    // (no poller re-derives it now).
+                                    if let ConversationStreamEvent::Message(m) = &ev {
+                                        if m.sender_type != "USER" {
+                                            agent_thinking.set(false);
+                                            agent_status_text.set(String::new());
+                                        }
+                                    }
                                 }
                                 None => break, // transport ended for good
                             }
@@ -918,8 +936,13 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             }
                             let new_state = *sub.state.borrow();
                             connection_state.set(new_state);
-                            // (d) Catch-up fetch after recovering from a drop.
-                            if last_state == ConnectionState::Reconnecting
+                            // (d) Catch-up fetch on EVERY transition into Live —
+                            // both the first connect and reconnects. The initial
+                            // seed (a) runs before subscribe, so a turn that
+                            // completes in the connect gap would otherwise be lost
+                            // (no polling fallback). Re-seeding on first Live
+                            // closes that window; on reconnect it fills the drop.
+                            if last_state != ConnectionState::Live
                                 && new_state == ConnectionState::Live
                             {
                                 seed_from_conversation(
