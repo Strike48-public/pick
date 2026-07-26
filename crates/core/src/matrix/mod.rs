@@ -11,6 +11,7 @@ pub mod documents;
 pub mod phoenix_sub;
 pub mod pre_approval;
 pub mod report_meta;
+pub mod stream_apply;
 pub mod subscription;
 mod types;
 
@@ -27,6 +28,7 @@ pub use pre_approval::{
     clear_staged_ott, pre_approve, stage_ott_for_sdk, staged_ott_path, OttData,
 };
 pub use report_meta::{BadgeKind, ReportFinding, ReportMeta, SeverityBadge, SeverityCounts};
+pub use stream_apply::{apply_event, ApplyOutcome};
 pub use subscription::{
     subscribe_conversation, AbortOnDrop, ConnectionState, ConversationSubscription,
 };
