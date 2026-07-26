@@ -10,12 +10,13 @@ mod history;
 mod input;
 mod messages;
 mod next_steps;
-mod polling;
 mod render;
 
 use dioxus::prelude::*;
 use pentest_core::matrix::{
-    AgentInfo, ChatClient, ChatMessage, ConversationInfo, MatrixChatClient, UpdateAgentInput,
+    apply_event, build_error_notice, subscribe_conversation, AgentInfo, AgentStatus, ApplyOutcome,
+    ChatClient, ChatMessage, ChatNotice, ChatNoticeKind, ConnectionState, ConversationInfo,
+    MatrixChatClient, UpdateAgentInput,
 };
 use pentest_core::terminal::TerminalLine;
 use std::collections::HashMap;
@@ -28,9 +29,136 @@ use constants::*;
 use history::HistoryDropdown;
 use input::ChatInput;
 use messages::MessageList;
-use polling::{poll_and_update, ChatNoticeKind};
 pub use render::format_relative_time;
 use render::{CHART_PROCESSOR_JS, UTILS_JS};
+
+/// Resolve the dev TLS-insecure flag the same way the rest of the app does
+/// (`liveview_connector::token_refresh::build_http_client` and
+/// `pentest_core::matrix::insecure_tls`): BUILD-time `option_env!` first — the
+/// only source that reaches the mobile apps, which have no runtime environment —
+/// then the RUNTIME env for desktop/dev/headless.
+fn subscription_insecure_tls() -> bool {
+    let truthy = |v: &str| v == "true" || v == "1";
+    option_env!("MATRIX_TLS_INSECURE")
+        .or(option_env!("MATRIX_INSECURE"))
+        .map(truthy)
+        .filter(|&b| b)
+        .unwrap_or_else(|| {
+            std::env::var("MATRIX_TLS_INSECURE")
+                .or_else(|_| std::env::var("MATRIX_INSECURE"))
+                .map(|v| truthy(&v))
+                .unwrap_or(false)
+        })
+}
+
+/// Human-readable label for a non-terminal agent status, mirroring the labels
+/// the old poller surfaced so the "Thinking..." semantics are preserved.
+fn status_label(status: AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::Processing => "Thinking...",
+        AgentStatus::Streaming => "Responding...",
+        AgentStatus::ExecutingTools => "Running tools...",
+        AgentStatus::AwaitingConsent => "Awaiting approval...",
+        AgentStatus::AwaitingClientTools => "Running client tools...",
+        _ => "Thinking...",
+    }
+}
+
+/// Merge server-truth messages with any local-only (`local-*`) messages the user
+/// has sent that the backend has not echoed yet, so a (re)connect catch-up never
+/// drops the in-flight user turn. Server messages win by id; unechoed locals are
+/// prepended.
+fn merge_server_messages(messages: &mut Signal<Vec<ChatMessage>>, server: Vec<ChatMessage>) {
+    let locals: Vec<ChatMessage> = messages
+        .peek()
+        .iter()
+        .filter(|m| m.id.starts_with("local-"))
+        .cloned()
+        .collect();
+    let mut merged = server;
+    for lm in locals {
+        let echoed = merged
+            .iter()
+            .any(|s| s.sender_type == "USER" && s.text == lm.text);
+        if !echoed {
+            merged.insert(0, lm);
+        }
+    }
+    messages.set(merged);
+}
+
+/// One HTTP `get_conversation` to seed history and the initial thinking state
+/// before the live subscription takes over (also used for reconnect catch-up).
+async fn seed_from_conversation(
+    client: &MatrixChatClient,
+    cid: &str,
+    messages: &mut Signal<Vec<ChatMessage>>,
+    agent_thinking: &mut Signal<bool>,
+    agent_status_text: &mut Signal<String>,
+) {
+    match client.get_conversation(cid).await {
+        Ok(state) => {
+            merge_server_messages(messages, state.messages);
+            if state.agent_status.is_terminal() {
+                agent_thinking.set(false);
+                agent_status_text.set(String::new());
+            } else {
+                agent_thinking.set(true);
+                agent_status_text.set(status_label(state.agent_status).to_string());
+            }
+        }
+        Err(e) => tracing::warn!("[chat] seed get_conversation failed: {e}"),
+    }
+}
+
+/// Fold an [`ApplyOutcome`] into the thinking/status/error signals. Called for
+/// every streamed event. On a terminal status it clears the thinking state and,
+/// if a validation round-trip is in flight, parses the Validator's verdicts.
+#[allow(clippy::too_many_arguments)]
+async fn apply_outcome(
+    outcome: ApplyOutcome,
+    client: &MatrixChatClient,
+    agent_thinking: &mut Signal<bool>,
+    agent_status_text: &mut Signal<String>,
+    error_msg: &mut Signal<Option<String>>,
+    chat_notice: &mut Signal<Option<ChatNotice>>,
+    pending_validator_apply: &mut Signal<Option<usize>>,
+    messages: &Signal<Vec<ChatMessage>>,
+) {
+    // The streamed error reason (AgentStatusEvent.error) is now available
+    // directly — surface it. Polling never saw this.
+    if let Some(err) = outcome.error.clone() {
+        error_msg.set(Some(err));
+    }
+
+    let Some(status) = outcome.status else {
+        return;
+    };
+
+    if status == AgentStatus::Error {
+        // Richer notice (token/rate-limit classification) via the Studio usage
+        // stats query, same as the old poller surfaced.
+        let notice = build_error_notice(client).await;
+        chat_notice.set(Some(notice));
+    }
+
+    if status.is_terminal() {
+        agent_thinking.set(false);
+        agent_status_text.set(String::new());
+
+        // Validator round-trip: the turn is done, so parse its reply and apply
+        // the verdicts to the evidence graph (previously done after polling).
+        let pending = *pending_validator_apply.peek();
+        if let Some(pending_count) = pending {
+            pending_validator_apply.set(None);
+            let mut em = *error_msg;
+            apply_validator_reply(&messages.peek(), pending_count, &mut em);
+        }
+    } else {
+        agent_thinking.set(true);
+        agent_status_text.set(status_label(status).to_string());
+    }
+}
 
 /// Parse the Validator Agent's latest reply and apply its verdicts to the
 /// evidence graph.
@@ -203,10 +331,22 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     let mut agent_thinking = use_signal(|| false);
     let mut agent_status_text = use_signal(String::new);
     let mut error_msg = use_signal(|| None::<String>);
-    // Subtle inline notice driven by poll_and_update — distinct from `error_msg`
-    // (which renders the loud red banner for call-failures). Used for things
-    // like "Token limit reached" where we want a softer, link-bearing message.
-    let mut chat_notice = use_signal(|| None::<polling::ChatNotice>);
+    // Subtle inline notice driven by the stream applier — distinct from
+    // `error_msg` (which renders the loud red banner for call-failures). Used for
+    // things like "Token limit reached" where we want a softer, link-bearing
+    // message.
+    let mut chat_notice = use_signal(|| None::<ChatNotice>);
+
+    // Live subscription plumbing (replaces the old 800ms HTTP poll).
+    // `connection_state` mirrors the transport's watch channel so the header can
+    // show a "Reconnecting..." chip / "Retry" button. `retry_tick` is bumped by
+    // the Retry button to force the subscription effect to respawn. When the
+    // active conversation is a Validator round-trip, `pending_validator_apply`
+    // holds the pending-node count so the terminal-status handler knows to parse
+    // and apply the Validator's verdicts (previously done right after polling).
+    let connection_state = use_signal(|| ConnectionState::Connecting);
+    let mut retry_tick = use_signal(|| 0u32);
+    let mut pending_validator_apply = use_signal(|| None::<usize>);
 
     // Per-agent conversation tracking
     let mut agent_conversations: Signal<HashMap<String, String>> = use_signal(HashMap::new);
@@ -665,6 +805,133 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     }
 
     // -----------------------------------------------------------------------
+    // Live conversation subscription (replaces HTTP polling)
+    // -----------------------------------------------------------------------
+    //
+    // A single `use_resource` owns the streaming lifecycle. It is keyed on the
+    // active `conversation_id` (+ `retry_tick`): when either changes, Dioxus
+    // drops the previous future — which drops the `ConversationSubscription`,
+    // whose `AbortOnDrop` tears the WebSocket down — and starts a fresh one for
+    // the new conversation. For each conversation it: (a) does one
+    // `get_conversation` to seed history + initial thinking state; (b) opens the
+    // subscription; (c) folds every event into `messages` via `apply_event` and
+    // updates the thinking/status/error/notice signals from the `ApplyOutcome`,
+    // mirroring the transport's connection state into `connection_state`; (d)
+    // re-runs the seed fetch on a Reconnecting -> Live transition to catch up on
+    // anything missed while offline. There is no post-send poll: replies arrive
+    // over this subscription.
+    {
+        let make_client = make_client.clone();
+        let api_url = api_url.clone();
+        let _subscription = use_resource(move || {
+            let make_client = make_client.clone();
+            let api_url = api_url.clone();
+            // Read the reactive deps synchronously so the resource restarts when
+            // the conversation changes or the user hits Retry.
+            let cid_opt = conversation_id();
+            let _ = retry_tick();
+            async move {
+                // Re-bind Copy signals mutably for use inside the async task.
+                let mut messages = messages;
+                let mut agent_thinking = agent_thinking;
+                let mut agent_status_text = agent_status_text;
+                let mut error_msg = error_msg;
+                let mut chat_notice = chat_notice;
+                let mut connection_state = connection_state;
+                let mut pending_validator_apply = pending_validator_apply;
+
+                let Some(cid) = cid_opt else {
+                    // No active conversation: nothing to stream. Reset the
+                    // connection chip so a stale Reconnecting/Failed doesn't linger.
+                    connection_state.set(ConnectionState::Connecting);
+                    return;
+                };
+
+                let client = make_client();
+
+                // (a) Seed history + initial status.
+                seed_from_conversation(
+                    &client,
+                    &cid,
+                    &mut messages,
+                    &mut agent_thinking,
+                    &mut agent_status_text,
+                )
+                .await;
+
+                // (b) Open the live subscription. `token_fn` reads the current
+                // session token on every (re)connect so reconnects use a fresh
+                // token; `insecure_tls` matches the rest of the app's dev flag.
+                let token_fn: Arc<dyn Fn() -> String + Send + Sync> =
+                    Arc::new(crate::session::get_auth_token);
+                let insecure = subscription_insecure_tls();
+                let mut sub =
+                    subscribe_conversation(api_url.clone(), cid.clone(), insecure, token_fn);
+
+                let mut last_state = *sub.state.borrow();
+                connection_state.set(last_state);
+
+                // (c) Stream loop. `select!` over events + connection-state; a
+                // top-of-loop guard is a belt-and-suspenders check in case the
+                // conversation id changes while the future is being torn down.
+                loop {
+                    if conversation_id.peek().as_deref() != Some(cid.as_str()) {
+                        break;
+                    }
+                    tokio::select! {
+                        maybe_ev = sub.events.recv() => {
+                            match maybe_ev {
+                                Some(ev) => {
+                                    // Tight write scope: never hold a signal guard
+                                    // across an await (AlreadyBorrowed panic).
+                                    let outcome = {
+                                        let mut m = messages.write();
+                                        apply_event(&mut m, &ev)
+                                    };
+                                    apply_outcome(
+                                        outcome,
+                                        &client,
+                                        &mut agent_thinking,
+                                        &mut agent_status_text,
+                                        &mut error_msg,
+                                        &mut chat_notice,
+                                        &mut pending_validator_apply,
+                                        &messages,
+                                    )
+                                    .await;
+                                }
+                                None => break, // transport ended for good
+                            }
+                        }
+                        changed = sub.state.changed() => {
+                            if changed.is_err() {
+                                break;
+                            }
+                            let new_state = *sub.state.borrow();
+                            connection_state.set(new_state);
+                            // (d) Catch-up fetch after recovering from a drop.
+                            if last_state == ConnectionState::Reconnecting
+                                && new_state == ConnectionState::Live
+                            {
+                                seed_from_conversation(
+                                    &client,
+                                    &cid,
+                                    &mut messages,
+                                    &mut agent_thinking,
+                                    &mut agent_status_text,
+                                )
+                                .await;
+                            }
+                            last_state = new_state;
+                        }
+                    }
+                }
+                // `sub` drops here -> AbortOnDrop stops the transport.
+            }
+        });
+    }
+
+    // -----------------------------------------------------------------------
     // Handlers
     // -----------------------------------------------------------------------
 
@@ -699,36 +966,13 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             if let Some(ref ag) = agent {
                 let stored_cid = agent_conversations.peek().get(&ag.id).cloned();
                 if let Some(cid) = stored_cid {
-                    conversation_id.set(Some(cid.clone()));
-                    let client = make_client();
-                    spawn(async move {
-                        match client.get_conversation(&cid).await {
-                            Ok(state) => {
-                                let active = !state.agent_status.is_terminal();
-                                messages.set(state.messages);
-                                if active {
-                                    agent_thinking.set(true);
-                                    agent_status_text.set("Thinking...".to_string());
-                                    poll_and_update(
-                                        client,
-                                        cid,
-                                        conversation_id,
-                                        messages,
-                                        agent_thinking,
-                                        agent_status_text,
-                                        error_msg,
-                                        chat_notice,
-                                    )
-                                    .await;
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to restore conversation: {}", e);
-                                conversation_id.set(None);
-                                messages.set(Vec::new());
-                            }
-                        }
-                    });
+                    // Clear the previous conversation's messages and switch the
+                    // active id. The subscription resource (keyed on
+                    // conversation_id) seeds history via get_conversation and
+                    // streams live updates from here on.
+                    messages.set(Vec::new());
+                    pending_validator_apply.set(None);
+                    conversation_id.set(Some(cid));
                 } else {
                     conversation_id.set(None);
                     messages.set(Vec::new());
@@ -817,22 +1061,13 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     let _ = document::eval("clearTextarea('.chat-input')").await;
                 });
 
+                // Send over HTTP; the reply streams back in via the live
+                // subscription (no post-send poll).
                 match client.send_message(&conv_id, &agent.id, &text).await {
                     Ok(_) => {
                         agent_thinking.set(true);
                         agent_status_text.set("Thinking...".to_string());
                         is_sending.set(false);
-                        poll_and_update(
-                            client,
-                            conv_id,
-                            conversation_id,
-                            messages,
-                            agent_thinking,
-                            agent_status_text,
-                            error_msg,
-                            chat_notice,
-                        )
-                        .await;
                     }
                     Err(e) => {
                         error_msg.set(Some(format!("Failed to send: {}", e)));
@@ -862,42 +1097,19 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
 
     // Consume conversation ID from the open_conversation_id mailbox (sidebar recent conversations).
     if let Some(mut conv_mailbox) = props.open_conversation_id {
-        let make_client = make_client.clone();
         use_effect(move || {
             let cid_opt = (conv_mailbox)();
             if let Some(cid) = cid_opt {
                 conv_mailbox.set(None);
-                conversation_id.set(Some(cid.clone()));
                 agent_thinking.set(false);
                 agent_status_text.set(String::new());
                 show_history.set(false);
-                let client = make_client();
-                spawn(async move {
-                    match client.get_conversation(&cid).await {
-                        Ok(state) => {
-                            messages.set(state.messages);
-                            let active = !state.agent_status.is_terminal();
-                            if active {
-                                agent_thinking.set(true);
-                                agent_status_text.set("Thinking...".to_string());
-                                poll_and_update(
-                                    client,
-                                    cid,
-                                    conversation_id,
-                                    messages,
-                                    agent_thinking,
-                                    agent_status_text,
-                                    error_msg,
-                                    chat_notice,
-                                )
-                                .await;
-                            }
-                        }
-                        Err(e) => {
-                            error_msg.set(Some(format!("Failed to load conversation: {}", e)));
-                        }
-                    }
-                });
+                // Switch the active id; the subscription resource seeds history
+                // and streams. Clear stale messages first so the previous
+                // conversation doesn't flash while the seed fetch runs.
+                messages.set(Vec::new());
+                pending_validator_apply.set(None);
+                conversation_id.set(Some(cid));
             }
         });
     }
@@ -1092,15 +1304,19 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             };
             let client = make_client();
             is_sending.set(true);
+            // Arm the terminal-status handler to parse + apply the Validator's
+            // verdicts once its turn finishes over the subscription (this used
+            // to run right after the poll loop returned).
+            pending_validator_apply.set(Some(pending_count));
 
             spawn(async move {
                 let conv_title = format!("Validation for {}", manifest.engagement.target);
                 let conv_id = match client.create_conversation(Some(&conv_title)).await {
                     Ok(id) => {
-                        conversation_id.set(Some(id.clone()));
                         agent_conversations
                             .write()
                             .insert(validator_agent.id.clone(), id.clone());
+                        conversation_id.set(Some(id.clone()));
                         id
                     }
                     Err(e) => {
@@ -1110,6 +1326,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             validator_agent.name, e
                         )));
                         is_sending.set(false);
+                        pending_validator_apply.set(None);
                         return;
                     }
                 };
@@ -1124,6 +1341,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 messages.write().push(user_msg);
                 user_scrolled_up.set(false);
 
+                // Send over HTTP; the Validator's reply streams back via the
+                // subscription. When the turn reaches a terminal status,
+                // apply_outcome parses the verdicts (see pending_validator_apply).
                 match client
                     .send_message(&conv_id, &validator_agent.id, &seed)
                     .await
@@ -1132,29 +1352,11 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         agent_thinking.set(true);
                         agent_status_text.set("Validating findings...".to_string());
                         is_sending.set(false);
-                        poll_and_update(
-                            client,
-                            conv_id,
-                            conversation_id,
-                            messages,
-                            agent_thinking,
-                            agent_status_text,
-                            error_msg,
-                            chat_notice,
-                        )
-                        .await;
-
-                        // Polling has ended. Parse the Validator's latest reply
-                        // and apply its verdicts to the evidence graph. The
-                        // verdict block is machine-parseable per the Validator
-                        // system prompt; a reply we cannot parse is surfaced so
-                        // the operator does not silently proceed to an empty or
-                        // stuck report.
-                        apply_validator_reply(&messages.peek(), pending_count, &mut error_msg);
                     }
                     Err(e) => {
                         error_msg.set(Some(format!("Failed to send validation seed: {e}")));
                         is_sending.set(false);
+                        pending_validator_apply.set(None);
                     }
                 }
             });
@@ -1267,22 +1469,13 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 messages.write().push(user_msg);
                 user_scrolled_up.set(false);
 
+                // Send over HTTP; the Report Agent's reply streams back via the
+                // subscription (no post-send poll).
                 match client.send_message(&conv_id, &report_agent.id, &seed).await {
                     Ok(_) => {
                         agent_thinking.set(true);
                         agent_status_text.set("Rendering report...".to_string());
                         is_sending.set(false);
-                        poll_and_update(
-                            client,
-                            conv_id,
-                            conversation_id,
-                            messages,
-                            agent_thinking,
-                            agent_status_text,
-                            error_msg,
-                            chat_notice,
-                        )
-                        .await;
                     }
                     Err(e) => {
                         error_msg.set(Some(format!("Failed to send report seed: {e}")));
@@ -1294,9 +1487,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     });
 
     let on_select_conversation = EventHandler::new({
-        let make_client = make_client.clone();
         move |cid: String| {
-            conversation_id.set(Some(cid.clone()));
             if let Some(agent) = selected_agent.peek().as_ref() {
                 agent_conversations
                     .write()
@@ -1305,33 +1496,12 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             show_history.set(false);
             agent_thinking.set(false);
             agent_status_text.set(String::new());
-            let client = make_client();
-            spawn(async move {
-                match client.get_conversation(&cid).await {
-                    Ok(state) => {
-                        messages.set(state.messages);
-                        let active = !state.agent_status.is_terminal();
-                        if active {
-                            agent_thinking.set(true);
-                            agent_status_text.set("Thinking...".to_string());
-                            poll_and_update(
-                                client,
-                                cid,
-                                conversation_id,
-                                messages,
-                                agent_thinking,
-                                agent_status_text,
-                                error_msg,
-                                chat_notice,
-                            )
-                            .await;
-                        }
-                    }
-                    Err(e) => {
-                        error_msg.set(Some(format!("Failed to load conversation: {}", e)));
-                    }
-                }
-            });
+            // Switch the active id; the subscription resource seeds history and
+            // streams. Clear stale messages so the previous conversation doesn't
+            // flash while the seed fetch runs.
+            messages.set(Vec::new());
+            pending_validator_apply.set(None);
+            conversation_id.set(Some(cid));
         }
     });
 
@@ -1343,6 +1513,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // which would trigger parent→child re-render cascades (infinite loop).
     // The effect runs AFTER render and only re-runs when its tracked signal
     // dependencies (agents, selected_agent, agents_loaded, show_history) change.
+    // Retry handler for the desktop header bar's chip: bump retry_tick so the
+    // subscription resource respawns.
+    let on_retry = EventHandler::new(move |_: ()| retry_tick += 1);
     {
         let is_full = props.full_page;
         let api_url_empty = api_url.is_empty();
@@ -1366,6 +1539,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 on_select_conversation,
                 on_validate_findings,
                 on_generate_report,
+                connection_state: connection_state(),
+                on_retry,
             };
             // Only write if the data actually changed (avoids unnecessary parent re-renders).
             let needs_update = {
@@ -1508,6 +1683,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     show_history: show_history,
                     is_full: is_full,
                     on_close: move |_| trigger_close(),
+                    connection_state: connection_state,
+                    on_retry: move |_| retry_tick += 1,
                 }
             }
 

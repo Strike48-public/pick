@@ -6,8 +6,6 @@ pub const CHAT_MIN_WIDTH: i32 = 280;
 pub const CHAT_MAX_WIDTH: i32 = 800;
 pub const CHAT_DEFAULT_WIDTH: i32 = 380;
 
-pub const POLL_INTERVAL_MS: u64 = 800;
-
 /// Suggested quick-action prompts shown in the empty chat state.
 pub const SUGGESTED_ACTIONS: &[(&str, &str)] = &[
     ("Scan Network", "Run a full network discovery — ARP, mDNS, and SSDP — and summarize what you find."),
