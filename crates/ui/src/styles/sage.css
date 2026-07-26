@@ -11,13 +11,14 @@
         var(--background);
 }
 
-/* Glass sidebar + header. */
+/* Glass sidebar + header. The `background` shorthand must come LAST so the
+   translucent glass fill wins; an earlier `background-color: var(--sidebar)`
+   would only take effect if the shorthand were ever removed. (The original
+   order had the opaque color last, which silently defeated the glass.) */
 .sage .sidebar {
     background: var(--sage-glass-bg);
     border-right: 1px solid var(--sage-glass-line);
     backdrop-filter: blur(20px);
-    /* Opaque fallback if backdrop-filter is unsupported. */
-    background-color: var(--sidebar);
 }
 .sage .desktop-header,
 .sage .page-header {
@@ -77,4 +78,21 @@
 .sage .status-bar {
     font-family: var(--font-mono);
     color: var(--sage-dim);
+}
+
+/* Accent-as-background legibility fix. In most themes --accent is a dark
+   neutral, so chrome that paints `background: var(--accent)` with
+   `color: var(--foreground)` reads fine. In Sage --accent is gold (#c9b27e);
+   near-white foreground text on gold is unreadable (~1.3:1). Repoint those
+   accent-fills to the sage tint (same wash the nav items use), which keeps
+   foreground text legible. Text-on-gold is reserved for the primary CTA,
+   which sets its own dark on-primary color. */
+.sage .status-bar-hint kbd,
+.sage .session-uptime,
+.sage .selectable-list-item.selected,
+.sage .context-menu-item:hover,
+.sage .button[data-style="secondary"]:hover:not(:disabled),
+.sage .button[data-style="outline"]:hover:not(:disabled),
+.sage .button[data-style="ghost"]:hover:not(:disabled) {
+    background: var(--sage-tint);
 }
