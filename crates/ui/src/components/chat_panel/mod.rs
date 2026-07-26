@@ -132,8 +132,16 @@ pub struct ChatPanelProps {
     #[props(default)]
     pub send_mailbox: Option<Signal<Option<String>>>,
     /// When true, renders as an inline full-page view instead of a slide-out overlay.
+    /// Set by BOTH the easy-mode shell and the expert full-page Chat page, so it
+    /// controls layout only — use `easy_mode` for lay-friendly copy/behavior.
     #[props(default)]
     pub full_page: bool,
+    /// True only in the easy-mode shell. Drives lay-friendly empty-state copy
+    /// (the "Scan My Network" greeting) and hides the expert suggested-action
+    /// chips. Distinct from `full_page`, which the expert full-page chat also
+    /// sets — conflating them leaked easy-mode copy into the expert shell.
+    #[props(default)]
+    pub easy_mode: bool,
     /// Mailbox to open a specific conversation by ID (set by sidebar recent conversations).
     #[props(default)]
     pub open_conversation_id: Option<Signal<Option<String>>>,
@@ -1533,7 +1541,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 on_send: send_message.clone(),
                 conversation_list: conversation_list,
                 on_select_conversation: on_select_conversation,
-                easy_mode: props.full_page,
+                easy_mode: props.easy_mode,
                 awaiting_auth: awaiting_auth,
                 needs_sign_in: needs_sign_in,
                 on_sign_in: {

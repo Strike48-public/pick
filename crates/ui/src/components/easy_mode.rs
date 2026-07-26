@@ -381,6 +381,7 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                     on_close: move |_| {},
                     send_mailbox: props.chat_mailbox,
                     full_page: true,
+                    easy_mode: true,
                     open_conversation_id: props.conversation_mailbox,
                     selected_agent_out: Some(agent_id),
                     conversation_active_out: Some(conversation_active),
