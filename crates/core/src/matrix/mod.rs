@@ -8,6 +8,7 @@ mod auth;
 pub mod chat_notice;
 mod client;
 pub mod documents;
+pub mod phoenix_sub;
 pub mod pre_approval;
 pub mod report_meta;
 mod types;
@@ -17,6 +18,10 @@ pub use auth::*;
 pub use chat_notice::{build_error_notice, studio_url_from_api, ChatNotice, ChatNoticeKind};
 pub use client::MatrixChatClient;
 pub use documents::{latest_document, preview_url, DocumentSummary};
+pub use phoenix_sub::{
+    build_ws_url, create_heartbeat, create_join, create_subscription, extract_event, parse_event,
+    ConversationStreamEvent, CONVERSATION_EVENTS_SUBSCRIPTION,
+};
 pub use pre_approval::{
     clear_staged_ott, pre_approve, stage_ott_for_sdk, staged_ott_path, OttData,
 };

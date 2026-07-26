@@ -50,6 +50,9 @@ strike48-connector = { workspace = true }
 reqwest = { workspace = true }
 futures = { workspace = true }
 
+# URL encoding
+urlencoding = "2.1"
+
 # Browser-based OAuth login (optional, desktop only)
 open = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }

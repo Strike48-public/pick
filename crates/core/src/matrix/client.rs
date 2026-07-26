@@ -365,7 +365,7 @@ struct ConversationInfoNode {
 // Parse helpers for rich message parts
 // ---------------------------------------------------------------------------
 
-fn parse_message_parts(parts_json: &[serde_json::Value]) -> (String, Vec<MessagePart>) {
+pub(crate) fn parse_message_parts(parts_json: &[serde_json::Value]) -> (String, Vec<MessagePart>) {
     let mut text_buf = String::new();
     let mut rich_parts = Vec::new();
 
