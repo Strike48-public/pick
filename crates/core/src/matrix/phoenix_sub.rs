@@ -181,7 +181,7 @@ subscription ConversationEvents($conversationId: ID!) {
 
 /// Build WebSocket URL for Absinthe GraphQL subscription.
 /// Converts http -> ws, https -> wss, sets path to /v1alpha/graphql_socket/websocket,
-/// and adds token and vsn query parameters.
+/// and adds the token query parameter (no vsn -> Phoenix v1 object frames).
 pub fn build_ws_url(api_url: &str, token: &str) -> String {
     let api_url = api_url.trim_end_matches('/');
 
@@ -198,8 +198,15 @@ pub fn build_ws_url(api_url: &str, token: &str) -> String {
     // URL-encode the token
     let encoded_token = urlencoding::encode(token);
 
+    // NO `vsn` param. Phoenix then defaults to its v1 (object) serializer, which
+    // matches the `{topic, event, payload, ref}` frames create_join/
+    // create_subscription build. Passing `vsn=2.0.0` would demand v2 ARRAY
+    // frames (`[join_ref, ref, topic, event, payload]`); sending object frames
+    // under v2 makes the server silently fail to decode the join (never acks),
+    // so no events ever arrive. This matches the working matrix-core client,
+    // which also sends only `?token=`.
     format!(
-        "{}://{}/v1alpha/graphql_socket/websocket?token={}&vsn=2.0.0",
+        "{}://{}/v1alpha/graphql_socket/websocket?token={}",
         scheme, rest, encoded_token
     )
 }
@@ -471,11 +478,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ws_url_https_to_wss_with_token_and_vsn() {
+    fn ws_url_https_to_wss_with_token_no_vsn() {
         let u = build_ws_url("https://plg.strike48.test", "tok en/+");
         assert!(u.starts_with("wss://plg.strike48.test/v1alpha/graphql_socket/websocket?"));
         assert!(u.contains("token=tok%20en%2F%2B")); // url-encoded
-        assert!(u.contains("vsn=2.0.0"));
+        // No vsn param -> Phoenix v1 (object) serializer, matching our frames.
+        assert!(!u.contains("vsn="));
         assert_eq!(build_ws_url("http://localhost:4000", "t").split("://").next(), Some("ws"));
     }
 
