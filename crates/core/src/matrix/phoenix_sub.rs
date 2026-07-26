@@ -131,6 +131,50 @@ subscription ConversationEvents($conversationId: ID!) {
       metadata
       timestamp
     }
+    ... on ChildMessageEvent {
+      id
+      type
+      messageType
+      sourceConversationId
+      sourceConversationTitle
+      timestamp
+      data
+    }
+    ... on ToolResultCompactingEvent {
+      id
+      conversationId
+      timestamp
+      toolCallId
+      toolName
+      originalSizeBytes
+    }
+    ... on ToolResultCompactedEvent {
+      id
+      conversationId
+      timestamp
+      toolCallId
+      toolName
+      format
+      originalSizeBytes
+      encodedSizeBytes
+      tokenSavingsPct
+    }
+    ... on ConversationCompactingEvent {
+      id
+      conversationId
+      timestamp
+      messageCount
+    }
+    ... on ConversationCompactedEvent {
+      id
+      conversationId
+      snapshotId
+      messagesSummarized
+      lastMessageId
+      snapshotTokens
+      snapshotSizeBytes
+      timestamp
+    }
   }
 }
 "#;
