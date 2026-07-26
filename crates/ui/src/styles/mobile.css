@@ -1137,3 +1137,138 @@ body {
 }
 /* The global button:hover green fill would fight the switch — keep it flat. */
 .easy-toggle:hover { background: none; color: inherit; }
+
+/* Easy Mode Home — hero + contextual cards (template Home screen). */
+.easy-home {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 24px;
+    width: 100%;
+    max-width: 660px;
+    margin: 0 auto;
+    padding: 48px 20px 24px;
+}
+.easy-home-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+    text-align: center;
+    width: 100%;
+}
+.easy-hero-badge {
+    width: 54px;
+    height: 54px;
+    border-radius: 15px;
+    background: var(--em-brand);
+    color: var(--em-on-primary);
+    display: grid;
+    place-items: center;
+}
+.easy-hero-badge svg {
+    width: 32px;
+    height: 32px;
+}
+.easy-hero-title {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--em-text);
+    margin: 0;
+}
+.easy-hero-sub {
+    font-size: 14px;
+    color: var(--em-text);
+    opacity: 0.7;
+    line-height: 1.5;
+    text-wrap: pretty;
+    margin: 0;
+    max-width: 46ch;
+}
+.easy-hero-scan {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    height: 62px;
+    border: none;
+    border-radius: 999px;
+    background: var(--em-scan-bg);
+    color: var(--em-on-scan);
+    font-size: 17px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter 0.15s;
+}
+.easy-hero-scan:hover {
+    filter: brightness(1.06);
+}
+.easy-hero-scan-icon {
+    display: inline-flex;
+    align-items: center;
+}
+.easy-home-cards {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+    width: 100%;
+}
+.easy-home-card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 16px 18px;
+    background: var(--em-surface);
+    border: 1px solid var(--em-border);
+    border-radius: var(--em-radius-card);
+}
+.easy-card-eye {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--em-text);
+    opacity: 0.5;
+    margin-bottom: 5px;
+}
+.easy-home-card-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--em-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.easy-home-card-sub {
+    font-size: 12px;
+    color: var(--em-text);
+    opacity: 0.6;
+}
+.easy-home-card-btn {
+    align-self: flex-start;
+    margin-top: 10px;
+    height: 32px;
+    padding: 0 16px;
+    border-radius: var(--em-radius-pill);
+    border: 1px solid var(--em-border-strong);
+    background: transparent;
+    color: var(--em-text);
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.15s;
+}
+.easy-home-card-btn:hover {
+    background: var(--em-surface-soft);
+}
+/* Drawer Reports count tag. */
+.easy-drawer-badge {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--em-on-primary);
+    background: var(--em-brand);
+    border-radius: var(--em-radius-pill);
+    padding: 1px 8px;
+}
