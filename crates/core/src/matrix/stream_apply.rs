@@ -71,18 +71,21 @@ pub fn apply_event(msgs: &mut Vec<ChatMessage>, ev: &ConversationStreamEvent) ->
                 }
             };
 
-            // Append to trailing Text part or create one
+            // `content` is CUMULATIVE (the full text so far), not a delta — the
+            // backend/web client treat it as "grows rather than increments" and
+            // reset the last text part. Appending would repeat text
+            // ("Perfect" -> "PerfectPerfect!" -> ...). Replace instead.
             match msg.parts.last_mut() {
                 Some(MessagePart::Text(text)) => {
-                    text.push_str(content);
+                    text.clone_from(content);
                 }
                 _ => {
                     msg.parts.push(MessagePart::Text(content.clone()));
                 }
             }
 
-            // Keep .text in sync
-            msg.text.push_str(content);
+            // Keep .text in sync (also cumulative).
+            msg.text.clone_from(content);
 
             ApplyOutcome::default()
         }
@@ -106,10 +109,10 @@ pub fn apply_event(msgs: &mut Vec<ChatMessage>, ev: &ConversationStreamEvent) ->
                 }
             };
 
-            // Append to trailing Thinking part or create one
+            // Cumulative, like MessagePartStreamingEvent — replace, don't append.
             match msg.parts.last_mut() {
                 Some(MessagePart::Thinking(thinking)) => {
-                    thinking.push_str(content);
+                    thinking.clone_from(content);
                 }
                 _ => {
                     msg.parts.push(MessagePart::Thinking(content.clone()));
@@ -305,7 +308,11 @@ mod tests {
     }
 
     #[test]
-    fn part_streaming_appends_to_in_flight_message() {
+    fn part_streaming_replaces_with_cumulative_content() {
+        // MessagePartStreamingEvent.content is CUMULATIVE (full text so far),
+        // not a delta — each event carries the whole string, so we replace the
+        // text part rather than append (appending repeated: "Hel"->"Hello"
+        // becoming "HelHello").
         let mut msgs = vec![];
         apply_event(
             &mut msgs,
@@ -318,7 +325,7 @@ mod tests {
             &mut msgs,
             &ConversationStreamEvent::PartStreaming {
                 message_id: "m1".into(),
-                content: "lo".into(),
+                content: "Hello".into(),
             },
         );
         assert_eq!(msgs.len(), 1);
