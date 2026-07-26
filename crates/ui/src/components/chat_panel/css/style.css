@@ -455,6 +455,9 @@
     color: var(--muted-foreground);
     line-height: 1.4;
 }
+.chat-empty-auth .button {
+    margin-top: 8px;
+}
 
 .chat-greeting {
     font-style: italic;

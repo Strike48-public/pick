@@ -40,6 +40,16 @@ pub struct MessageListProps {
     /// the browser rather than the misleading "Select an agent to begin".
     #[props(default)]
     pub awaiting_auth: bool,
+    /// True when the chat has no auth token yet and sign-in has not started.
+    /// The empty state then shows an explicit "Sign in to Strike48" button
+    /// instead of the misleading "Select an agent to begin". Used by the
+    /// expert full-page chat, which (unlike the lazy-OAuth expert sidebar) has
+    /// no other way to kick off sign-in.
+    #[props(default)]
+    pub needs_sign_in: bool,
+    /// Called when the user clicks the empty-state "Sign in to Strike48" button.
+    #[props(default)]
+    pub on_sign_in: EventHandler<()>,
 }
 
 /// Scrollable message list, thinking indicator, and scroll-to-bottom FAB.
@@ -116,6 +126,17 @@ pub fn MessageList(props: MessageListProps) -> Element {
                         div { class: "chat-empty chat-empty-auth",
                             p { class: "chat-empty-auth-title", "Complete your sign-in in the browser" }
                             p { class: "chat-empty-auth-sub", "We opened your browser to sign in to Strike48. Come back here once you're done — this will update automatically." }
+                        }
+                    } else if props.needs_sign_in {
+                        div { class: "chat-empty chat-empty-auth",
+                            p { class: "chat-empty-auth-title", "Chat needs sign-in" }
+                            p { class: "chat-empty-auth-sub", "Sign in to Strike48 to talk to the agent." }
+                            button {
+                                class: "button",
+                                "data-style": "primary",
+                                onclick: move |_| props.on_sign_in.call(()),
+                                "Sign in to Strike48"
+                            }
                         }
                     } else {
                         div { class: "chat-empty",

@@ -240,7 +240,15 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // Auth token resolution — prefer session store (set by connector), then prop
     // -----------------------------------------------------------------------
 
+    // Bumped whenever we write the session token out-of-band (browser OAuth
+    // success). The session store is a process-global RwLock, not a signal, so
+    // without this the render never re-reads it after sign-in and stays stuck on
+    // the "complete sign-in in the browser" state until an unrelated re-render.
+    // Reading it here makes `effective_token` reactive to that write.
+    let token_tick = use_signal(|| 0u32);
+
     let effective_token = {
+        let _ = token_tick(); // subscribe: re-resolve the token when it changes
         let session_token = crate::session::get_auth_token();
         if !session_token.is_empty() {
             session_token
@@ -354,15 +362,64 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // -----------------------------------------------------------------------
 
     // Track whether we've attempted browser auth
-    let mut browser_auth_attempted = use_signal(|| false);
+    let browser_auth_attempted = use_signal(|| false);
 
-    // Lazy browser-OAuth is for the EXPERT shell only. Easy mode
-    // (props.full_page) makes sign-in an explicit user gesture: the easy-mode
-    // "Sign in" button drives plg_sign_in_and_connect in connector_app, which
-    // opens the browser (desktop) or presents the native OAuth sheet (mobile,
-    // which REQUIRES a user gesture with the scene foreground-active — auto-
-    // firing here silently fails to present). So in easy mode this auto-trigger
-    // is skipped and the not-signed-in state shows the Sign in button instead.
+    // Shared browser-OAuth kickoff — used both by the expert sidebar's lazy
+    // auto-trigger and the full-page empty-state "Sign in" button. Marks the
+    // attempt, opens the browser, and on success writes + persists the chat
+    // token (the effect on `effective_token` picks it up and loads agents).
+    let start_browser_auth = {
+        let api_url = api_url.clone();
+        move || {
+            if api_url.is_empty() {
+                return;
+            }
+            // Re-bind the Copy signals mutably per call so this stays an `Fn`
+            // closure (usable by both the auto-trigger and the button handler).
+            let mut browser_auth_attempted = browser_auth_attempted;
+            let mut token_tick = token_tick;
+            browser_auth_attempted.set(true);
+            let api_url_clone = api_url.clone();
+            crate::liveview_server::push_terminal_line(TerminalLine::info(
+                "[chat] No auth token — opening browser for authentication...",
+            ));
+            spawn(async move {
+                match pentest_core::matrix::fetch_matrix_token_browser(&api_url_clone).await {
+                    Ok(token) => {
+                        tracing::info!(
+                            "[chat] Browser auth succeeded, token length: {}",
+                            token.len()
+                        );
+                        crate::liveview_server::set_matrix_credentials(&api_url_clone, &token);
+                        crate::session::set_auth_token(&token);
+                        // Persist so relaunch skips sign-in (Keychain on iOS).
+                        crate::session::persist_matrix_token(&token, &api_url_clone);
+                        // Bump the tick so the render re-reads the session store
+                        // (RwLock, not a signal) and drops the awaiting state.
+                        token_tick += 1;
+                        crate::liveview_server::push_terminal_line(TerminalLine::success(
+                            "[chat] Authentication successful — chat ready",
+                        ));
+                    }
+                    Err(e) => {
+                        tracing::warn!("[chat] Browser auth failed: {}", e);
+                        crate::liveview_server::push_terminal_line(TerminalLine::error(format!(
+                            "[chat] Authentication failed: {}",
+                            e
+                        )));
+                    }
+                }
+            });
+        }
+    };
+
+    // Lazy browser-OAuth is for the EXPERT SIDEBAR only (not full_page). The
+    // full-page chat — expert AND easy — makes sign-in an explicit user gesture
+    // instead: mobile OAuth REQUIRES a user gesture with the scene foreground-
+    // active (auto-firing silently fails to present), and the expert full-page
+    // chat has no connection screen to kick it off. So full_page shows a
+    // "Sign in to Strike48" button (see `needs_sign_in` below); only the
+    // sidebar auto-triggers here.
     if !props.full_page
         && props.visible
         && effective_token.is_empty()
@@ -370,43 +427,21 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         && !browser_auth_attempted()
         && !agents_loaded()
     {
-        browser_auth_attempted.set(true);
-        let api_url_clone = api_url.clone();
-
-        crate::liveview_server::push_terminal_line(TerminalLine::info(
-            "[chat] No auth token — opening browser for authentication...",
-        ));
-
-        spawn(async move {
-            match pentest_core::matrix::fetch_matrix_token_browser(&api_url_clone).await {
-                Ok(token) => {
-                    tracing::info!(
-                        "[chat] Browser auth succeeded, token length: {}",
-                        token.len()
-                    );
-                    crate::liveview_server::set_matrix_credentials(&api_url_clone, &token);
-                    crate::session::set_auth_token(&token);
-                    // Persist so relaunch skips sign-in (Keychain on iOS).
-                    crate::session::persist_matrix_token(&token, &api_url_clone);
-                    crate::liveview_server::push_terminal_line(TerminalLine::success(
-                        "[chat] Authentication successful — chat ready",
-                    ));
-                }
-                Err(e) => {
-                    tracing::warn!("[chat] Browser auth failed: {}", e);
-                    crate::liveview_server::push_terminal_line(TerminalLine::error(format!(
-                        "[chat] Authentication failed: {}",
-                        e
-                    )));
-                }
-            }
-        });
+        start_browser_auth.clone()();
     }
 
     // Browser OAuth for the chat token has been opened but hasn't returned yet
     // (no token, agents not loaded). Drives the "finish sign-in in the browser"
     // empty state so the user isn't shown a misleading "Select an agent".
     let awaiting_auth = browser_auth_attempted() && effective_token.is_empty() && !agents_loaded();
+
+    // Full-page chat with no token and sign-in not yet started: show the
+    // explicit "Sign in to Strike48" button in the empty state.
+    let needs_sign_in = props.full_page
+        && effective_token.is_empty()
+        && !api_url.is_empty()
+        && !browser_auth_attempted()
+        && !agents_loaded();
 
     // -----------------------------------------------------------------------
     // Fetch agents when we have a token
@@ -1500,6 +1535,11 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 on_select_conversation: on_select_conversation,
                 easy_mode: props.full_page,
                 awaiting_auth: awaiting_auth,
+                needs_sign_in: needs_sign_in,
+                on_sign_in: {
+                    let start = start_browser_auth.clone();
+                    move |_| start()
+                },
             }
 
             // Inline notice — quieter than `chat-error`, sits above the input.

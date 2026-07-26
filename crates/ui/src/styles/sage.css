@@ -27,7 +27,16 @@
     backdrop-filter: blur(20px);
 }
 
-/* Nav items: rounded, sage tint on hover/active, mint text when active. */
+/* Nav items: rounded, sage tint on hover/active, mint text when active.
+   Base items are full-width with no gap inside a zero-horizontal-padding nav;
+   the base hover bg is too subtle to notice, but Sage's rounded tint fill makes
+   the pills collide with each other and the sidebar edges. Inset the nav
+   horizontally and add a small vertical gap so each pill floats (template
+   .side padding:16px 12px + gapped nav links). */
+.sage .sidebar-flat-nav {
+    padding: 8px 10px;
+    gap: 2px;
+}
 .sage .sidebar-flat-item {
     border-radius: 10px;
 }
