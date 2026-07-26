@@ -238,6 +238,9 @@ pub fn ConversationDocs(props: ConversationDocsProps) -> Element {
 
     // Reports belonging to the active conversation, newest first.
     let mut docs = use_signal(Vec::<DocumentSummary>::new);
+    // doc id -> parsed frontmatter (Option: Some(meta) if the report carried a
+    // block, None for legacy). Memoized so a report is fetched once.
+    let mut meta_map = use_signal(std::collections::HashMap::<String, Option<ReportMeta>>::new);
 
     {
         let api_url = api_url.clone();
@@ -275,6 +278,34 @@ pub fn ConversationDocs(props: ConversationDocsProps) -> Element {
         });
     }
 
+    // Fetch + parse frontmatter for the conversation's reports (few per chat, so
+    // no cap needed); memoized per doc id so each is fetched once.
+    {
+        let api_url = api_url.clone();
+        let auth_token = auth_token.clone();
+        use_effect(move || {
+            let list = docs();
+            if auth_token.is_empty() || api_url.is_empty() {
+                return;
+            }
+            for doc in list {
+                if meta_map.peek().contains_key(&doc.id) {
+                    continue;
+                }
+                let api_url = api_url.clone();
+                let auth_token = auth_token.clone();
+                spawn(async move {
+                    let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
+                    if let Ok(content) =
+                        client.get_document_content(&doc.conversation_id, &doc.id).await
+                    {
+                        meta_map.write().insert(doc.id.clone(), ReportMeta::parse(&content));
+                    }
+                });
+            }
+        });
+    }
+
     let items = docs();
     if items.is_empty() {
         return rsx! {};
@@ -290,11 +321,43 @@ pub fn ConversationDocs(props: ConversationDocsProps) -> Element {
                 {
                     let title = doc.title.clone();
                     let open_doc = doc.clone();
+                    // Flatten: not-yet-fetched (None) and legacy (Some(None)) both
+                    // render as no metadata.
+                    let meta = meta_map.read().get(&doc.id).cloned().flatten();
                     rsx! {
                         div {
                             class: "easy-conv-docs-row",
                             onclick: move |_| props.on_open.call(open_doc.clone()),
-                            span { class: "easy-conv-docs-title", "{title}" }
+                            div { class: "easy-conv-docs-main",
+                                span { class: "easy-conv-docs-title", "{title}" }
+                                if let Some(m) = meta.as_ref() {
+                                    div { class: "easy-conv-docs-meta",
+                                        if let Some(scope) = m.scope.as_ref() {
+                                            span { class: "easy-conv-docs-scope", "{scope}" }
+                                        }
+                                        {
+                                            let n = m.finding_count();
+                                            if n > 0 {
+                                                rsx! {
+                                                    span { class: "easy-conv-docs-findings",
+                                                        "{n} finding" {if n == 1 { "" } else { "s" }}
+                                                    }
+                                                }
+                                            } else {
+                                                rsx! {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(m) = meta.as_ref() {
+                                {
+                                    let b = m.badge();
+                                    rsx! {
+                                        span { class: "easy-sev-badge {sev_badge_class(b.kind)}", "{b.label}" }
+                                    }
+                                }
+                            }
                             span { class: "easy-docs-chevron", "\u{203A}" }
                         }
                     }

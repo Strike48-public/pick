@@ -87,6 +87,29 @@ impl ReportMeta {
         SeverityBadge { label: "clean".to_string(), kind: BadgeKind::Clean }
     }
 
+    /// All non-zero severity buckets as badges, highest first. Empty when the
+    /// report recorded no findings (callers show a "clean" state themselves).
+    /// Used by the Home "Last scan" tile, which lists every bucket (e.g.
+    /// "2 high" + "3 medium") rather than just the top one.
+    pub fn all_badges(&self) -> Vec<SeverityBadge> {
+        let s = &self.severity;
+        let mut out = Vec::new();
+        for (n, kind, name) in [
+            (s.critical, BadgeKind::Critical, "critical"),
+            (s.high, BadgeKind::High, "high"),
+            (s.medium, BadgeKind::Medium, "medium"),
+            (s.low, BadgeKind::Low, "low"),
+            (s.info, BadgeKind::Info, "info"),
+        ] {
+            if let Some(count) = n {
+                if count > 0 {
+                    out.push(SeverityBadge { label: format!("{count} {name}"), kind });
+                }
+            }
+        }
+        out
+    }
+
     /// True when the report has any critical or high findings.
     pub fn is_high_risk(&self) -> bool {
         self.severity.critical.unwrap_or(0) > 0 || self.severity.high.unwrap_or(0) > 0
@@ -154,6 +177,16 @@ mod tests {
         assert_eq!(m.badge().label, "clean");
         assert!(matches!(m.badge().kind, BadgeKind::Clean));
         assert!(!m.is_high_risk());
+    }
+
+    #[test]
+    fn all_badges_lists_every_bucket_highest_first() {
+        let m = ReportMeta::parse("---\nseverity:\n  high: 2\n  medium: 3\n  low: 1\n---\nx").unwrap();
+        let labels: Vec<_> = m.all_badges().into_iter().map(|b| b.label).collect();
+        assert_eq!(labels, vec!["2 high", "3 medium", "1 low"]);
+        // No severity -> empty (caller renders a "clean" state).
+        let clean = ReportMeta::parse("---\nscope: x\n---\ny").unwrap();
+        assert!(clean.all_badges().is_empty());
     }
 
     #[test]

@@ -502,8 +502,49 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                                 .cloned();
                             let sub = resume_sub_line(&relative, report.is_some());
                             let conv_id = conv.id.clone();
+                            // "Last scan" tile: only when the report carries real
+                            // frontmatter counts/severity (no fabricated numbers).
+                            let last_scan = report_meta().filter(|m| {
+                                m.hosts.is_some() || m.services.is_some() || !m.all_badges().is_empty()
+                            });
                             rsx! {
                                 div { class: "easy-home-cards",
+                                    if let Some(m) = last_scan {
+                                        div { class: "easy-home-card",
+                                            div { class: "easy-card-eye", "Last scan" }
+                                            if m.hosts.is_some() || m.services.is_some() {
+                                                div { class: "easy-home-stat",
+                                                    if let Some(h) = m.hosts {
+                                                        span { class: "easy-home-stat-n", "{h}" }
+                                                        span { class: "easy-home-stat-l", "hosts" }
+                                                    }
+                                                    if let Some(s) = m.services {
+                                                        span { class: "easy-home-stat-sep", "·" }
+                                                        span { class: "easy-home-stat-n", "{s}" }
+                                                        span { class: "easy-home-stat-l", "services" }
+                                                    }
+                                                }
+                                            }
+                                            {
+                                                let badges = m.all_badges();
+                                                if badges.is_empty() {
+                                                    rsx! {
+                                                        div { class: "easy-home-badges",
+                                                            span { class: "easy-sev-badge sev-ok", "clean" }
+                                                        }
+                                                    }
+                                                } else {
+                                                    rsx! {
+                                                        div { class: "easy-home-badges",
+                                                            for b in badges {
+                                                                span { class: "easy-sev-badge {sev_badge_class(b.kind)}", "{b.label}" }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                     div { class: "easy-home-card",
                                         div { class: "easy-card-eye", "Pick up where you left off" }
                                         div { class: "easy-home-card-title", "{title}" }
