@@ -668,38 +668,6 @@ body {
 /* Reports-list overlay body (Docs icon). */
 .easy-docs-list-body { flex: 1; min-height: 0; overflow-y: auto; }
 
-.easy-mode .action-grid {
-    padding: 16px;
-    flex: 0 0 auto;
-}
-/* Prominent full-width scan button (overrides the dashboard grid-cell card,
-   which collapses to cramped inline text without its grid context). */
-.easy-mode .action-card {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    justify-content: center;
-    gap: 12px;
-    width: 100%;
-    min-height: 64px;
-    padding: 18px 20px;
-    /* Material 3 pill for the primary action. */
-    border-radius: var(--em-radius-pill);
-    background: var(--em-scan-bg);
-    color: var(--em-on-scan);
-    cursor: pointer;
-}
-.easy-mode .action-card:active {
-    filter: brightness(0.92);
-}
-.easy-mode .action-card-icon {
-    display: flex;
-    align-items: center;
-}
-.easy-mode .action-card-label {
-    font-size: 18px;
-    font-weight: 600;
-}
 .easy-mode-chat {
     flex: 1 1 auto;
     min-height: 0;
@@ -863,9 +831,10 @@ body {
     margin: 0;
     max-width: 300px;
 }
-/* The overlay is a sibling of `.easy-mode`, so the `.easy-mode .action-card`
-   rule above doesn't reach it — style the retry button here as the sage CTA
-   pill (matching "Scan My Network"), overriding the browser-default button. */
+/* The sign-in overlay's retry button is the only remaining .action-card in the
+   easy-mode surfaces (the Home scan tile is now .easy-hero-scan). Style it here
+   as the sage CTA pill (matching "Scan My Network"), overriding the
+   browser-default button. */
 .easy-signin .action-card {
     display: flex;
     align-items: center;

@@ -115,21 +115,34 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     });
 
     {
+        // Poll the report list once signed in so a report generated mid-session
+        // (e.g. after a scan) refreshes the resume card + Reports badge without
+        // needing a token/agent change. A single use_hook-spawned loop re-reads
+        // the token/agent signals each pass, so it follows agent switches and
+        // logout without spawning a new loop per change (which would leak).
         let api_url = props.api_url.clone();
-        use_effect(move || {
-            let api_url = api_url.clone();
-            let token = auth_token();
-            let aid = agent_id();
-            if token.is_empty() || api_url.is_empty() {
-                return;
-            }
+        use_hook(move || {
             spawn(async move {
-                let client = pentest_core::matrix::MatrixChatClient::new(api_url)
-                    .with_auth_token(token);
-                if let Ok(mut list) = client.list_documents(aid.as_deref()).await {
-                    // Newest first (timestamp is ISO-8601, lexical sort works).
-                    list.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-                    docs.set(list);
+                loop {
+                    let token = auth_token.peek().clone();
+                    let aid = agent_id.peek().clone();
+                    if token.is_empty() || api_url.is_empty() {
+                        // Logged out / not signed in yet: drop any prior
+                        // session's reports so the badge and resume card don't
+                        // flash a stale count on the next sign-in.
+                        if !docs.peek().is_empty() {
+                            docs.set(Vec::new());
+                        }
+                    } else {
+                        let client = pentest_core::matrix::MatrixChatClient::new(api_url.clone())
+                            .with_auth_token(token);
+                        if let Ok(mut list) = client.list_documents(aid.as_deref()).await {
+                            // Newest first (timestamp is ISO-8601, lexical sort works).
+                            list.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+                            docs.set(list);
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
             });
         });
