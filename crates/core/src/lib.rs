@@ -54,7 +54,18 @@ pub fn easy_mode_scan_prompt() -> String {
      findings summary in Markdown. This easy-mode flow has no separate report \
      step, so creating that document is your responsibility and is required: the \
      app surfaces it to the user for viewing and sharing. After the \
-     `document_write` call succeeds, tell the user their report is ready."
+     `document_write` call succeeds, tell the user their report is ready.\n\n\
+     At the very top of the document content, before the markdown body, include a \
+     YAML frontmatter block fenced with lines of three dashes (---). Put optional \
+     metadata there so the app can render a richer report card: \
+     scope (the subnet or target you scanned, e.g. \"10.10.0.0/24\"), \
+     source (this device's hostname), hosts (integer count that responded), \
+     services (integer count enumerated), severity (a map with integer counts for \
+     any of critical/high/medium/low/info), and findings (a short list, ideally 8 \
+     or fewer, of items each with severity, title, and a one-to-two sentence body). \
+     Use those exact lowercase severity words. Every field is optional — include \
+     what you know. After the closing --- line, write the normal Markdown summary \
+     (GFM tables are great for host/service breakdowns)."
         .to_string()
 }
 
@@ -107,6 +118,19 @@ mod tests {
         assert!(
             p.contains("document_write"),
             "prompt must direct the agent to use document_write: {p}"
+        );
+    }
+
+    #[test]
+    fn scan_prompt_requests_frontmatter() {
+        let p = easy_mode_scan_prompt();
+        assert!(
+            p.contains("frontmatter"),
+            "prompt should instruct the agent to emit frontmatter: {p}"
+        );
+        assert!(
+            p.contains("scope"),
+            "prompt should mention the scope field: {p}"
         );
     }
 }
