@@ -95,6 +95,7 @@ async fn seed_from_conversation(
     messages: &mut Signal<Vec<ChatMessage>>,
     agent_thinking: &mut Signal<bool>,
     agent_status_text: &mut Signal<String>,
+    error_msg: &mut Signal<Option<String>>,
 ) {
     match client.get_conversation(cid).await {
         Ok(state) => {
@@ -105,6 +106,12 @@ async fn seed_from_conversation(
             } else {
                 agent_thinking.set(true);
                 agent_status_text.set(status_label(state.agent_status).to_string());
+            }
+            // Surface a durable mid-stream failure: a turn that died with the
+            // agent server reporting IDLE (not ERROR) still carries
+            // `metadata.stream_error`. Without this a crashed turn opens clean.
+            if let Some(err) = state.stream_error {
+                error_msg.set(Some(err));
             }
         }
         Err(e) => tracing::warn!("[chat] seed get_conversation failed: {e}"),
@@ -835,9 +842,14 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             let make_client = make_client.clone();
             let api_url = api_url.clone();
             // Read the reactive deps synchronously so the resource restarts when
-            // the conversation changes or the user hits Retry.
+            // the conversation changes, the user hits Retry, or the token lands.
+            // token_tick() is bumped whenever the session token is written, so
+            // reading it here makes a late/refreshed token restart the
+            // subscription instead of churning connects on an empty token.
             let cid_opt = conversation_id();
             let _ = retry_tick();
+            let _ = token_tick();
+            let token = crate::session::get_auth_token();
             async move {
                 // Re-bind Copy signals mutably for use inside the async task.
                 let mut messages = messages;
@@ -855,6 +867,15 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     return;
                 };
 
+                // Gate on credentials: without a token or api_url the WS join is
+                // rejected and the transport would churn connect attempts to
+                // Failed. Wait quietly instead; the resource restarts when the
+                // token lands (effective_token -> token_tick dependency above).
+                if token.is_empty() || api_url.is_empty() {
+                    connection_state.set(ConnectionState::Connecting);
+                    return;
+                }
+
                 let client = make_client();
 
                 // (a) Seed history + initial status.
@@ -864,6 +885,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     &mut messages,
                     &mut agent_thinking,
                     &mut agent_status_text,
+                    &mut error_msg,
                 )
                 .await;
 
@@ -951,6 +973,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                     &mut messages,
                                     &mut agent_thinking,
                                     &mut agent_status_text,
+                                    &mut error_msg,
                                 )
                                 .await;
                             }
