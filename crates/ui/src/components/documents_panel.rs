@@ -274,7 +274,8 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
                 let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
                 match client.get_document_content(&conv, &doc_id).await {
                     Ok(md) => {
-                        html.set(render_markdown_raw(&md));
+                        let (_fm, body) = pentest_core::rendering::split_frontmatter(&md);
+                        html.set(render_markdown_raw(body));
                         // Load the shared chart/mermaid libs (idempotent) then
                         // render any ```mermaid```/```echarts``` fences inside the
                         // viewer's own container. The chat panel does the same for
