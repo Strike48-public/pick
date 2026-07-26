@@ -1241,3 +1241,34 @@ body {
     border-radius: var(--em-radius-pill);
     padding: 1px 8px;
 }
+
+/* Report severity badge (parsed from frontmatter). Tinted pill matching the
+   template's b-err / b-warn chips; colors from Sage tokens. */
+.easy-sev-badge {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 9px;
+    border-radius: var(--em-radius-pill);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.easy-sev-badge.sev-err {
+    background: color-mix(in srgb, var(--em-error) 18%, transparent);
+    color: var(--em-error);
+}
+.easy-sev-badge.sev-warn {
+    background: color-mix(in srgb, var(--warning) 18%, transparent);
+    color: var(--warning);
+}
+.easy-sev-badge.sev-muted {
+    background: color-mix(in srgb, var(--em-text) 10%, transparent);
+    color: var(--em-text);
+    opacity: 0.75;
+}
+.easy-sev-badge.sev-ok {
+    background: color-mix(in srgb, var(--em-toast-fg) 16%, transparent);
+    color: var(--em-toast-fg);
+}
