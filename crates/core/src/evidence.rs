@@ -336,10 +336,21 @@ mod tests {
             ProbeCommand::from_exact("nmap -sV 192.168.1.1"),
             "Nmap scan report",
         );
-        let node = fixture().with_provenance(prov.clone());
+        let node = fixture().with_provenance(prov);
         let wire = serde_json::to_value(&node).unwrap();
         let back: EvidenceNode = serde_json::from_value(wire).unwrap();
-        assert_eq!(back.provenance, Some(prov));
+        // The wire-facing provenance fields survive the round-trip. The raw
+        // `command` is intentionally not serialized (#317 review) — it can carry
+        // an injected credential — so it comes back empty while the redacted
+        // `effective_command` is intact.
+        let back_prov = back.provenance.expect("provenance present");
+        assert_eq!(back_prov.underlying_tool, "nmap");
+        assert_eq!(back_prov.tool_version, "7.95");
+        assert_eq!(back_prov.probe_commands[0].command, "");
+        assert_eq!(
+            back_prov.probe_commands[0].effective_command,
+            "nmap -sV 192.168.1.1"
+        );
     }
 
     #[test]

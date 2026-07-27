@@ -1309,9 +1309,12 @@ mod transport_tests {
 
     #[test]
     fn tool_result_with_provenance_round_trips_through_json() {
-        // Contract: once a tool attaches provenance, every field must
-        // survive a JSON round-trip intact — this is exactly what the
-        // SDK does at connector.rs:237 before sending over the wire.
+        // Contract: once a tool attaches provenance, the wire-facing fields must
+        // survive a JSON round-trip — this is what the SDK does at
+        // connector.rs:237 before sending over the wire. The raw `command` is
+        // deliberately NOT on the wire (`#[serde(skip_serializing)]`, #317
+        // review): it can carry an injected credential, so only the redacted
+        // `effective_command` crosses the boundary.
         let prov = Provenance::new(
             "nmap",
             "7.95",
@@ -1321,7 +1324,7 @@ mod transport_tests {
         let original = ToolResult::success(serde_json::json!({
             "hosts": [{"ip": "192.168.1.1"}]
         }))
-        .with_provenance(prov.clone());
+        .with_provenance(prov);
 
         let wire = serde_json::to_value(&original).expect("serialize");
 
@@ -1332,14 +1335,27 @@ mod transport_tests {
         assert_eq!(prov_json["underlying_tool"], "nmap");
         assert_eq!(prov_json["tool_version"], "7.95");
         assert_eq!(prov_json["probe_commands"].as_array().unwrap().len(), 1);
+        // The raw command must be absent from the wire; the redacted form present.
+        assert!(
+            prov_json["probe_commands"][0].get("command").is_none(),
+            "raw `command` must not be serialized: {prov_json}"
+        );
         assert_eq!(
-            prov_json["probe_commands"][0]["command"],
+            prov_json["probe_commands"][0]["effective_command"],
             "nmap -sV 192.168.1.1"
         );
 
-        // Round-trip: Report Agent parses this back into a typed Provenance.
+        // Round-trip: Report Agent parses this back into a typed Provenance. The
+        // raw `command` comes back empty (skip_serializing + default) while every
+        // wire-facing field is intact.
         let back: ToolResult = serde_json::from_value(wire).expect("deserialize");
-        assert_eq!(back.provenance, Some(prov));
+        let back_prov = back.provenance.expect("provenance present");
+        assert_eq!(back_prov.underlying_tool, "nmap");
+        assert_eq!(back_prov.probe_commands[0].command, "");
+        assert_eq!(
+            back_prov.probe_commands[0].effective_command,
+            "nmap -sV 192.168.1.1"
+        );
     }
 
     #[test]

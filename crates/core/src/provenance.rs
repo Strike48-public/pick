@@ -18,7 +18,15 @@ const TRUNCATION_MARKER: &str = "\n…[truncated]";
 /// A single probe step with both an exact and a report-safe command form.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProbeCommand {
-    /// Exact command as executed. May contain secrets; internal use only.
+    /// Exact command as executed. May contain secrets (e.g. an injected
+    /// `Authorization: Bearer <token>` from a differential-authz identity run,
+    /// or `curl -u user:pass`), so it is **never serialized** — `skip_serializing`
+    /// keeps it off every wire/agent/report boundary by construction, not by
+    /// best-effort scrubbing. `effective_command` is the redacted form that does
+    /// cross the boundary. `default` lets a value deserialized from the wire
+    /// (where the field is absent) round-trip to an empty string rather than
+    /// failing. See pick#162 / #317 review.
+    #[serde(skip_serializing, default)]
     pub command: String,
 
     /// Redacted form safe to publish in reports.
@@ -350,6 +358,34 @@ mod tests {
         let p = ProbeCommand::from_exact("curl -u admin:hunter2 https://x.example.com");
         assert_eq!(p.command, "curl -u admin:hunter2 https://x.example.com");
         assert!(!p.effective_command.contains("hunter2"));
+    }
+
+    #[test]
+    fn probe_command_raw_command_never_serializes() {
+        // #317 review CRITICAL: the raw `command` can carry an injected
+        // credential (e.g. `-H "Authorization: Bearer <token>"` from a
+        // differential-authz identity run). It must never cross the wire; only
+        // the redacted `effective_command` may. Guards the leak by construction
+        // — removing `#[serde(skip_serializing)]` on `command` turns this red.
+        let secret = "Bearer sk-super-secret-token-abcdef1234567890";
+        let raw = format!(r#"curl -H "Authorization: {secret}" https://target.example"#);
+        let p = ProbeCommand::from_exact(&raw);
+
+        // In memory the exact command is retained for local traceability.
+        assert!(p.command.contains(secret), "in-memory command retained");
+
+        // On the wire it must be gone: no `command` key, and the secret must not
+        // appear anywhere in the serialized form (effective_command is redacted).
+        let wire = serde_json::to_value(&p).expect("serialize");
+        assert!(
+            wire.get("command").is_none(),
+            "raw command must not serialize: {wire}"
+        );
+        let wire_str = serde_json::to_string(&p).expect("serialize");
+        assert!(
+            !wire_str.contains("sk-super-secret-token-abcdef1234567890"),
+            "secret leaked onto the wire: {wire_str}"
+        );
     }
 
     #[test]
