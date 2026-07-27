@@ -46,6 +46,17 @@ impl PentestTool for ExecuteCommandTool {
                 "Command timeout in seconds",
                 json!(120),
             ))
+            .param(ToolParam::optional(
+                "identity_ref",
+                ParamType::String,
+                "Label of an operator-provisioned test identity to run this \
+                 command as (differential-authz testing). The connector injects \
+                 the identity's auth header for the target binary locally - you \
+                 never see or write the credential. Only these binaries support \
+                 injection: curl, ffuf, wget, sqlmap. Fails if the label is \
+                 unknown or the binary has no supported header flag.",
+                json!(null),
+            ))
     }
 
     fn supported_platforms(&self) -> Vec<Platform> {
@@ -70,6 +81,43 @@ impl PentestTool for ExecuteCommandTool {
             ));
         }
 
+        // Parse command/args up front (not inside the timed closure) so that
+        // identity injection can fail-closed BEFORE any subprocess spawns — an
+        // unknown identity_ref or an unmappable binary must never run
+        // unauthenticated and report success (pick#314 / #162 ethos).
+        let command = match params.get("command").and_then(|v| v.as_str()) {
+            Some(c) => c.to_string(),
+            None => return Ok(ToolResult::error("Command is required")),
+        };
+
+        let mut args: Vec<String> = params
+            .get("args")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Identity injection (pick#314): if the caller referenced a test
+        // identity, resolve it to its auth header and splice the correct
+        // per-binary flag ahead of the user args. resolve_identity never
+        // reveals the secret to the LLM; the connector injects it locally here.
+        if let Some(label) = params.get("identity_ref").and_then(|v| v.as_str()) {
+            match build_identity_injection(&command, label, ctx) {
+                // Prepend so tool-specific positional args (e.g. a target URL)
+                // stay last, matching how these binaries expect flags.
+                Ok(mut injected) => {
+                    injected.extend(std::mem::take(&mut args));
+                    args = injected;
+                }
+                Err(e) => return Ok(ToolResult::error(e.to_string())),
+            }
+        }
+
+        let timeout_seconds = param_u64(&params, "timeout_seconds", 120);
+
         // Build the run future via the provenance-timed helper so timing and
         // the error→Failed mapping stay consistent with every other tool. On
         // success we then reclassify the outcome from the process exit status
@@ -78,26 +126,9 @@ impl PentestTool for ExecuteCommandTool {
         let run = execute_timed_with_provenance(|| async move {
             let platform = get_platform();
 
-            let command = params
-                .get("command")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    pentest_core::error::Error::InvalidParams("Command is required".into())
-                })?;
-
-            let args: Vec<String> = params
-                .get("args")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let command = command.as_str();
 
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-
-            let timeout_seconds = param_u64(&params, "timeout_seconds", 120);
 
             let timeout = Duration::from_secs(timeout_seconds);
 
@@ -205,6 +236,75 @@ fn format_full_command(command: &str, args: &[String]) -> String {
         }
     }
     out
+}
+
+/// Reduce a `command` string to the bare executable name: strip any directory
+/// path (`/usr/bin/curl` -> `curl`, `./sqlmap` -> `sqlmap`). The identity flag
+/// map is keyed by executable name, not the invocation path.
+fn binary_basename(command: &str) -> &str {
+    std::path::Path::new(command)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(command)
+}
+
+/// Map a target binary to the argv fragment that passes a full HTTP header
+/// line as a custom request header, for the given `header` value.
+///
+/// Session material (pick#162) is stored as a complete header line
+/// (`"Authorization: Bearer ..."` or `"Cookie: sid=..."`), so a single
+/// custom-header flag per binary handles both the auth and cookie cases - no
+/// need to parse the material apart. Returns:
+/// * `Some(vec![..])` - the argv fragment to splice in for a supported binary.
+/// * `None` - the binary has no generic custom-header flag we trust. The caller
+///   MUST fail loud rather than run without the identity: a curl-shaped `-H`
+///   guessed onto a sibling tool is the exact silently-wrong bug pick#314
+///   exists to avoid (PR-review Lens 7).
+///
+/// Binaries differ in flag *shape*, which is why this is a per-binary map and
+/// not one splice rule:
+/// * `curl` / `ffuf` take a separate `-H <value>` arg pair.
+/// * `wget` / `sqlmap` take a single joined `--header=<value>` arg.
+fn header_flags_for(binary: &str, header: &str) -> Option<Vec<String>> {
+    match binary {
+        "curl" | "ffuf" => Some(vec!["-H".to_string(), header.to_string()]),
+        "wget" | "sqlmap" => Some(vec![format!("--header={header}")]),
+        _ => None,
+    }
+}
+
+/// Resolve an `identity_ref` label to the argv fragment that authenticates the
+/// target `command` as that identity (pick#314).
+///
+/// Fails loud (returns `Err(message)`) - never silently runs unauthenticated,
+/// which would misreport a differential-authz result (the pick#162 ethos) -
+/// when:
+/// * the label is unknown (not provisioned / typo), or
+/// * the identity carries material but the binary has no supported header flag.
+///
+/// Returns `Ok(vec![])` (inject nothing) when the identity is anonymous (empty
+/// material): running with no auth *is* that identity, so it is not a failure.
+fn build_identity_injection(command: &str, label: &str, ctx: &ToolContext) -> Result<Vec<String>> {
+    let material = ctx.resolve_identity(label).ok_or_else(|| {
+        pentest_core::error::Error::InvalidParams(format!(
+            "identity_ref '{label}' is not a provisioned test identity; \
+             cannot authenticate as it (refusing to run unauthenticated)"
+        ))
+    })?;
+
+    // Anonymous identity: no material to inject. Running as-is IS this identity.
+    if material.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let binary = binary_basename(command);
+    header_flags_for(binary, material.expose()).ok_or_else(|| {
+        pentest_core::error::Error::InvalidParams(format!(
+            "identity_ref '{label}' cannot be injected into '{binary}': no \
+             supported custom-header flag for this binary (supported: curl, \
+             ffuf, wget, sqlmap). Refusing to run with the identity dropped."
+        ))
+    })
 }
 
 /// Detect the login shell version once per process. Falls back to
@@ -413,5 +513,174 @@ mod tests {
         // execute(); if one reaches the classifier it must survive.
         let r = classify_command_outcome(ToolResult::skipped("unsupported platform"));
         assert_eq!(r.outcome, ToolOutcome::Skipped);
+    }
+
+    // --- identity injection (pick#314) -------------------------------------
+    //
+    // A specialist ACTS as a differential-authz identity by referencing it by
+    // `label` (never the secret, which the LLM never sees - pick#162). The
+    // connector resolves the label to session material and splices the correct
+    // "custom header" flag for the target binary. Session material is a full
+    // HTTP header line (`"Authorization: Bearer ..."` / `"Cookie: sid=..."`),
+    // so one flag handles both auth and cookie forms per binary.
+
+    use pentest_core::identity::{IdentityStore, SessionMaterial};
+
+    #[test]
+    fn header_flags_curl_uses_separate_dash_h() {
+        // curl takes the header as a separate `-H <value>` arg pair.
+        assert_eq!(
+            header_flags_for("curl", "Authorization: Bearer tok"),
+            Some(vec![
+                "-H".to_string(),
+                "Authorization: Bearer tok".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn header_flags_ffuf_uses_separate_dash_h() {
+        assert_eq!(
+            header_flags_for("ffuf", "Cookie: sid=abc"),
+            Some(vec!["-H".to_string(), "Cookie: sid=abc".to_string()])
+        );
+    }
+
+    #[test]
+    fn header_flags_wget_uses_joined_long_flag() {
+        // wget takes `--header=<value>` as one joined arg.
+        assert_eq!(
+            header_flags_for("wget", "Authorization: Bearer tok"),
+            Some(vec!["--header=Authorization: Bearer tok".to_string()])
+        );
+    }
+
+    #[test]
+    fn header_flags_sqlmap_uses_joined_long_flag() {
+        assert_eq!(
+            header_flags_for("sqlmap", "Cookie: sid=abc"),
+            Some(vec!["--header=Cookie: sid=abc".to_string()])
+        );
+    }
+
+    #[test]
+    fn header_flags_unknown_binary_is_none() {
+        // nmap/nikto/etc. have no generic custom-HTTP-header flag; return None
+        // so the caller fails loud rather than guessing a curl-shaped `-H`.
+        assert_eq!(header_flags_for("nmap", "Cookie: sid=abc"), None);
+        assert_eq!(header_flags_for("echo", "Cookie: sid=abc"), None);
+    }
+
+    #[test]
+    fn binary_basename_strips_path_and_args() {
+        assert_eq!(binary_basename("/usr/bin/curl"), "curl");
+        assert_eq!(binary_basename("curl"), "curl");
+        assert_eq!(binary_basename("./sqlmap"), "sqlmap");
+    }
+
+    fn ctx_with(label: &str, material: &str) -> ToolContext {
+        ToolContext::default().with_identities(IdentityStore::from_pairs([(
+            label,
+            SessionMaterial::new(material),
+        )]))
+    }
+
+    #[test]
+    fn build_injection_unknown_label_fails_loud() {
+        // A label the connector never provisioned must NOT silently run
+        // unauthenticated - that would misreport the authz result (#162 ethos).
+        let ctx = ToolContext::default();
+        let err = build_identity_injection("curl", "ghost", &ctx)
+            .expect_err("unknown label must fail loud")
+            .to_string();
+        assert!(err.contains("ghost"), "message names the label: {err}");
+    }
+
+    #[test]
+    fn build_injection_known_label_curl_injects_material() {
+        let ctx = ctx_with("user_a", "Cookie: sid=secret-abc");
+        let args = build_identity_injection("curl", "user_a", &ctx).expect("known label injects");
+        assert_eq!(
+            args,
+            vec!["-H".to_string(), "Cookie: sid=secret-abc".to_string()]
+        );
+    }
+
+    #[test]
+    fn build_injection_unmapped_binary_fails_loud() {
+        // Known identity, but the binary has no header flag: fail loud rather
+        // than run the scan without the requested identity applied.
+        let ctx = ctx_with("user_a", "Cookie: sid=abc");
+        let err = build_identity_injection("nmap", "user_a", &ctx)
+            .expect_err("unmapped binary must fail loud")
+            .to_string();
+        assert!(err.contains("nmap"), "message names the binary: {err}");
+    }
+
+    #[test]
+    fn build_injection_empty_material_injects_nothing() {
+        // An anonymous identity carries no material: inject nothing and succeed
+        // (running with no auth IS that identity), never fail.
+        let ctx = ctx_with("anon", "");
+        let args =
+            build_identity_injection("curl", "anon", &ctx).expect("anonymous injects nothing");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn injected_auth_header_redacts_in_effective_command() {
+        // The injected secret must be scrubbed from effective_command (which
+        // reaches evidence/report) but retained in the exact command.
+        let full = format_full_command(
+            "curl",
+            &[
+                "-H".to_string(),
+                "Authorization: Bearer secrettoken123".to_string(),
+                "https://x.test".to_string(),
+            ],
+        );
+        let prov = Provenance::new("shell", "test", ProbeCommand::from_exact(full), "");
+        let eff = &prov.probe_commands[0].effective_command;
+        assert!(!eff.contains("secrettoken123"), "secret leaked: {eff}");
+        assert!(eff.contains("<REDACTED>"));
+        assert!(prov.probe_commands[0].command.contains("secrettoken123"));
+    }
+
+    #[tokio::test]
+    async fn execute_unknown_identity_ref_fails_without_running() {
+        // identity_ref pointing at no known identity fails closed BEFORE any
+        // subprocess spawns - so no deterministic dependency on curl/etc.
+        pentest_platform::set_use_sandbox(false);
+        let tool = ExecuteCommandTool;
+        let ctx = ToolContext::default();
+        let params = json!({
+            "command": "curl",
+            "args": ["https://x.test"],
+            "identity_ref": "ghost",
+        });
+        let result = tool.execute(params, &ctx).await.expect("execute ok");
+        assert_eq!(result.outcome, ToolOutcome::Failed);
+        assert!(!result.success);
+        assert!(result.error.unwrap_or_default().contains("ghost"));
+    }
+
+    #[tokio::test]
+    async fn execute_identity_ref_unmapped_binary_fails() {
+        // Known identity, but nmap has no header flag: fail loud, do not run
+        // the scan with the identity silently dropped.
+        pentest_platform::set_use_sandbox(false);
+        let tool = ExecuteCommandTool;
+        let ctx = ToolContext::default().with_identities(IdentityStore::from_pairs([(
+            "user_a",
+            SessionMaterial::new("Cookie: sid=abc"),
+        )]));
+        let params = json!({
+            "command": "nmap",
+            "args": ["-sV", "10.0.0.1"],
+            "identity_ref": "user_a",
+        });
+        let result = tool.execute(params, &ctx).await.expect("execute ok");
+        assert_eq!(result.outcome, ToolOutcome::Failed);
+        assert!(result.error.unwrap_or_default().contains("nmap"));
     }
 }
