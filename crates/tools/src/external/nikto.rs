@@ -9,7 +9,7 @@ use pentest_core::timeout::ToolTimeouts;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
-use pentest_core::url_validation::{validate_url, ValidationMode};
+use pentest_core::url_validation::{target_validation_mode, validate_url};
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -90,8 +90,10 @@ impl PentestTool for NiktoTool {
                 ));
             }
 
-            // Validate URL to prevent SSRF and command injection
-            let target = validate_url(&target, ValidationMode::Production, None)?;
+            // Validate URL to prevent SSRF and command injection. The mode
+            // honors PENTEST_ALLOW_PRIVATE_IPS so private-network engagements can
+            // scan RFC-1918 targets; defaults to Production (private IPs blocked).
+            let target = validate_url(&target, target_validation_mode(), None)?;
 
             let port = param_u64(&params, "port", 0);
             let ssl = crate::util::param_bool(&params, "ssl", false);
