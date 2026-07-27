@@ -109,6 +109,12 @@ impl PentestTool for PortScanTool {
                 "host": result.host,
                 "ports": result.ports,
                 "open_count": result.open_count,
+                // Surface reachability failures so the agent can tell "we
+                // checked and found nothing open" apart from "we could not
+                // reach the target" (#306). A scan where unreachable_count
+                // equals total_scanned means no packet reached the host.
+                "unreachable_count": result.unreachable_count,
+                "errors": result.errors,
                 "total_scanned": result.ports.len(),
                 "duration_ms": result.duration_ms,
             }))
