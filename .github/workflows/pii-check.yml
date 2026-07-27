@@ -13,6 +13,11 @@ jobs:
   check-pii:
     name: Scan for customer names
     runs-on: ubuntu-latest
+    # The banned-name list is injected from a repository secret so the customer
+    # names never live in this public repo. Configure it under Settings ->
+    # Secrets and variables -> Actions -> PII_NAMES (newline- or comma-separated).
+    env:
+      PII_NAMES: ${{ secrets.PII_NAMES }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,6 +25,14 @@ jobs:
 
       - name: Ensure scanner is executable
         run: chmod +x scripts/check-pii.sh
+
+      - name: Verify PII name list is configured
+        run: |
+          if [[ -z "${PII_NAMES:-}" ]]; then
+            echo "::error::PII_NAMES secret is not set - the scanner cannot run."
+            echo "Add it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
 
       - name: Check PR title
         env:

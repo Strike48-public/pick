@@ -61,3 +61,7 @@ android-jniLibs
 .mise.local.toml
 .direnv/
 __pycache__/
+
+# PII scanner: the real banned-name list lives here, never committed.
+# Seed it from .pii-names.local.example. See scripts/check-pii.sh.
+.pii-names.local

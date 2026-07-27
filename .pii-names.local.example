@@ -1,0 +1,14 @@
+# PII name list for scripts/check-pii.sh (LOCAL - do not commit the real one).
+#
+# Copy this file to `.pii-names.local` and replace the placeholders with the
+# actual customer/tenant names that must never appear in public artifacts.
+# `.pii-names.local` is gitignored so the real names never enter the repo.
+#
+# Format: one name per line. Blank lines and '#' comments are ignored.
+# Matching is case-insensitive and word-boundary anchored.
+#
+# In CI, the list is supplied instead via the $PII_NAMES secret/variable
+# (newline- or comma-separated) - see .github/workflows/pii-check.yml.
+
+example-customer-one
+example-customer-two

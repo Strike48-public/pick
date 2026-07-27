@@ -13,6 +13,14 @@ echo "Installing git hooks from .githooks/ ..."
 git config core.hooksPath .githooks
 chmod +x .githooks/* scripts/check-pii.sh
 
+# Seed the local (gitignored) PII name list from the example if it's missing,
+# so the PII hooks have a list to scan against. The scanner fails loud without
+# one; edit .pii-names.local to add the real customer/tenant names.
+if [[ ! -f .pii-names.local && -f .pii-names.local.example ]]; then
+    cp .pii-names.local.example .pii-names.local
+    echo "Created .pii-names.local from the example - edit it to add the real names."
+fi
+
 echo ""
 echo "Hooks installed. The following hooks will run on every commit:"
 echo "  - pre-commit: scans staged changes for customer names (PII)"
