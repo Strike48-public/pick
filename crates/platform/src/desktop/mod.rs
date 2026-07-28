@@ -97,27 +97,58 @@ pub(crate) async fn wait_for_child_output(
 
 /// Synchronous "is a sandbox backend available?" probe for startup-time UI.
 ///
-/// Wraps the async [`sandbox::probe::any_backend_available`] so it can be stored
-/// in the cross-target `ConnectorAppConfig` as a `fn() -> bool`. Called once from
-/// the Dioxus desktop `main`, which is NOT `#[tokio::main]`, so we can't assume a
-/// current runtime: if a Tokio handle exists we block on it via
-/// `block_in_place`; otherwise we spin up a throwaway runtime. If no runtime can
-/// be built we fail OPEN (return `true`) — this only affects the availability
-/// *display*; the actual execution path stays fail-closed elsewhere.
-pub fn sandbox_available_blocking() -> bool {
-    use sandbox::config::SandboxConfig;
-    use sandbox::probe::any_backend_available;
+/// Run an async future to completion from a synchronous (possibly-already-in-a-
+/// runtime) caller, on a DEDICATED thread with its own fresh multi-thread
+/// runtime.
+///
+/// Why a dedicated thread rather than `block_in_place` + `Handle::block_on` on
+/// the caller's runtime: these futures spawn `wsl.exe`/`docker` via
+/// `tokio::process::Command`, whose child-exit reaping is driven by the runtime
+/// that owns the process. Blocking on the Dioxus UI thread's runtime from within
+/// itself does not reliably drive that reaper, so `.output()`/`.status()` calls
+/// stall until the probe timeout — which made the sandbox look unavailable even
+/// when WSL was installed. A separate thread with its own runtime owns the child
+/// processes and reaps them promptly. The thread is short-lived (one probe /
+/// one install) and joined before returning.
+fn run_blocking_on_dedicated_runtime<T, F>(make: F) -> std::result::Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = T>>> + Send + 'static,
+{
+    let joined: std::result::Result<std::result::Result<T, String>, _> =
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("failed to build runtime: {e}"))?;
+            std::result::Result::<T, String>::Ok(rt.block_on(make()))
+        })
+        .join();
+    match joined {
+        Ok(inner) => inner,
+        Err(_) => Err("probe thread panicked".to_string()),
+    }
+}
 
-    let cfg = SandboxConfig::default();
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(any_backend_available(&cfg))),
-        Err(_) => match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt.block_on(any_backend_available(&cfg)),
-            Err(e) => {
-                tracing::warn!("sandbox_available_blocking: no runtime ({e}); assuming available");
-                true
-            }
-        },
+/// Wraps the async [`sandbox::probe::any_backend_available`] so it can be stored
+/// in the cross-target `ConnectorAppConfig` as a `fn() -> bool`. Runs on a
+/// dedicated-thread runtime (see [`run_blocking_on_dedicated_runtime`]) so the
+/// `wsl.exe`/`docker` child processes it spawns are reaped promptly instead of
+/// stalling. If the runtime can't be built we fail OPEN (return `true`) — this
+/// only affects the availability *display*; execution stays fail-closed
+/// elsewhere.
+pub fn sandbox_available_blocking() -> bool {
+    match run_blocking_on_dedicated_runtime(|| {
+        Box::pin(async {
+            let cfg = sandbox::config::SandboxConfig::default();
+            sandbox::probe::any_backend_available(&cfg).await
+        })
+    }) {
+        Ok(available) => available,
+        Err(e) => {
+            tracing::warn!("sandbox_available_blocking: {e}; assuming available");
+            true
+        }
     }
 }
 
@@ -132,18 +163,17 @@ pub fn sandbox_available_blocking() -> bool {
 /// install inline and map its [`wsl_install::InstallOutcome`] onto the
 /// cross-target [`WslInstallStatus`].
 ///
-/// Runtime handling mirrors [`sandbox_available_blocking`]: the Dioxus desktop
-/// `main` is NOT `#[tokio::main]`, so we can't assume a current runtime — if a
-/// Tokio handle exists we block on it via `block_in_place`, otherwise we spin up
-/// a throwaway runtime, and if none can be built we fail with a clear message.
+/// Runs on a dedicated-thread runtime (see [`run_blocking_on_dedicated_runtime`])
+/// so the `powershell.exe`/`wsl.exe` child processes it spawns are reaped
+/// promptly instead of stalling on a nested runtime.
 pub fn run_wsl_install_blocking() -> pentest_core::WslInstallStatus {
     use pentest_core::WslInstallStatus;
-    use sandbox::wsl_install::{
-        is_elevated, relaunch_elevated, run_guided_install, InstallOutcome,
-    };
 
     // Async body: decide elevation, then either relaunch or install inline.
     async fn drive() -> WslInstallStatus {
+        use sandbox::wsl_install::{
+            is_elevated, relaunch_elevated, run_guided_install, InstallOutcome,
+        };
         if is_elevated().await {
             match run_guided_install().await {
                 InstallOutcome::Completed => WslInstallStatus::Completed,
@@ -164,15 +194,9 @@ pub fn run_wsl_install_blocking() -> pentest_core::WslInstallStatus {
         }
     }
 
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(drive())),
-        Err(_) => match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt.block_on(drive()),
-            Err(e) => {
-                tracing::warn!("run_wsl_install_blocking: no runtime ({e})");
-                WslInstallStatus::Failed(format!("no async runtime available: {e}"))
-            }
-        },
+    match run_blocking_on_dedicated_runtime(|| Box::pin(drive())) {
+        Ok(status) => status,
+        Err(e) => WslInstallStatus::Failed(e),
     }
 }
 

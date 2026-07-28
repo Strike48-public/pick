@@ -1165,20 +1165,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         {css_block}
 
         div { class: "{root_class}",
-            // Windows-only "install WSL" onboarding banner, above whichever shell
-            // renders. Shown only when no sandbox backend is available and not
-            // dismissed (see `show_wsl_banner`). The banner is presentation-only;
-            // this parent owns the install state + handlers.
-            if show_wsl_banner {
-                WslInstallBanner {
-                    installing: wsl_installing(),
-                    reboot_required: wsl_reboot_required(),
-                    error: wsl_install_error(),
-                    on_dismiss: on_wsl_dismiss,
-                    on_install: on_wsl_install,
-                    on_how: on_wsl_how,
-                }
-            }
             if easy_mode() {
                 {
                     let host = config.read().host.clone();
@@ -1221,6 +1207,20 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                     on_easy_mode_change: on_easy_mode_change,
                                     on_sign_in: move |_| d1(AuthEvent::SignInRequested),
                                     on_chat_event: move |ev| d2(ev),
+                                    banner: if show_wsl_banner {
+                                        Some(rsx! {
+                                            WslInstallBanner {
+                                                installing: wsl_installing(),
+                                                reboot_required: wsl_reboot_required(),
+                                                error: wsl_install_error(),
+                                                on_dismiss: on_wsl_dismiss,
+                                                on_install: on_wsl_install,
+                                                on_how: on_wsl_how,
+                                            }
+                                        })
+                                    } else {
+                                        None
+                                    },
                                 }
                             }
                         },

@@ -121,10 +121,12 @@ pub async fn probe_backend(cfg: &SandboxConfig, b: SandboxBackend) -> BackendRep
 /// synchronously on the UI thread at startup — an installed-but-hung Docker
 /// daemon or wedged `wsl.exe` must not stall the app. A probe that exceeds this
 /// is reported `Broken` (prerequisites may exist, but the backend is not
-/// responding). Generous enough to tolerate a COLD WSL distro spinning up under
-/// startup load (WSL idle-terminates distros, so the first `wsl -d` call after
-/// launch can take a few seconds), while still bounding a truly hung backend.
-const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// responding). Generous enough to tolerate a COLD WSL distro spinning up (WSL
+/// idle-terminates distros, so the first `wsl -d` call can take a couple
+/// seconds), while still bounding a truly hung backend. The probe now runs on a
+/// dedicated-thread runtime that reaps the child processes promptly, so this
+/// only needs to cover genuine cold-start latency, not reaper stalls.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Probe every backend valid for this target_os. Skips (reports `Unavailable`)
 /// backends that can't run here; never errors for "not available". Each probe

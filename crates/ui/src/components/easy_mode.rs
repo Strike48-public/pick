@@ -51,6 +51,10 @@ pub struct EasyModeShellProps {
     pub on_sign_in: EventHandler<()>,
     /// Fired when chat-level auth events occur (ChatReady, ChatAuthDead).
     pub on_chat_event: EventHandler<crate::auth_flow::AuthEvent>,
+    /// Optional banner rendered in the content area, just below the brand bar
+    /// (e.g. the Windows "install WSL" onboarding banner). `None` renders nothing.
+    #[props(default)]
+    pub banner: Option<Element>,
 }
 
 /// The simplified Easy Mode screen: a scan action card above a full-page chat.
@@ -165,7 +169,10 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
             let chat_ctx = chat_header_ctx.read();
             let recent_conv = chat_ctx.as_ref().and_then(|c| c.conversations.first());
             let report_id = recent_conv.and_then(|conv| {
-                all_docs.iter().find(|d| d.conversation_id == conv.id).map(|d| (d.id.clone(), d.conversation_id.clone()))
+                all_docs
+                    .iter()
+                    .find(|d| d.conversation_id == conv.id)
+                    .map(|d| (d.id.clone(), d.conversation_id.clone()))
             });
             match report_id {
                 Some((doc_id, conv_id)) => {
@@ -453,6 +460,11 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                 }
                 span { class: "easy-brand-badge", dangerous_inner_html: STRIKE48_S_BADGE_SVG }
                 span { class: "easy-brand-word", "Pick" }
+            }
+            // Optional onboarding banner (e.g. install-WSL), in the content area
+            // below the brand bar rather than above the whole app chrome.
+            if let Some(banner) = props.banner.clone() {
+                {banner}
             }
             // Home (hero + resume card): shown on an empty chat once we're Connected.
             // Hidden once a conversation starts (New Chat brings it back), and while
