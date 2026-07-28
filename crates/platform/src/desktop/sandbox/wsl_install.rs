@@ -113,18 +113,19 @@ pub async fn run_guided_install() -> InstallOutcome {
             return InstallOutcome::NeedsElevation;
         }
 
-        // Enable an optional feature via PowerShell. Args are built as a Vec
-        // (never one interpolated string) so no shell quoting is involved.
+        // Enable an optional feature via PowerShell. The feature name is a fixed
+        // internal identifier (never user input), so it is safe to embed in the
+        // -Command string. `$ErrorActionPreference='Stop'` turns
+        // Enable-WindowsOptionalFeature's NON-TERMINATING errors into a nonzero
+        // exit — without it PowerShell can exit 0 on a partial failure and we'd
+        // misclassify it as success. Mirrors the elevated script in
+        // relaunch_elevated, which sets the same preference.
         async fn enable_feature(feature: &str) -> Result<(), String> {
-            let args: Vec<&str> = vec![
-                "-NoProfile",
-                "-Command",
-                "Enable-WindowsOptionalFeature",
-                "-Online",
-                "-FeatureName",
-                feature,
-                "-NoRestart",
-            ];
+            let command = format!(
+                "$ErrorActionPreference='Stop'; \
+                 Enable-WindowsOptionalFeature -Online -FeatureName {feature} -NoRestart"
+            );
+            let args: Vec<&str> = vec!["-NoProfile", "-Command", &command];
             let status = Command::new("powershell.exe")
                 .args(&args)
                 .stdout(Stdio::null())
