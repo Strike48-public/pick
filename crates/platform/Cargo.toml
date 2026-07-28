@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = ["desktop"]
-desktop = ["sysinfo", "local-ip-address", "dns-lookup", "network-interface", "dep:lazy_static", "dep:uuid", "dep:image", "desktop-mdns", "wifi_scan", "ssdp-client", "dep:reqwest", "dep:portable-pty", "dep:libc", "dep:sha2", "dep:keyring"]
+desktop = ["sysinfo", "local-ip-address", "dns-lookup", "network-interface", "dep:lazy_static", "dep:uuid", "dep:image", "desktop-mdns", "wifi_scan", "ssdp-client", "dep:reqwest", "dep:portable-pty", "dep:libc", "dep:sha2", "dep:keyring", "dep:arboard"]
 desktop-all = ["desktop", "desktop-screenshots"]
 desktop-screenshots = ["desktop", "screenshots"]
 desktop-mdns = ["desktop", "mdns-sd"]
@@ -61,6 +61,11 @@ reqwest = { version = "0.12", features = ["rustls-tls", "rustls-tls-native-roots
 # Manager, macOS Keychain, and the Linux Secret Service (each internally
 # cfg(target_os)-gated), so a single cross-platform desktop build works.
 keyring = { version = "4", optional = true }
+
+# Native OS clipboard for the desktop "Copy link" action. WebView2 (Windows)
+# does not expose navigator.clipboard from Dioxus's custom-protocol origin, so
+# the JS path silently no-ops there; this gives every desktop a reliable copy.
+arboard = { version = "3", optional = true }
 
 # PTY support (desktop + android)
 portable-pty = { version = "0.9", optional = true }

@@ -33,6 +33,19 @@ fn clipboard_js(url: &str) -> String {
     format!("navigator.clipboard && navigator.clipboard.writeText({literal})")
 }
 
+/// Copy `url` to the clipboard, preferring the native OS clipboard handler
+/// (registered by desktop targets) and falling back to the webview's
+/// `navigator.clipboard`. The JS path silently no-ops in WebView2 on Windows
+/// (no `navigator.clipboard` from the custom-protocol origin), so desktop must
+/// go through the native handler; mobile/web have no handler and use the JS
+/// path, which works in their (WebKit) renderers.
+async fn copy_to_clipboard(url: &str) {
+    if pentest_core::clipboard::copy_text(url).is_ok() {
+        return;
+    }
+    let _ = document::eval(&clipboard_js(url)).await;
+}
+
 /// Add `preview=1` to a share URL. Delegates to the shared
 /// `pentest_core::matrix::preview_url` so Easy Mode's crux shells and the Dioxus
 /// app build the preview link identically.
@@ -451,11 +464,11 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
                 match client.create_shared_link(&c, &d).await {
                     Ok(url) => match action {
                         ShareAction::Copy => {
-                            let _ = document::eval(&clipboard_js(&url));
+                            copy_to_clipboard(&url).await;
                             toast.set(Some("Link copied".to_string()));
                         }
                         ShareAction::NativeSheet => {
-                            let _ = document::eval(&clipboard_js(&url));
+                            copy_to_clipboard(&url).await;
                             let _ = pentest_core::share::share_text(&url);
                         }
                         ShareAction::OpenBrowser => {

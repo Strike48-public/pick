@@ -7336,6 +7336,7 @@ name = "pentest-platform"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "async-trait",
  "base64",
  "block2 0.6.2",

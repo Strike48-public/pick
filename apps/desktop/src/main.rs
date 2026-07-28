@@ -42,6 +42,13 @@ fn main() {
         pentest_platform::desktop::secure_delete,
     );
 
+    // Register the native OS clipboard so "Copy link" works on Windows, where
+    // WebView2 does not expose navigator.clipboard from the custom-protocol
+    // origin (the JS path silently no-ops there).
+    pentest_core::clipboard::set_clipboard_handler(
+        pentest_platform::desktop::clipboard_copy_text,
+    );
+
     // Load theme from settings
     let settings = load_settings();
     let css = pentest_ui::theme::generate_theme_css(

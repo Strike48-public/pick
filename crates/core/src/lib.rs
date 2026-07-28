@@ -4,6 +4,7 @@
 //! pentest connector application.
 
 pub mod aggression;
+pub mod clipboard;
 pub mod config;
 pub mod connector;
 pub mod connector_registration;

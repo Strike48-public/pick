@@ -1,6 +1,7 @@
 //! Desktop platform implementation
 
 mod capture;
+pub mod clipboard;
 pub mod command;
 mod network;
 pub mod pty_shell;
@@ -16,6 +17,10 @@ pub use command::{is_sandbox_enabled, set_use_sandbox};
 // can register them with `pentest_core::secure_store` (mirrors the iOS/Android
 // backends registered from `apps/mobile`).
 pub use secure::{secure_delete, secure_get, secure_set};
+
+// Re-export the native clipboard copy so the desktop app can register it with
+// `pentest_core::clipboard` (WebView2 has no navigator.clipboard on Windows).
+pub use clipboard::copy_text as clipboard_copy_text;
 
 /// Returns all local non-loopback IPv4 addresses (synchronous).
 /// Used by connectors to report their host interfaces during registration.
