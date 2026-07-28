@@ -41,10 +41,6 @@ pub struct WslInstallBannerProps {
     /// Fired when the user clicks How (opens the WSL docs). The parent calls
     /// `pentest_core::matrix::open_url_in_browser`.
     pub on_how: EventHandler<()>,
-    /// Optional: fired when the user clicks Restart (only shown when
-    /// `reboot_required`). When `None`, no Restart button is rendered.
-    #[props(default)]
-    pub on_restart: Option<EventHandler<()>>,
 }
 
 /// Dismissable Windows banner that offers a guided WSL install.
@@ -77,15 +73,7 @@ pub fn WslInstallBanner(props: WslInstallBannerProps) -> Element {
                         }
                     } else if props.reboot_required {
                         span { class: "wsl-banner-status is-reboot",
-                            "Restart required to finish installing WSL."
-                        }
-                        if let Some(on_restart) = props.on_restart {
-                            Button {
-                                variant: ButtonVariant::Primary,
-                                size: ButtonSize::Small,
-                                on_click: move |_| on_restart.call(()),
-                                "Restart"
-                            }
+                            "WSL installed. Restart Windows to finish, then reopen Pick."
                         }
                     } else {
                         Button {
