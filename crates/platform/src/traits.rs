@@ -188,11 +188,36 @@ pub trait WifiAttackOps: Send + Sync {
 /// Port scan configuration (re-exported from pentest-core to avoid duplication)
 pub use pentest_core::state::ScanConfig;
 
+/// Outcome of probing a single TCP port.
+///
+/// Distinguishing these matters for a pentest report: a genuinely closed port
+/// (`Closed`) and a host that was never reachable (`Unreachable`) must not read
+/// the same way. Collapsing every non-open outcome into "closed" lets an
+/// unroutable scan masquerade as "checked and clean" (#306).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PortState {
+    /// The connect succeeded — a service is listening.
+    Open,
+    /// The connect was actively refused (`ConnectionRefused`) — a reachable
+    /// host with nothing listening on this port.
+    Closed,
+    /// The connect timed out or failed indeterminately — likely firewalled or
+    /// silently dropped. Not proof of closed, not proof of unreachable.
+    Filtered,
+    /// The probe never reached the target: host/network unreachable, or blocked
+    /// by the sandbox / a missing capability. This is a scan failure, not a
+    /// finding about the port.
+    Unreachable,
+}
+
 /// Scanned port result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScannedPort {
     pub port: u16,
+    /// Retained for backward compatibility; equivalent to `state == Open`.
     pub open: bool,
+    pub state: PortState,
     pub service: Option<String>,
 }
 
@@ -203,6 +228,14 @@ pub struct ScanResult {
     pub ports: Vec<ScannedPort>,
     pub duration_ms: u64,
     pub open_count: usize,
+    /// Number of probes that never reached the target (see [`PortState::Unreachable`]).
+    /// When this equals the number of ports scanned, the host was never
+    /// reachable and the empty open-port list must not be read as "clean".
+    pub unreachable_count: usize,
+    /// Human-readable reachability failures encountered during the scan. Empty
+    /// on a fully successful scan; populated so a caller can tell "we checked
+    /// and found nothing" apart from "we could not check".
+    pub errors: Vec<String>,
 }
 
 /// ARP table entry

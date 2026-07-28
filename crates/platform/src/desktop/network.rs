@@ -11,22 +11,12 @@ use std::time::{Duration, Instant};
 /// (via [`std::net::ToSocketAddrs`]) and semaphore-based concurrency limiting
 /// (driven by `ScanConfig::concurrency`).
 pub async fn port_scan(config: ScanConfig) -> Result<ScanResult> {
-    let start = Instant::now();
     let timeout = Duration::from_millis(config.timeout_ms);
 
-    let ports =
+    Ok(
         crate::common::tcp_port_scan(&config.host, &config.ports, timeout, config.concurrency)
-            .await;
-
-    let open_count = ports.iter().filter(|p| p.open).count();
-    let duration_ms = start.elapsed().as_millis() as u64;
-
-    Ok(ScanResult {
-        host: config.host,
-        ports,
-        duration_ms,
-        open_count,
-    })
+            .await,
+    )
 }
 
 /// Get the system ARP table
