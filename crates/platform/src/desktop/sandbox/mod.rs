@@ -11,6 +11,7 @@ pub mod probe;
 pub mod proot;
 pub mod rootfs;
 pub mod wsl;
+pub mod wsl_install;
 
 use crate::traits::CommandResult;
 use config::{SandboxBackend, SandboxConfig, SandboxError, SandboxResult};
