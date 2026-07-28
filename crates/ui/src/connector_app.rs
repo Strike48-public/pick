@@ -351,11 +351,11 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         spawn(async move {
             // The hook shells out (elevation check, dism, wsl --update) and can
             // take many seconds; keep it off the UI thread.
-            let status = tokio::task::spawn_blocking(run)
-                .await
-                .unwrap_or_else(|e| {
-                    pentest_core::config::WslInstallStatus::Failed(format!("install task panicked: {e}"))
-                });
+            let status = tokio::task::spawn_blocking(run).await.unwrap_or_else(|e| {
+                pentest_core::config::WslInstallStatus::Failed(format!(
+                    "install task panicked: {e}"
+                ))
+            });
             wsl_installing.set(false);
             match status {
                 pentest_core::config::WslInstallStatus::RebootRequired => {

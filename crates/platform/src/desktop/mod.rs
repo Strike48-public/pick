@@ -138,7 +138,9 @@ pub fn sandbox_available_blocking() -> bool {
 /// a throwaway runtime, and if none can be built we fail with a clear message.
 pub fn run_wsl_install_blocking() -> pentest_core::WslInstallStatus {
     use pentest_core::WslInstallStatus;
-    use sandbox::wsl_install::{is_elevated, relaunch_elevated, run_guided_install, InstallOutcome};
+    use sandbox::wsl_install::{
+        is_elevated, relaunch_elevated, run_guided_install, InstallOutcome,
+    };
 
     // Async body: decide elevation, then either relaunch or install inline.
     async fn drive() -> WslInstallStatus {
