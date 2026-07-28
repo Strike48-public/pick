@@ -7,6 +7,7 @@
 pub mod bwrap;
 pub mod config;
 pub mod docker;
+pub mod probe;
 pub mod proot;
 pub mod rootfs;
 pub mod wsl;

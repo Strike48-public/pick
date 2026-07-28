@@ -41,7 +41,7 @@ pub enum SandboxError {
 pub type SandboxResult<T> = std::result::Result<T, SandboxError>;
 
 /// Sandbox backend type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum SandboxBackend {
     /// Bubblewrap (Linux namespaces) - preferred on Linux
     Bwrap,

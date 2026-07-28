@@ -410,7 +410,7 @@ echo "WSL distro setup complete"
     }
 
     /// Check if the distro setup has been completed (marker file exists).
-    async fn is_setup_complete(&self) -> bool {
+    pub(super) async fn is_setup_complete(&self) -> bool {
         #[cfg(not(target_os = "windows"))]
         {
             false
