@@ -806,6 +806,28 @@ pub struct AppSettings {
     pub wsl_banner_dismissed: bool,
 }
 
+/// Cross-target result of the guided WSL install, surfaced to the UI banner.
+///
+/// This is the platform-agnostic mirror of
+/// `pentest_platform::desktop::sandbox::wsl_install::InstallOutcome`. It lives
+/// in `pentest-core` so `pentest-ui` (which is cross-target and must not depend
+/// on the desktop-only `wsl_install` module) can name the states in its
+/// `ConnectorAppConfig` hook signature. The desktop wrapper maps `InstallOutcome`
+/// onto this enum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WslInstallStatus {
+    /// Features + kernel installed successfully; the machine must reboot before
+    /// WSL is usable.
+    RebootRequired,
+    /// The install completed and WSL is ready (no reboot needed).
+    Completed,
+    /// A UAC-elevating relaunch was launched; the elevated helper continues the
+    /// install out-of-process. Nothing more for this process to do.
+    ElevationLaunched,
+    /// The install failed; the string carries a human-readable reason.
+    Failed(String),
+}
+
 /// Resolve the effective Easy Mode flag from all sources, most-specific first:
 ///  1. the user's persisted Settings choice (`settings_easy_mode`), if set;
 ///  2. the BUILD-TIME `PICK_EASY_MODE` env (baked via `option_env!`, the only

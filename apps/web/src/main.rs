@@ -86,6 +86,7 @@ const WEB_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
     create_tools: pentest_tools::create_tool_registry,
     set_sandbox: Some(pentest_platform::set_use_sandbox),
     sandbox_available: None,
+    run_wsl_install: None,
     easy_mode: false,
 };
 

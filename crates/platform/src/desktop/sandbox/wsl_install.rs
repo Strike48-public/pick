@@ -250,6 +250,8 @@ mod tests {
     #[test]
     fn outcome_serializes() {
         let o = InstallOutcome::RebootRequired;
-        assert!(serde_json::to_string(&o).unwrap().contains("RebootRequired"));
+        assert!(serde_json::to_string(&o)
+            .unwrap()
+            .contains("RebootRequired"));
     }
 }

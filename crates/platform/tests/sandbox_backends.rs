@@ -22,7 +22,9 @@ async fn probe_all_reports_every_os_backend() {
 #[ignore = "requires a provisioned backend; run with --ignored on a set-up host"]
 async fn at_least_one_backend_is_working_on_a_provisioned_host() {
     let reports = probe_all(&SandboxConfig::default()).await;
-    let working = reports.iter().any(|r| matches!(r.status, BackendStatus::Working { .. }));
+    let working = reports
+        .iter()
+        .any(|r| matches!(r.status, BackendStatus::Working { .. }));
     assert!(
         working,
         "no Working backend; provision one (WSL distro / bwrap / docker) before running this test. Reports: {reports:?}"

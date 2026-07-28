@@ -121,6 +121,59 @@ pub fn sandbox_available_blocking() -> bool {
     }
 }
 
+/// Run the guided WSL install synchronously, for the cross-target UI banner.
+///
+/// Stored in the cross-target `ConnectorAppConfig` as a
+/// `fn() -> pentest_core::WslInstallStatus`, so `pentest-ui` never touches the
+/// desktop-only `wsl_install` module directly. The flow: check elevation; if
+/// NOT elevated, launch a UAC-elevating relaunch (the elevated helper does the
+/// feature-enable + kernel-update out of process) and report
+/// [`WslInstallStatus::ElevationLaunched`]; if already elevated, run the guided
+/// install inline and map its [`wsl_install::InstallOutcome`] onto the
+/// cross-target [`WslInstallStatus`].
+///
+/// Runtime handling mirrors [`sandbox_available_blocking`]: the Dioxus desktop
+/// `main` is NOT `#[tokio::main]`, so we can't assume a current runtime — if a
+/// Tokio handle exists we block on it via `block_in_place`, otherwise we spin up
+/// a throwaway runtime, and if none can be built we fail with a clear message.
+pub fn run_wsl_install_blocking() -> pentest_core::WslInstallStatus {
+    use pentest_core::WslInstallStatus;
+    use sandbox::wsl_install::{is_elevated, relaunch_elevated, run_guided_install, InstallOutcome};
+
+    // Async body: decide elevation, then either relaunch or install inline.
+    async fn drive() -> WslInstallStatus {
+        if is_elevated().await {
+            match run_guided_install().await {
+                InstallOutcome::Completed => WslInstallStatus::Completed,
+                InstallOutcome::RebootRequired => WslInstallStatus::RebootRequired,
+                // Already elevated, so this should not happen; treat as failure.
+                InstallOutcome::NeedsElevation => {
+                    WslInstallStatus::Failed("elevation lost mid-install".into())
+                }
+                InstallOutcome::Failed(msg) => WslInstallStatus::Failed(msg),
+            }
+        } else {
+            // Not elevated: launch the UAC-elevating helper which finishes the
+            // install out-of-process. The user must reboot afterwards.
+            match relaunch_elevated() {
+                Ok(()) => WslInstallStatus::ElevationLaunched,
+                Err(e) => WslInstallStatus::Failed(e),
+            }
+        }
+    }
+
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(drive())),
+        Err(_) => match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt.block_on(drive()),
+            Err(e) => {
+                tracing::warn!("run_wsl_install_blocking: no runtime ({e})");
+                WslInstallStatus::Failed(format!("no async runtime available: {e}"))
+            }
+        },
+    }
+}
+
 /// Desktop platform provider
 pub struct DesktopPlatform;
 

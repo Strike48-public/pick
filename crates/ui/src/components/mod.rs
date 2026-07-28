@@ -44,6 +44,7 @@ pub mod tools_page;
 mod wifi_warning_dialog;
 #[cfg(feature = "liveview")]
 pub mod workspace_app;
+pub mod wsl_install_banner;
 
 pub use agent_page::{AgentDetail, AgentsPage};
 pub use alert_dialog::AlertDialog;
@@ -88,3 +89,4 @@ pub use tools_page::ToolsPage;
 pub use wifi_warning_dialog::WifiWarningDialog;
 #[cfg(feature = "liveview")]
 pub use workspace_app::WorkspaceApp;
+pub use wsl_install_banner::WslInstallBanner;

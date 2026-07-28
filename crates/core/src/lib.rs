@@ -36,6 +36,10 @@ pub mod url_validation;
 pub mod validation;
 pub mod workspace;
 
+/// Cross-target result of the guided WSL install, re-exported at the crate root
+/// so UI code can name it as `pentest_core::WslInstallStatus`.
+pub use config::WslInstallStatus;
+
 /// The canned chat message the Easy Mode "Scan" button sends. It instructs the
 /// server-side agent to enumerate local interfaces, scan the local subnet, and
 /// write a report document of the findings. Kept as one place so the wording is

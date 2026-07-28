@@ -20,7 +20,7 @@ use crate::auth_flow::{reduce, AuthEvent, AuthFlow};
 use crate::components::icons::MessageCircle;
 use crate::components::{
     AppLayout, ChatPanel, ConfigForm, ConnectingScreen, ConnectingStep, Dashboard, EasyModeShell,
-    FileBrowser, InteractiveShell, NavPage, SettingsPage, Terminal, ToolsPage,
+    FileBrowser, InteractiveShell, NavPage, SettingsPage, Terminal, ToolsPage, WslInstallBanner,
     STRIKE48_SIDEBAR_LOGO_SVG,
 };
 use crate::download_manager::is_blackarch_ready;
@@ -59,6 +59,12 @@ pub struct ConnectorAppConfig {
     pub set_sandbox: Option<fn(bool)>,
     /// Returns whether a sandbox backend is currently available. None (mobile/web) is treated as true.
     pub sandbox_available: Option<fn() -> bool>,
+    /// Runs the guided Windows WSL install (blocking), returning a cross-target
+    /// [`pentest_core::WslInstallStatus`]. Desktop supplies
+    /// `pentest_platform::run_wsl_install_blocking`; `None` (mobile/web) means
+    /// the install affordance is a no-op. Kept as an indirection hook so
+    /// `pentest-ui` never depends on the desktop-only `wsl_install` module.
+    pub run_wsl_install: Option<fn() -> pentest_core::config::WslInstallStatus>,
     /// When true, render the simplified "Easy Mode" shell (scan + chat) instead
     /// of the full dashboard/sidebar UI. Default target is mobile.
     pub easy_mode: bool,
@@ -306,6 +312,63 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // Windows install banner.
     let sandbox_available = use_signal(|| cfg.sandbox_available.map(|f| f()).unwrap_or(true));
     tracing::debug!("sandbox_available at startup: {}", sandbox_available());
+
+    // ---- Windows WSL install banner state ----
+    // The banner surfaces only on Windows when no sandbox backend is available
+    // and the user hasn't dismissed it. `installing`/`wsl_reboot_required`/
+    // `wsl_install_error` are the controlled install state the banner renders;
+    // the parent owns them (the banner is presentation-only). Guarded by
+    // `cfg!(windows)` so it never shows off-Windows, where WSL is irrelevant.
+    let wsl_installing = use_signal(|| false);
+    let wsl_reboot_required = use_signal(|| false);
+    let wsl_install_error = use_signal(|| None::<String>);
+    let show_wsl_banner = cfg!(target_os = "windows")
+        && !sandbox_available()
+        && !settings.read().wsl_banner_dismissed;
+
+    // Banner handlers, shared by the easy-mode and workspace render sites.
+    // `run_wsl_install` (the platform hook) is blocking, so it runs on a blocking
+    // thread; the result maps to the controlled install-state signals.
+    let on_wsl_dismiss = move |_: ()| {
+        let mut s = settings.write();
+        s.wsl_banner_dismissed = true;
+        let _ = save_settings(&s);
+    };
+    let on_wsl_how = move |_: ()| {
+        let _ = pentest_core::matrix::open_url_in_browser(
+            "https://learn.microsoft.com/windows/wsl/install",
+        );
+    };
+    let on_wsl_install = move |_: ()| {
+        let Some(run) = cfg.run_wsl_install else {
+            return;
+        };
+        let mut wsl_installing = wsl_installing;
+        let mut wsl_reboot_required = wsl_reboot_required;
+        let mut wsl_install_error = wsl_install_error;
+        wsl_installing.set(true);
+        wsl_install_error.set(None);
+        spawn(async move {
+            // The hook shells out (elevation check, dism, wsl --update) and can
+            // take many seconds; keep it off the UI thread.
+            let status = tokio::task::spawn_blocking(run)
+                .await
+                .unwrap_or_else(|e| {
+                    pentest_core::config::WslInstallStatus::Failed(format!("install task panicked: {e}"))
+                });
+            wsl_installing.set(false);
+            match status {
+                pentest_core::config::WslInstallStatus::RebootRequired => {
+                    wsl_reboot_required.set(true);
+                }
+                pentest_core::config::WslInstallStatus::Completed
+                | pentest_core::config::WslInstallStatus::ElevationLaunched => {}
+                pentest_core::config::WslInstallStatus::Failed(msg) => {
+                    wsl_install_error.set(Some(msg));
+                }
+            }
+        });
+    };
 
     // ---- easy mode resolution ----
     // The effective Easy Mode flag: persisted Settings choice > build-time
@@ -1102,6 +1165,20 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         {css_block}
 
         div { class: "{root_class}",
+            // Windows-only "install WSL" onboarding banner, above whichever shell
+            // renders. Shown only when no sandbox backend is available and not
+            // dismissed (see `show_wsl_banner`). The banner is presentation-only;
+            // this parent owns the install state + handlers.
+            if show_wsl_banner {
+                WslInstallBanner {
+                    installing: wsl_installing(),
+                    reboot_required: wsl_reboot_required(),
+                    error: wsl_install_error(),
+                    on_dismiss: on_wsl_dismiss,
+                    on_install: on_wsl_install,
+                    on_how: on_wsl_how,
+                }
+            }
             if easy_mode() {
                 {
                     let host = config.read().host.clone();
