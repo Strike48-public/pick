@@ -17,6 +17,7 @@ pub mod orchestrator;
 pub mod paths;
 pub mod provenance;
 pub mod rendering;
+pub mod sanitize;
 pub mod seed;
 pub mod settings;
 pub mod specialist_spawner;
