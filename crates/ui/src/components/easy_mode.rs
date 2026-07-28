@@ -55,6 +55,16 @@ pub struct EasyModeShellProps {
     /// (e.g. the Windows "install WSL" onboarding banner). `None` renders nothing.
     #[props(default)]
     pub banner: Option<Element>,
+    /// Whether a command-sandbox backend is usable on this machine. Gates the
+    /// Sandboxed shell-mode toggle in easy-mode Settings.
+    #[props(default = true)]
+    pub sandbox_available: bool,
+    /// Current shell execution mode, for the easy-mode Settings toggle.
+    #[props(default)]
+    pub shell_mode: pentest_core::config::ShellMode,
+    /// Fired when the user changes shell mode in easy-mode Settings.
+    #[props(default)]
+    pub on_shell_mode_change: EventHandler<pentest_core::config::ShellMode>,
 }
 
 /// The simplified Easy Mode screen: a scan action card above a full-page chat.
@@ -411,6 +421,46 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                                 on_easy_mode_change.call(false);
                             },
                             span { class: "easy-toggle-track" }
+                        }
+                    }
+                    // Scan mode: Sandboxed (isolated Linux sandbox) vs Native
+                    // (run tools on this host). Sandboxed is only selectable when
+                    // a backend is available — matches the expert Settings gate.
+                    {
+                        let sandbox_on = props.sandbox_available
+                            && props.shell_mode == pentest_core::config::ShellMode::Proot;
+                        let avail = props.sandbox_available;
+                        let on_change = props.on_shell_mode_change;
+                        rsx! {
+                            div { class: "easy-settings-row",
+                                div { class: "easy-settings-text",
+                                    div { class: "easy-settings-label", "Sandboxed scanning" }
+                                    div { class: "easy-settings-desc",
+                                        if avail {
+                                            "Run scanning tools inside an isolated Linux sandbox (recommended). Turn off to run them directly on this machine."
+                                        } else {
+                                            "No sandbox available — install WSL for isolated scanning. Tools run directly on this machine for now."
+                                        }
+                                    }
+                                }
+                                button {
+                                    class: if sandbox_on { "easy-toggle easy-toggle-on" } else { "easy-toggle" },
+                                    disabled: !avail,
+                                    "aria-label": "Toggle sandboxed scanning",
+                                    onclick: move |_| {
+                                        if !avail {
+                                            return;
+                                        }
+                                        let next = if sandbox_on {
+                                            pentest_core::config::ShellMode::Native
+                                        } else {
+                                            pentest_core::config::ShellMode::Proot
+                                        };
+                                        on_change.call(next);
+                                    },
+                                    span { class: "easy-toggle-track" }
+                                }
+                            }
                         }
                     }
                 }

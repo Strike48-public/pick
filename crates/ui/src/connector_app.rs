@@ -1207,6 +1207,19 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                     on_easy_mode_change: on_easy_mode_change,
                                     on_sign_in: move |_| d1(AuthEvent::SignInRequested),
                                     on_chat_event: move |ev| d2(ev),
+                                    sandbox_available: sandbox_available(),
+                                    shell_mode: settings.read().shell_mode,
+                                    on_shell_mode_change: move |mode: ShellMode| {
+                                        if mode == ShellMode::Proot && !sandbox_available() {
+                                            return;
+                                        }
+                                        let mut s = settings.write();
+                                        s.shell_mode = mode;
+                                        let _ = save_settings(&s);
+                                        if let Some(set_sb) = cfg.set_sandbox {
+                                            set_sb(mode == ShellMode::Proot);
+                                        }
+                                    },
                                     banner: if show_wsl_banner {
                                         Some(rsx! {
                                             WslInstallBanner {
