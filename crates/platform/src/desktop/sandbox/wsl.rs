@@ -19,6 +19,74 @@ const WSL_SETUP_MARKER: &str = "/root/.pentest-setup-complete";
 const ARCHWSL_ROOTFS_URL: &str =
     "https://github.com/yuk7/ArchWSL-FS/releases/download/25030400/rootfs.tar.gz";
 
+/// Setup script executed inside the freshly-imported WSL distro.
+///
+/// On WSL1 (used when the host lacks nested virtualisation) WSL auto-generates
+/// an `/etc/resolv.conf` pointing at an unreachable nameserver, so pacman fails
+/// with "Could not resolve host" for every mirror. This script therefore always
+/// takes control of DNS (disabling WSL's regeneration and pinning public
+/// resolvers) and passes pacman `--overwrite '*'` to clear the ArchWSL
+/// gcc-libs / libstdc++ file conflict that would otherwise abort the transaction.
+pub(crate) const WSL_SETUP_SCRIPT: &str = r#"#!/bin/bash
+set -e
+
+# WSL1 auto-generates a resolv.conf pointing at an unreachable nameserver
+# (it mirrors NetBird-polluted Windows DNS), so ALWAYS take control of DNS.
+cat > /etc/wsl.conf << 'WSLCONF'
+[network]
+generateResolvConf = false
+WSLCONF
+rm -f /etc/resolv.conf
+cat > /etc/resolv.conf << 'RESOLV'
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+RESOLV
+
+# Configure mirrors — $repo and $arch are pacman variables, not shell
+cat > /etc/pacman.d/mirrorlist << 'MIRRORS'
+Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
+Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
+MIRRORS
+
+# Fix pacman.conf for WSL
+sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf 2>/dev/null || true
+sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf 2>/dev/null || true
+sed -i 's/^#DisableSandbox/DisableSandbox/' /etc/pacman.conf 2>/dev/null || true
+
+# Add DisableSandbox if not present (pacman 7.0+)
+if ! grep -q 'DisableSandbox' /etc/pacman.conf 2>/dev/null; then
+    sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
+fi
+
+# Set SigLevel to Never (avoids keyring issues)
+sed -i 's/^SigLevel.*/SigLevel = Never/' /etc/pacman.conf 2>/dev/null || true
+
+# Initialize pacman keyring
+pacman-key --init 2>/dev/null || true
+pacman-key --populate archlinux 2>/dev/null || true
+
+# Add BlackArch repository if not present
+if ! grep -q '\[blackarch\]' /etc/pacman.conf 2>/dev/null; then
+    cat >> /etc/pacman.conf << 'BLACKARCH'
+
+[blackarch]
+Server = https://blackarch.org/blackarch/$repo/os/$arch
+SigLevel = Never
+BLACKARCH
+fi
+
+# System update — --overwrite '*' clears the ArchWSL gcc-libs / libstdc++
+# file conflict that would otherwise abort the transaction.
+pacman -Syu --noconfirm --overwrite '*' 2>&1 || true
+
+# Sync package databases
+pacman -Sy --noconfirm --overwrite '*' 2>&1 || true
+
+# Mark setup as complete
+touch /root/.pentest-setup-complete
+echo "WSL distro setup complete"
+"#;
+
 /// WSL2 executor for Windows
 pub struct WslExecutor {
     config: SandboxConfig,
@@ -216,60 +284,8 @@ impl WslExecutor {
         // Write setup script to a temp file on the Windows filesystem.
         // This avoids Windows cmd mangling $ signs in wsl.exe -c "..." args.
         let script_path = self.config.data_dir.join("wsl-setup.sh");
-        let setup_script = r#"#!/bin/bash
-set -e
 
-# Configure DNS (WSL usually handles this, but just in case)
-if [ ! -f /etc/resolv.conf ] || ! grep -q nameserver /etc/resolv.conf 2>/dev/null; then
-    echo 'nameserver 8.8.8.8' > /etc/resolv.conf
-    echo 'nameserver 8.8.4.4' >> /etc/resolv.conf
-fi
-
-# Configure mirrors — $repo and $arch are pacman variables, not shell
-cat > /etc/pacman.d/mirrorlist << 'MIRRORS'
-Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
-Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
-MIRRORS
-
-# Fix pacman.conf for WSL
-sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf 2>/dev/null || true
-sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf 2>/dev/null || true
-sed -i 's/^#DisableSandbox/DisableSandbox/' /etc/pacman.conf 2>/dev/null || true
-
-# Add DisableSandbox if not present (pacman 7.0+)
-if ! grep -q 'DisableSandbox' /etc/pacman.conf 2>/dev/null; then
-    sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
-fi
-
-# Set SigLevel to Never (avoids keyring issues)
-sed -i 's/^SigLevel.*/SigLevel = Never/' /etc/pacman.conf 2>/dev/null || true
-
-# Initialize pacman keyring
-pacman-key --init 2>/dev/null || true
-pacman-key --populate archlinux 2>/dev/null || true
-
-# Add BlackArch repository if not present
-if ! grep -q '\[blackarch\]' /etc/pacman.conf 2>/dev/null; then
-    cat >> /etc/pacman.conf << 'BLACKARCH'
-
-[blackarch]
-Server = https://blackarch.org/blackarch/$repo/os/$arch
-SigLevel = Never
-BLACKARCH
-fi
-
-# System update
-pacman -Syu --noconfirm --overwrite '*' 2>&1 || true
-
-# Sync package databases
-pacman -Sy --noconfirm 2>&1 || true
-
-# Mark setup as complete
-touch /root/.pentest-setup-complete
-echo "WSL distro setup complete"
-"#;
-
-        tokio::fs::write(&script_path, setup_script).await?;
+        tokio::fs::write(&script_path, WSL_SETUP_SCRIPT).await?;
 
         // Convert Windows path to WSL path so wsl.exe can find the script
         let wsl_script_path = Self::windows_to_wsl_path(&script_path.to_string_lossy());
@@ -550,6 +566,19 @@ echo "WSL distro setup complete"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_script_forces_working_dns_and_overwrite() {
+        // The embedded setup script must (a) disable WSL's resolv.conf regeneration,
+        // (b) pin a working nameserver unconditionally, and (c) use --overwrite so
+        // the ArchWSL gcc-libs file conflict does not abort the transaction.
+        let script = super::WSL_SETUP_SCRIPT;
+        assert!(script.contains("generateResolvConf = false"));
+        assert!(script.contains("nameserver 8.8.8.8"));
+        assert!(script.contains("--overwrite"));
+        // resolv.conf must be written unconditionally, not guarded by "if missing".
+        assert!(!script.contains("if [ ! -f /etc/resolv.conf ]"));
+    }
 
     #[test]
     fn test_windows_to_wsl_path_drive_letter() {
