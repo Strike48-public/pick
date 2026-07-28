@@ -23,6 +23,11 @@ pub fn SettingsPage(
     #[props(default)] setup_error: Option<String>,
     shell_mode: ShellMode,
     on_shell_mode_change: EventHandler<ShellMode>,
+    // Whether a command-sandbox backend (bwrap/proot/docker/WSL) is usable on
+    // this machine. When false (e.g. Windows without WSL) the Sandboxed (Proot)
+    // shell mode is disabled and forced to display as Native. Defaults on so
+    // mobile/other call sites that don't gate keep their existing behavior.
+    #[props(default = true)] sandbox_available: bool,
     #[props(default)] wifi_adapter: Option<String>,
     #[props(default)] on_wifi_adapter_change: EventHandler<Option<String>>,
     // Appearance settings
@@ -45,7 +50,9 @@ pub fn SettingsPage(
     // Auto-save on toggle with visual feedback
     // -----------------------------------------------------------------------
 
-    let is_proot = shell_mode == ShellMode::Proot;
+    // When no sandbox backend is available, Proot is not selectable — force the
+    // effective display to Native regardless of the persisted setting.
+    let is_proot = sandbox_available && shell_mode == ShellMode::Proot;
 
     // Track which mode was just saved for visual feedback (bold border)
     let mut just_saved = use_signal(|| None::<ShellMode>);
@@ -877,16 +884,30 @@ pub fn SettingsPage(
                                     } else {
                                         "toggle-btn"
                                     },
-                                    disabled: !blackarch_downloaded,
+                                    disabled: !sandbox_available || !blackarch_downloaded,
                                     onclick: move |_| {
-                                        if blackarch_downloaded {
+                                        // Defense in depth: never switch to Proot when the
+                                        // sandbox backend is missing or BlackArch isn't set up.
+                                        if sandbox_available && blackarch_downloaded {
                                             on_toggle(ShellMode::Proot);
                                         }
                                     },
-                                    title: if !blackarch_downloaded { "Set up BlackArch environment first" } else { "" },
+                                    title: if !sandbox_available {
+                                        "No sandbox available — install WSL for isolated scanning"
+                                    } else if !blackarch_downloaded {
+                                        "Set up BlackArch environment first"
+                                    } else {
+                                        ""
+                                    },
                                     "Proot"
                                 }
                             }
+                        }
+                    }
+                    // Helper text when no sandbox backend is available on this host.
+                    if !sandbox_available {
+                        div { class: "text-dim-xs", style: "margin-top: 8px;",
+                            "No sandbox available — install WSL for isolated scanning"
                         }
                     }
                 }

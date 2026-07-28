@@ -99,6 +99,10 @@ pub struct ConnectorPagesProps {
     settings_shell_mode: ShellMode,
     /// Callback when the user changes the shell mode in Settings.
     on_shell_mode_change: EventHandler<ShellMode>,
+    /// Whether a command-sandbox backend is usable on this machine. Gates the
+    /// Sandboxed (Proot) shell mode toggle in Settings.
+    #[props(default = true)]
+    sandbox_available: bool,
     /// Selected WiFi adapter for scanning.
     #[props(default)]
     wifi_adapter: Option<String>,
@@ -235,6 +239,7 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                     on_start_download: move |_| props.on_start_download.call(()),
                     shell_mode: props.settings_shell_mode,
                     on_shell_mode_change: move |mode: ShellMode| props.on_shell_mode_change.call(mode),
+                    sandbox_available: props.sandbox_available,
                     wifi_adapter: props.wifi_adapter.clone(),
                     on_wifi_adapter_change: move |adapter: Option<String>| props.on_wifi_adapter_change.call(adapter),
                     theme: props.theme,
@@ -1277,7 +1282,18 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                     on_disconnect: move |_| on_disconnect(()),
                                     on_start_download: on_start_download,
                                     settings_shell_mode: settings.read().shell_mode,
+                                    sandbox_available: sandbox_available(),
                                     on_shell_mode_change: move |mode: ShellMode| {
+                                        // Defense in depth: ignore a switch to Proot when no
+                                        // sandbox backend is available on this machine. The
+                                        // Settings toggle already disables it, but a stale or
+                                        // programmatic request must not enable sandboxing.
+                                        if mode == ShellMode::Proot && !sandbox_available() {
+                                            tracing::warn!(
+                                                "Ignoring switch to Proot: no sandbox backend available"
+                                            );
+                                            return;
+                                        }
                                         let mut s = settings.write();
                                         s.shell_mode = mode;
                                         let _ = save_settings(&s);
