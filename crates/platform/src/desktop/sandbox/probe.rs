@@ -117,11 +117,14 @@ pub async fn probe_backend(cfg: &SandboxConfig, b: SandboxBackend) -> BackendRep
 }
 
 /// Per-backend probe timeout. The probes shell out (`docker info`,
-/// `wsl.exe --status`, `bwrap`), and `any_backend_available` runs synchronously
-/// on the UI thread at startup — an installed-but-hung Docker daemon or wedged
-/// `wsl.exe` must not stall the app. A probe that exceeds this is reported
-/// `Broken` (prerequisites may exist, but the backend is not responding).
-const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+/// `wsl.exe --status`/`--list`, `bwrap`), and `any_backend_available` runs
+/// synchronously on the UI thread at startup — an installed-but-hung Docker
+/// daemon or wedged `wsl.exe` must not stall the app. A probe that exceeds this
+/// is reported `Broken` (prerequisites may exist, but the backend is not
+/// responding). Generous enough to tolerate a COLD WSL distro spinning up under
+/// startup load (WSL idle-terminates distros, so the first `wsl -d` call after
+/// launch can take a few seconds), while still bounding a truly hung backend.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Probe every backend valid for this target_os. Skips (reports `Unavailable`)
 /// backends that can't run here; never errors for "not available". Each probe
@@ -138,6 +141,10 @@ pub async fn probe_all(cfg: &SandboxConfig) -> Vec<BackendReport> {
                 },
             },
         };
+        // Log every verdict at info so the availability decision (which drives
+        // the Settings gate + Windows install banner) is visible without a
+        // special RUST_LOG filter.
+        tracing::info!("[SANDBOX_PROBE] {:?} -> {:?}", report.backend, report.status);
         out.push(report);
     }
     out
