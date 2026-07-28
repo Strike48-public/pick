@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = ["desktop"]
-desktop = ["sysinfo", "local-ip-address", "dns-lookup", "network-interface", "dep:lazy_static", "dep:uuid", "dep:image", "desktop-mdns", "wifi_scan", "ssdp-client", "dep:reqwest", "dep:portable-pty", "dep:libc", "dep:sha2"]
+desktop = ["sysinfo", "local-ip-address", "dns-lookup", "network-interface", "dep:lazy_static", "dep:uuid", "dep:image", "desktop-mdns", "wifi_scan", "ssdp-client", "dep:reqwest", "dep:portable-pty", "dep:libc", "dep:sha2", "dep:keyring"]
 desktop-all = ["desktop", "desktop-screenshots"]
 desktop-screenshots = ["desktop", "screenshots"]
 desktop-mdns = ["desktop", "mdns-sd"]
@@ -55,6 +55,12 @@ ssdp-client = { version = "2.1", optional = true }
 
 # Sandbox dependencies (desktop)
 reqwest = { version = "0.12", features = ["rustls-tls", "rustls-tls-native-roots", "stream"], default-features = false, optional = true }
+
+# OS credential store for the desktop chat-token secure backend. The default
+# `v1` feature selects the native store per platform: Windows Credential
+# Manager, macOS Keychain, and the Linux Secret Service (each internally
+# cfg(target_os)-gated), so a single cross-platform desktop build works.
+keyring = { version = "4", optional = true }
 
 # PTY support (desktop + android)
 portable-pty = { version = "0.9", optional = true }

@@ -31,6 +31,17 @@ fn main() {
     tracing::info!("Log file: {}", log_path.display());
     tracing::info!("Starting Pentest Connector Desktop");
 
+    // Register the OS credential store as the secure backend for bearer tokens
+    // (Windows Credential Manager / macOS Keychain / Linux Secret Service). Without
+    // this, `pentest_core::secure_store` has no desktop backend and the Matrix chat
+    // token is never persisted — forcing a fresh browser sign-in on every launch.
+    // Mirrors the iOS Keychain / Android Keystore registration in apps/mobile.
+    pentest_core::secure_store::set_backend(
+        pentest_platform::desktop::secure_set,
+        pentest_platform::desktop::secure_get,
+        pentest_platform::desktop::secure_delete,
+    );
+
     // Load theme from settings
     let settings = load_settings();
     let css = pentest_ui::theme::generate_theme_css(
