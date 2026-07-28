@@ -31,7 +31,7 @@ pub use ios::pty_shell::PtyShell;
 
 /// Re-export sandbox control for desktop
 #[cfg(feature = "desktop")]
-pub use desktop::{is_sandbox_enabled, set_use_sandbox};
+pub use desktop::{is_sandbox_enabled, sandbox_available_blocking, set_use_sandbox};
 
 /// Command sandboxing (bubblewrap/proot) is a desktop-only concept. On
 /// non-desktop platforms (mobile) there is no command sandbox, so report it

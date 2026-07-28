@@ -15,6 +15,7 @@ const MOBILE_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
     extra_init_messages: &[],
     create_tools: pentest_tools::create_tool_registry,
     set_sandbox: None,
+    sandbox_available: None,
     // Per-app fallback default only. The effective mode is resolved at runtime
     // as persisted-setting > build-time PICK_EASY_MODE env > this literal, so the
     // mobile builds turn easy mode on via PICK_EASY_MODE=true (see the just

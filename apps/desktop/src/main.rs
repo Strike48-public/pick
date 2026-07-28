@@ -17,6 +17,7 @@ const DESKTOP_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
     extra_init_messages: &[],
     create_tools: pentest_tools::create_tool_registry,
     set_sandbox: Some(pentest_platform::set_use_sandbox),
+    sandbox_available: Some(pentest_platform::sandbox_available_blocking),
     // Per-app fallback default. The effective mode is resolved at runtime as
     // persisted-setting > build-time PICK_EASY_MODE env > this literal, so a
     // desktop build can ship easy-mode-first via PICK_EASY_MODE=true without

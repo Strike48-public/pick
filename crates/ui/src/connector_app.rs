@@ -57,6 +57,8 @@ pub struct ConnectorAppConfig {
     pub create_tools: fn() -> ToolRegistry,
     /// Optional sandbox toggle. Desktop/Web pass `pentest_platform::set_use_sandbox`.
     pub set_sandbox: Option<fn(bool)>,
+    /// Returns whether a sandbox backend is currently available. None (mobile/web) is treated as true.
+    pub sandbox_available: Option<fn() -> bool>,
     /// When true, render the simplified "Easy Mode" shell (scan + chat) instead
     /// of the full dashboard/sidebar UI. Default target is mobile.
     pub easy_mode: bool,
@@ -290,6 +292,15 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         s
     });
     let device_id = settings.peek().device_id.clone();
+
+    // ---- sandbox availability ----
+    // Whether a command-sandbox backend (bwrap/proot/docker/WSL) is usable on
+    // this machine. Desktop supplies a blocking probe via the config hook; a
+    // `None` hook (mobile/web) means "always available" (mobile has its proot
+    // path). Later tasks read this signal to gate the Settings toggle and show a
+    // Windows install banner.
+    let sandbox_available = use_signal(|| cfg.sandbox_available.map(|f| f()).unwrap_or(true));
+    tracing::debug!("sandbox_available at startup: {}", sandbox_available());
 
     // ---- easy mode resolution ----
     // The effective Easy Mode flag: persisted Settings choice > build-time

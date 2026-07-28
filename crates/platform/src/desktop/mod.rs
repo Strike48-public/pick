@@ -95,6 +95,32 @@ pub(crate) async fn wait_for_child_output(
     Ok((stdout, stderr, exit_code))
 }
 
+/// Synchronous "is a sandbox backend available?" probe for startup-time UI.
+///
+/// Wraps the async [`sandbox::probe::any_backend_available`] so it can be stored
+/// in the cross-target `ConnectorAppConfig` as a `fn() -> bool`. Called once from
+/// the Dioxus desktop `main`, which is NOT `#[tokio::main]`, so we can't assume a
+/// current runtime: if a Tokio handle exists we block on it via
+/// `block_in_place`; otherwise we spin up a throwaway runtime. If no runtime can
+/// be built we fail OPEN (return `true`) — this only affects the availability
+/// *display*; the actual execution path stays fail-closed elsewhere.
+pub fn sandbox_available_blocking() -> bool {
+    use sandbox::config::SandboxConfig;
+    use sandbox::probe::any_backend_available;
+
+    let cfg = SandboxConfig::default();
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(any_backend_available(&cfg))),
+        Err(_) => match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt.block_on(any_backend_available(&cfg)),
+            Err(e) => {
+                tracing::warn!("sandbox_available_blocking: no runtime ({e}); assuming available");
+                true
+            }
+        },
+    }
+}
+
 /// Desktop platform provider
 pub struct DesktopPlatform;
 
