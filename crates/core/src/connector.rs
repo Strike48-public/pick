@@ -240,7 +240,23 @@ impl BaseConnector for PentestConnector {
                 Ok(result) => {
                     let duration_ms = start.elapsed().as_millis() as u64;
                     let success = result.success;
-                    let result_value = serde_json::to_value(&result).unwrap_or(Value::Null);
+                    let mut result_value = serde_json::to_value(&result).unwrap_or(Value::Null);
+                    // Sanitize target-controlled tool output before it re-enters
+                    // any LLM agent (#320): scrub secrets and neutralize injected
+                    // instructions in `data`/`error`. This is the single agent-
+                    // facing choke point, so every tool is covered here rather
+                    // than per-tool. `provenance` keeps the (already-redacted)
+                    // raw excerpt as the audit trail.
+                    let scrub = crate::sanitize::sanitize_agent_result(&mut result_value);
+                    if scrub.changed_anything() {
+                        tracing::info!(
+                            tool = %name,
+                            injection_suspected = scrub.injection_suspected,
+                            secrets_redacted = scrub.secrets_redacted,
+                            markers_neutralized = scrub.markers_neutralized,
+                            "sanitized tool output before returning to agent"
+                        );
+                    }
                     let _ = event_tx.send(ToolEvent::Completed {
                         tool_name: name,
                         duration_ms,
@@ -254,10 +270,15 @@ impl BaseConnector for PentestConnector {
                         tool_name: name,
                         error: e.to_string(),
                     });
-                    Ok(serde_json::json!({
+                    // The error string is connector-internal (not target output),
+                    // but pass it through the same scrub so a secret echoed into
+                    // an error message can't leak to the agent either (#320).
+                    let mut err_value = serde_json::json!({
                         "success": false,
                         "error": e.to_string()
-                    }))
+                    });
+                    let _ = crate::sanitize::sanitize_agent_result(&mut err_value);
+                    Ok(err_value)
                 }
             }
         })

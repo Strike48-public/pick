@@ -8,7 +8,7 @@ use pentest_core::error::Result;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
-use pentest_core::url_validation::{validate_url, ValidationMode};
+use pentest_core::url_validation::{target_validation_mode, validate_url};
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -99,8 +99,9 @@ impl PentestTool for DirbTool {
                 ));
             }
 
-            // Validate URL to prevent SSRF and command injection
-            let url = validate_url(&url, ValidationMode::Production, None)?;
+            // Validate URL to prevent SSRF and command injection. Mode honors
+            // PENTEST_ALLOW_PRIVATE_IPS (defaults to Production).
+            let url = validate_url(&url, target_validation_mode(), None)?;
 
             let recursive = crate::util::param_bool(&params, "recursive", false);
             let speed_delay = param_u64(&params, "speed_delay", 0);

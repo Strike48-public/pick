@@ -9,7 +9,7 @@ use pentest_core::timeout::ToolTimeouts;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
-use pentest_core::url_validation::{validate_url, ValidationMode};
+use pentest_core::url_validation::{target_validation_mode, validate_url};
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -115,9 +115,10 @@ impl PentestTool for FfufTool {
                 ));
             }
 
-            // Validate base URL (before FUZZ keyword) to prevent SSRF
+            // Validate base URL (before FUZZ keyword) to prevent SSRF. Mode
+            // honors PENTEST_ALLOW_PRIVATE_IPS (defaults to Production).
             let base_url = url.replace("FUZZ", "test");
-            let _ = validate_url(&base_url, ValidationMode::Production, None)?;
+            let _ = validate_url(&base_url, target_validation_mode(), None)?;
 
             let threads = param_u64(&params, "threads", 40);
             let match_codes =
