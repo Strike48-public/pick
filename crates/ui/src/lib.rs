@@ -2,8 +2,8 @@
 //!
 //! Shared Dioxus UI components for all platforms.
 
-pub mod components;
 pub mod auth_flow;
+pub mod components;
 #[cfg(feature = "connector")]
 pub mod connector_app;
 pub mod download_manager;
@@ -130,10 +130,16 @@ pub async fn run_event_loop(
                         crate::session::set_auth_token(&auth_token);
                         crate::session::set_tenant_id(&signals.config.peek().tenant_id);
                         crate::session::set_connector_name(&signals.config.peek().connector_name);
-                        // Persist for relaunch: token → OS secure store (Keychain
-                        // on iOS); the API URL it was minted for → settings, so
-                        // startup can restore it without a fresh browser sign-in.
-                        crate::session::persist_matrix_token(&auth_token, &api_url);
+                        // Persist for relaunch: token → OS secure store; the API
+                        // URL → settings via the authoritative in-memory signal so
+                        // a later signal-based save_settings can't clobber it back
+                        // to empty (which forced a fresh sign-in every launch).
+                        {
+                            let mut s = signals.settings.write();
+                            s.matrix_api_url = api_url.clone();
+                            let _ = save_settings(&s);
+                        }
+                        crate::session::persist_matrix_token(&auth_token);
                     }
                 }
                 ConnectorEvent::ToolStarted { tool_name, params } => {

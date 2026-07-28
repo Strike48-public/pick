@@ -555,8 +555,12 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         );
                         crate::liveview_server::set_matrix_credentials(&api_url_clone, &token);
                         crate::session::set_auth_token(&token);
-                        // Persist so relaunch skips sign-in (Keychain on iOS).
-                        crate::session::persist_matrix_token(&token, &api_url_clone);
+                        // Persist so relaunch skips sign-in: token → secure store,
+                        // api_url → settings. This path has no `settings` signal in
+                        // scope, so it writes the URL detached; the connector_app /
+                        // lib.rs paths (which own the signal) write it there.
+                        crate::session::persist_matrix_token(&token);
+                        crate::session::persist_matrix_api_url_detached(&api_url_clone);
                         // Bump the tick so the render re-reads the session store
                         // (RwLock, not a signal) and drops the awaiting state.
                         token_tick += 1;
@@ -718,7 +722,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 );
                                 agents.set(list);
                                 agents_loaded.set(true);
-                                props.on_chat_event.call(crate::auth_flow::AuthEvent::ChatReady);
+                                props
+                                    .on_chat_event
+                                    .call(crate::auth_flow::AuthEvent::ChatReady);
                                 selected_agent.set(Some(updated.clone()));
                                 if let Some(mut out) = props.selected_agent_out {
                                     out.set(Some(updated.id.clone()));
@@ -731,7 +737,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 );
                                 agents.set(list);
                                 agents_loaded.set(true);
-                                props.on_chat_event.call(crate::auth_flow::AuthEvent::ChatReady);
+                                props
+                                    .on_chat_event
+                                    .call(crate::auth_flow::AuthEvent::ChatReady);
                                 selected_agent.set(Some(agent.clone()));
                                 if let Some(mut out) = props.selected_agent_out {
                                     out.set(Some(agent.id.clone()));
@@ -752,7 +760,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 list.push(new_agent.clone());
                                 agents.set(list);
                                 agents_loaded.set(true);
-                                props.on_chat_event.call(crate::auth_flow::AuthEvent::ChatReady);
+                                props
+                                    .on_chat_event
+                                    .call(crate::auth_flow::AuthEvent::ChatReady);
                                 selected_agent.set(Some(new_agent.clone()));
                                 if let Some(mut out) = props.selected_agent_out {
                                     out.set(Some(new_agent.id.clone()));
@@ -765,7 +775,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 );
                                 agents.set(list);
                                 agents_loaded.set(true);
-                                props.on_chat_event.call(crate::auth_flow::AuthEvent::ChatReady);
+                                props
+                                    .on_chat_event
+                                    .call(crate::auth_flow::AuthEvent::ChatReady);
                             }
                         }
                     }
@@ -805,7 +817,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             crate::session::clear_matrix_token();
                             crate::session::set_auth_token("");
                             pentest_core::matrix::clear_browser_token_cache();
-                            props.on_chat_event.call(crate::auth_flow::AuthEvent::ChatAuthDead);
+                            props
+                                .on_chat_event
+                                .call(crate::auth_flow::AuthEvent::ChatAuthDead);
                             return;
                         }
                         tracing::info!("ChatPanel: auth error, will retry in 5s");

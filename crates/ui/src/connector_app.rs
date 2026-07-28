@@ -703,6 +703,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             let mut matrix_api_url = matrix_api_url;
             let dispatch = dispatch.clone();
             spawn(async move {
+                tracing::info!("[CONNECT] plg_sign_in_and_connect spawn entered");
                 status.set(ConnectorStatus::Connecting);
                 connecting_step.set(Some(ConnectingStep::SigningIn));
 
@@ -720,6 +721,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 // reachable from this crate, so use the shared helper added in
                 // Step 1b instead.
                 let api_url = derive_api_url(&base_config.host, base_config.use_tls);
+                tracing::info!("[CONNECT] derived api_url={api_url:?} host={:?} calling fetch_matrix_token_browser", base_config.host);
 
                 let jwt = match pentest_core::matrix::fetch_matrix_token_browser(&api_url).await {
                     Ok(t) => t,
@@ -747,7 +749,18 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 matrix_api_url.set(api_url.clone());
                 matrix_auth_token.set(jwt.clone());
                 crate::session::set_auth_token(&jwt);
-                crate::session::persist_matrix_token(&jwt, &api_url);
+                // Write matrix_api_url into the authoritative in-memory `settings`
+                // signal (not just a detached load_settings copy). Other handlers
+                // persist by cloning this signal; if the URL only lived on disk,
+                // the next signal-based save_settings would clobber it back to
+                // empty and relaunch would force a fresh sign-in. See the same
+                // pattern in `on_easy_mode_change`.
+                {
+                    let mut s = settings.write();
+                    s.matrix_api_url = api_url.clone();
+                    let _ = save_settings(&s);
+                }
+                crate::session::persist_matrix_token(&jwt);
                 dispatch(AuthEvent::TokenObtained);
 
                 // Exchange the JWT for a tenant-scoped OTT, stage it, and point

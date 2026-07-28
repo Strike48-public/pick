@@ -13,5 +13,7 @@ pub fn copy_text(text: &str) -> Result<(), String> {
     // arboard hands ownership to the OS/session clipboard manager on drop, so a
     // short-lived instance is fine for set_text on all desktop platforms.
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    clipboard.set_text(text.to_owned()).map_err(|e| e.to_string())
+    clipboard
+        .set_text(text.to_owned())
+        .map_err(|e| e.to_string())
 }

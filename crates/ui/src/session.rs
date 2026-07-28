@@ -86,32 +86,57 @@ pub fn set_auth_token(token: &str) {
     });
 }
 
-/// Persist the Matrix chat token for relaunch. The token goes to the OS secure
-/// store (Keychain on iOS / Keystore on Android); the API URL it was minted for
-/// goes to settings so startup only restores when pointing at the same host.
-/// Falls back to nothing if no secure store is registered (desktop dev) — the
-/// token simply isn't persisted rather than being written in plaintext.
-pub fn persist_matrix_token(token: &str, api_url: &str) {
+/// Persist the Matrix chat token to the OS secure store (Keychain on iOS /
+/// Keystore on Android / Credential Manager on Windows / Secret Service on
+/// Linux) for relaunch. Falls back to nothing if no secure store is registered
+/// (headless) — the token simply isn't persisted rather than written in
+/// plaintext.
+///
+/// This ONLY writes the token. The API URL the token was minted for is
+/// persisted separately by the caller, via [`persist_matrix_api_url`], which
+/// writes it through the in-memory `AppSettings` signal so a later
+/// signal-based `save_settings` cannot clobber it back to empty (which forced a
+/// fresh browser sign-in every launch — see `on_easy_mode_change` for the same
+/// convention). `persist_matrix_token` runs on background threads with no
+/// access to the Dioxus signal, so it must not touch settings at all.
+pub fn persist_matrix_token(token: &str) {
     tracing::info!(
-        "[TOKEN_PERSIST] persist_matrix_token called: token_len={} api_url={api_url:?} secure_store_available={}",
+        "[TOKEN_PERSIST] persist_matrix_token called: token_len={} secure_store_available={}",
         token.len(),
         pentest_core::secure_store::is_available()
     );
     match pentest_core::secure_store::store_token(token) {
         Ok(()) => {
-            let mut s = pentest_core::settings::load_settings();
-            s.matrix_api_url = api_url.to_string();
-            if let Err(e) = pentest_core::settings::save_settings(&s) {
-                tracing::warn!("failed to save matrix_api_url for token restore: {e}");
-            } else {
-                tracing::info!(
-                    "[TOKEN_PERSIST] stored chat token in secure store + saved matrix_api_url"
-                );
+            // Read back immediately: a `set` that returns Ok but does not
+            // persist is exactly the failure observed on Windows Credential
+            // Manager. This turns a silent no-op into a visible warning.
+            match pentest_core::secure_store::load_token() {
+                Ok(Some(v)) if v == token => {
+                    tracing::info!("[TOKEN_PERSIST] stored + verified chat token in secure store")
+                }
+                Ok(_) => tracing::warn!(
+                    "[TOKEN_PERSIST] stored chat token but read-back did not match (store not honoring writes?)"
+                ),
+                Err(e) => tracing::warn!("[TOKEN_PERSIST] stored chat token but read-back errored: {e}"),
             }
         }
         Err(e) => {
             tracing::info!("not persisting chat token (no secure store: {e})");
         }
+    }
+}
+
+/// Persist `matrix_api_url` to `settings.json` for the token-restore path,
+/// WITHOUT going through the Dioxus signal. Used by callers that lack the
+/// signal (e.g. the chat panel's own sign-in). Callers that DO own the
+/// `settings` signal must instead write the signal and `save_settings(&signal)`
+/// so the two do not diverge (the signal is authoritative; a detached
+/// `load_settings`→save here would be clobbered by the next signal save).
+pub fn persist_matrix_api_url_detached(api_url: &str) {
+    let mut s = pentest_core::settings::load_settings();
+    s.matrix_api_url = api_url.to_string();
+    if let Err(e) = pentest_core::settings::save_settings(&s) {
+        tracing::warn!("failed to save matrix_api_url for token restore: {e}");
     }
 }
 
