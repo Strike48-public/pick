@@ -116,12 +116,29 @@ pub async fn probe_backend(cfg: &SandboxConfig, b: SandboxBackend) -> BackendRep
     BackendReport { backend: b, status }
 }
 
+/// Per-backend probe timeout. The probes shell out (`docker info`,
+/// `wsl.exe --status`, `bwrap`), and `any_backend_available` runs synchronously
+/// on the UI thread at startup — an installed-but-hung Docker daemon or wedged
+/// `wsl.exe` must not stall the app. A probe that exceeds this is reported
+/// `Broken` (prerequisites may exist, but the backend is not responding).
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Probe every backend valid for this target_os. Skips (reports `Unavailable`)
-/// backends that can't run here; never errors for "not available".
+/// backends that can't run here; never errors for "not available". Each probe
+/// is bounded by [`PROBE_TIMEOUT`] so a hung backend can't stall the caller.
 pub async fn probe_all(cfg: &SandboxConfig) -> Vec<BackendReport> {
     let mut out = Vec::new();
     for b in os_backends() {
-        out.push(probe_backend(cfg, b).await);
+        let report = match tokio::time::timeout(PROBE_TIMEOUT, probe_backend(cfg, b)).await {
+            Ok(report) => report,
+            Err(_) => BackendReport {
+                backend: b,
+                status: BackendStatus::Broken {
+                    reason: format!("probe timed out after {}s", PROBE_TIMEOUT.as_secs()),
+                },
+            },
+        };
+        out.push(report);
     }
     out
 }
