@@ -798,6 +798,12 @@ pub struct AppSettings {
     /// an explicit in-app Settings choice that overrides the default.
     #[serde(default)]
     pub easy_mode: Option<bool>,
+
+    /// Whether the user dismissed the Windows "install WSL for better scanning"
+    /// banner. The show logic still hides the banner once a sandbox backend is
+    /// available, so this only suppresses the nag while none is.
+    #[serde(default)]
+    pub wsl_banner_dismissed: bool,
 }
 
 /// Resolve the effective Easy Mode flag from all sources, most-specific first:
@@ -845,6 +851,7 @@ impl Default for AppSettings {
             telemetry_enabled: default_telemetry_enabled(),
             matrix_api_url: String::new(),
             easy_mode: None,
+            wsl_banner_dismissed: false,
         }
     }
 }
@@ -1062,6 +1069,19 @@ impl AppSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_settings_defaults_wsl_banner_not_dismissed() {
+        let s = AppSettings::default();
+        assert!(!s.wsl_banner_dismissed);
+    }
+
+    #[test]
+    fn app_settings_deserializes_without_wsl_banner_field() {
+        // Older settings.json lacks the field; must default, not fail.
+        let s: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(!s.wsl_banner_dismissed);
+    }
 
     /// Serialises every test that mutates a process-global env var — the
     /// tenant vars (`TENANT_ENV_VARS`) AND `HOME` (the credential-file tests set
