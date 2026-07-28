@@ -92,12 +92,21 @@ pub fn set_auth_token(token: &str) {
 /// Falls back to nothing if no secure store is registered (desktop dev) — the
 /// token simply isn't persisted rather than being written in plaintext.
 pub fn persist_matrix_token(token: &str, api_url: &str) {
+    tracing::info!(
+        "[TOKEN_PERSIST] persist_matrix_token called: token_len={} api_url={api_url:?} secure_store_available={}",
+        token.len(),
+        pentest_core::secure_store::is_available()
+    );
     match pentest_core::secure_store::store_token(token) {
         Ok(()) => {
             let mut s = pentest_core::settings::load_settings();
             s.matrix_api_url = api_url.to_string();
             if let Err(e) = pentest_core::settings::save_settings(&s) {
                 tracing::warn!("failed to save matrix_api_url for token restore: {e}");
+            } else {
+                tracing::info!(
+                    "[TOKEN_PERSIST] stored chat token in secure store + saved matrix_api_url"
+                );
             }
         }
         Err(e) => {
@@ -114,10 +123,21 @@ pub fn persist_matrix_token(token: &str, api_url: &str) {
 /// in advance.
 pub fn restore_matrix_token() -> Option<(String, String)> {
     let saved_url = pentest_core::settings::load_settings().matrix_api_url;
+    tracing::info!(
+        "[TOKEN_RESTORE] restore_matrix_token: saved_url_empty={} secure_store_available={}",
+        saved_url.is_empty(),
+        pentest_core::secure_store::is_available()
+    );
     if saved_url.is_empty() {
         return None;
     }
-    let token = match pentest_core::secure_store::load_token() {
+    let load = pentest_core::secure_store::load_token();
+    tracing::info!(
+        "[TOKEN_RESTORE] load_token -> ok={} some={}",
+        load.is_ok(),
+        matches!(load, Ok(Some(ref t)) if !t.is_empty())
+    );
+    let token = match load {
         Ok(Some(t)) if !t.is_empty() => t,
         _ => return None,
     };
