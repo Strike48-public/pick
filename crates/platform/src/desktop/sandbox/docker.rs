@@ -320,4 +320,19 @@ WORKDIR /root
         assert!(!d.contains("archlinux:latest"));
         assert!(!d.contains("pkgbuild.com"));
     }
+
+    #[test]
+    fn docker_mirror_matches_shared_arch_helper() {
+        // Docker inlines its mirror Server lines rather than reusing
+        // arch::mirrorlist_for (it needs a `RUN echo` shape, not the newline-
+        // joined mirrorlist). Guard against silent drift: the mirror host in the
+        // Dockerfile must match the shared helper for each arch.
+        use super::super::arch;
+        // x86_64: pkgbuild mirror.
+        assert!(arch::mirrorlist_for(false).contains("geo.mirror.pkgbuild.com"));
+        assert!(dockerfile_contents_for(false).contains("geo.mirror.pkgbuild.com"));
+        // aarch64: ALARM mirror.
+        assert!(arch::mirrorlist_for(true).contains("mirror.archlinuxarm.org"));
+        assert!(dockerfile_contents_for(true).contains("mirror.archlinuxarm.org"));
+    }
 }

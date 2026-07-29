@@ -300,6 +300,12 @@ impl RootfsManager {
     }
 
     /// Add BlackArch repository to the rootfs
+    ///
+    /// On aarch64 this still runs strap.sh (unlike WSL/Docker which append
+    /// `[blackarch]` directly). strap.sh may assume an x86_64 bootstrap; if it
+    /// misbehaves on arm64 the `Err` fallback appends the repo manually. This
+    /// arm64-Linux path is unverified (no arm64 Linux test hardware yet) — verify
+    /// when a box exists.
     async fn add_blackarch_repo(&self, rootfs: &Path) -> SandboxResult<()> {
         tracing::info!("Adding BlackArch repository...");
 

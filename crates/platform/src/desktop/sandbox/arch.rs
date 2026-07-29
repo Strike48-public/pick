@@ -83,13 +83,6 @@ pub(super) fn docker_base_image_for(aarch64: bool) -> &'static str {
     }
 }
 
-/// Docker base image for the current host arch.
-/// Public-API convenience wrapper kept for symmetry with other arch helpers.
-#[allow(dead_code)]
-pub(super) fn docker_base_image() -> &'static str {
-    docker_base_image_for(is_aarch64())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
