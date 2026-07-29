@@ -1458,11 +1458,22 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             let manifest = match pentest_core::orchestrator::gate_for_report(&snapshot, engagement)
             {
                 Ok(m) => m,
-                Err(e) => {
+                Err(pentest_core::orchestrator::GateError::PendingNodes { pending_ids }) => {
+                    // The most common gate failure: report requested before the
+                    // findings were validated. Show an ACTIONABLE message that
+                    // points at the Validate Findings (shield) button, rather
+                    // than dumping the raw evidence-node UUIDs at the operator.
+                    let n = pending_ids.len();
                     error_msg.set(Some(format!(
-                        "Cannot generate report: {e}. Ask the Validator to adjudicate \
-                         pending nodes first."
+                        "{n} finding{} need{} validation first. Click the shield \
+                         (\"Validate Findings\") button, then Generate Report.",
+                        if n == 1 { "" } else { "s" },
+                        if n == 1 { "s" } else { "" },
                     )));
+                    return;
+                }
+                Err(e) => {
+                    error_msg.set(Some(format!("Cannot generate report: {e}")));
                     return;
                 }
             };
