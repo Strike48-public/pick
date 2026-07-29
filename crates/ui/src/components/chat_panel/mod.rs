@@ -1584,7 +1584,16 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // dependencies (agents, selected_agent, agents_loaded, show_history) change.
     // Retry handler for the desktop header bar's chip: bump retry_tick so the
     // subscription resource respawns.
-    let on_retry = EventHandler::new(move |_: ()| retry_tick += 1);
+    // This handler is published into the parent AppLayout's ChatHeaderCtx and can
+    // outlive the ChatPanel (e.g. the workspace is replaced by the session-expired
+    // overlay, unmounting the panel). Writing the dropped `retry_tick` signal via
+    // `+=` would panic with ValueDroppedError, so write fallibly and no-op if the
+    // signal is already gone.
+    let on_retry = EventHandler::new(move |_: ()| {
+        if let Ok(mut t) = retry_tick.try_write() {
+            *t += 1;
+        }
+    });
     {
         let is_full = props.full_page;
         let api_url_empty = api_url.is_empty();
@@ -1753,7 +1762,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     is_full: is_full,
                     on_close: move |_| trigger_close(),
                     connection_state: connection_state,
-                    on_retry: move |_| retry_tick += 1,
+                    on_retry: move |_| { if let Ok(mut t) = retry_tick.try_write() { *t += 1; } },
                 }
             }
 
