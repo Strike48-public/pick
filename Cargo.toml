@@ -126,3 +126,12 @@ strip = false
 # LTO off keeps them. The FFI shim is tiny, so losing cross-crate LTO here costs
 # almost nothing in size/speed.
 lto = false
+
+# Local patch of dioxus-asset-resolver 0.7.9: upstream native.rs:58 does
+# `strip_prefix("/").unwrap()`, which panics (StripPrefixError) whenever the
+# webview requests an asset path that neither exists on disk nor starts with
+# `/` — reproducible on Windows when opening the expert sidebar, taking down
+# the whole app. The vendored copy replaces that unwrap with a graceful
+# fallback (return "not found" + log the path). Remove once fixed upstream.
+[patch.crates-io]
+dioxus-asset-resolver = { path = "vendor/dioxus-asset-resolver" }
