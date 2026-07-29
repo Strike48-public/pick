@@ -97,17 +97,22 @@ pub async fn probe_backend(cfg: &SandboxConfig, b: SandboxBackend) -> BackendRep
                 }
             } else {
                 let exec = wsl::WslExecutor::new(cfg.clone());
-                if !exec.is_distro_imported().await {
-                    BackendStatus::Unavailable {
-                        reason: "WSL installed but distro not imported yet".into(),
-                    }
-                } else if !exec.is_setup_complete().await {
-                    BackendStatus::Unavailable {
-                        reason: "WSL distro imported but not set up yet".into(),
+                // Only check that WSL is installed and our distro is imported —
+                // both are fast metadata queries (`wsl --status`, `wsl --list`).
+                // Do NOT call `is_setup_complete` here: it runs `wsl -d <distro>
+                // -- test -f ...`, which COLD-STARTS the distro (WSL idle-
+                // terminates it), and at app startup that boot can exceed the
+                // probe timeout — reporting Broken even though the sandbox works
+                // (the actual first command then runs fine). Distro setup /
+                // readiness is handled by `ensure_ready` on the first real
+                // command; "imported" is enough to say the backend is available.
+                if exec.is_distro_imported().await {
+                    BackendStatus::Working {
+                        detail: "WSL distro imported".into(),
                     }
                 } else {
-                    BackendStatus::Working {
-                        detail: "WSL distro ready".into(),
+                    BackendStatus::Unavailable {
+                        reason: "WSL installed but distro not imported yet".into(),
                     }
                 }
             }
