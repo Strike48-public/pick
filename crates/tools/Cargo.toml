@@ -66,5 +66,14 @@ rquickjs = { version = "0.9", features = ["loader"] }
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
 rquickjs = { version = "0.9", features = ["loader", "bindgen"] }
 
+# aarch64 Windows: rquickjs-sys 0.9 ships prebuilt bindings for
+# x86_64-pc-windows-msvc but NOT aarch64-pc-windows-msvc, so the prebuilt path
+# fails to `include!` a nonexistent bindings file. Generate via bindgen instead
+# (needs libclang, provided by the LLVM/clang install on the arm64 build host).
+# Cargo unions features across target tables, so this arm64-Windows entry adds
+# `bindgen` on top of the `loader` from the desktop table above.
+[target.'cfg(all(target_arch = "aarch64", target_os = "windows"))'.dependencies]
+rquickjs = { version = "0.9", features = ["loader", "bindgen"] }
+
 [dev-dependencies]
 tempfile = "3"
