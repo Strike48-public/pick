@@ -2588,8 +2588,6 @@ dependencies = [
 [[package]]
 name = "dioxus-liveview"
 version = "0.7.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7344b8f174967c7d2f6ad0103d680ab57daea83ebe3368f7f011c402fd6aaf77"
 dependencies = [
  "axum 0.8.9",
  "dioxus-cli-config",

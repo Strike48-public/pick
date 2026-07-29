@@ -133,5 +133,13 @@ lto = false
 # `/` — reproducible on Windows when opening the expert sidebar, taking down
 # the whole app. The vendored copy replaces that unwrap with a graceful
 # fallback (return "not found" + log the path). Remove once fixed upstream.
+# Local patch of dioxus-liveview 0.7.9: upstream events.rs convert_form_data
+# does `.downcast::<SerializedFormData>().unwrap()`, which aborts the whole
+# process when the downcast is None — an `oninput`/`onchange` event on the
+# desktop WebView2 transport can arrive without a Form payload, so it panics on
+# the first keystroke in a text field. The vendored copy falls back to an empty
+# form instead of crashing. 0.7.9 is the latest 0.7.x (next is 0.8.0-alpha,
+# still affected); remove once fixed upstream.
 [patch.crates-io]
 dioxus-asset-resolver = { path = "vendor/dioxus-asset-resolver" }
+dioxus-liveview = { path = "vendor/dioxus-liveview" }
