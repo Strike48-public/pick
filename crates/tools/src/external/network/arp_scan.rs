@@ -34,7 +34,10 @@ impl PentestTool for ArpScanTool {
             .param(ToolParam::required(
                 "target",
                 ParamType::String,
-                "Target network (CIDR)",
+                "Target network (CIDR), or a sentinel: 'current' (this host's \
+                 primary subnet), 'auto'/'all' (every active local subnet). \
+                 Prefer a sentinel over guessing a range - it uses the host's \
+                 real interface subnets.",
             ))
             .param(ToolParam::optional(
                 "timeout",
@@ -63,7 +66,13 @@ impl PentestTool for ArpScanTool {
 
             let timeout_secs = crate::util::param_u64(&params, "timeout", 60);
 
-            let builder = CommandBuilder::new().positional(&target);
+            // Resolve auto/current/all -> real subnets, validate, and surface an
+            // out-of-subnet advisory. arp-scan accepts multiple positional
+            // targets ("arp-scan [options] [hosts...]"), so a multi-subnet
+            // resolution fans out in one invocation.
+            let prepared = crate::scan_target::prepare_scan_targets(&target).await?;
+
+            let builder = CommandBuilder::new().extend(&prepared.targets);
 
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -80,6 +89,8 @@ impl PentestTool for ArpScanTool {
 
             Ok(json!({
                 "target": target,
+                "resolved_targets": prepared.targets,
+                "out_of_subnet_warning": prepared.warning,
                 "hosts": hosts,
                 "count": hosts.len(),
             }))

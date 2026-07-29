@@ -34,7 +34,10 @@ impl PentestTool for MasscanFastTool {
             .param(ToolParam::required(
                 "target",
                 ParamType::String,
-                "Target IP or CIDR range",
+                "Target IP or CIDR range, or a sentinel: 'current' (this host's \
+                 primary subnet), 'auto'/'all' (every active local subnet). \
+                 Prefer a sentinel over guessing a range - it uses the host's \
+                 real interface subnets.",
             ))
             .param(ToolParam::optional(
                 "rate",
@@ -70,8 +73,13 @@ impl PentestTool for MasscanFastTool {
             let rate = params.get("rate").and_then(|v| v.as_u64()).unwrap_or(10000);
             let timeout_secs = crate::util::param_u64(&params, "timeout", 120);
 
+            // Resolve auto/current/all -> real subnets, validate, warn if
+            // out-of-subnet. masscan accepts multiple positional targets, so a
+            // multi-subnet resolution fans out in one invocation.
+            let prepared = crate::scan_target::prepare_scan_targets(&target).await?;
+
             let builder = CommandBuilder::new()
-                .positional(&target)
+                .extend(&prepared.targets)
                 .arg("-p", "21,22,23,25,80,443,445,3306,3389,8080")
                 .arg("--rate", &rate.to_string());
 
@@ -90,6 +98,8 @@ impl PentestTool for MasscanFastTool {
 
             Ok(json!({
                 "target": target,
+                "resolved_targets": prepared.targets,
+                "out_of_subnet_warning": prepared.warning,
                 "open_ports": open_ports,
                 "count": open_ports.len(),
             }))
