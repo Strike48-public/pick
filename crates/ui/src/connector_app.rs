@@ -1239,6 +1239,33 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                         },
                     }
                 }
+            } else if matches!(flow(), AuthFlow::Failed { reauth: true, .. }) {
+                // Chat session token died (ChatAuthDead -> Failed{reauth}). The
+                // gRPC connector may still be "Registered", so the workspace would
+                // otherwise sit there throwing "Not authenticated" with no way
+                // back. Surface a re-sign-in prompt (mirrors easy mode's overlay);
+                // tapping it dispatches SignInRequested, which the general
+                // SigningIn launch effect turns into a fresh browser sign-in.
+                {
+                    let d_reauth = dispatch.clone();
+                    rsx! {
+                        div { class: "connect-screen",
+                            span {
+                                class: "header-logo mb-8",
+                                dangerous_inner_html: STRIKE48_SIDEBAR_LOGO_SVG,
+                            }
+                            h1 { class: "mb-4", "Session expired" }
+                            span { class: "connect-subtitle",
+                                "Your Strike48 session expired. Sign in again to continue."
+                            }
+                            button {
+                                class: "action-card",
+                                onclick: move |_| d_reauth(AuthEvent::SignInRequested),
+                                span { class: "action-card-label", "Sign in" }
+                            }
+                        }
+                    }
+                }
             } else {
                 match screen {
                     AppScreen::Connect => rsx! {

@@ -26,6 +26,12 @@
     } else {
         httpBase = BASE;
     }
+    // Normalize: `location.origin` can be empty/`null` under the Dioxus custom
+    // protocol, and the StrikeHub branch can leave a trailing slash — either
+    // way `httpBase + '/assets/...'` would produce a double slash
+    // (`//assets/restty.js`), which the desktop asset resolver rejects. Trim any
+    // trailing slash so exactly one joins the path.
+    httpBase = (httpBase || '').replace(/\/+$/, '');
 
     // Load the restty bundle via script tag if not already loaded
     // (In Strike48 mode, it's already inlined in <head>)
