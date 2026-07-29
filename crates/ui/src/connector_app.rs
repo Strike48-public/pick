@@ -149,6 +149,11 @@ pub struct ConnectorPagesProps {
     chat_mailbox: Signal<Option<String>>,
     /// Mailbox for opening a specific conversation by ID.
     conversation_mailbox: Signal<Option<String>>,
+    /// Chat-level auth events (ChatReady, ChatAuthDead) → auth-flow dispatch, so
+    /// expert mode reacts to an expired chat token the same way easy mode does
+    /// (surfacing the re-sign-in overlay). Defaults to a no-op.
+    #[props(default)]
+    on_chat_event: EventHandler<crate::auth_flow::AuthEvent>,
 }
 
 /// Routes between Dashboard, Tools, Files, Shell, Logs, and Settings.
@@ -223,6 +228,7 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                     send_mailbox: props.chat_mailbox,
                     full_page: true,
                     open_conversation_id: props.conversation_mailbox,
+                    on_chat_event: move |ev| props.on_chat_event.call(ev),
                 }
             }
 
@@ -1400,6 +1406,10 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                     on_start_download: on_start_download,
                                     settings_shell_mode: settings.read().shell_mode,
                                     sandbox_available: sandbox_available(),
+                                    on_chat_event: {
+                                        let d = dispatch.clone();
+                                        move |ev| d(ev)
+                                    },
                                     on_shell_mode_change: move |mode: ShellMode| {
                                         // Defense in depth: ignore a switch to Proot when no
                                         // sandbox backend is available on this machine. The
