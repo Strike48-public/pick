@@ -19,7 +19,19 @@ const WSL_SETUP_MARKER: &str = "/root/.pentest-setup-complete";
 const ARCHWSL_ROOTFS_URL: &str =
     "https://github.com/yuk7/ArchWSL-FS/releases/download/25030400/rootfs.tar.gz";
 
-/// Setup script executed inside the freshly-imported WSL distro.
+/// Rootfs download URL for the current host architecture. x86_64 uses the
+/// pre-built ArchWSL-FS release (flat, WSL-ready). aarch64 uses the ArchLinuxARM
+/// aarch64 rootfs — the x86_64 ArchWSL image imports on arm64 WSL but every
+/// command then fails `execvpe(/bin/sh): Exec format error`.
+fn wsl_rootfs_url() -> &'static str {
+    if super::arch::is_aarch64() {
+        super::arch::ALARM_AARCH64_ROOTFS
+    } else {
+        ARCHWSL_ROOTFS_URL
+    }
+}
+
+/// Build the setup script executed inside the freshly-imported WSL distro.
 ///
 /// On WSL1 (used when the host lacks nested virtualisation) WSL auto-generates
 /// an `/etc/resolv.conf` pointing at an unreachable nameserver, so pacman fails
@@ -27,7 +39,16 @@ const ARCHWSL_ROOTFS_URL: &str =
 /// takes control of DNS (disabling WSL's regeneration and pinning public
 /// resolvers) and passes pacman `--overwrite '*'` to clear the ArchWSL
 /// gcc-libs / libstdc++ file conflict that would otherwise abort the transaction.
-pub(crate) const WSL_SETUP_SCRIPT: &str = r#"#!/bin/bash
+///
+/// The mirrorlist and keyring are arch-specific (Arch vs ArchLinuxARM); every
+/// other line is identical across arches.
+pub(crate) fn wsl_setup_script() -> String {
+    wsl_setup_script_for(super::arch::is_aarch64())
+}
+
+fn wsl_setup_script_for(aarch64: bool) -> String {
+    format!(
+        r#"#!/bin/bash
 set -e
 
 # WSL1 auto-generates a resolv.conf pointing at an unreachable nameserver
@@ -44,9 +65,7 @@ RESOLV
 
 # Configure mirrors — $repo and $arch are pacman variables, not shell
 cat > /etc/pacman.d/mirrorlist << 'MIRRORS'
-Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
-Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
-MIRRORS
+{mirrors}MIRRORS
 
 # Fix pacman.conf for WSL
 sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf 2>/dev/null || true
@@ -63,7 +82,7 @@ sed -i 's/^SigLevel.*/SigLevel = Never/' /etc/pacman.conf 2>/dev/null || true
 
 # Initialize pacman keyring
 pacman-key --init 2>/dev/null || true
-pacman-key --populate archlinux 2>/dev/null || true
+pacman-key --populate {keyring} 2>/dev/null || true
 
 # Add BlackArch repository if not present
 if ! grep -q '\[blackarch\]' /etc/pacman.conf 2>/dev/null; then
@@ -85,7 +104,11 @@ pacman -Sy --noconfirm --overwrite '*' 2>&1 || true
 # Mark setup as complete
 touch /root/.pentest-setup-complete
 echo "WSL distro setup complete"
-"#;
+"#,
+        mirrors = super::arch::mirrorlist_for(aarch64),
+        keyring = super::arch::keyring_for(aarch64),
+    )
+}
 
 /// WSL2 executor for Windows
 pub struct WslExecutor {
@@ -285,7 +308,7 @@ impl WslExecutor {
         // This avoids Windows cmd mangling $ signs in wsl.exe -c "..." args.
         let script_path = self.config.data_dir.join("wsl-setup.sh");
 
-        tokio::fs::write(&script_path, WSL_SETUP_SCRIPT).await?;
+        tokio::fs::write(&script_path, wsl_setup_script()).await?;
 
         // Convert Windows path to WSL path so wsl.exe can find the script
         let wsl_script_path = Self::windows_to_wsl_path(&script_path.to_string_lossy());
@@ -354,8 +377,8 @@ impl WslExecutor {
 
         tracing::info!("[ensure_distro] WSL distro not found, downloading and importing...");
 
-        // Use ArchWSL-FS rootfs — pre-built for WSL (v1 & v2), flat rootfs,
-        // no repacking needed. https://github.com/yuk7/ArchWSL-FS
+        // Use arch-appropriate rootfs — x86_64: ArchWSL-FS (pre-built, flat);
+        // aarch64: ArchLinuxARM (WSL import accepts plain .tar.gz).
         let rootfs_path = self.config.data_dir.join("archwsl-rootfs.tar.gz");
 
         // Delete suspiciously small files (likely truncated/corrupted downloads)
@@ -371,10 +394,10 @@ impl WslExecutor {
             }
         }
         if !rootfs_path.exists() {
-            tracing::info!("[ensure_distro] Downloading ArchWSL rootfs...");
+            tracing::info!("[ensure_distro] Downloading rootfs...");
             let rootfs_manager = super::rootfs::RootfsManager::new(self.config.clone());
             rootfs_manager
-                .download_file(ARCHWSL_ROOTFS_URL, &rootfs_path)
+                .download_file(wsl_rootfs_url(), &rootfs_path)
                 .await?;
             tracing::info!("[ensure_distro] Download complete");
         } else {
@@ -384,7 +407,7 @@ impl WslExecutor {
             );
         }
 
-        // Import directly into WSL (no repack needed — ArchWSL rootfs is already flat)
+        // Import directly into WSL (no repack needed — both rootfs sources are WSL-ready)
         tracing::info!("[ensure_distro] Starting WSL import...");
         self.import_distro(&rootfs_path).await?;
         tracing::info!("[ensure_distro] WSL import succeeded");
@@ -569,15 +592,46 @@ mod tests {
 
     #[test]
     fn setup_script_forces_working_dns_and_overwrite() {
-        // The embedded setup script must (a) disable WSL's resolv.conf regeneration,
+        // The built setup script must (a) disable WSL's resolv.conf regeneration,
         // (b) pin a working nameserver unconditionally, and (c) use --overwrite so
         // the ArchWSL gcc-libs file conflict does not abort the transaction.
-        let script = super::WSL_SETUP_SCRIPT;
-        assert!(script.contains("generateResolvConf = false"));
-        assert!(script.contains("nameserver 8.8.8.8"));
-        assert!(script.contains("--overwrite"));
-        // resolv.conf must be written unconditionally, not guarded by "if missing".
-        assert!(!script.contains("if [ ! -f /etc/resolv.conf ]"));
+        // These invariants hold on BOTH arches.
+        for aarch64 in [false, true] {
+            let script = super::wsl_setup_script_for(aarch64);
+            assert!(script.contains("generateResolvConf = false"), "arch={aarch64}");
+            assert!(script.contains("nameserver 8.8.8.8"), "arch={aarch64}");
+            assert!(script.contains("--overwrite"), "arch={aarch64}");
+            // resolv.conf must be written unconditionally, not guarded by "if missing".
+            assert!(!script.contains("if [ ! -f /etc/resolv.conf ]"), "arch={aarch64}");
+            // BlackArch repo line is arch-agnostic ($arch resolves in-guest).
+            assert!(script.contains("[blackarch]"), "arch={aarch64}");
+        }
+    }
+
+    #[test]
+    fn x86_64_setup_script_uses_arch_mirrors_and_keyring() {
+        let s = super::wsl_setup_script_for(false);
+        assert!(s.contains("geo.mirror.pkgbuild.com/$repo/os/$arch"));
+        assert!(s.contains("pacman-key --populate archlinux"));
+        assert!(!s.contains("archlinuxarm"));
+    }
+
+    #[test]
+    fn aarch64_setup_script_uses_alarm_mirrors_and_keyring() {
+        let s = super::wsl_setup_script_for(true);
+        assert!(s.contains("mirror.archlinuxarm.org/$arch/$repo"));
+        assert!(s.contains("pacman-key --populate archlinuxarm"));
+        assert!(!s.contains("pkgbuild.com"));
+    }
+
+    #[test]
+    fn wsl_rootfs_url_selects_alarm_only_on_aarch64() {
+        // On the x86_64 build host the URL must be the ArchWSL-FS release.
+        let url = super::wsl_rootfs_url();
+        #[cfg(target_arch = "aarch64")]
+        assert!(url.contains("archlinuxarm.org"));
+        #[cfg(not(target_arch = "aarch64"))]
+        assert!(url.contains("yuk7/ArchWSL-FS"));
     }
 
     #[test]

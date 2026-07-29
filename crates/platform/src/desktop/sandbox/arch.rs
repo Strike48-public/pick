@@ -13,8 +13,6 @@
 //! containers natively). The `*_for(bool)` helpers take the arch as a param so
 //! both branches are unit-testable on any host.
 
-#![allow(dead_code)] // Task 1: helpers unused until Tasks 2-4 wire backends
-
 /// ArchLinuxARM aarch64 root filesystem tarball. Plain `.tar.gz`, accepted by
 /// both `wsl --import` (WSL backend) and `tar -xzf` (Linux bwrap/proot backend),
 /// so the two share this single source and never drift. The `os.archlinuxarm.org`
@@ -37,6 +35,7 @@ pub(super) fn keyring_for(aarch64: bool) -> &'static str {
 }
 
 /// pacman keyring for the current host arch.
+#[allow(dead_code)] // consumed in Task 3 (rootfs.rs)
 pub(super) fn pacman_keyring() -> &'static str {
     keyring_for(is_aarch64())
 }
@@ -55,6 +54,7 @@ pub(super) fn mirrorlist_for(aarch64: bool) -> &'static str {
 }
 
 /// pacman mirrorlist for the current host arch.
+#[allow(dead_code)] // consumed in Task 3 (rootfs.rs)
 pub(super) fn pacman_mirrorlist() -> &'static str {
     mirrorlist_for(is_aarch64())
 }
@@ -62,6 +62,7 @@ pub(super) fn pacman_mirrorlist() -> &'static str {
 /// Docker `--platform` value: arm64 runs natively on Apple Silicon, amd64 on
 /// Intel. (The official `archlinux` image is amd64-only; arm64 uses an ALARM
 /// base image — see `docker_base_image_for`.)
+#[allow(dead_code)] // consumed in Task 4 (docker.rs)
 pub(super) fn docker_platform_for(aarch64: bool) -> &'static str {
     if aarch64 {
         "linux/arm64"
@@ -71,12 +72,14 @@ pub(super) fn docker_platform_for(aarch64: bool) -> &'static str {
 }
 
 /// Docker platform for the current host arch.
+#[allow(dead_code)] // consumed in Task 4 (docker.rs)
 pub(super) fn docker_platform() -> &'static str {
     docker_platform_for(is_aarch64())
 }
 
 /// Docker base image: vanilla Arch on amd64, an ArchLinuxARM image on arm64
 /// (the official `archlinux` image has no arm64 manifest).
+#[allow(dead_code)] // consumed in Task 4 (docker.rs)
 pub(super) fn docker_base_image_for(aarch64: bool) -> &'static str {
     if aarch64 {
         "menci/archlinuxarm:latest"
@@ -86,6 +89,7 @@ pub(super) fn docker_base_image_for(aarch64: bool) -> &'static str {
 }
 
 /// Docker base image for the current host arch.
+#[allow(dead_code)] // consumed in Task 4 (docker.rs)
 pub(super) fn docker_base_image() -> &'static str {
     docker_base_image_for(is_aarch64())
 }
