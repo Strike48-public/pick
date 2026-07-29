@@ -6,6 +6,7 @@
 
 pub mod bwrap;
 pub mod config;
+mod arch;
 pub mod docker;
 pub mod probe;
 pub mod proot;
