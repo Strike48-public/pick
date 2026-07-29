@@ -1634,6 +1634,23 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         });
     }
 
+    // When this ChatPanel unmounts (e.g. the workspace is replaced by the
+    // session-expired overlay, or the user navigates off the Chat page), clear
+    // the published header context. The ChatHeaderCtx we set above holds
+    // EventHandlers bound to THIS component's scope; if the parent AppLayout's
+    // desktop header bar fires one after we're gone, dioxus-core panics with
+    // ValueDroppedError (the handler's generational box was dropped with our
+    // scope). Dropping the ctx to None removes those stale handlers so the
+    // header bar simply renders nothing to fire.
+    {
+        let mut chat_header_ctx = chat_header_ctx;
+        use_drop(move || {
+            if chat_header_ctx.try_peek().map(|c| c.is_some()).unwrap_or(false) {
+                let _ = chat_header_ctx.try_write().map(|mut c| *c = None);
+            }
+        });
+    }
+
     // -----------------------------------------------------------------------
     // Resize handlers
     // -----------------------------------------------------------------------
