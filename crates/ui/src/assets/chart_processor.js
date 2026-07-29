@@ -21,6 +21,54 @@
         document.head.appendChild(es);
     }
 
+    // Lazily-built shared fullscreen overlay for expanding a diagram. Clicking a
+    // rendered mermaid diagram clones its SVG into this overlay at full size;
+    // clicking the backdrop / Esc / the close button dismisses it.
+    function ensureVizModal() {
+        var modal = document.getElementById('viz-fullscreen-modal');
+        if (modal) return modal;
+        modal = document.createElement('div');
+        modal.id = 'viz-fullscreen-modal';
+        modal.style.cssText = 'display:none;position:fixed;inset:0;z-index:99999;'
+            + 'background:rgba(0,0,0,0.85);align-items:center;justify-content:center;padding:32px;box-sizing:border-box;';
+        var inner = document.createElement('div');
+        inner.className = 'viz-fullscreen-inner';
+        inner.style.cssText = 'max-width:96vw;max-height:92vh;overflow:auto;background:#1b211e;'
+            + 'border-radius:10px;padding:20px;box-sizing:border-box;';
+        var close = document.createElement('button');
+        close.textContent = '✕';
+        close.setAttribute('aria-label', 'Close');
+        close.style.cssText = 'position:fixed;top:20px;right:24px;width:40px;height:40px;border-radius:50%;'
+            + 'border:none;background:rgba(255,255,255,0.12);color:#e9eeeb;font-size:18px;cursor:pointer;';
+        function hide() { modal.style.display = 'none'; inner.innerHTML = ''; }
+        modal.addEventListener('click', function(e) { if (e.target === modal) hide(); });
+        close.addEventListener('click', hide);
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && modal.style.display !== 'none') hide();
+        });
+        modal.appendChild(inner);
+        modal.appendChild(close);
+        document.body.appendChild(modal);
+        modal.__show = function(svgMarkup) {
+            inner.innerHTML = svgMarkup;
+            var s = inner.querySelector('svg');
+            if (s) { s.style.width = '100%'; s.style.height = 'auto'; s.removeAttribute('height'); }
+            modal.style.display = 'flex';
+        };
+        return modal;
+    }
+
+    // Make a rendered mermaid container click-to-expand into the fullscreen modal.
+    function makeExpandable(div) {
+        div.style.cursor = 'zoom-in';
+        div.title = 'Click to expand';
+        div.addEventListener('click', function() {
+            var svg = div.querySelector('svg');
+            if (!svg) return;
+            ensureVizModal().__show(svg.outerHTML);
+        });
+    }
+
     // Chart processor: finds unprocessed code blocks and renders them.
     // Optional `sel` overrides the default chat container so other surfaces
     // (e.g. the Easy Mode document viewer) can render mermaid/echarts too.
@@ -44,6 +92,7 @@
                         div.innerHTML = result.svg;
                         var svg = div.querySelector('svg');
                         if (svg) { svg.style.display='block'; svg.style.width='100%'; svg.style.height='auto'; svg.style.minHeight='80px'; }
+                        makeExpandable(div);
                     }).catch(function(err) {
                         div.innerHTML = '<div style="color:#f38ba8;font-size:0.75rem;">Mermaid error: ' + err.message + '</div>';
                     });

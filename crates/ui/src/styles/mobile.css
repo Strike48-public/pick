@@ -184,11 +184,13 @@ body {
 
     /* -- Touch targets --------------------------------------------------- */
 
-    /* Exclude the toggle switch: it's a fixed 46x28 pill, and a 48px min-height
-       forces it nearly square so the border-radius:999px track renders as a
-       circle. Desktop (>768px) never hit this, which is why it looked right
-       there but broke in the mobile WebView. */
-    button:not(.easy-toggle),
+    /* Exclude fixed-size round/pill buttons: a 48px min-height forces their set
+       width:height ratio, so a circular button (border-radius:50% with equal
+       width/height) renders as a tall oval. This hit the toggle switch
+       (46x28 pill), the chat scroll-to-bottom FAB (28x28 circle), and page back
+       buttons (.easy-doc-back). Desktop (>768px) never hit this rule, which is
+       why it looked right there but broke in the mobile WebView. */
+    button:not(.easy-toggle):not(.chat-scroll-to-bottom):not(.easy-doc-back),
     .action-card,
     .tab-item {
         min-height: 48px;
