@@ -2,6 +2,7 @@
 //!
 //! Handles downloading, extracting, and managing the BlackArch minimal rootfs.
 
+use super::arch;
 use super::config::{SandboxConfig, SandboxError, SandboxResult};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
@@ -21,6 +22,28 @@ pub(super) const ARCH_BOOTSTRAP_URL_GZ: &str =
 
 /// BlackArch repository strap script
 const BLACKARCH_STRAP_URL: &str = "https://blackarch.org/strap.sh";
+
+/// Base rootfs URL for the current host arch. x86_64 uses the Arch bootstrap
+/// tarball; aarch64 uses the ArchLinuxARM aarch64 rootfs (vanilla Arch has no
+/// ARM port).
+fn bootstrap_url() -> &'static str {
+    if arch::is_aarch64() {
+        arch::ALARM_AARCH64_ROOTFS
+    } else {
+        ARCH_BOOTSTRAP_URL
+    }
+}
+
+/// Name of the wrapper directory the base archive extracts into, if any. The
+/// x86_64 Arch bootstrap archive nests everything under `root.x86_64/`; the
+/// ALARM aarch64 tarball extracts flat, so there is no wrapper to move.
+fn extracted_subdir_for(aarch64: bool) -> Option<&'static str> {
+    if aarch64 {
+        None
+    } else {
+        Some("root.x86_64")
+    }
+}
 
 /// Rootfs manager for BlackArch environment
 pub struct RootfsManager {
@@ -115,12 +138,60 @@ impl RootfsManager {
 
     /// Download and extract the base Arch rootfs
     async fn download_and_extract_rootfs(&self, rootfs: &Path) -> SandboxResult<()> {
+        tokio::fs::create_dir_all(rootfs).await?;
+
+        // aarch64: ArchLinuxARM ships a flat .tar.gz that untars directly into
+        // the rootfs dir (no `root.<arch>` wrapper like the x86_64 bootstrap).
+        if arch::is_aarch64() {
+            let tarball_path = self.config.data_dir.join("alarm-rootfs.tar.gz");
+            if !tarball_path.exists() {
+                tracing::info!("Downloading ArchLinuxARM aarch64 rootfs...");
+                self.download_file(bootstrap_url(), &tarball_path).await?;
+            }
+            tracing::info!("Extracting ALARM rootfs...");
+            let status = Command::new("tar")
+                .args([
+                    "-xzf",
+                    &tarball_path.to_string_lossy(),
+                    "-C",
+                    &rootfs.to_string_lossy(),
+                    "--no-same-owner",
+                ])
+                .status()
+                .await
+                .map_err(|e| {
+                    SandboxError::RootfsSetupFailed(format!("Failed to extract ALARM rootfs: {e}"))
+                })?;
+            if !status.success() {
+                tracing::warn!(
+                    "ALARM tar extraction exit code {} (usually harmless symlink perms)",
+                    status.code().unwrap_or(-1)
+                );
+            }
+            tokio::fs::remove_file(&tarball_path).await.ok();
+
+            if !rootfs.join("bin").join("bash").exists()
+                && !rootfs.join("usr").join("bin").join("bash").exists()
+            {
+                return Err(SandboxError::RootfsSetupFailed(
+                    "ALARM rootfs extraction incomplete - bash not found".to_string(),
+                ));
+            }
+            if !rootfs.join("usr").join("bin").join("pacman").exists() {
+                return Err(SandboxError::RootfsSetupFailed(
+                    "ALARM rootfs extraction incomplete - pacman not found".to_string(),
+                ));
+            }
+            tracing::info!("ALARM rootfs extraction completed successfully");
+            return Ok(());
+        }
+
         let tarball_path = self.config.data_dir.join("arch-bootstrap.tar.zst");
 
         if !tarball_path.exists() {
             tracing::info!("Downloading Arch bootstrap...");
             if self
-                .download_file(ARCH_BOOTSTRAP_URL, &tarball_path)
+                .download_file(bootstrap_url(), &tarball_path)
                 .await
                 .is_err()
             {
@@ -132,7 +203,6 @@ impl RootfsManager {
         }
 
         tracing::info!("Extracting rootfs...");
-        tokio::fs::create_dir_all(rootfs).await?;
 
         let tarball_str = tarball_path.to_string_lossy();
         let extract_result = if tarball_str.ends_with(".zst") {
@@ -175,12 +245,14 @@ impl RootfsManager {
         }
 
         // The archive extracts to a subdirectory, move contents up
-        let extracted_dir = self.config.data_dir.join("root.x86_64");
-        if extracted_dir.exists() && extracted_dir != *rootfs {
-            if rootfs.exists() {
-                tokio::fs::remove_dir_all(rootfs).await.ok();
+        if let Some(subdir) = extracted_subdir_for(false) {
+            let extracted_dir = self.config.data_dir.join(subdir);
+            if extracted_dir.exists() && extracted_dir != *rootfs {
+                if rootfs.exists() {
+                    tokio::fs::remove_dir_all(rootfs).await.ok();
+                }
+                tokio::fs::rename(&extracted_dir, rootfs).await?;
             }
-            tokio::fs::rename(&extracted_dir, rootfs).await?;
         }
 
         tokio::fs::remove_file(&tarball_path).await.ok();
@@ -209,13 +281,12 @@ impl RootfsManager {
         tokio::fs::create_dir_all(&pacman_gnupg).await?;
 
         // Initialize keyring and populate with Arch Linux keys
-        let init_script = r#"
-set -e
-pacman-key --init
-pacman-key --populate archlinux
-        "#;
+        let init_script = format!(
+            "set -e\npacman-key --init\npacman-key --populate {}\n",
+            arch::pacman_keyring()
+        );
 
-        match self.run_in_rootfs(rootfs, init_script).await {
+        match self.run_in_rootfs(rootfs, &init_script).await {
             Ok(output) => {
                 tracing::info!("Pacman keyring initialized successfully: {}", output.trim());
             }
@@ -284,12 +355,7 @@ set -e
         tracing::info!("Configuring mirrors...");
 
         let mirrorlist = rootfs.join("etc/pacman.d/mirrorlist");
-        tokio::fs::write(
-            &mirrorlist,
-            "Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch\n\
-             Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch\n",
-        )
-        .await?;
+        tokio::fs::write(&mirrorlist, arch::pacman_mirrorlist()).await?;
 
         Ok(())
     }
@@ -555,5 +621,19 @@ done
         file.write_all(&bytes).await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn x86_64_bootstrap_archive_has_wrapper_dir_aarch64_is_flat() {
+        // The x86_64 Arch bootstrap tarball extracts into a `root.x86_64/`
+        // wrapper dir that must then be moved up. The ALARM aarch64 tarball
+        // extracts flat (no wrapper), so no move is needed.
+        assert_eq!(extracted_subdir_for(false), Some("root.x86_64"));
+        assert_eq!(extracted_subdir_for(true), None);
     }
 }

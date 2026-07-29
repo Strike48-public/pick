@@ -35,7 +35,6 @@ pub(super) fn keyring_for(aarch64: bool) -> &'static str {
 }
 
 /// pacman keyring for the current host arch.
-#[allow(dead_code)] // consumed in Task 3 (rootfs.rs)
 pub(super) fn pacman_keyring() -> &'static str {
     keyring_for(is_aarch64())
 }
@@ -54,7 +53,6 @@ pub(super) fn mirrorlist_for(aarch64: bool) -> &'static str {
 }
 
 /// pacman mirrorlist for the current host arch.
-#[allow(dead_code)] // consumed in Task 3 (rootfs.rs)
 pub(super) fn pacman_mirrorlist() -> &'static str {
     mirrorlist_for(is_aarch64())
 }
