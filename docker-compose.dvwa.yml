@@ -53,6 +53,20 @@ services:
     networks:
       - scan-net      # reach DVWA at http://dvwa
       - backend-net   # egress to the Strike48 backend
+    # Reach the Strike48 backend hostnames on the DOCKER HOST. On a local/newdev
+    # cluster the backend is exposed on the host (lima/k3s forwards :80/:443/:50061;
+    # *.strike48.test → 127.0.0.1 in the host's /etc/hosts). A container can't use
+    # the host's loopback, so map the backend hostnames to host-gateway (the host
+    # as seen from the container). Without this Pick resolves the names to the
+    # CONTAINER's 127.0.0.1 and gets "connection refused". Three hosts are needed
+    # across the connect + OTT→JWT flow: the connector gRPC endpoint, the Studio
+    # HTTP API, AND Keycloak (auth) — Pick fetches its JWT directly from Keycloak
+    # after approval, so auth.strike48.test must resolve too. Override via the env
+    # vars if your backend is reachable at a routable address instead.
+    extra_hosts:
+      - "connectors-studio.strike48.test:host-gateway"
+      - "studio.strike48.test:host-gateway"
+      - "auth.strike48.test:host-gateway"
     # Raw sockets for nmap/masscan/rustscan. NET_RAW + NET_ADMIN as in the chart
     # (chart/pick-connector/templates/_helpers.tpl "pentest" profile). This puts
     # the caps in the container's bounding set; the binary carries matching FILE
