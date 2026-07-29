@@ -1265,9 +1265,10 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                 "Your Strike48 session expired. Sign in again to continue."
                             }
                             button {
-                                class: "action-card",
+                                r#type: "button",
+                                class: "success",
                                 onclick: move |_| d_reauth(AuthEvent::SignInRequested),
-                                span { class: "action-card-label", "Sign in" }
+                                "Sign in"
                             }
                         }
                     }

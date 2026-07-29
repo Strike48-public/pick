@@ -119,8 +119,16 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
 }
 
 /// Auto-resizing textarea + Send button — native-events variant (Windows and
-/// other non-desktop-Unix targets). Kept intentionally as the pattern #191
-/// restored to unbreak StrikeHub-hosted Pick on Windows/WebView2.
+/// other non-desktop-Unix targets).
+///
+/// We deliberately do NOT bind `oninput` / read `evt.value()`: on the desktop
+/// WebView2 + LiveView transport a form event does not carry a usable
+/// `SerializedFormData` payload, so `evt.value()` is always empty (and the
+/// upstream converter used to panic on it — see the vendored dioxus-liveview
+/// patch). Instead we read the textarea's value from the DOM via
+/// `document::eval` at send time. Enter submits, Shift+Enter inserts a newline;
+/// the auto-resize runs in a JS listener installed once. `onkeydown`
+/// (KeyboardData) and `onclick` (MouseData) DO downcast fine on this transport.
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "ios")))]
 #[component]
 pub fn ChatInput(props: ChatInputProps) -> Element {
@@ -128,8 +136,6 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
     let agent_thinking = props.agent_thinking;
     let disabled = is_sending() || agent_thinking();
     let on_send = props.on_send;
-
-    let mut input_text = use_signal(String::new);
 
     // Re-focus the textarea when agent finishes (disabled → enabled).
     use_effect(move || {
@@ -143,50 +149,63 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
         }
     });
 
-    let on_input = move |evt: Event<FormData>| {
-        input_text.set(evt.value());
+    // Install a one-time JS `input` listener that auto-resizes the textarea, so
+    // we never need a Rust `oninput` (which would hit the broken form-data
+    // path). Idempotent via a flag on the element.
+    use_hook(|| {
         spawn(async move {
             let _ = document::eval(
-                "var el=document.querySelector('.chat-textarea');\
-                 if(el){el.style.height='auto';\
-                 el.style.height=Math.min(Math.max(el.scrollHeight,40),200)+'px';}",
+                r#"
+                (function(){
+                    var el = document.querySelector('.chat-textarea');
+                    if (el && !el.__autoResizeBound) {
+                        el.__autoResizeBound = true;
+                        el.addEventListener('input', function() {
+                            el.style.height = 'auto';
+                            el.style.height = Math.min(Math.max(el.scrollHeight, 40), 200) + 'px';
+                        });
+                    }
+                })();
+                "#,
             )
             .await;
         });
+    });
+
+    // Read the textarea value from the DOM, clear + reset it, and send. The
+    // one-shot `dioxus.send` reverse channel resolves on the standalone desktop
+    // WebView2 (it also backs focus/auto-scroll/OAuth here), so we get the value
+    // without ever touching `convert_form_data`.
+    let flush_and_send = move || {
+        spawn(async move {
+            let mut eval = document::eval(
+                r#"
+                var el = document.querySelector('.chat-textarea');
+                var v = el ? el.value : '';
+                if (el) { el.value = ''; el.style.height = '40px'; }
+                dioxus.send(v);
+                "#,
+            );
+            if let Ok(text) = eval.recv::<String>().await {
+                let text = text.trim().to_string();
+                if !text.is_empty() {
+                    on_send.call(text);
+                }
+            }
+        });
     };
 
+    // Enter submits; Shift+Enter falls through to insert a newline.
     let on_keydown = move |evt: Event<KeyboardData>| {
         if evt.key() == Key::Enter && !evt.modifiers().shift() {
             evt.prevent_default();
-            let text = input_text.read().trim().to_string();
-            if !text.is_empty() {
-                input_text.set(String::new());
-                spawn(async move {
-                    let _ = document::eval(
-                        "var el=document.querySelector('.chat-textarea');\
-                         if(el){el.value='';el.style.height='40px';}",
-                    )
-                    .await;
-                });
-                on_send.call(text);
-            }
+            flush_and_send();
         }
     };
 
     let on_click = move |evt: Event<MouseData>| {
         evt.prevent_default();
-        let text = input_text.read().trim().to_string();
-        if !text.is_empty() {
-            input_text.set(String::new());
-            spawn(async move {
-                let _ = document::eval(
-                    "var el=document.querySelector('.chat-textarea');\
-                     if(el){el.value='';el.style.height='40px';}",
-                )
-                .await;
-            });
-            on_send.call(text);
-        }
+        flush_and_send();
     };
 
     rsx! {
@@ -201,7 +220,6 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
                 style: "min-height: 40px; max-height: 200px; overflow-y: auto; resize: none;",
                 placeholder: if disabled { "Waiting for response..." } else { "Type a message..." },
                 disabled: disabled,
-                oninput: on_input,
                 onkeydown: on_keydown,
             }
             button {
