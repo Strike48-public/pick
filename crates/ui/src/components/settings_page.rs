@@ -856,7 +856,7 @@ pub fn SettingsPage(
                         div { class: "setting-label",
                             div { class: "setting-name", "Shell Mode" }
                             div { class: "text-dim-xs",
-                                if is_proot { "BlackArch proot" } else { "Native shell" }
+                                if is_proot { "Sandboxed (isolated Linux)" } else { "Native (this host)" }
                             }
                         }
                         div { class: "setting-controls",
@@ -899,7 +899,7 @@ pub fn SettingsPage(
                                     } else {
                                         ""
                                     },
-                                    "Proot"
+                                    "Sandboxed"
                                 }
                             }
                         }
