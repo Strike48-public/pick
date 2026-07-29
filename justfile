@@ -116,6 +116,71 @@ run-headless-env *ARGS:
     set +a
     cargo run --package pentest-headless -- {{ARGS}} 2>&1 | tee -a ~/tmp/pentest.log
 
+# ============ StrikeKit DVWA demo (matrix#3207) ============
+
+# Compose file + its env for the Pick + DVWA live demo. Override DVWA_ENV to
+# point at a different env file (the init-dev demo:pick tasks generate .env.dvwa).
+dvwa_compose := "docker-compose.dvwa.yml"
+dvwa_env := env_var_or_default("DVWA_ENV", ".env.dvwa")
+
+# Validate the compose file + assert the DVWA isolation invariant (no live daemon
+# needed beyond `docker compose config`). Cheap regression tripwire: fails if a
+# future edit re-exposes the deliberately-vulnerable DVWA — publishes a host port,
+# flips scan-net off `internal`, or attaches dvwa to the backend network.
+dvwa-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Stub env so the mandatory ${VAR:?} interpolations resolve for a pure config render.
+    RENDERED=$(STRIKE48_HOST=grpc://stub:80 STRIKE48_TENANT=stub MATRIX_API_URL=https://stub \
+        docker compose -f "{{dvwa_compose}}" config) \
+    python3 -c '
+    import os, sys, yaml
+    d = yaml.safe_load(os.environ["RENDERED"])
+    s, n = d["services"], d["networks"]
+    # `docker compose config` renders service networks as a dict (name -> opts|None),
+    # not a list — normalize to the set of network names before asserting.
+    dvwa_nets = set(s["dvwa"]["networks"] or [])
+    errs = []
+    if "ports" in s["dvwa"]: errs.append("dvwa publishes host ports (must not)")
+    if dvwa_nets != {"scan-net"}: errs.append("dvwa networks != {scan-net}: %s" % sorted(dvwa_nets))
+    if n["scan-net"].get("internal") is not True: errs.append("scan-net is not internal:true")
+    if "backend-net" in dvwa_nets: errs.append("dvwa attached to backend-net (must not)")
+    if errs:
+        print("DVWA isolation FAILED:"); [print("  -", e) for e in errs]; sys.exit(1)
+    print("dvwa-check OK: config valid + DVWA isolated (no host ports, scan-net internal, off backend-net)")
+    '
+
+# Bring up the Pick + DVWA demo stack (pick scans dvwa; registers with the backend)
+dvwa-up *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -f "{{dvwa_env}}" ]]; then
+        echo "error: {{dvwa_env}} not found — copy .env.dvwa.example to {{dvwa_env}} and set STRIKE48_TENANT" >&2
+        exit 1
+    fi
+    docker compose --env-file "{{dvwa_env}}" -f "{{dvwa_compose}}" up --build -d {{ARGS}}
+    # `up -d` returns once containers are STARTED, not proven healthy — pick has no
+    # healthcheck (it's an outbound client), so confirm it didn't immediately exit
+    # rather than blindly claiming success (a crash-on-boot would otherwise be hidden).
+    # `ps --status running -q pick` prints the id only while pick is actually running.
+    sleep 2
+    if [[ -z "$(docker compose --env-file "{{dvwa_env}}" -f "{{dvwa_compose}}" ps --status running -q pick)" ]]; then
+        echo "error: pick container is not running — check 'docker compose -f {{dvwa_compose}} logs pick'" >&2
+        exit 1
+    fi
+    echo "Pick + DVWA up. Pick registers PENDING — approve it in Studio → Gateways."
+
+# Tear down the Pick + DVWA demo stack (add --volumes to also drop the creds volume)
+dvwa-down *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Pass --env-file so the compose model's mandatory ${VAR:?} interpolations
+    # resolve on `down` too — otherwise teardown aborts and leaves DVWA (a
+    # deliberately vulnerable app, restart: unless-stopped) running.
+    env_args=()
+    [[ -f "{{dvwa_env}}" ]] && env_args=(--env-file "{{dvwa_env}}")
+    docker compose "${env_args[@]}" -f "{{dvwa_compose}}" down --remove-orphans {{ARGS}}
+
 # ============ Web (Liveview) ============
 
 # Build web app

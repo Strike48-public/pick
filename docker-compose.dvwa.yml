@@ -1,0 +1,102 @@
+# StrikeKit live demo: Pick connector + DVWA target (matrix#3207).
+#
+# Brings up two containers:
+#   - dvwa: a deliberately vulnerable web app (the scan target)
+#   - pick: the headless pentest-agent connector that scans dvwa and registers
+#           with a Strike48 backend (Studio) as the "Pick" connector
+#
+# Network topology (isolation is the point):
+#   - scan-net:    isolated bridge shared by pick + dvwa. Pick reaches DVWA by
+#                  service DNS (http://dvwa). DVWA is published NOWHERE else, so
+#                  scan traffic stays contained on this bridge.
+#   - backend-net: pick's egress to the Strike48 backend (Studio) to register.
+#                  DVWA is NOT on this network.
+#
+# Pick is an OUTBOUND-only client — it exposes no inbound port. It connects out
+# to STRIKE48_HOST (gRPC) and MATRIX_API_URL (HTTP, for OTT registration).
+#
+# Configure via a .env file next to this compose file (see .env.dvwa.example);
+# `just dvwa-up` sources it. STRIKE48_TENANT must be the demo realm's tenant
+# UUID (not the realm name) — the init-dev `demo:pick:*` tasks resolve + inject it.
+
+services:
+  dvwa:
+    # The classic, anonymously-pullable DVWA image. (digininja's ghcr.io/digininja/dvwa
+    # named in matrix#3207 is not anonymously pullable — pull is "denied".) amd64-only,
+    # so it runs under emulation on arm64 hosts — fine for a demo target.
+    image: docker.io/vulnerables/web-dvwa:latest
+    container_name: pick-demo-dvwa
+    restart: unless-stopped
+    networks:
+      - scan-net
+    # No `ports:` — DVWA is reachable only by pick on scan-net, never the host.
+    # Probe with PHP (guaranteed in the php-apache base image) rather than curl,
+    # which the digininja/dvwa image does not ship — a curl probe would return
+    # 127 forever, keep DVWA `unhealthy`, and block pick's `depends_on` start.
+    healthcheck:
+      test: ["CMD-SHELL", "php -r 'exit(@file_get_contents(\"http://localhost/login.php\")===false?1:0);'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  pick:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/strike48-public/pick:demo
+    container_name: pick-demo-connector
+    restart: unless-stopped
+    depends_on:
+      dvwa:
+        condition: service_healthy
+    networks:
+      - scan-net      # reach DVWA at http://dvwa
+      - backend-net   # egress to the Strike48 backend
+    # Raw sockets for nmap/masscan/rustscan. NET_RAW + NET_ADMIN as in the chart
+    # (chart/pick-connector/templates/_helpers.tpl "pentest" profile). This puts
+    # the caps in the container's bounding set; the binary carries matching FILE
+    # capabilities (setcap in the Dockerfile) so the non-root uid 999 process gets
+    # them EFFECTIVE under Docker — no root needed. (Docker cap_add alone leaves a
+    # non-root exec with CapEff=0; the file caps close that gap.)
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    # Reaching a private-IP / self-signed backend on newdev requires relaxing
+    # the connector's SSRF guard and cert checks — see .env.dvwa.example for why.
+    environment:
+      STRIKE48_HOST: "${STRIKE48_HOST:?set STRIKE48_HOST in .env (e.g. grpc://connectors-studio.strike48.test:80)}"
+      STRIKE48_TENANT: "${STRIKE48_TENANT:?set STRIKE48_TENANT to the demo realm tenant UUID}"
+      MATRIX_API_URL: "${MATRIX_API_URL:?set MATRIX_API_URL in .env (e.g. https://studio.strike48.test)}"
+      CONNECTOR_NAME: "${CONNECTOR_NAME:-pick-demo}"
+      STRIKE48_INSTANCE_ID: "${STRIKE48_INSTANCE_ID:-pick-demo-01}"
+      # Security-relaxation flags are secure-by-default HERE and switched on only
+      # by .env.dvwa (which sets them true for the newdev demo). Keeping the
+      # compose default secure means a bare `docker compose up` with an unrelated
+      # env fails LOUDLY against a self-signed/private backend rather than
+      # silently running cert-insecure.
+      #
+      # SSRF guard relaxation for newdev's private-IP / ClusterIP backend (169.254
+      # cloud-metadata stays blocked regardless). Required for the demo → set in .env.dvwa.
+      PENTEST_ALLOW_PRIVATE_IPS: "${PENTEST_ALLOW_PRIVATE_IPS:-false}"
+      # Self-signed *.strike48.test certs → set true in .env.dvwa.
+      MATRIX_TLS_INSECURE: "${MATRIX_TLS_INSECURE:-false}"
+      STRIKE48_ACCEPT_INVALID_CERTS: "${STRIKE48_ACCEPT_INVALID_CERTS:-false}"
+      RUST_LOG: "${RUST_LOG:-info,strike48_connector=info}"
+      # STRIKE48_TOKEN intentionally unset → Pick registers PENDING approval
+      # (OTT flow). Operator approves in Studio → Gateways. The minted JWT is
+      # persisted to HOME below so the approval survives restarts.
+    volumes:
+      # Persist ~/.strike48 credentials (HOME=/data/connector in the image) so
+      # the OTT-minted JWT survives container restarts and the approval sticks.
+      - pick-demo-creds:/data/connector
+
+networks:
+  scan-net:
+    driver: bridge
+    internal: true   # no external egress from the scan bridge — DVWA stays contained
+  backend-net:
+    driver: bridge
+
+volumes:
+  pick-demo-creds:
