@@ -60,7 +60,6 @@ pub(super) fn pacman_mirrorlist() -> &'static str {
 /// Docker `--platform` value: arm64 runs natively on Apple Silicon, amd64 on
 /// Intel. (The official `archlinux` image is amd64-only; arm64 uses an ALARM
 /// base image — see `docker_base_image_for`.)
-#[allow(dead_code)] // consumed in Task 4 (docker.rs)
 pub(super) fn docker_platform_for(aarch64: bool) -> &'static str {
     if aarch64 {
         "linux/arm64"
@@ -70,14 +69,12 @@ pub(super) fn docker_platform_for(aarch64: bool) -> &'static str {
 }
 
 /// Docker platform for the current host arch.
-#[allow(dead_code)] // consumed in Task 4 (docker.rs)
 pub(super) fn docker_platform() -> &'static str {
     docker_platform_for(is_aarch64())
 }
 
 /// Docker base image: vanilla Arch on amd64, an ArchLinuxARM image on arm64
 /// (the official `archlinux` image has no arm64 manifest).
-#[allow(dead_code)] // consumed in Task 4 (docker.rs)
 pub(super) fn docker_base_image_for(aarch64: bool) -> &'static str {
     if aarch64 {
         "menci/archlinuxarm:latest"
@@ -87,7 +84,8 @@ pub(super) fn docker_base_image_for(aarch64: bool) -> &'static str {
 }
 
 /// Docker base image for the current host arch.
-#[allow(dead_code)] // consumed in Task 4 (docker.rs)
+/// Public-API convenience wrapper kept for symmetry with other arch helpers.
+#[allow(dead_code)]
 pub(super) fn docker_base_image() -> &'static str {
     docker_base_image_for(is_aarch64())
 }
