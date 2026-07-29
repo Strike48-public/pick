@@ -506,6 +506,7 @@ mod tests {
                 severity: Severity::Info,
             }],
             network_map: map,
+            active_subnets: Vec::new(),
             recommendations: generate_recommendations(&[], &None),
             timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
         }

@@ -113,6 +113,32 @@ pub async fn run_safety_check() -> anyhow::Result<SafetyCheckResult> {
         }
     };
 
+    // Derive the host's active subnets scan-free (interface netmasks only, no
+    // nmap/ARP). This is the reusable "what network am I on" source of truth,
+    // independent of whether the discovery sweep above succeeded. Best-effort:
+    // an enumeration failure yields an empty list, never a failed check.
+    let active_subnets = match crate::network_context::network_context().await {
+        Ok(subnets) => {
+            tracing::info!(
+                "Active subnets (scan-free): {}",
+                if subnets.is_empty() {
+                    "none derived".to_string()
+                } else {
+                    subnets
+                        .iter()
+                        .map(|s| s.cidr.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            );
+            subnets.into_iter().map(|s| s.cidr).collect()
+        }
+        Err(e) => {
+            tracing::warn!("Could not derive active subnets: {}", e);
+            Vec::new()
+        }
+    };
+
     // Determine overall status based on check results, then cap it for the
     // realities of a large/shared network (busy networks never read a
     // confident green "Safe").
@@ -125,6 +151,7 @@ pub async fn run_safety_check() -> anyhow::Result<SafetyCheckResult> {
         status,
         checks,
         network_map,
+        active_subnets,
         recommendations,
         timestamp,
     })

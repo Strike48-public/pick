@@ -202,11 +202,11 @@ pub async fn get_network_interfaces() -> Result<Vec<NetworkInterface>> {
                 let is_loopback = name == "lo";
 
                 // Try to get IP address using ip command
-                let ip_addresses = get_interface_ips(&name).await;
+                let addresses = get_interface_addrs(&name).await;
 
                 interfaces.push(NetworkInterface {
                     name,
-                    ip_addresses,
+                    addresses,
                     mac_address: None, // Would need to read from /sys/class/net/*/address
                     is_up: true,
                     is_loopback,
@@ -218,8 +218,8 @@ pub async fn get_network_interfaces() -> Result<Vec<NetworkInterface>> {
     Ok(interfaces)
 }
 
-async fn get_interface_ips(interface: &str) -> Vec<String> {
-    let mut ips = Vec::new();
+async fn get_interface_addrs(interface: &str) -> Vec<InterfaceAddr> {
+    let mut addrs = Vec::new();
 
     if let Ok(output) = tokio::process::Command::new("ip")
         .args(["addr", "show", interface])
@@ -229,17 +229,16 @@ async fn get_interface_ips(interface: &str) -> Vec<String> {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
             let line = line.trim();
-            if line.starts_with("inet ") {
-                if let Some(addr) = line.split_whitespace().nth(1) {
-                    // Remove CIDR notation
-                    let ip = addr.split('/').next().unwrap_or(addr);
-                    ips.push(ip.to_string());
+            if line.starts_with("inet ") || line.starts_with("inet6 ") {
+                if let Some(token) = line.split_whitespace().nth(1) {
+                    // Keep the CIDR prefix (e.g. "/22") instead of discarding it.
+                    addrs.push(interface_addr_from_token(token));
                 }
             }
         }
     }
 
-    ips
+    addrs
 }
 
 #[cfg(test)]

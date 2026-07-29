@@ -100,19 +100,28 @@ impl PentestTool for AutoPwnNetworkPlanTool {
             // Find active network interface
             let active_iface = interfaces
                 .iter()
-                .find(|i| i.is_up && !i.ip_addresses.is_empty())
+                .find(|i| i.is_up && i.has_addresses())
                 .ok_or_else(|| Error::InvalidParams("No active network interface found".into()))?;
 
-            let local_ip = active_iface
-                .ip_addresses
+            let local_addr = active_iface
+                .addresses
                 .first()
                 .ok_or_else(|| Error::InvalidParams("No IP address assigned".into()))?;
+            let local_ip = local_addr.ip.clone();
 
-            // Calculate network CIDR (default to /24 since netmask not available)
-            let network_cidr = format!(
-                "{}/24",
-                &local_ip[..local_ip.rfind('.').unwrap_or(local_ip.len())]
-            );
+            // Derive the network CIDR from the interface's real prefix (no longer
+            // assuming /24). IPv4 with a known prefix uses the shared netmask
+            // math; a missing prefix or non-IPv4 address falls back to the prior
+            // /24-of-first-three-octets behavior so planning still proceeds.
+            let network_cidr = match (local_addr.parse_ip(), local_addr.prefix_len) {
+                (Some(std::net::IpAddr::V4(v4)), Some(prefix)) => {
+                    crate::network_context::subnet_cidr_v4(v4, prefix)
+                }
+                _ => format!(
+                    "{}.0/24",
+                    &local_ip[..local_ip.rfind('.').unwrap_or(local_ip.len())]
+                ),
+            };
 
             tracing::info!("  Network:    {}", network_cidr);
             tracing::info!("  Local IP:   {}", local_ip);

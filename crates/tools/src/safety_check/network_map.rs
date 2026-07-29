@@ -2,10 +2,11 @@
 
 use super::oui;
 use super::types::{Device, NetworkMap, ThreatLevel};
+use crate::network_context::subnet_cidr_v4;
 use anyhow::Context;
 use pentest_platform::{NetworkOps, SystemInfo};
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 use std::process::Stdio;
 use tokio::process::Command;
 
@@ -16,16 +17,6 @@ use tokio::process::Command;
 /// box). Kept conservative to avoid alarming a non-technical user over a
 /// normal NAS or printer.
 const SUSPICIOUS_PORT_THRESHOLD: usize = 10;
-
-/// Narrowest (largest) prefix we will ever widen a discovery sweep to.
-///
-/// The interface may legitimately report a very wide prefix (e.g. /8 on some
-/// VPN or container setups). Sweeping a /8 is 16M addresses - a netmask fix
-/// (#182) must never silently turn into "scan the whole /8". When the real
-/// prefix is wider than this, we clamp the sweep subnet to `/16` (still large,
-/// but bounded) and log the clamp so the narrowing is observable. The full
-/// host-count bounding for sizing lives in `cap_for_network_size` (mod.rs).
-const MIN_SUBNET_PREFIX: u8 = 16;
 
 /// Enrichment data for a single host, keyed by IP, drawn from the ARP table.
 struct ArpInfo {
@@ -271,20 +262,19 @@ fn own_ips_from_interfaces(interfaces: Vec<pentest_platform::NetworkInterface>) 
         if iface.is_loopback {
             continue;
         }
-        for ip_str in iface.ip_addresses {
-            // Interface addresses may carry a CIDR suffix (e.g. "192.168.1.42/24")
-            // depending on the platform backend; strip it before parsing.
-            let addr = ip_str.split('/').next().unwrap_or(ip_str.as_str());
-            match addr.parse::<IpAddr>() {
-                Ok(ip) if is_own_addressable(&ip) => {
+        for iface_addr in iface.addresses {
+            // `InterfaceAddr::parse_ip` strips any CIDR suffix and returns the
+            // bare address, or `None` if malformed.
+            match iface_addr.parse_ip() {
+                Some(ip) if is_own_addressable(&ip) => {
                     own.insert(ip);
                 }
-                Ok(_) => {
+                Some(_) => {
                     // Loopback / link-local: real but never a foreign LAN host,
                     // so no need to carry it in the self-filter set.
                 }
-                Err(e) => {
-                    tracing::debug!("Ignoring malformed interface address {:?}: {}", ip_str, e);
+                None => {
+                    tracing::debug!("Ignoring malformed interface address {:?}", iface_addr.ip);
                 }
             }
         }
@@ -340,13 +330,10 @@ async fn get_gateway_and_local_ip() -> anyhow::Result<(IpAddr, IpAddr, Option<u8
 
 /// Determine the subnet CIDR notation from a local IP and its prefix length.
 ///
-/// Uses the interface's real prefix instead of assuming /24 (#182). The network
-/// base address is computed by applying the netmask (`addr & mask`), so a /25
-/// host `.130` yields `.128/25`, not `.0/24`. A missing prefix (e.g. a future
-/// IPv6-only path) falls back to /24 for IPv4 to preserve prior behavior.
-///
-/// Safety cap: a prefix wider than [`MIN_SUBNET_PREFIX`] is clamped up to it, so
-/// the discovery sweep is never silently widened to a /8-scale range.
+/// Delegates the netmask math to [`crate::network_context::subnet_cidr_v4`] (the
+/// single source of truth for subnet derivation, with the /16 sweep cap). A
+/// missing prefix (e.g. a future IPv6-only path) falls back to /24 for IPv4 to
+/// preserve prior behavior. IPv6 subnets are not yet modeled.
 fn determine_subnet(local_ip: &IpAddr, prefix_len: Option<u8>) -> anyhow::Result<String> {
     match local_ip {
         IpAddr::V4(ipv4) => Ok(subnet_cidr_v4(*ipv4, prefix_len.unwrap_or(24))),
@@ -354,37 +341,6 @@ fn determine_subnet(local_ip: &IpAddr, prefix_len: Option<u8>) -> anyhow::Result
             anyhow::bail!("IPv6 subnets not yet supported");
         }
     }
-}
-
-/// Pure helper: compute the sweep-subnet CIDR for an IPv4 host + prefix.
-///
-/// * Clamps a `0` prefix and anything wider than [`MIN_SUBNET_PREFIX`] to the
-///   cap - logging the narrowing - so a wide interface prefix can't become an
-///   implicit huge scan. A nonsensical `>32` is defensively clamped to `32`
-///   (unreachable from a real `Ipv4Net`, so it is not logged).
-/// * Computes the network base via the netmask, not by zeroing octets.
-///
-/// Kept free of any interface/I/O so the subnet math is unit-testable.
-fn subnet_cidr_v4(addr: Ipv4Addr, prefix_len: u8) -> String {
-    let effective = if prefix_len == 0 || prefix_len < MIN_SUBNET_PREFIX {
-        tracing::info!(
-            "Interface prefix /{} is wider than the /{} sweep cap; clamping discovery \
-             subnet to /{} to avoid an oversized scan",
-            prefix_len,
-            MIN_SUBNET_PREFIX,
-            MIN_SUBNET_PREFIX
-        );
-        MIN_SUBNET_PREFIX
-    } else {
-        prefix_len.min(32)
-    };
-
-    // Netmask for the effective prefix. `effective` is in 16..=32 here, so the
-    // shift is well-defined (a /0 would need the all-zero mask special-case,
-    // but the clamp above guarantees effective >= 16).
-    let mask: u32 = u32::MAX << (32 - effective as u32);
-    let network = u32::from(addr) & mask;
-    format!("{}/{}", Ipv4Addr::from(network), effective)
 }
 
 /// Run nmap ARP scan to discover hosts on the subnet.
@@ -472,79 +428,10 @@ mod tests {
         assert!(determine_subnet(&ip, Some(64)).is_err());
     }
 
-    #[test]
-    fn derives_subnet_from_real_prefix_not_assumed_24() {
-        // #182: the derived subnet must reflect the real prefix, not /24.
-        assert_eq!(
-            subnet_cidr_v4(Ipv4Addr::new(172, 16, 5, 9), 23),
-            "172.16.4.0/23"
-        );
-        assert_eq!(
-            subnet_cidr_v4(Ipv4Addr::new(192, 168, 1, 130), 25),
-            "192.168.1.128/25"
-        );
-    }
-
-    #[test]
-    fn computes_network_address_via_netmask_not_by_zeroing_octet() {
-        // /25 of .130 -> .128 (bit 7 of the last octet is part of the network),
-        // NOT .0 as a "zero the last octet" shortcut would give.
-        assert_eq!(
-            subnet_cidr_v4(Ipv4Addr::new(192, 168, 1, 130), 25),
-            "192.168.1.128/25"
-        );
-        // /26 of .200 -> .192.
-        assert_eq!(
-            subnet_cidr_v4(Ipv4Addr::new(10, 0, 0, 200), 26),
-            "10.0.0.192/26"
-        );
-        // /30 of .6 -> .4.
-        assert_eq!(
-            subnet_cidr_v4(Ipv4Addr::new(10, 0, 0, 6), 30),
-            "10.0.0.4/30"
-        );
-    }
-
-    #[test]
-    fn exact_host_prefix_32_is_single_address() {
-        assert_eq!(
-            subnet_cidr_v4(Ipv4Addr::new(203, 0, 113, 7), 32),
-            "203.0.113.7/32"
-        );
-    }
-
-    #[test]
-    fn very_wide_prefix_is_capped_not_silently_swept() {
-        // #182 safety cap: a prefix wider than /16 must clamp to /16, never
-        // expand the sweep to a /8-scale range. The network base is recomputed
-        // at the clamped prefix.
-        assert_eq!(subnet_cidr_v4(Ipv4Addr::new(10, 1, 2, 3), 8), "10.1.0.0/16");
-        assert_eq!(
-            subnet_cidr_v4(Ipv4Addr::new(172, 20, 30, 40), 12),
-            "172.20.0.0/16"
-        );
-        // A degenerate /0 also clamps to /16 (guards the shift, too).
-        assert_eq!(subnet_cidr_v4(Ipv4Addr::new(10, 1, 2, 3), 0), "10.1.0.0/16");
-    }
-
-    #[test]
-    fn absurd_prefix_clamps_to_32() {
-        // Unreachable from a real Ipv4Net, but guard the defensive >32 clamp
-        // so it can never panic on the left-shift.
-        assert_eq!(
-            subnet_cidr_v4(Ipv4Addr::new(10, 0, 0, 1), 99),
-            "10.0.0.1/32"
-        );
-    }
-
-    #[test]
-    fn exactly_16_is_not_clamped() {
-        // Boundary: /16 is the cap itself, so it passes through unchanged.
-        assert_eq!(
-            subnet_cidr_v4(Ipv4Addr::new(10, 1, 2, 3), 16),
-            "10.1.0.0/16"
-        );
-    }
+    // Note: the exhaustive `subnet_cidr_v4` prefix/clamp cases live with the
+    // function in `crate::network_context` (single source of truth). The tests
+    // above cover the `determine_subnet` wrapper's own behavior (v4 pass-through,
+    // /24 fallback, IPv6 rejection).
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
@@ -590,7 +477,10 @@ mod tests {
     fn iface(name: &str, is_loopback: bool, ips: &[&str]) -> pentest_platform::NetworkInterface {
         pentest_platform::NetworkInterface {
             name: name.to_string(),
-            ip_addresses: ips.iter().map(|s| s.to_string()).collect(),
+            addresses: ips
+                .iter()
+                .map(|s| pentest_platform::InterfaceAddr::new(*s, None))
+                .collect(),
             mac_address: None,
             is_up: true,
             is_loopback,

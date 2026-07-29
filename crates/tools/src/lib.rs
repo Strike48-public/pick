@@ -17,6 +17,7 @@ pub mod inject_test_evidence; // NEW: Test tool for three-agent pipeline
 pub mod installers; // NEW: Bespoke tool installers for the tool catalog
 pub mod lateral_movement;
 pub mod list_files;
+pub mod network_context; // Scan-free host subnet enumeration (auto/current targets)
 pub mod network_discover;
 pub mod port_scan;
 pub mod provenance_support;
