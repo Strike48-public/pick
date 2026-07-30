@@ -2,6 +2,19 @@
     if (window.__chatChartsInit) return;
     window.__chatChartsInit = true;
 
+    // Render an inline chart-error notice. Builds the node with textContent so
+    // the browser escapes the (attacker-influenceable) error message natively —
+    // never string-concatenate a `.message` into innerHTML (DOM XSS sink,
+    // CodeQL js/xss-through-exception).
+    function renderChartError(div, label, message) {
+        div.textContent = '';
+        var note = document.createElement('div');
+        note.style.color = '#f38ba8';
+        note.style.fontSize = '0.75rem';
+        note.textContent = label + ': ' + (message == null ? '' : message);
+        div.appendChild(note);
+    }
+
     // Load Mermaid
     if (!window.mermaid) {
         var ms = document.createElement('script');
@@ -94,10 +107,10 @@
                         if (svg) { svg.style.display='block'; svg.style.width='100%'; svg.style.height='auto'; svg.style.minHeight='80px'; }
                         makeExpandable(div);
                     }).catch(function(err) {
-                        div.innerHTML = '<div style="color:#f38ba8;font-size:0.75rem;">Mermaid error: ' + err.message + '</div>';
+                        renderChartError(div, 'Mermaid error', err.message);
                     });
                 } catch(e) {
-                    div.innerHTML = '<div style="color:#f38ba8;font-size:0.75rem;">Mermaid error: ' + e.message + '</div>';
+                    renderChartError(div, 'Mermaid error', e.message);
                 }
                 pre.parentNode.replaceChild(div, pre);
             });
@@ -130,7 +143,7 @@
                 } catch(e) {
                     div.style.height = 'auto';
                     div.style.padding = '8px';
-                    div.innerHTML = '<div style="color:#f38ba8;font-size:0.75rem;">ECharts error: ' + e.message + '</div>';
+                    renderChartError(div, 'ECharts error', e.message);
                     pre.parentNode.replaceChild(div, pre);
                 }
             });
