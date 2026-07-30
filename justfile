@@ -168,18 +168,34 @@ dvwa-up *ARGS:
         echo "error: pick container is not running — check 'docker compose -f {{dvwa_compose}} logs pick'" >&2
         exit 1
     fi
-    echo "Pick + DVWA up. Pick registers PENDING — approve it in Studio → Gateways."
+    # pick is running, but "running" is NOT proof it registered: the connector SDK
+    # RETRIES on registration failure (bad tenant UUID, unreachable/unapproved
+    # backend), so it stays `running` while never appearing in Studio. Don't assert
+    # PENDING here — tell the operator how to confirm it, so a silent registration
+    # failure isn't masked as success.
+    echo "Pick + DVWA started (pick container running)."
+    echo "Confirm registration: 'docker compose -f {{dvwa_compose}} logs pick' should show a registration/pending line,"
+    echo "then approve the connector in Studio -> Gateways. If it never appears, check STRIKE48_TENANT and backend reachability."
 
 # Tear down the Pick + DVWA demo stack (add --volumes to also drop the creds volume)
 dvwa-down *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Pass --env-file so the compose model's mandatory ${VAR:?} interpolations
-    # resolve on `down` too — otherwise teardown aborts and leaves DVWA (a
-    # deliberately vulnerable app, restart: unless-stopped) running.
+    # The compose model has mandatory ${VAR:?} interpolations; if they can't
+    # resolve, `down` aborts at model-parse time and leaves DVWA (a deliberately
+    # vulnerable app, restart: unless-stopped) running. `down` never USES these
+    # values (it identifies containers by compose project/service, not by env), so
+    # default any that are unset to a stub — teardown then always succeeds even when
+    # {{dvwa_env}} is absent (deleted after up, or brought up via exported vars).
+    # The `:-` only substitutes when a var is unset, so a real value already in the
+    # shell env is preserved; --env-file is still passed when present. (Shell env
+    # takes precedence over --env-file in compose, but for `down` neither matters.)
     env_args=()
     [[ -f "{{dvwa_env}}" ]] && env_args=(--env-file "{{dvwa_env}}")
-    docker compose "${env_args[@]}" -f "{{dvwa_compose}}" down --remove-orphans {{ARGS}}
+    STRIKE48_HOST="${STRIKE48_HOST:-stub}" \
+    STRIKE48_TENANT="${STRIKE48_TENANT:-stub}" \
+    MATRIX_API_URL="${MATRIX_API_URL:-stub}" \
+        docker compose "${env_args[@]}" -f "{{dvwa_compose}}" down --remove-orphans {{ARGS}}
 
 # ============ Web (Liveview) ============
 
