@@ -36,6 +36,10 @@ static AUTH_TOKEN: LazyLock<(
 static TENANT_ID: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
 static CONNECTOR_NAME: LazyLock<RwLock<String>> =
     LazyLock::new(|| RwLock::new("pentest-connector".to_string()));
+/// Proxy-advertised subscription WebSocket URL (`window.__MATRIX_WS_URL__`),
+/// injected by StrikeHub's auth proxy when Pick is embedded. Empty when running
+/// standalone (the subscription then derives its URL from the Matrix API URL).
+static WS_URL_OVERRIDE: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
 static TOOL_NAMES: LazyLock<RwLock<Vec<String>>> = LazyLock::new(|| RwLock::new(Vec::new()));
 static ACTION_REGISTRY: LazyLock<pentest_tools::registry::QuickActionRegistry> =
     LazyLock::new(pentest_tools::create_action_registry);
@@ -225,6 +229,29 @@ pub fn set_connector_name(name: &str) {
         .unwrap_or_else(|e| recover_poisoned(e, "CONNECTOR_NAME"));
     guard.clear();
     guard.push_str(name);
+}
+
+/// Read the proxy-advertised subscription WebSocket URL override, if any.
+/// Returns `None` when empty (standalone: derive the URL from the API URL).
+pub fn get_ws_url_override() -> Option<String> {
+    let v = WS_URL_OVERRIDE
+        .read()
+        .unwrap_or_else(|e| recover_poisoned(e, "WS_URL_OVERRIDE"))
+        .clone();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
+}
+
+/// Store the proxy-advertised subscription WebSocket URL (`__MATRIX_WS_URL__`).
+pub fn set_ws_url_override(url: &str) {
+    let mut guard = WS_URL_OVERRIDE
+        .write()
+        .unwrap_or_else(|e| recover_poisoned(e, "WS_URL_OVERRIDE"));
+    guard.clear();
+    guard.push_str(url);
 }
 
 /// Read the registered connector tool names.

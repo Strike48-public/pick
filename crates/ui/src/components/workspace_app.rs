@@ -361,12 +361,13 @@ pub fn WorkspaceApp() -> Element {
                 loop {
                     // Pick up session token from bridge injection
                     if let Ok(val) = document::eval(
-                        "return JSON.stringify({ t: window.__MATRIX_SESSION_TOKEN__ || '', u: window.__MATRIX_API_URL__ || '' })"
+                        "return JSON.stringify({ t: window.__MATRIX_SESSION_TOKEN__ || '', u: window.__MATRIX_API_URL__ || '', w: window.__MATRIX_WS_URL__ || '' })"
                     ).await {
                         if let Some(json_str) = val.as_str() {
                             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
                                 let token = parsed.get("t").and_then(|v| v.as_str()).unwrap_or_default();
                                 let url = parsed.get("u").and_then(|v| v.as_str()).unwrap_or_default();
+                                let ws_url = parsed.get("w").and_then(|v| v.as_str()).unwrap_or_default();
 
                                 if !token.is_empty() {
                                     let current = crate::session::get_auth_token();
@@ -382,6 +383,14 @@ pub fn WorkspaceApp() -> Element {
                                 if !url.is_empty() && matrix_api_url.peek().is_empty() {
                                     tracing::info!("[WorkspaceApp] picked up API URL from browser: {}", url);
                                     matrix_api_url.set(url.to_string());
+                                }
+                                // Proxy-advertised subscription socket URL. Stored in
+                                // the session so the chat subscription dials the proxy
+                                // (same authenticated origin as HTTP) instead of Matrix
+                                // directly. Only set once.
+                                if !ws_url.is_empty() && crate::session::get_ws_url_override().is_none() {
+                                    tracing::info!("[WorkspaceApp] picked up WS URL from browser: {}", ws_url);
+                                    crate::session::set_ws_url_override(ws_url);
                                 }
                             }
                         }

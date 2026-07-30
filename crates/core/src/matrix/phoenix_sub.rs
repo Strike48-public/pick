@@ -179,9 +179,34 @@ subscription ConversationEvents($conversationId: ID!) {
 }
 "#;
 
-/// Build WebSocket URL for Absinthe GraphQL subscription.
+/// Resolve the subscription WebSocket URL, honoring a proxy-advertised override.
+///
+/// When embedded in StrikeHub, the auth proxy injects `window.__MATRIX_WS_URL__`
+/// (e.g. `ws://127.0.0.1:PORT/ws/graphql`) — a socket it terminates and relays
+/// to Matrix's `/v1alpha/graphql_socket/websocket`. Honoring it keeps the
+/// subscription on the same authenticated origin as the HTTP GraphQL calls
+/// (avoiding a second TLS/cert path) instead of dialing Matrix directly. The
+/// override already carries the correct scheme, host, AND path, so we only
+/// append `?token=&vsn=2.0.0` — we must NOT re-derive the canonical path onto it.
+///
+/// When no override is present (standalone desktop dialing Matrix directly), we
+/// fall back to [`build_ws_url`], which synthesizes the canonical path from
+/// `api_url`. Both paths use `vsn=2.0.0` (v2 array frames).
+pub fn resolve_ws_url(api_url: &str, ws_url_override: Option<&str>, token: &str) -> String {
+    match ws_url_override {
+        Some(base) if !base.is_empty() => {
+            let base = base.trim_end_matches('/');
+            let encoded_token = urlencoding::encode(token);
+            // The proxy advertises a bare URL (no query); append auth + vsn.
+            format!("{}?token={}&vsn=2.0.0", base, encoded_token)
+        }
+        _ => build_ws_url(api_url, token),
+    }
+}
+
+/// Build WebSocket URL for Absinthe GraphQL subscription from a Matrix API URL.
 /// Converts http -> ws, https -> wss, sets path to /v1alpha/graphql_socket/websocket,
-/// and adds the token query parameter (no vsn -> Phoenix v1 object frames).
+/// and adds the token + `vsn=2.0.0` query params (Phoenix v2 array frames).
 pub fn build_ws_url(api_url: &str, token: &str) -> String {
     let api_url = api_url.trim_end_matches('/');
 
@@ -198,65 +223,91 @@ pub fn build_ws_url(api_url: &str, token: &str) -> String {
     // URL-encode the token
     let encoded_token = urlencoding::encode(token);
 
-    // NO `vsn` param. Phoenix then defaults to its v1 (object) serializer, which
-    // matches the `{topic, event, payload, ref}` frames create_join/
-    // create_subscription build. Passing `vsn=2.0.0` would demand v2 ARRAY
-    // frames (`[join_ref, ref, topic, event, payload]`); sending object frames
-    // under v2 makes the server silently fail to decode the join (never acks),
-    // so no events ever arrive. This matches the working matrix-core client,
-    // which also sends only `?token=`.
+    // `vsn=2.0.0` selects Phoenix's v2 (array) serializer, matching the
+    // `[join_ref, ref, topic, event, payload]` frames create_join/
+    // create_subscription/create_heartbeat build. This is also what StrikeHub's
+    // auth proxy forwards (its /ws/graphql route defaults absent clients to
+    // vsn=2.0.0), so honoring the proxy-advertised WS URL and dialing Matrix
+    // directly use the same wire format. The URL's vsn and the frame envelope
+    // MUST agree: sending v1 object frames under vsn=2.0.0 (or vice versa) makes
+    // Phoenix silently fail to decode the join, so it never acks and no events
+    // arrive.
     format!(
-        "{}://{}/v1alpha/graphql_socket/websocket?token={}",
+        "{}://{}/v1alpha/graphql_socket/websocket?token={}&vsn=2.0.0",
         scheme, rest, encoded_token
     )
 }
 
-/// Create Phoenix join frame for the Absinthe control topic.
-pub fn create_join(ref_id: &str) -> Value {
-    serde_json::json!({
-        "topic": CONTROL_TOPIC,
-        "event": JOIN_EVENT,
-        "payload": {},
-        "ref": ref_id
-    })
+// Phoenix frames use the v2 serializer (array/"binary" format), matching the
+// `vsn=2.0.0` we send on the socket URL. Every client->server and server->client
+// message is a 5-element array:
+//   [join_ref, ref, topic, event, payload]
+// `join_ref` ties a message to the channel join; `ref` is the per-message id the
+// server echoes back in `phx_reply`. Server-pushed messages (subscription data)
+// carry null join_ref/ref. Passing `vsn=2.0.0` but sending v1 object frames makes
+// Phoenix silently fail to decode the join (it never acks), so the envelope shape
+// and the URL's vsn must always agree.
+
+// Phoenix v2 array frame layout: [join_ref, ref, topic, event, payload].
+// Only the indices the accessors below read are named; join_ref (0) and topic
+// (2) are positional-only (we build them but never parse them back out).
+const IDX_REF: usize = 1;
+const IDX_EVENT: usize = 3;
+const IDX_PAYLOAD: usize = 4;
+
+/// Create a Phoenix v2 join frame for the Absinthe control topic.
+///
+/// `join_ref` identifies this channel join for its lifetime; it is echoed in the
+/// `phx_reply` and reused as the join_ref on every later frame for this channel.
+pub fn create_join(join_ref: &str, ref_id: &str) -> Value {
+    serde_json::json!([join_ref, ref_id, CONTROL_TOPIC, JOIN_EVENT, {}])
 }
 
-/// Create Phoenix subscription frame with the conversationEvents query.
-pub fn create_subscription(conversation_id: &str, ref_id: &str) -> Value {
-    serde_json::json!({
-        "topic": CONTROL_TOPIC,
-        "event": DOC_EVENT,
-        "payload": {
+/// Create a Phoenix v2 subscription (`doc`) frame with the conversationEvents query.
+pub fn create_subscription(conversation_id: &str, join_ref: &str, ref_id: &str) -> Value {
+    serde_json::json!([
+        join_ref,
+        ref_id,
+        CONTROL_TOPIC,
+        DOC_EVENT,
+        {
             "query": CONVERSATION_EVENTS_SUBSCRIPTION,
-            "variables": {
-                "conversationId": conversation_id
-            }
-        },
-        "ref": ref_id
-    })
+            "variables": { "conversationId": conversation_id }
+        }
+    ])
 }
 
-/// Create Phoenix heartbeat frame.
+/// Create a Phoenix v2 heartbeat frame. Heartbeats are not tied to a channel
+/// join, so `join_ref` is null.
 pub fn create_heartbeat(ref_id: &str) -> Value {
-    serde_json::json!({
-        "topic": HEARTBEAT_TOPIC,
-        "event": HEARTBEAT_EVENT,
-        "payload": {},
-        "ref": ref_id
-    })
+    serde_json::json!([Value::Null, ref_id, HEARTBEAT_TOPIC, HEARTBEAT_EVENT, {}])
 }
 
-/// Extract the conversationEvents data from a Phoenix subscription:data message.
-/// Returns None if the message is not a subscription:data event or if the path is invalid.
+/// The `event` name of a Phoenix v2 array frame, if it is well-formed.
+pub fn frame_event(message: &Value) -> Option<&str> {
+    message.get(IDX_EVENT)?.as_str()
+}
+
+/// The `ref` of a Phoenix v2 array frame, if present.
+pub fn frame_ref(message: &Value) -> Option<&str> {
+    message.get(IDX_REF)?.as_str()
+}
+
+/// The `payload` (5th element) of a Phoenix v2 array frame.
+pub fn frame_payload(message: &Value) -> Option<&Value> {
+    message.get(IDX_PAYLOAD)
+}
+
+/// Extract the conversationEvents data from a Phoenix v2 subscription:data frame.
+/// Returns None if the frame is not a subscription:data event or the path is invalid.
 pub fn extract_event(message: &Value) -> Option<Value> {
-    // Only process subscription:data events
-    if message.get("event")?.as_str()? != SUBSCRIPTION_DATA_EVENT {
+    // Only process subscription:data events (index 3 in the v2 array frame).
+    if frame_event(message)? != SUBSCRIPTION_DATA_EVENT {
         return None;
     }
 
     // Navigate: payload.result.data.conversationEvents
-    let event = message
-        .get("payload")?
+    let event = frame_payload(message)?
         .get("result")?
         .get("data")?
         .get("conversationEvents")?
@@ -494,12 +545,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ws_url_https_to_wss_with_token_no_vsn() {
+    fn ws_url_https_to_wss_with_token_and_v2_vsn() {
         let u = build_ws_url("https://plg.strike48.test", "tok en/+");
         assert!(u.starts_with("wss://plg.strike48.test/v1alpha/graphql_socket/websocket?"));
         assert!(u.contains("token=tok%20en%2F%2B")); // url-encoded
-                                                     // No vsn param -> Phoenix v1 (object) serializer, matching our frames.
-        assert!(!u.contains("vsn="));
+                                                     // vsn=2.0.0 -> Phoenix v2 (array) serializer, matching our frames.
+        assert!(u.contains("vsn=2.0.0"));
         assert_eq!(
             build_ws_url("http://localhost:4000", "t")
                 .split("://")
@@ -509,31 +560,61 @@ mod tests {
     }
 
     #[test]
+    fn resolve_ws_url_prefers_override_and_appends_auth() {
+        // With a proxy-advertised override, dial it verbatim + token + vsn — do
+        // NOT re-append the canonical /v1alpha path.
+        let u = resolve_ws_url(
+            "https://plg.strike48.test",
+            Some("ws://127.0.0.1:8765/ws/graphql"),
+            "tok/+",
+        );
+        assert_eq!(
+            u,
+            "ws://127.0.0.1:8765/ws/graphql?token=tok%2F%2B&vsn=2.0.0"
+        );
+        assert!(!u.contains("/v1alpha/graphql_socket/websocket"));
+
+        // No override (None or empty) -> fall back to build_ws_url from api_url.
+        let fallback = resolve_ws_url("https://plg.strike48.test", None, "t");
+        assert_eq!(fallback, build_ws_url("https://plg.strike48.test", "t"));
+        let fallback_empty = resolve_ws_url("https://plg.strike48.test", Some(""), "t");
+        assert_eq!(
+            fallback_empty,
+            build_ws_url("https://plg.strike48.test", "t")
+        );
+    }
+
+    #[test]
     fn join_and_subscription_frames() {
-        let j = create_join("1");
-        assert_eq!(j["topic"], "__absinthe__:control");
-        assert_eq!(j["event"], "phx_join");
-        assert_eq!(j["ref"], "1");
-        let s = create_subscription("conv-9", "2");
-        assert_eq!(s["event"], "doc");
-        assert_eq!(s["payload"]["variables"]["conversationId"], "conv-9");
-        assert!(s["payload"]["query"]
+        // v2 array envelope: [join_ref, ref, topic, event, payload]
+        let j = create_join("10", "1");
+        assert_eq!(j[0], "10"); // join_ref
+        assert_eq!(j[IDX_REF], "1");
+        assert_eq!(j[2], "__absinthe__:control"); // topic
+        assert_eq!(j[IDX_EVENT], "phx_join");
+        let s = create_subscription("conv-9", "10", "2");
+        assert_eq!(s[0], "10"); // join_ref
+        assert_eq!(s[IDX_EVENT], "doc");
+        assert_eq!(s[IDX_PAYLOAD]["variables"]["conversationId"], "conv-9");
+        assert!(s[IDX_PAYLOAD]["query"]
             .as_str()
             .unwrap()
             .contains("conversationEvents"));
         let h = create_heartbeat("3");
-        assert_eq!(h["topic"], "phoenix");
-        assert_eq!(h["event"], "heartbeat");
+        assert_eq!(h[0], Value::Null); // heartbeat has no channel join
+        assert_eq!(h[2], "phoenix"); // topic
+        assert_eq!(h[IDX_EVENT], "heartbeat");
     }
 
     #[test]
     fn extract_only_subscription_data() {
-        let non = serde_json::json!({"event":"phx_reply","payload":{}});
+        // v2 array frames: [join_ref, ref, topic, event, payload]
+        let non = serde_json::json!([null, "1", "__absinthe__:control", "phx_reply", {}]);
         assert!(extract_event(&non).is_none());
-        let data = serde_json::json!({
-            "event":"subscription:data",
-            "payload":{"result":{"data":{"conversationEvents":{"__typename":"AgentStatusEvent","agentStatus":"IDLE"}}}}
-        });
+        let data = serde_json::json!([
+            null, null, "__absinthe__:doc:1", "subscription:data",
+            {"result":{"data":{"conversationEvents":{"__typename":"AgentStatusEvent","agentStatus":"IDLE"}}}}
+        ]);
         let ev = extract_event(&data).expect("event");
         assert_eq!(ev["__typename"], "AgentStatusEvent");
     }

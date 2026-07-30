@@ -15,8 +15,8 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::matrix::phoenix_sub::{
-    build_ws_url, create_heartbeat, create_join, create_subscription, extract_event, parse_event,
-    ConversationStreamEvent,
+    create_heartbeat, create_join, create_subscription, extract_event, frame_event, frame_payload,
+    frame_ref, parse_event, resolve_ws_url, ConversationStreamEvent,
 };
 
 type WsError = tokio_tungstenite::tungstenite::Error;
@@ -113,6 +113,7 @@ enum ConnectOutcome {
 /// native-tls connector (dev clusters with self-signed chains only).
 pub fn subscribe_conversation(
     api_url: String,
+    ws_url_override: Option<String>,
     conversation_id: String,
     insecure_tls: bool,
     token_fn: Arc<dyn Fn() -> String + Send + Sync>,
@@ -122,6 +123,7 @@ pub fn subscribe_conversation(
 
     let handle = tokio::spawn(supervisor(
         api_url,
+        ws_url_override,
         conversation_id,
         insecure_tls,
         token_fn,
@@ -139,6 +141,7 @@ pub fn subscribe_conversation(
 /// Supervisor loop: connect, run until the socket drops, back off, repeat.
 async fn supervisor(
     api_url: String,
+    ws_url_override: Option<String>,
     conversation_id: String,
     insecure_tls: bool,
     token_fn: Arc<dyn Fn() -> String + Send + Sync>,
@@ -170,6 +173,7 @@ async fn supervisor(
 
         let outcome = connect_and_run(
             &api_url,
+            ws_url_override.as_deref(),
             &conversation_id,
             insecure_tls,
             &token_fn,
@@ -213,8 +217,13 @@ async fn supervisor(
 }
 
 /// Connect, join, subscribe, then pump the socket until it drops.
+// Private helper that fans out the supervisor's per-attempt state; grouping
+// these into a struct would just move the argument list one call up without
+// improving clarity.
+#[allow(clippy::too_many_arguments)]
 async fn connect_and_run(
     api_url: &str,
+    ws_url_override: Option<&str>,
     conversation_id: &str,
     insecure_tls: bool,
     token_fn: &Arc<dyn Fn() -> String + Send + Sync>,
@@ -223,7 +232,7 @@ async fn connect_and_run(
     ref_counter: &mut u64,
 ) -> ConnectOutcome {
     let token = token_fn();
-    let url = build_ws_url(api_url, &token);
+    let url = resolve_ws_url(api_url, ws_url_override, &token);
 
     let connector = match native_tls::TlsConnector::builder()
         .danger_accept_invalid_certs(insecure_tls)
@@ -253,10 +262,11 @@ async fn connect_and_run(
 
     let (mut write, mut read) = ws.split();
 
-    // Phoenix join on the Absinthe control topic.
+    // Phoenix join on the Absinthe control topic. The join_ref identifies this
+    // channel for its lifetime and is reused on every later frame (v2 format).
     *ref_counter += 1;
     let join_ref = ref_counter.to_string();
-    if let Err(e) = send_json(&mut write, &create_join(&join_ref)).await {
+    if let Err(e) = send_json(&mut write, &create_join(&join_ref, &join_ref)).await {
         tracing::warn!("subscription: join send failed: {e}");
         return ConnectOutcome::FailedBeforeLive;
     }
@@ -265,10 +275,15 @@ async fn connect_and_run(
         return ConnectOutcome::FailedBeforeLive;
     }
 
-    // GraphQL subscribe as a `doc` frame.
+    // GraphQL subscribe as a `doc` frame, on the same channel join.
     *ref_counter += 1;
     let sub_ref = ref_counter.to_string();
-    if let Err(e) = send_json(&mut write, &create_subscription(conversation_id, &sub_ref)).await {
+    if let Err(e) = send_json(
+        &mut write,
+        &create_subscription(conversation_id, &join_ref, &sub_ref),
+    )
+    .await
+    {
         tracing::warn!("subscription: subscribe send failed: {e}");
         return ConnectOutcome::FailedBeforeLive;
     }
@@ -357,20 +372,16 @@ where
                     let Ok(value) = serde_json::from_str::<Value>(&text) else {
                         continue;
                     };
-                    if value.get("event").and_then(Value::as_str) != Some("phx_reply") {
+                    // v2 array frame: [join_ref, ref, topic, event, payload].
+                    if frame_event(&value) != Some("phx_reply") {
                         continue;
                     }
                     // Match the ref when present; tolerate servers that omit it.
-                    let ref_matches = value
-                        .get("ref")
-                        .and_then(Value::as_str)
-                        .map(|r| r == expected_ref)
-                        .unwrap_or(true);
+                    let ref_matches = frame_ref(&value).map(|r| r == expected_ref).unwrap_or(true);
                     if !ref_matches {
                         continue;
                     }
-                    let status = value
-                        .get("payload")
+                    let status = frame_payload(&value)
                         .and_then(|p| p.get("status"))
                         .and_then(Value::as_str);
                     return status == Some("ok");

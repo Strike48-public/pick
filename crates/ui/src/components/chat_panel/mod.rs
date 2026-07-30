@@ -909,8 +909,17 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 let token_fn: Arc<dyn Fn() -> String + Send + Sync> =
                     Arc::new(crate::session::get_auth_token);
                 let insecure = subscription_insecure_tls();
-                let mut sub =
-                    subscribe_conversation(api_url.clone(), cid.clone(), insecure, token_fn);
+                // When embedded in StrikeHub, the proxy advertises the socket URL
+                // to dial (window.__MATRIX_WS_URL__); standalone this is None and
+                // the URL is derived from api_url.
+                let ws_url_override = crate::session::get_ws_url_override();
+                let mut sub = subscribe_conversation(
+                    api_url.clone(),
+                    ws_url_override,
+                    cid.clone(),
+                    insecure,
+                    token_fn,
+                );
 
                 let mut last_state = *sub.state.borrow();
                 connection_state.set(last_state);
