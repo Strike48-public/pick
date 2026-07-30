@@ -3,7 +3,7 @@
 use dioxus::prelude::*;
 
 use super::chat_panel::{ChatHeaderActions, ChatHeaderCtx};
-use super::icons::{Menu, STRIKE48_SIDEBAR_LOGO_SVG};
+use super::icons::Menu;
 use super::pane_boundary::PaneBoundary;
 use super::sidebar::{NavPage, Sidebar};
 use super::status_bar::StatusBar;
@@ -95,13 +95,9 @@ pub fn AppLayout(
                         Menu { size: 24 }
                     }
 
-                    // Left: logo + breadcrumb title + optional subtitle
+                    // Left: brand + breadcrumb title + optional subtitle
                     div { class: "desktop-header-left",
-                        span {
-                            class: "desktop-header-logo",
-                            dangerous_inner_html: STRIKE48_SIDEBAR_LOGO_SVG,
-                        }
-                        span { class: "desktop-header-title", "Strike48" }
+                        span { class: "desktop-header-title", "Pick" }
                         div { class: "desktop-header-text",
                             span { class: "desktop-header-breadcrumb", "/ {active_page.label()}" }
                             if let Some(ref sub) = page_subtitle {
