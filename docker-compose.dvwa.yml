@@ -43,7 +43,13 @@ services:
   pick:
     build:
       context: .
-      dockerfile: Dockerfile
+      # Kali-based image (same one prod/k8s ships) — it bundles the actual pentest
+      # toolchain (nmap, nikto, nuclei, ffuf, sqlmap, whatweb, …). The slim
+      # `Dockerfile` builds only the pentest-agent binary with NO tools, so scans
+      # fail "tool not found" (only the built-in Rust port_scan works there). This
+      # runtime runs as ROOT, so raw-socket caps are effective without setcap, and
+      # HOME is /root (see the creds volume mount below).
+      dockerfile: Dockerfile.scratch
     image: ghcr.io/strike48-public/pick:demo
     container_name: pick-demo-connector
     restart: unless-stopped
@@ -67,12 +73,11 @@ services:
       - "connectors-studio.strike48.test:host-gateway"
       - "studio.strike48.test:host-gateway"
       - "auth.strike48.test:host-gateway"
-    # Raw sockets for nmap/masscan/rustscan. NET_RAW + NET_ADMIN as in the chart
-    # (chart/pick-connector/templates/_helpers.tpl "pentest" profile). This puts
-    # the caps in the container's bounding set; the binary carries matching FILE
-    # capabilities (setcap in the Dockerfile) so the non-root uid 999 process gets
-    # them EFFECTIVE under Docker — no root needed. (Docker cap_add alone leaves a
-    # non-root exec with CapEff=0; the file caps close that gap.)
+    # Raw sockets for nmap/masscan/etc. The Kali runtime (Dockerfile.scratch) runs
+    # as ROOT, so these caps are effective on exec directly — no setcap needed
+    # (that dance was only for the slim image's non-root uid 999). Keep cap_add so
+    # the caps are in the container bounding set. NET_RAW+NET_ADMIN mirror the
+    # chart's "pentest" profile (chart/pick-connector/templates/_helpers.tpl).
     cap_add:
       - NET_RAW
       - NET_ADMIN
@@ -97,13 +102,23 @@ services:
       MATRIX_TLS_INSECURE: "${MATRIX_TLS_INSECURE:-false}"
       STRIKE48_ACCEPT_INVALID_CERTS: "${STRIKE48_ACCEPT_INVALID_CERTS:-false}"
       RUST_LOG: "${RUST_LOG:-info,strike48_connector=info}"
+      # Disable the proot/BlackArch sandbox: this slim demo image doesn't ship the
+      # sandbox rootfs (or `zstd` to extract it), so sandboxed external tools (e.g.
+      # webwright, nmap) fail-closed with "Rootfs extraction incomplete". Tools run
+      # directly in the container instead — fine for the demo, whose isolation is
+      # the container + the internal scan-net, not the in-container sandbox. (The
+      # full sandbox lives in the prod Kali image built from Dockerfile.scratch.)
+      DISABLE_SANDBOX: "${DISABLE_SANDBOX:-true}"
       # STRIKE48_TOKEN intentionally unset → Pick registers PENDING approval
       # (OTT flow). Operator approves in Studio → Gateways. The minted JWT is
       # persisted to HOME below so the approval survives restarts.
     volumes:
-      # Persist ~/.strike48 credentials (HOME=/data/connector in the image) so
-      # the OTT-minted JWT survives container restarts and the approval sticks.
-      - pick-demo-creds:/data/connector
+      # Persist ~/.strike48 credentials so the OTT-minted JWT survives restarts
+      # and the approval sticks. The Kali runtime (Dockerfile.scratch) runs as
+      # root with HOME=/root, so mount there. (The slim Dockerfile used
+      # /data/connector — keep this in sync with whichever image `build.dockerfile`
+      # selects above.)
+      - pick-demo-creds:/root
 
 networks:
   scan-net:
