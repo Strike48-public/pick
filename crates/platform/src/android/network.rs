@@ -2,24 +2,13 @@
 
 use crate::traits::*;
 use pentest_core::error::Result;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Perform a port scan
 pub async fn port_scan(config: ScanConfig) -> Result<ScanResult> {
-    let start = Instant::now();
     let timeout = Duration::from_millis(config.timeout_ms);
 
-    let ports = crate::common::tcp_port_scan(&config.host, &config.ports, timeout, 0).await;
-
-    let open_count = ports.iter().filter(|p| p.open).count();
-    let duration_ms = start.elapsed().as_millis() as u64;
-
-    Ok(ScanResult {
-        host: config.host,
-        ports,
-        duration_ms,
-        open_count,
-    })
+    Ok(crate::common::tcp_port_scan(&config.host, &config.ports, timeout, 0).await)
 }
 
 /// Get the ARP table with layered fallback (bd-23):

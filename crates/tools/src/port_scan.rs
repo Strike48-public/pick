@@ -223,6 +223,12 @@ impl PentestTool for PortScanTool {
                         "host": r.host,
                         "ports": r.ports,
                         "open_count": r.open_count,
+                        // Surface reachability failures so the agent can tell "we
+                        // checked and found nothing open" apart from "we could not
+                        // reach the target" (#306). unreachable_count == total_scanned
+                        // means no packet reached the host.
+                        "unreachable_count": r.unreachable_count,
+                        "errors": r.errors,
                         "total_scanned": r.ports.len(),
                         "duration_ms": r.duration_ms,
                     })),
@@ -239,12 +245,27 @@ impl PentestTool for PortScanTool {
             // directly feeds the batched service_banner step.
             let mut host_entries: Vec<Value> = Vec::new();
             let mut hosts_scanned = 0usize;
+            // Hosts that no probe ever reached (every port Unreachable, none open).
+            // Aggregated as a COUNT, not a per-host list: on a 254-host subnet a
+            // mesh/routing failure can make hundreds unreachable, and listing each
+            // would blow the token budget the tiny-payload design exists to protect.
+            // The count lets the agent distinguish "scanned the subnet, nothing was
+            // open" from "couldn't reach most of the subnet" (#306).
+            let mut hosts_unreachable = 0usize;
             let mut errors: Vec<Value> = Vec::new();
             for r in results {
                 match r {
                     Ok(scan) => {
                         hosts_scanned += 1;
                         if scan.open_count == 0 {
+                            // Distinguish "reachable, nothing open" from "never
+                            // reached": a host is unreachable when every scanned
+                            // port failed to reach it.
+                            if scan.unreachable_count > 0
+                                && scan.unreachable_count == scan.ports.len()
+                            {
+                                hosts_unreachable += 1;
+                            }
                             continue;
                         }
                         let open: Vec<Value> = scan
@@ -266,6 +287,7 @@ impl PentestTool for PortScanTool {
                 "hosts": host_entries,
                 "hosts_scanned": hosts_scanned,
                 "hosts_with_open_ports": host_entries.len(),
+                "hosts_unreachable": hosts_unreachable,
                 "errors": errors,
             }))
         })

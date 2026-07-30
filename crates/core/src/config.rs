@@ -237,36 +237,13 @@ impl ConnectorConfig {
     /// Secure by default: any other value (including unset) falls back to
     /// [`ValidationMode::default()`], which is Production in release builds.
     /// Pure (no I/O) so it can be unit-tested independent of the build profile.
+    ///
+    /// Delegates to [`crate::url_validation::resolve_validation_mode`], the
+    /// single source of truth now shared with per-tool target validation
+    /// (`nikto`/`ffuf`/`dirb`/`gobuster`). Kept as an associated function so the
+    /// connector-host call site and its tests read naturally.
     fn resolve_validation_mode(env_val: Option<&str>) -> crate::url_validation::ValidationMode {
-        use crate::url_validation::ValidationMode;
-
-        match env_val.map(|v| v.trim().to_ascii_lowercase()) {
-            Some(v) if v == "true" || v == "1" => {
-                // Loud, auditable: an operator (or a leaked env var) has relaxed
-                // the SSRF guard. Emitted once per validate() call, not per request.
-                tracing::warn!(
-                    "PENTEST_ALLOW_PRIVATE_IPS is set: connector host SSRF validation \
-                     relaxed to PrivateNetwork mode (RFC-1918/loopback allowed; \
-                     link-local/metadata still blocked). Do NOT use in production."
-                );
-                ValidationMode::PrivateNetwork
-            }
-            // Set, but NOT a recognized truthy value (e.g. a typo like "ture",
-            // or "yes"/"on"/"0"/"false"). Fall back to the secure default, but
-            // WARN so the operator isn't left debugging a "private IP blocked"
-            // failure with no hint that their opt-in was silently ignored.
-            Some(v) if !v.is_empty() => {
-                tracing::warn!(
-                    "PENTEST_ALLOW_PRIVATE_IPS is set to an unrecognized value ({:?}); \
-                     expected \"true\" or \"1\". Ignoring and using the secure default \
-                     (private IPs blocked in release builds).",
-                    v
-                );
-                ValidationMode::default()
-            }
-            // Unset or empty: secure default, silently.
-            _ => ValidationMode::default(),
-        }
+        crate::url_validation::resolve_validation_mode(env_val)
     }
 
     /// Check if this config has authentication

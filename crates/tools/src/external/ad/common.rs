@@ -1,13 +1,13 @@
 //! Shared validation helpers for the Active Directory attack tools.
 //!
 //! These keep the four AD wrappers DRY: a single metacharacter guard (copied
-//! from `zap::validate_url`'s check) and a conservative path/flag allowlist used
+//! from `zap::sanitize_target_url`'s check) and a conservative path/flag allowlist used
 //! for free-form positional values such as wordlist paths and `extra_args`.
 
 use pentest_core::error::Result;
 
 /// Reject shell metacharacters defensively even though args are passed as an
-/// argv vector (never a shell string). Mirrors `zap::validate_url` and
+/// argv vector (never a shell string). Mirrors `zap::sanitize_target_url` and
 /// `metasploit::reject_metacharacters`.
 ///
 /// Passwords may legitimately contain symbols, so callers validating a password

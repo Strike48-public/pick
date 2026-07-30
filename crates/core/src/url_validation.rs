@@ -21,13 +21,10 @@ pub enum ValidationMode {
     /// (169.254.0.0/16, fe80::/10) and other non-LAN reserved ranges (multicast,
     /// broadcast, docs, CGN, etc.). This is the narrow relaxation for in-cluster
     /// dev: unlike Development mode it does not broadly expose the metadata
-    /// service (169.254.169.254).
-    ///
-    /// Caveat (shared with Production mode, not specific to this variant):
-    /// IPv6-encoded IPv4 forms of link-local — IPv4-mapped `::ffff:169.254.x.x`
-    /// and NAT64 `64:ff9b::a9fe:x` — are NOT canonicalized by `is_private_ipv6`,
-    /// so they classify as public. See the follow-up to canonicalize embedded
-    /// IPv4 in `is_private_ipv6` (benefits Production too).
+    /// service (169.254.169.254). IPv6-encoded IPv4 forms of link-local —
+    /// IPv4-mapped `::ffff:169.254.x.x` and NAT64 `64:ff9b::a9fe:x` — are
+    /// canonicalized (see [`embedded_ipv4`]) and blocked here too, so they
+    /// cannot be used to smuggle the metadata service past this mode.
     PrivateNetwork,
     /// Strict mode - only allows explicitly allowlisted hosts
     Strict,
@@ -145,6 +142,59 @@ pub fn validate_url(
     Ok(url.to_string())
 }
 
+/// Select the SSRF [`ValidationMode`] for a scan/connection target from the
+/// `PENTEST_ALLOW_PRIVATE_IPS` opt-in.
+///
+/// This is the single source of truth shared by the connector-host check
+/// ([`crate::config`]) and every per-tool scan-target check
+/// (`nikto`/`ffuf`/`dirb`/`gobuster`, …). Before this existed, those tools
+/// hardcoded [`ValidationMode::Production`], so on a legitimately-relaxed
+/// private-network engagement (`PENTEST_ALLOW_PRIVATE_IPS=true`) the connector
+/// registered fine but every tool refused to scan the private-IP targets —
+/// "Private IP addresses are not allowed in production mode".
+///
+/// Behavior:
+/// * `true` / `1` (case-insensitive, whitespace-tolerant) →
+///   [`ValidationMode::PrivateNetwork`] (RFC-1918 / loopback allowed;
+///   link-local / cloud-metadata still blocked). Logs a loud warning.
+/// * any other set-but-unrecognized value (`yes`, `on`, `false`, typo) → the
+///   secure [`ValidationMode::default`], with a warning so a silently-ignored
+///   opt-in is diagnosable.
+/// * unset / empty → secure [`ValidationMode::default`], silently.
+///
+/// Secure by default: never returns [`ValidationMode::Development`]. Pure over
+/// its argument (no env read of its own) so it is unit-testable independent of
+/// the build profile; callers pass `std::env::var("PENTEST_ALLOW_PRIVATE_IPS")`.
+pub fn resolve_validation_mode(env_val: Option<&str>) -> ValidationMode {
+    match env_val.map(|v| v.trim().to_ascii_lowercase()) {
+        Some(v) if v == "true" || v == "1" => {
+            tracing::warn!(
+                "PENTEST_ALLOW_PRIVATE_IPS is set: target SSRF validation relaxed to \
+                 PrivateNetwork mode (RFC-1918/loopback allowed; link-local/metadata \
+                 still blocked). Do NOT use in production."
+            );
+            ValidationMode::PrivateNetwork
+        }
+        Some(v) if !v.is_empty() => {
+            tracing::warn!(
+                "PENTEST_ALLOW_PRIVATE_IPS is set to an unrecognized value ({:?}); \
+                 expected \"true\" or \"1\". Ignoring and using the secure default \
+                 (private IPs blocked in release builds).",
+                v
+            );
+            ValidationMode::default()
+        }
+        _ => ValidationMode::default(),
+    }
+}
+
+/// Convenience wrapper that reads `PENTEST_ALLOW_PRIVATE_IPS` from the
+/// environment and returns the resolved [`ValidationMode`]. Tool call sites use
+/// this so target validation honors the same opt-in as the connector host.
+pub fn target_validation_mode() -> ValidationMode {
+    resolve_validation_mode(std::env::var("PENTEST_ALLOW_PRIVATE_IPS").ok().as_deref())
+}
+
 /// Extract hostname from URL
 fn extract_host(url: &str) -> Result<String> {
     // Handle various URL formats: wss://host:port, grpc://host:port, host:port
@@ -228,7 +278,107 @@ fn is_localhost_ipv4(ip: Ipv4Addr) -> bool {
 
 /// Check if an IPv6 address is localhost (::1)
 fn is_localhost_ipv6(ip: Ipv6Addr) -> bool {
+    // Canonicalize IPv6-encoded IPv4 first: `::ffff:127.0.0.1` (mapped) and the
+    // NAT64 form of a loopback address must be recognized as loopback, not
+    // slip through as a distinct IPv6 literal.
+    if let Some(v4) = embedded_ipv4(ip) {
+        return is_localhost_ipv4(v4);
+    }
     ip == Ipv6Addr::LOCALHOST
+}
+
+/// Extract an IPv4 address embedded in an IPv6 representation, if any.
+///
+/// SSRF defenses must not be bypassable by re-encoding a blocked IPv4 target as
+/// IPv6. Six encodings smuggle an IPv4 address through the IPv6 classifier:
+///
+/// * **IPv4-mapped** `::ffff:a.b.c.d` (`::ffff:0:0/96`) — dual-stack sockets
+///   route these straight to the v4 address, so `::ffff:169.254.169.254`
+///   reaches the real cloud-metadata service.
+/// * **IPv4-translated** `::ffff:0:a.b.c.d` (`::ffff:0:0:0/96`, RFC 2765 SIIT) —
+///   the mapped form's sibling, one segment further left. Trivially confused
+///   with the mapped prefix, and a SIIT translator resolves it to the v4.
+/// * **NAT64** `64:ff9b::a.b.c.d` (well-known prefix `64:ff9b::/96`, RFC 6052) —
+///   a NAT64 gateway translates these to the embedded v4 destination.
+/// * **NAT64 local-use** `64:ff9b:1::a.b.c.d` (`64:ff9b:1::/48`, RFC 8215) —
+///   the range reserved for deployment-chosen NAT64 prefixes. A deployment that
+///   carves a `/96` out of it translates the low 32 bits exactly as above.
+/// * **IPv4-compatible** `::a.b.c.d` (top 96 bits zero) — the deprecated
+///   (RFC 4291) sibling of the mapped form. Formally not auto-routed to IPv4
+///   everywhere, but a defense-in-depth SSRF guard must not let `::169.254.169.254`
+///   through when the bare and mapped spellings of the same address are blocked.
+/// * **6to4** `2002:a.b.c.d::/48` (`2002::/16`, RFC 3056) — embeds the v4 in
+///   segments 1..3; a 6to4 relay translates to the embedded destination.
+///
+/// All carry the IPv4 in a fixed slot. `Ipv6Addr::to_ipv4_mapped()` handles the
+/// mapped form; the other five are matched explicitly. `::` (unspecified) and
+/// `::1` (loopback) are the two IPv4-compatible literals that must NOT be
+/// reinterpreted as embedded IPv4 — they have dedicated predicates (and `::1`
+/// must classify as loopback, not slip through the `is_lan_private_ipv4` allow
+/// path as `0.0.0.1`), so they are excluded here.
+///
+/// **Known uncovered:** RFC 6052 also defines *variable-length* embeddings for
+/// network-specific prefixes of `/32`, `/40`, `/48`, `/56`, and `/64`, which
+/// scatter the v4 octets around a zero `u` byte at bits 64-71 instead of using
+/// the low 32 bits. Decoding those requires knowing the deployment's own NSP,
+/// which this crate has no way to learn, so only the low-32 layout is decoded.
+/// An operator behind a NAT64 gateway using a non-`/96` NSP can still reach a
+/// blocked v4 by hand-encoding it; that is an accepted limit of a
+/// prefix-agnostic guard, not an oversight.
+fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    /// Decode an IPv4 address from two adjacent IPv6 segments (big-endian).
+    fn v4_from(hi: u16, lo: u16) -> Ipv4Addr {
+        Ipv4Addr::new(
+            (hi >> 8) as u8,
+            (hi & 0xff) as u8,
+            (lo >> 8) as u8,
+            (lo & 0xff) as u8,
+        )
+    }
+
+    // IPv4-mapped ::ffff:a.b.c.d
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        return Some(v4);
+    }
+    let seg = ip.segments();
+    let low32 = v4_from(seg[6], seg[7]);
+    // IPv4-translated ::ffff:0:a.b.c.d (::ffff:0:0:0/96, RFC 2765): the 0xffff
+    // sits one segment left of the mapped form, low 32 bits carry the IPv4.
+    if seg[0] == 0 && seg[1] == 0 && seg[2] == 0 && seg[3] == 0 && seg[4] == 0xffff && seg[5] == 0 {
+        return Some(low32);
+    }
+    // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052): first 6 segments are
+    // 0064:ff9b:0000:0000:0000:0000, low 32 bits carry the IPv4.
+    if seg[0] == 0x0064
+        && seg[1] == 0xff9b
+        && seg[2] == 0
+        && seg[3] == 0
+        && seg[4] == 0
+        && seg[5] == 0
+    {
+        return Some(low32);
+    }
+    // NAT64 local-use prefix 64:ff9b:1::/48 (RFC 8215). RFC 8215 reserves the
+    // whole /48 for NAT64, so no legitimate global destination lives here and a
+    // guard may decode the low 32 without inspecting segments 3..6 — erring
+    // toward blocking inside a reserved range is the safe direction.
+    if seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2] == 0x0001 {
+        return Some(low32);
+    }
+    // IPv4-compatible ::a.b.c.d (top 96 bits zero), excluding :: and ::1 which
+    // their own predicates handle. `to_ipv4()` also matches the mapped form, but
+    // that already returned above, so a match here is the compatible form.
+    if seg[0] == 0 && seg[1] == 0 && seg[2] == 0 && seg[3] == 0 && seg[4] == 0 && seg[5] == 0 {
+        // Exclude ::/::1 (0.0.0.0 / 0.0.0.1): unspecified + loopback.
+        if low32 != Ipv4Addr::UNSPECIFIED && low32 != Ipv4Addr::new(0, 0, 0, 1) {
+            return Some(low32);
+        }
+    }
+    // 6to4 2002:a.b.c.d::/48 (RFC 3056): v4 in segments[1..3].
+    if seg[0] == 0x2002 {
+        return Some(v4_from(seg[1], seg[2]));
+    }
+    None
 }
 
 /// SSRF classification of a host: safe to reach, a private/internal target, or
@@ -422,6 +572,13 @@ fn is_lan_private_ipv4(ip: Ipv4Addr) -> bool {
 /// LAN-private IPv6 allow-set for PrivateNetwork mode: unique-local (fc00::/7)
 /// and loopback (::1). Excludes link-local (fe80::/10) and multicast.
 fn is_lan_private_ipv6(ip: Ipv6Addr) -> bool {
+    // Canonicalize IPv6-encoded IPv4 (mapped / NAT64): an RFC-1918/loopback
+    // target expressed as `::ffff:10.0.0.1` is a LAN-private target and should
+    // be admitted, while `::ffff:169.254.169.254` must NOT be (it is caught by
+    // the LAN-private v4 allow-set, which excludes link-local/metadata).
+    if let Some(v4) = embedded_ipv4(ip) {
+        return is_lan_private_ipv4(v4);
+    }
     // Loopback ::1
     if ip == Ipv6Addr::LOCALHOST {
         return true;
@@ -533,6 +690,13 @@ fn is_private_ipv4(ip: Ipv4Addr) -> bool {
 
 /// Check if an IPv6 address is private
 fn is_private_ipv6(ip: Ipv6Addr) -> bool {
+    // Canonicalize IPv6-encoded IPv4 (mapped / NAT64) and classify via the IPv4
+    // guard, so `::ffff:169.254.169.254` and `64:ff9b::a9fe:a9fe` are blocked
+    // like their bare-IPv4 equivalents instead of slipping through as "public".
+    if let Some(v4) = embedded_ipv4(ip) {
+        return is_private_ipv4(v4);
+    }
+
     // Link-local (fe80::/10)
     if (ip.segments()[0] & 0xffc0) == 0xfe80 {
         return true;
@@ -985,5 +1149,358 @@ mod tests {
 
         // Empty brackets
         assert!(validate_url("wss://[]:443", ValidationMode::Development, None).is_err());
+    }
+
+    // ---- IPv6-encoded IPv4 canonicalization (#232 / #236) -------------------
+    //
+    // IPv4-mapped (`::ffff:a.b.c.d`) and NAT64 (`64:ff9b::a.b.c.d`) forms embed
+    // an IPv4 address that dual-stack sockets / NAT64 gateways route to the real
+    // v4 destination. Before the fix, `is_private_ipv6` ignored the embedded
+    // IPv4 and classified these as public, so the cloud-metadata service could
+    // be reached via an IPv6-encoded literal.
+
+    #[test]
+    fn test_embedded_ipv4_extraction() {
+        // IPv4-mapped.
+        assert_eq!(
+            embedded_ipv4("::ffff:169.254.169.254".parse().unwrap()),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
+        // The mapped form is also written in hex segments (::ffff:a9fe:a9fe).
+        assert_eq!(
+            embedded_ipv4("::ffff:a9fe:a9fe".parse().unwrap()),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
+        // NAT64 well-known prefix.
+        assert_eq!(
+            embedded_ipv4("64:ff9b::a9fe:a9fe".parse().unwrap()),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
+        assert_eq!(
+            embedded_ipv4("64:ff9b::10.0.0.1".parse().unwrap()),
+            Some(Ipv4Addr::new(10, 0, 0, 1))
+        );
+        // IPv4-compatible ::a.b.c.d (top 96 bits zero) — the deprecated sibling
+        // of the mapped form. `::169.254.169.254` and its hex spelling both
+        // decode to the metadata address.
+        assert_eq!(
+            embedded_ipv4("::169.254.169.254".parse().unwrap()),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
+        assert_eq!(
+            embedded_ipv4("::a9fe:a9fe".parse().unwrap()),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
+        assert_eq!(
+            embedded_ipv4("::10.0.0.1".parse().unwrap()),
+            Some(Ipv4Addr::new(10, 0, 0, 1))
+        );
+        // 6to4 2002:a.b.c.d::/48 embeds the v4 in segments 1..3.
+        assert_eq!(
+            embedded_ipv4("2002:a9fe:a9fe::".parse().unwrap()),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
+        // IPv4-translated ::ffff:0:a.b.c.d (::ffff:0:0:0/96, RFC 2765) — the
+        // 0xffff sits one segment left of the mapped form.
+        assert_eq!(
+            embedded_ipv4("::ffff:0:169.254.169.254".parse().unwrap()),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
+        assert_eq!(
+            embedded_ipv4("::ffff:0:10.0.0.1".parse().unwrap()),
+            Some(Ipv4Addr::new(10, 0, 0, 1))
+        );
+        // NAT64 local-use prefix 64:ff9b:1::/48 (RFC 8215).
+        assert_eq!(
+            embedded_ipv4("64:ff9b:1::169.254.169.254".parse().unwrap()),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
+        assert_eq!(
+            embedded_ipv4("64:ff9b:1::a9fe:a9fe".parse().unwrap()),
+            Some(Ipv4Addr::new(169, 254, 169, 254))
+        );
+        // A genuine global IPv6 address has no embedded IPv4.
+        assert_eq!(embedded_ipv4("2001:db8::1".parse().unwrap()), None);
+        // 64:ff9b:2:: is outside both the well-known /96 and the RFC 8215 /48,
+        // so it is a normal global address, not an embed.
+        assert_eq!(embedded_ipv4("64:ff9b:2::a9fe:a9fe".parse().unwrap()), None);
+        // Loopback / unspecified are NOT treated as IPv4-compatible embeds —
+        // they must fall through to their own predicates (`::1` -> loopback).
+        assert_eq!(embedded_ipv4("::1".parse().unwrap()), None);
+        assert_eq!(embedded_ipv4("::".parse().unwrap()), None);
+    }
+
+    #[test]
+    fn test_production_blocks_ipv4_compatible_and_6to4_metadata() {
+        // #289: the IPv4-compatible (`::a.b.c.d`) and 6to4 (`2002::/16`)
+        // encodings of the metadata address are the same re-encoding class as
+        // the mapped/NAT64 forms and must not slip through as "public".
+        for host in [
+            "wss://[::169.254.169.254]:443", // IPv4-compatible metadata
+            "wss://[::a9fe:a9fe]:443",       // same, hex segments
+            "wss://[2002:a9fe:a9fe::]:443",  // 6to4 metadata
+        ] {
+            assert!(
+                validate_url(host, ValidationMode::Production, None).is_err(),
+                "{host} must be BLOCKED in Production"
+            );
+            assert!(
+                validate_url(host, ValidationMode::PrivateNetwork, None).is_err(),
+                "{host} must be BLOCKED in PrivateNetwork too"
+            );
+        }
+    }
+
+    #[test]
+    fn test_production_blocks_translated_and_local_use_nat64_metadata() {
+        // #289 follow-up: the IPv4-translated (`::ffff:0:0:0/96`, RFC 2765) and
+        // NAT64 local-use (`64:ff9b:1::/48`, RFC 8215) prefixes embed the v4 in
+        // the low 32 bits exactly as the mapped/well-known forms do. Decoding
+        // only the well-known `/96` left these reaching the metadata service.
+        for host in [
+            "wss://[::ffff:0:169.254.169.254]:443",   // IPv4-translated
+            "wss://[::ffff:0:a9fe:a9fe]:443",         // same, hex segments
+            "wss://[64:ff9b:1::169.254.169.254]:443", // NAT64 local-use /48
+            "wss://[64:ff9b:1::a9fe:a9fe]:443",       // same, hex segments
+        ] {
+            assert!(
+                validate_url(host, ValidationMode::Production, None).is_err(),
+                "{host} must be BLOCKED in Production"
+            );
+            assert!(
+                validate_url(host, ValidationMode::PrivateNetwork, None).is_err(),
+                "{host} must be BLOCKED in PrivateNetwork too"
+            );
+        }
+    }
+
+    #[test]
+    fn test_translated_and_local_use_nat64_honor_private_opt_in() {
+        // The new prefixes must classify as LAN-private (not blanket-blocked)
+        // when they embed an RFC-1918 address, matching the mapped form: allowed
+        // in PrivateNetwork, blocked in Production. A guard that hard-blocked
+        // the whole prefix would pass the metadata test above but break
+        // in-cluster targets.
+        for host in [
+            "wss://[::ffff:0:10.0.0.1]:443",
+            "wss://[64:ff9b:1::10.0.0.1]:443",
+        ] {
+            assert!(
+                validate_url(host, ValidationMode::PrivateNetwork, None).is_ok(),
+                "{host} embeds RFC-1918 and must be ALLOWED in PrivateNetwork"
+            );
+            assert!(
+                validate_url(host, ValidationMode::Production, None).is_err(),
+                "{host} embeds RFC-1918 and must be BLOCKED in Production"
+            );
+        }
+    }
+
+    #[test]
+    fn test_production_blocks_ipv4_mapped_metadata() {
+        // #232/#236 acceptance criterion: mapped metadata blocked in Production.
+        assert!(
+            validate_url(
+                "wss://[::ffff:169.254.169.254]:443",
+                ValidationMode::Production,
+                None
+            )
+            .is_err(),
+            "IPv4-mapped metadata must be blocked in Production"
+        );
+        // Hex-segment spelling of the same address.
+        assert!(validate_url(
+            "wss://[::ffff:a9fe:a9fe]:443",
+            ValidationMode::Production,
+            None
+        )
+        .is_err());
+        // Mapped RFC-1918 is also private in Production.
+        assert!(validate_url(
+            "wss://[::ffff:10.0.0.1]:443",
+            ValidationMode::Production,
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_production_blocks_nat64_metadata() {
+        // #232/#236 acceptance criterion: NAT64-embedded metadata blocked.
+        assert!(
+            validate_url(
+                "wss://[64:ff9b::a9fe:a9fe]:443",
+                ValidationMode::Production,
+                None
+            )
+            .is_err(),
+            "NAT64-embedded metadata must be blocked in Production"
+        );
+    }
+
+    #[test]
+    fn test_private_network_blocks_encoded_metadata() {
+        // #232 acceptance criteria: both encoded metadata forms stay blocked
+        // even in the relaxed PrivateNetwork mode.
+        for host in [
+            "wss://[::ffff:169.254.169.254]:443", // IPv4-mapped metadata
+            "wss://[::ffff:a9fe:a9fe]:443",       // same, hex segments
+            "wss://[64:ff9b::a9fe:a9fe]:443",     // NAT64 metadata
+        ] {
+            assert!(
+                validate_url(host, ValidationMode::PrivateNetwork, None).is_err(),
+                "{host} must be BLOCKED in PrivateNetwork mode"
+            );
+        }
+    }
+
+    #[test]
+    fn test_private_network_allows_ipv4_mapped_rfc1918() {
+        // #232 acceptance criterion: RFC-1918 via the mapped form is a
+        // LAN-private target and IS admitted in PrivateNetwork mode.
+        assert!(
+            validate_url(
+                "wss://[::ffff:10.0.0.1]:443",
+                ValidationMode::PrivateNetwork,
+                None
+            )
+            .is_ok(),
+            "IPv4-mapped RFC-1918 should be allowed in PrivateNetwork mode"
+        );
+    }
+
+    #[test]
+    fn test_localhost_via_ipv4_mapped_loopback() {
+        // Mapped loopback must still count as localhost (blocked in Production).
+        assert!(is_localhost("::ffff:127.0.0.1"));
+        assert!(validate_url(
+            "wss://[::ffff:127.0.0.1]:443",
+            ValidationMode::Production,
+            None
+        )
+        .is_err());
+    }
+
+    // ---- PrivateNetwork DNS-rebinding + boundary coverage (#233) -------------
+    //
+    // #233 was filed against an earlier revision of #231 that BLOCKED all
+    // hostnames in PrivateNetwork mode. The shipped behavior (and its regression
+    // guard test_private_network_mode_allows_hostname_resolving_to_private)
+    // deliberately ALLOWS a hostname that resolves ENTIRELY to LAN-private IPs
+    // (the documented in-cluster `.svc` deployment). These tests lock in the
+    // real security property: the DNS path cannot admit a link-local/metadata
+    // or public-then-rebind target into the LAN allow-set.
+
+    #[test]
+    fn test_private_network_hostname_all_private_is_admitted_not_rebindable_to_metadata() {
+        // localhost resolves only to loopback (LAN-private) → admitted. This is
+        // the offline-safe stand-in for a `.svc` ClusterIP name. The rebinding
+        // defense is that admission requires EVERY resolved IP to be LAN-private
+        // (see classify_lan_private): a name resolving to 169.254.169.254 would
+        // hit the BlockedInternal arm, never the allow-set.
+        assert!(
+            validate_url(
+                "grpc://localhost:50061",
+                ValidationMode::PrivateNetwork,
+                None
+            )
+            .is_ok(),
+            "hostname resolving entirely to loopback must be admitted in PrivateNetwork"
+        );
+    }
+
+    #[test]
+    fn test_private_network_boundary_ranges_blocked() {
+        // 172.16/12 exclusive edges: .15 and .32 are NOT RFC-1918, so they are
+        // public literals → fall through to Production, which allows public IPs.
+        // The meaningful assertion is the INTERNAL ranges that are private per
+        // the full guard but NOT in the LAN allow-set: they must be blocked.
+        for host in [
+            "wss://100.64.0.1:443",      // CGN 100.64/10 (RFC 6598)
+            "wss://100.127.255.254:443", // CGN upper edge
+            "wss://198.18.0.1:443",      // benchmark 198.18/15
+            "wss://192.0.2.1:443",       // TEST-NET-1 documentation
+            "wss://[ff02::1]:443",       // IPv6 multicast
+            "wss://[::]:443",            // IPv6 unspecified
+            "wss://0.0.0.0:443",         // this-network
+        ] {
+            assert!(
+                validate_url(host, ValidationMode::PrivateNetwork, None).is_err(),
+                "{host} (internal/reserved, not LAN allow-set) must be BLOCKED in PrivateNetwork"
+            );
+        }
+    }
+
+    #[test]
+    fn test_private_network_172_boundary_edges_are_public() {
+        // 172.15.255.255 and 172.32.0.0 are just OUTSIDE 172.16/12, so they are
+        // public and pass (via the Production fall-through). Documents the
+        // exclusive boundary so a future "172.x is private" over-broadening
+        // regresses loudly.
+        assert!(validate_url(
+            "wss://172.15.255.255:443",
+            ValidationMode::PrivateNetwork,
+            None
+        )
+        .is_ok());
+        assert!(validate_url("wss://172.32.0.1:443", ValidationMode::PrivateNetwork, None).is_ok());
+    }
+
+    #[test]
+    fn test_private_network_blocked_internal_message_mentions_metadata() {
+        // #233 optional: guard the operator-facing reason string for a literal
+        // link-local address so message regressions are caught.
+        let err = validate_url(
+            "http://169.254.169.254:80",
+            ValidationMode::PrivateNetwork,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("internal/reserved") && err.contains("link-local"),
+            "message should explain why the metadata range is refused, got: {err}"
+        );
+    }
+
+    // ---- Shared validation-mode resolver (#289) -----------------------------
+
+    #[test]
+    fn test_resolve_validation_mode_opts_in_on_truthy() {
+        for v in ["true", "1", "TRUE", "  true  ", "\t1\n"] {
+            assert_eq!(
+                resolve_validation_mode(Some(v)),
+                ValidationMode::PrivateNetwork,
+                "{v:?} should opt in to PrivateNetwork"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_validation_mode_secure_default_otherwise() {
+        for v in [
+            Some("false"),
+            Some("0"),
+            Some("yes"),
+            Some(""),
+            Some("ture"),
+            None,
+        ] {
+            assert_eq!(
+                resolve_validation_mode(v),
+                ValidationMode::default(),
+                "{v:?} must NOT opt in (secure default)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_validation_mode_never_development() {
+        // The opt-in must select the NARROW PrivateNetwork mode, never full
+        // Development (which would also unblock link-local / cloud-metadata).
+        assert_ne!(
+            resolve_validation_mode(Some("true")),
+            ValidationMode::Development
+        );
     }
 }

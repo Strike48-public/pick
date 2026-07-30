@@ -7,7 +7,7 @@ use pentest_core::error::Result;
 use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
-use pentest_core::url_validation::{validate_url, ValidationMode};
+use pentest_core::url_validation::{target_validation_mode, validate_url};
 use pentest_core::validation::validate_target;
 use pentest_platform::{get_platform, CommandExec};
 use serde_json::{json, Value};
@@ -124,17 +124,13 @@ impl PentestTool for GobusterTool {
             // - dns mode expects domain names → use validate_target
             let target = match mode.as_str() {
                 "dir" | "vhost" => {
-                    // Use ValidationMode from context (Development vs Production based on environment)
-                    let validation_mode = if std::env::var("PENTEST_ENV")
-                        .unwrap_or_else(|_| "development".to_string())
-                        .to_lowercase()
-                        == "production"
-                    {
-                        ValidationMode::Production
-                    } else {
-                        ValidationMode::Development
-                    };
-                    validate_url(&target, validation_mode, None)?
+                    // SSRF-validate the target URL. Mode honors the shared
+                    // PENTEST_ALLOW_PRIVATE_IPS opt-in (Production by default;
+                    // PrivateNetwork when set) — the same source of truth as the
+                    // connector host and the other web tools. This replaces a
+                    // prior PENTEST_ENV branch that defaulted to Development
+                    // (allow-all), which was a weaker, inconsistent SSRF posture.
+                    validate_url(&target, target_validation_mode(), None)?
                 }
                 "dns" => validate_target(&target)?,
                 _ => unreachable!(), // Already validated mode above

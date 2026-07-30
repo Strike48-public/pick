@@ -19,6 +19,7 @@ pub mod orchestrator;
 pub mod paths;
 pub mod provenance;
 pub mod rendering;
+pub mod sanitize;
 pub mod secure_store;
 pub mod seed;
 pub mod settings;

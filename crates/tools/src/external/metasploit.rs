@@ -331,7 +331,7 @@ fn validate_lport(lport: u64) -> Result<()> {
 }
 
 /// Reject shell metacharacters defensively even though args are passed as an
-/// argv vector (never a shell string). Mirrors `zap::validate_url`.
+/// argv vector (never a shell string). Mirrors `zap::sanitize_target_url`.
 fn reject_metacharacters(value: &str, field: &str) -> Result<()> {
     if value.chars().any(|c| {
         matches!(
