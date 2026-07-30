@@ -4,9 +4,9 @@
 //! penetration testing commands. Uses bubblewrap (Linux namespaces)
 //! as the primary backend, with proot as a universal fallback.
 
+mod arch;
 pub mod bwrap;
 pub mod config;
-mod arch;
 pub mod docker;
 pub mod probe;
 pub mod proot;

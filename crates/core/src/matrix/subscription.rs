@@ -238,18 +238,18 @@ async fn connect_and_run(
 
     let connect_fut =
         tokio_tungstenite::connect_async_tls_with_config(&url, None, false, Some(connector));
-    let ws = match tokio::time::timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS), connect_fut).await
-    {
-        Ok(Ok((ws, _resp))) => ws,
-        Ok(Err(e)) => {
-            tracing::warn!("subscription: connect error: {e}");
-            return ConnectOutcome::FailedBeforeLive;
-        }
-        Err(_) => {
-            tracing::warn!("subscription: connect timed out");
-            return ConnectOutcome::FailedBeforeLive;
-        }
-    };
+    let ws =
+        match tokio::time::timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS), connect_fut).await {
+            Ok(Ok((ws, _resp))) => ws,
+            Ok(Err(e)) => {
+                tracing::warn!("subscription: connect error: {e}");
+                return ConnectOutcome::FailedBeforeLive;
+            }
+            Err(_) => {
+                tracing::warn!("subscription: connect timed out");
+                return ConnectOutcome::FailedBeforeLive;
+            }
+        };
 
     let (mut write, mut read) = ws.split();
 

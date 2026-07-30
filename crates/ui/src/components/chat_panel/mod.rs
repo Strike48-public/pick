@@ -1656,7 +1656,11 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     {
         let mut chat_header_ctx = chat_header_ctx;
         use_drop(move || {
-            if chat_header_ctx.try_peek().map(|c| c.is_some()).unwrap_or(false) {
+            if chat_header_ctx
+                .try_peek()
+                .map(|c| c.is_some())
+                .unwrap_or(false)
+            {
                 let _ = chat_header_ctx.try_write().map(|mut c| *c = None);
             }
         });

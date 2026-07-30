@@ -30,7 +30,8 @@ fn dockerfile_contents_for(aarch64: bool) -> String {
         super::arch::docker_base_image_for(aarch64),
     );
     let mirror_block = if aarch64 {
-        "RUN echo 'Server = http://mirror.archlinuxarm.org/$arch/$repo' > /etc/pacman.d/mirrorlist".to_string()
+        "RUN echo 'Server = http://mirror.archlinuxarm.org/$arch/$repo' > /etc/pacman.d/mirrorlist"
+            .to_string()
     } else {
         "RUN echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist && \\\n    echo 'Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch' >> /etc/pacman.d/mirrorlist".to_string()
     };

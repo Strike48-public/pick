@@ -77,8 +77,7 @@ fn key_window(mtm: MainThreadMarker) -> Retained<UIWindow> {
     unsafe {
         // Walk connectedScenes for a foreground-active UIWindowScene, else the
         // first UIWindowScene; within it, the key window (else first window).
-        let scenes: Retained<objc2_foundation::NSSet<AnyObject>> =
-            msg_send![&app, connectedScenes];
+        let scenes: Retained<objc2_foundation::NSSet<AnyObject>> = msg_send![&app, connectedScenes];
         let all: Retained<objc2_foundation::NSArray<AnyObject>> = msg_send![&scenes, allObjects];
         let scount = all.count();
         tracing::info!("[IOS_OAUTH] key_window: connectedScenes count={scount}");
@@ -113,8 +112,7 @@ fn key_window(mtm: MainThreadMarker) -> Retained<UIWindow> {
         let scene = chosen_scene.or(first_scene);
 
         if let Some(scene) = scene {
-            let windows: Retained<objc2_foundation::NSArray<UIWindow>> =
-                msg_send![&scene, windows];
+            let windows: Retained<objc2_foundation::NSArray<UIWindow>> = msg_send![&scene, windows];
             let wcount = windows.count();
             let mut first: Option<Retained<UIWindow>> = None;
             for i in 0..wcount {
@@ -134,7 +132,9 @@ fn key_window(mtm: MainThreadMarker) -> Retained<UIWindow> {
             }
         }
 
-        tracing::warn!("[IOS_OAUTH] key_window: no window scene/window — detached UIWindow (cannot present!)");
+        tracing::warn!(
+            "[IOS_OAUTH] key_window: no window scene/window — detached UIWindow (cannot present!)"
+        );
         UIWindow::new(mtm)
     }
 }

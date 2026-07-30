@@ -151,7 +151,11 @@ pub async fn probe_all(cfg: &SandboxConfig) -> Vec<BackendReport> {
         // Log every verdict at info so the availability decision (which drives
         // the Settings gate + Windows install banner) is visible without a
         // special RUST_LOG filter.
-        tracing::info!("[SANDBOX_PROBE] {:?} -> {:?}", report.backend, report.status);
+        tracing::info!(
+            "[SANDBOX_PROBE] {:?} -> {:?}",
+            report.backend,
+            report.status
+        );
         out.push(report);
     }
     out

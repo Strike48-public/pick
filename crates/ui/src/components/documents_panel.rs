@@ -96,8 +96,7 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
     // report carried a frontmatter block, `None` for a legacy report (so it is
     // memoized as "fetched, no metadata" and its row stays title+date with no
     // badge, rather than re-fetching every poll or showing a false "clean").
-    let mut meta_map =
-        use_signal(std::collections::HashMap::<String, Option<ReportMeta>>::new);
+    let mut meta_map = use_signal(std::collections::HashMap::<String, Option<ReportMeta>>::new);
 
     // Keep the report list current automatically: reload when token/agent change,
     // then poll on an interval so a scan's new report appears on its own — no
@@ -154,10 +153,13 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                 let auth_token = auth_token.clone();
                 spawn(async move {
                     let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
-                    if let Ok(content) =
-                        client.get_document_content(&doc.conversation_id, &doc.id).await
+                    if let Ok(content) = client
+                        .get_document_content(&doc.conversation_id, &doc.id)
+                        .await
                     {
-                        meta_map.write().insert(doc.id.clone(), ReportMeta::parse(&content));
+                        meta_map
+                            .write()
+                            .insert(doc.id.clone(), ReportMeta::parse(&content));
                     }
                 });
             }
@@ -309,10 +311,13 @@ pub fn ConversationDocs(props: ConversationDocsProps) -> Element {
                 let auth_token = auth_token.clone();
                 spawn(async move {
                     let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
-                    if let Ok(content) =
-                        client.get_document_content(&doc.conversation_id, &doc.id).await
+                    if let Ok(content) = client
+                        .get_document_content(&doc.conversation_id, &doc.id)
+                        .await
                     {
-                        meta_map.write().insert(doc.id.clone(), ReportMeta::parse(&content));
+                        meta_map
+                            .write()
+                            .insert(doc.id.clone(), ReportMeta::parse(&content));
                     }
                 });
             }

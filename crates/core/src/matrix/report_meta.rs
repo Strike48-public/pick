@@ -80,11 +80,17 @@ impl ReportMeta {
         ] {
             if let Some(count) = n {
                 if count > 0 {
-                    return SeverityBadge { label: format!("{count} {name}"), kind };
+                    return SeverityBadge {
+                        label: format!("{count} {name}"),
+                        kind,
+                    };
                 }
             }
         }
-        SeverityBadge { label: "clean".to_string(), kind: BadgeKind::Clean }
+        SeverityBadge {
+            label: "clean".to_string(),
+            kind: BadgeKind::Clean,
+        }
     }
 
     /// All non-zero severity buckets as badges, highest first. Empty when the
@@ -103,7 +109,10 @@ impl ReportMeta {
         ] {
             if let Some(count) = n {
                 if count > 0 {
-                    out.push(SeverityBadge { label: format!("{count} {name}"), kind });
+                    out.push(SeverityBadge {
+                        label: format!("{count} {name}"),
+                        kind,
+                    });
                 }
             }
         }
@@ -181,7 +190,8 @@ mod tests {
 
     #[test]
     fn all_badges_lists_every_bucket_highest_first() {
-        let m = ReportMeta::parse("---\nseverity:\n  high: 2\n  medium: 3\n  low: 1\n---\nx").unwrap();
+        let m =
+            ReportMeta::parse("---\nseverity:\n  high: 2\n  medium: 3\n  low: 1\n---\nx").unwrap();
         let labels: Vec<_> = m.all_badges().into_iter().map(|b| b.label).collect();
         assert_eq!(labels, vec!["2 high", "3 medium", "1 low"]);
         // No severity -> empty (caller renders a "clean" state).
@@ -191,7 +201,10 @@ mod tests {
 
     #[test]
     fn finding_count_prefers_findings_then_severity_sum() {
-        let with_findings = ReportMeta::parse("---\nseverity:\n  high: 5\nfindings:\n  - title: a\n  - title: b\n---\nx").unwrap();
+        let with_findings = ReportMeta::parse(
+            "---\nseverity:\n  high: 5\nfindings:\n  - title: a\n  - title: b\n---\nx",
+        )
+        .unwrap();
         assert_eq!(with_findings.finding_count(), 2);
         let sev_only = ReportMeta::parse("---\nseverity:\n  high: 2\n  low: 1\n---\nx").unwrap();
         assert_eq!(sev_only.finding_count(), 3);

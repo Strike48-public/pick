@@ -172,11 +172,7 @@ pub fn apply_event(msgs: &mut Vec<ChatMessage>, ev: &ConversationStreamEvent) ->
             status,
         } => {
             // Find or create the owning message (most recent AGENT message)
-            let msg = match msgs
-                .iter_mut()
-                .rev()
-                .find(|m| m.sender_type == "AGENT")
-            {
+            let msg = match msgs.iter_mut().rev().find(|m| m.sender_type == "AGENT") {
                 Some(m) => m,
                 None => {
                     // Create a new AGENT message
@@ -192,7 +188,9 @@ pub fn apply_event(msgs: &mut Vec<ChatMessage>, ev: &ConversationStreamEvent) ->
             };
 
             // Upsert ToolCall part by id
-            let parsed_status = status.parse::<ToolCallStatus>().unwrap_or(ToolCallStatus::Unknown);
+            let parsed_status = status
+                .parse::<ToolCallStatus>()
+                .unwrap_or(ToolCallStatus::Unknown);
 
             if let Some(part) = msg.parts.iter_mut().find_map(|p| match p {
                 MessagePart::ToolCall(tc) if tc.id == *id => Some(tc),
@@ -229,22 +227,18 @@ pub fn apply_event(msgs: &mut Vec<ChatMessage>, ev: &ConversationStreamEvent) ->
             delta,
         } => {
             // Find the owning message (most recent AGENT message with this tool call)
-            let msg_opt = msgs
-                .iter_mut()
-                .rev()
-                .find(|m| {
-                    m.sender_type == "AGENT"
-                        && m.parts.iter().any(|p| matches!(p, MessagePart::ToolCall(tc) if tc.id == *tool_call_id))
-                });
+            let msg_opt = msgs.iter_mut().rev().find(|m| {
+                m.sender_type == "AGENT"
+                    && m.parts
+                        .iter()
+                        .any(|p| matches!(p, MessagePart::ToolCall(tc) if tc.id == *tool_call_id))
+            });
 
             let msg = if msg_opt.is_some() {
                 msg_opt
             } else {
                 // Try to find most recent AGENT message
-                let agent_msg = msgs
-                    .iter_mut()
-                    .rev()
-                    .find(|m| m.sender_type == "AGENT");
+                let agent_msg = msgs.iter_mut().rev().find(|m| m.sender_type == "AGENT");
 
                 if agent_msg.is_some() {
                     agent_msg

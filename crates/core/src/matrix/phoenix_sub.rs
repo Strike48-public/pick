@@ -271,15 +271,9 @@ pub enum ConversationStreamEvent {
     /// Full message with all parts (upsert by id).
     Message(ChatMessage),
     /// Text streaming delta for a message.
-    PartStreaming {
-        message_id: String,
-        content: String,
-    },
+    PartStreaming { message_id: String, content: String },
     /// Thinking streaming delta for a message.
-    ThinkingStreaming {
-        message_id: String,
-        content: String,
-    },
+    ThinkingStreaming { message_id: String, content: String },
     /// Tool call update (from ToolCallMessageEvent).
     ToolCall {
         id: String,
@@ -297,10 +291,7 @@ pub enum ConversationStreamEvent {
         tool_name: String,
     },
     /// Tool call streaming delta.
-    ToolCallStreaming {
-        tool_call_id: String,
-        delta: String,
-    },
+    ToolCallStreaming { tool_call_id: String, delta: String },
     /// Agent status change.
     Status {
         status: AgentStatus,
@@ -465,7 +456,9 @@ pub fn parse_event(event: &Value) -> ConversationStreamEvent {
                 .get("agentStatus")
                 .and_then(|v| v.as_str())
                 .unwrap_or("UNKNOWN");
-            let status = status_str.parse::<AgentStatus>().unwrap_or(AgentStatus::Unknown);
+            let status = status_str
+                .parse::<AgentStatus>()
+                .unwrap_or(AgentStatus::Unknown);
             let error = event
                 .get("error")
                 .and_then(|v| v.as_str())
@@ -505,9 +498,14 @@ mod tests {
         let u = build_ws_url("https://plg.strike48.test", "tok en/+");
         assert!(u.starts_with("wss://plg.strike48.test/v1alpha/graphql_socket/websocket?"));
         assert!(u.contains("token=tok%20en%2F%2B")); // url-encoded
-        // No vsn param -> Phoenix v1 (object) serializer, matching our frames.
+                                                     // No vsn param -> Phoenix v1 (object) serializer, matching our frames.
         assert!(!u.contains("vsn="));
-        assert_eq!(build_ws_url("http://localhost:4000", "t").split("://").next(), Some("ws"));
+        assert_eq!(
+            build_ws_url("http://localhost:4000", "t")
+                .split("://")
+                .next(),
+            Some("ws")
+        );
     }
 
     #[test]
@@ -519,7 +517,10 @@ mod tests {
         let s = create_subscription("conv-9", "2");
         assert_eq!(s["event"], "doc");
         assert_eq!(s["payload"]["variables"]["conversationId"], "conv-9");
-        assert!(s["payload"]["query"].as_str().unwrap().contains("conversationEvents"));
+        assert!(s["payload"]["query"]
+            .as_str()
+            .unwrap()
+            .contains("conversationEvents"));
         let h = create_heartbeat("3");
         assert_eq!(h["topic"], "phoenix");
         assert_eq!(h["event"], "heartbeat");
@@ -540,9 +541,13 @@ mod tests {
     #[test]
     fn parse_event_variants() {
         let m = serde_json::json!({"__typename":"MessagePartStreamingEvent","messageId":"m1","content":"hel"});
-        assert!(matches!(parse_event(&m), ConversationStreamEvent::PartStreaming { message_id, content } if message_id=="m1" && content=="hel"));
+        assert!(
+            matches!(parse_event(&m), ConversationStreamEvent::PartStreaming { message_id, content } if message_id=="m1" && content=="hel")
+        );
         let s = serde_json::json!({"__typename":"AgentStatusEvent","agentStatus":"ERROR","error":"boom"});
-        assert!(matches!(parse_event(&s), ConversationStreamEvent::Status { error: Some(e), .. } if e=="boom"));
+        assert!(
+            matches!(parse_event(&s), ConversationStreamEvent::Status { error: Some(e), .. } if e=="boom")
+        );
         let u = serde_json::json!({"__typename":"SomethingNew"});
         assert!(matches!(parse_event(&u), ConversationStreamEvent::Other));
     }

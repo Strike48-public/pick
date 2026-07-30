@@ -598,11 +598,17 @@ mod tests {
         // These invariants hold on BOTH arches.
         for aarch64 in [false, true] {
             let script = super::wsl_setup_script_for(aarch64);
-            assert!(script.contains("generateResolvConf = false"), "arch={aarch64}");
+            assert!(
+                script.contains("generateResolvConf = false"),
+                "arch={aarch64}"
+            );
             assert!(script.contains("nameserver 8.8.8.8"), "arch={aarch64}");
             assert!(script.contains("--overwrite"), "arch={aarch64}");
             // resolv.conf must be written unconditionally, not guarded by "if missing".
-            assert!(!script.contains("if [ ! -f /etc/resolv.conf ]"), "arch={aarch64}");
+            assert!(
+                !script.contains("if [ ! -f /etc/resolv.conf ]"),
+                "arch={aarch64}"
+            );
             // BlackArch repo line is arch-agnostic ($arch resolves in-guest).
             assert!(script.contains("[blackarch]"), "arch={aarch64}");
         }

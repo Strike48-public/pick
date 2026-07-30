@@ -70,7 +70,9 @@ pub fn reduce(state: AuthFlow, event: AuthEvent, easy: bool, _auto: bool) -> Aut
         // are separate and do NOT count). With a restored token we go straight
         // to connecting the connector; without one we always show the sign-in
         // overlay — the sign-in gesture performs OAuth AND connects together.
-        (S::Restoring, E::Restored { have_token: true }) => S::Registering(ConnectingStep::Connecting),
+        (S::Restoring, E::Restored { have_token: true }) => {
+            S::Registering(ConnectingStep::Connecting)
+        }
         (S::Restoring, E::Restored { have_token: false }) => S::AwaitingGesture,
 
         // ---- The gesture (idempotent) ------------------------------------
@@ -84,7 +86,10 @@ pub fn reduce(state: AuthFlow, event: AuthEvent, easy: bool, _auto: bool) -> Aut
 
         // ---- Sign-in in flight -------------------------------------------
         (S::SigningIn, E::TokenObtained) => S::Registering(ConnectingStep::SigningIn),
-        (S::SigningIn, E::TokenFailed(reason)) => S::Failed { reason, reauth: true },
+        (S::SigningIn, E::TokenFailed(reason)) => S::Failed {
+            reason,
+            reauth: true,
+        },
 
         // ---- Connector connect -------------------------------------------
         (S::Registering(_), E::ConnectorStep(step)) => S::Registering(step),
@@ -119,7 +124,12 @@ mod tests {
     #[test]
     fn sign_in_requested_is_idempotent() {
         assert_eq!(
-            reduce(AuthFlow::AwaitingGesture, AuthEvent::SignInRequested, true, false),
+            reduce(
+                AuthFlow::AwaitingGesture,
+                AuthEvent::SignInRequested,
+                true,
+                false
+            ),
             AuthFlow::SigningIn
         );
         // From SigningIn (already in flight) it's a no-op.
@@ -143,7 +153,12 @@ mod tests {
     #[test]
     fn restored_token_starts_registering() {
         assert_eq!(
-            reduce(AuthFlow::Restoring, AuthEvent::Restored { have_token: true }, true, true),
+            reduce(
+                AuthFlow::Restoring,
+                AuthEvent::Restored { have_token: true },
+                true,
+                true
+            ),
             AuthFlow::Registering(ConnectingStep::Connecting)
         );
     }
@@ -164,11 +179,21 @@ mod tests {
     #[test]
     fn startup_no_token_awaits_gesture() {
         assert_eq!(
-            reduce(AuthFlow::Restoring, AuthEvent::Restored { have_token: false }, true, true),
+            reduce(
+                AuthFlow::Restoring,
+                AuthEvent::Restored { have_token: false },
+                true,
+                true
+            ),
             AuthFlow::AwaitingGesture
         );
         assert_eq!(
-            reduce(AuthFlow::Restoring, AuthEvent::Restored { have_token: false }, true, false),
+            reduce(
+                AuthFlow::Restoring,
+                AuthEvent::Restored { have_token: false },
+                true,
+                false
+            ),
             AuthFlow::AwaitingGesture
         );
     }
@@ -181,7 +206,12 @@ mod tests {
         assert_eq!(s, AuthFlow::SigningIn);
         let s = reduce(s, AuthEvent::TokenObtained, true, false);
         assert_eq!(s, AuthFlow::Registering(ConnectingStep::SigningIn));
-        let s = reduce(s, AuthEvent::ConnectorStep(ConnectingStep::Registering), true, false);
+        let s = reduce(
+            s,
+            AuthEvent::ConnectorStep(ConnectingStep::Registering),
+            true,
+            false,
+        );
         assert_eq!(s, AuthFlow::Registering(ConnectingStep::Registering));
         let s = reduce(s, AuthEvent::ConnectorRegistered, true, false);
         assert_eq!(s, AuthFlow::Connected { chat_ready: false });
@@ -193,7 +223,12 @@ mod tests {
     #[test]
     fn logout_returns_to_awaiting_gesture() {
         assert_eq!(
-            reduce(AuthFlow::Connected { chat_ready: true }, AuthEvent::LoggedOut, true, true),
+            reduce(
+                AuthFlow::Connected { chat_ready: true },
+                AuthEvent::LoggedOut,
+                true,
+                true
+            ),
             AuthFlow::AwaitingGesture
         );
     }
@@ -201,8 +236,19 @@ mod tests {
     // Token failure during sign-in → Failed { reauth }.
     #[test]
     fn token_failure_is_reauth_failure() {
-        let s = reduce(AuthFlow::SigningIn, AuthEvent::TokenFailed("boom".into()), true, false);
-        assert_eq!(s, AuthFlow::Failed { reason: "boom".into(), reauth: true });
+        let s = reduce(
+            AuthFlow::SigningIn,
+            AuthEvent::TokenFailed("boom".into()),
+            true,
+            false,
+        );
+        assert_eq!(
+            s,
+            AuthFlow::Failed {
+                reason: "boom".into(),
+                reauth: true
+            }
+        );
     }
 
     // Failed { reauth } can retry sign-in (the button is not a dead-end).
@@ -210,7 +256,10 @@ mod tests {
     fn failed_reauth_can_retry_sign_in() {
         assert_eq!(
             reduce(
-                AuthFlow::Failed { reason: "expired".into(), reauth: true },
+                AuthFlow::Failed {
+                    reason: "expired".into(),
+                    reauth: true
+                },
                 AuthEvent::SignInRequested,
                 true,
                 false
@@ -224,7 +273,12 @@ mod tests {
     #[test]
     fn disconnected_can_sign_in() {
         assert_eq!(
-            reduce(AuthFlow::Disconnected, AuthEvent::SignInRequested, true, false),
+            reduce(
+                AuthFlow::Disconnected,
+                AuthEvent::SignInRequested,
+                true,
+                false
+            ),
             AuthFlow::SigningIn
         );
     }
