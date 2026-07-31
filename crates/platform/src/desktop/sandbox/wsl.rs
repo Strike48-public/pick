@@ -34,11 +34,15 @@ fn wsl_rootfs_url() -> &'static str {
 /// Build the setup script executed inside the freshly-imported WSL distro.
 ///
 /// On WSL1 (used when the host lacks nested virtualisation) WSL auto-generates
-/// an `/etc/resolv.conf` pointing at an unreachable nameserver, so pacman fails
-/// with "Could not resolve host" for every mirror. This script therefore always
-/// takes control of DNS (disabling WSL's regeneration and pinning public
-/// resolvers) and passes pacman `--overwrite '*'` to clear the ArchWSL
-/// gcc-libs / libstdc++ file conflict that would otherwise abort the transaction.
+/// an `/etc/resolv.conf` pointing at an unreachable nameserver (it mirrors
+/// NetBird-polluted Windows DNS), so pacman fails with "Could not resolve host"
+/// for every mirror. But on a locked-down corporate host the WSL-provided DNS
+/// may be the ONLY resolver that works (public resolvers firewalled), so we do
+/// NOT blindly overwrite it: the script first tests whether the existing
+/// resolv.conf can resolve a mirror host, and only takes over DNS (disabling
+/// WSL's regeneration and pinning public resolvers) when that test FAILS. It
+/// also passes pacman `--overwrite '*'` to clear the ArchWSL gcc-libs /
+/// libstdc++ file conflict that would otherwise abort the transaction.
 ///
 /// The mirrorlist and keyring are arch-specific (Arch vs ArchLinuxARM); every
 /// other line is identical across arches.
@@ -51,17 +55,22 @@ fn wsl_setup_script_for(aarch64: bool) -> String {
         r#"#!/bin/bash
 set -e
 
-# WSL1 auto-generates a resolv.conf pointing at an unreachable nameserver
-# (it mirrors NetBird-polluted Windows DNS), so ALWAYS take control of DNS.
-cat > /etc/wsl.conf << 'WSLCONF'
+# DNS: prefer the WSL-provided resolv.conf when it actually works (a corporate
+# host may resolve ONLY via internal DNS, with 8.8.8.8/1.1.1.1 firewalled). Only
+# when the existing resolv.conf cannot resolve our mirror host — the WSL1 /
+# NetBird failure mode, where WSL points at an unreachable nameserver — do we
+# take control: disable WSL's regeneration and pin public resolvers.
+if ! getent hosts {dns_probe_host} >/dev/null 2>&1; then
+    cat > /etc/wsl.conf << 'WSLCONF'
 [network]
 generateResolvConf = false
 WSLCONF
-rm -f /etc/resolv.conf
-cat > /etc/resolv.conf << 'RESOLV'
+    rm -f /etc/resolv.conf
+    cat > /etc/resolv.conf << 'RESOLV'
 nameserver 8.8.8.8
 nameserver 1.1.1.1
 RESOLV
+fi
 
 # Configure mirrors — $repo and $arch are pacman variables, not shell
 cat > /etc/pacman.d/mirrorlist << 'MIRRORS'
@@ -107,6 +116,13 @@ echo "WSL distro setup complete"
 "#,
         mirrors = super::arch::mirrorlist_for(aarch64),
         keyring = super::arch::keyring_for(aarch64),
+        // Resolve-test host: the arch's own mirror host, so the probe checks the
+        // DNS we actually need to reach (ALARM on aarch64, pkgbuild on x86_64).
+        dns_probe_host = if aarch64 {
+            "mirror.archlinuxarm.org"
+        } else {
+            "geo.mirror.pkgbuild.com"
+        },
     )
 }
 
@@ -591,23 +607,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn setup_script_forces_working_dns_and_overwrite() {
-        // The built setup script must (a) disable WSL's resolv.conf regeneration,
-        // (b) pin a working nameserver unconditionally, and (c) use --overwrite so
-        // the ArchWSL gcc-libs file conflict does not abort the transaction.
-        // These invariants hold on BOTH arches.
+    fn setup_script_dns_fallback_and_overwrite() {
+        // The built setup script must (a) still carry the DNS-override fallback
+        // (disable WSL regeneration + pin a public resolver) for the WSL1/NetBird
+        // failure mode, (b) gate that override behind a resolve-test of the arch's
+        // mirror host so a working corporate DNS is preserved rather than clobbered,
+        // and (c) use --overwrite so the ArchWSL gcc-libs file conflict does not
+        // abort the transaction. Invariants hold on BOTH arches.
         for aarch64 in [false, true] {
             let script = super::wsl_setup_script_for(aarch64);
+            // Fallback still present.
             assert!(
                 script.contains("generateResolvConf = false"),
                 "arch={aarch64}"
             );
             assert!(script.contains("nameserver 8.8.8.8"), "arch={aarch64}");
             assert!(script.contains("--overwrite"), "arch={aarch64}");
-            // resolv.conf must be written unconditionally, not guarded by "if missing".
+            // The DNS override is now CONDITIONAL: guarded by a getent resolve-test
+            // of the mirror host, so we only take over DNS when the existing
+            // resolver can't reach our mirror (WSL1/NetBird), not unconditionally.
+            let probe_host = if aarch64 {
+                "mirror.archlinuxarm.org"
+            } else {
+                "geo.mirror.pkgbuild.com"
+            };
             assert!(
-                !script.contains("if [ ! -f /etc/resolv.conf ]"),
-                "arch={aarch64}"
+                script.contains(&format!("if ! getent hosts {probe_host}")),
+                "arch={aarch64}: DNS override must be gated on a resolve-test"
             );
             // BlackArch repo line is arch-agnostic ($arch resolves in-guest).
             assert!(script.contains("[blackarch]"), "arch={aarch64}");

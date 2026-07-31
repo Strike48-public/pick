@@ -56,11 +56,13 @@ pub enum AuthEvent {
     Disconnected,
 }
 
-/// Pure transition function. `easy` is the resolved easy-mode flag and `_auto`
-/// is the persisted `auto_connect` setting (reserved for future use). In expert
-/// mode (`easy == false`) the caller does not route through this machine, but
-/// `reduce` still returns a sensible value.
-pub fn reduce(state: AuthFlow, event: AuthEvent, easy: bool, _auto: bool) -> AuthFlow {
+/// Pure transition function from the current [`AuthFlow`] state and an
+/// [`AuthEvent`] to the next state. Startup routes purely on token presence and
+/// the connector-registration steps; the persisted `auto_connect` setting is
+/// consulted by the caller (as the "remember me" flag), not here. In expert mode
+/// the caller does not route through this machine, but `reduce` still returns a
+/// sensible value.
+pub fn reduce(state: AuthFlow, event: AuthEvent) -> AuthFlow {
     use AuthEvent as E;
     use AuthFlow as S;
 
@@ -115,12 +117,8 @@ pub fn reduce(state: AuthFlow, event: AuthEvent, easy: bool, _auto: bool) -> Aut
         (_, E::LoggedOut) => S::AwaitingGesture,
         (_, E::Disconnected) => S::Disconnected,
 
-        // Anything else is a no-op (keep current state). `easy` is reserved for
-        // future expert/easy divergence; unused branches keep it referenced.
-        (state, _) => {
-            let _ = easy;
-            state
-        }
+        // Anything else is a no-op (keep current state).
+        (state, _) => state,
     }
 }
 
@@ -133,17 +131,12 @@ mod tests {
     #[test]
     fn sign_in_requested_is_idempotent() {
         assert_eq!(
-            reduce(
-                AuthFlow::AwaitingGesture,
-                AuthEvent::SignInRequested,
-                true,
-                false
-            ),
+            reduce(AuthFlow::AwaitingGesture, AuthEvent::SignInRequested,),
             AuthFlow::SigningIn
         );
         // From SigningIn (already in flight) it's a no-op.
         assert_eq!(
-            reduce(AuthFlow::SigningIn, AuthEvent::SignInRequested, true, false),
+            reduce(AuthFlow::SigningIn, AuthEvent::SignInRequested),
             AuthFlow::SigningIn
         );
         // From Connected it's a no-op.
@@ -151,8 +144,6 @@ mod tests {
             reduce(
                 AuthFlow::Connected { chat_ready: true },
                 AuthEvent::SignInRequested,
-                true,
-                false
             ),
             AuthFlow::Connected { chat_ready: true }
         );
@@ -165,8 +156,6 @@ mod tests {
             reduce(
                 AuthFlow::Restoring,
                 AuthEvent::Restored { have_token: true },
-                true,
-                true
             ),
             AuthFlow::Registering(ConnectingStep::Connecting)
         );
@@ -178,8 +167,6 @@ mod tests {
         let s = reduce(
             AuthFlow::Connected { chat_ready: false },
             AuthEvent::ChatAuthDead,
-            true,
-            true,
         );
         assert!(matches!(s, AuthFlow::Failed { reauth: true, .. }));
     }
@@ -196,7 +183,7 @@ mod tests {
             AuthFlow::Registering(ConnectingStep::Connecting),
             AuthFlow::Registering(ConnectingStep::Registering),
         ] {
-            let s = reduce(state.clone(), AuthEvent::ChatAuthDead, true, false);
+            let s = reduce(state.clone(), AuthEvent::ChatAuthDead);
             assert!(
                 matches!(s, AuthFlow::Failed { reauth: true, .. }),
                 "ChatAuthDead from {state:?} should fail-reauth, got {s:?}"
@@ -211,8 +198,6 @@ mod tests {
             reduce(
                 AuthFlow::Restoring,
                 AuthEvent::Restored { have_token: false },
-                true,
-                true
             ),
             AuthFlow::AwaitingGesture
         );
@@ -220,8 +205,6 @@ mod tests {
             reduce(
                 AuthFlow::Restoring,
                 AuthEvent::Restored { have_token: false },
-                true,
-                false
             ),
             AuthFlow::AwaitingGesture
         );
@@ -231,20 +214,15 @@ mod tests {
     #[test]
     fn happy_path_signin_to_connected() {
         let s = AuthFlow::AwaitingGesture;
-        let s = reduce(s, AuthEvent::SignInRequested, true, false);
+        let s = reduce(s, AuthEvent::SignInRequested);
         assert_eq!(s, AuthFlow::SigningIn);
-        let s = reduce(s, AuthEvent::TokenObtained, true, false);
+        let s = reduce(s, AuthEvent::TokenObtained);
         assert_eq!(s, AuthFlow::Registering(ConnectingStep::SigningIn));
-        let s = reduce(
-            s,
-            AuthEvent::ConnectorStep(ConnectingStep::Registering),
-            true,
-            false,
-        );
+        let s = reduce(s, AuthEvent::ConnectorStep(ConnectingStep::Registering));
         assert_eq!(s, AuthFlow::Registering(ConnectingStep::Registering));
-        let s = reduce(s, AuthEvent::ConnectorRegistered, true, false);
+        let s = reduce(s, AuthEvent::ConnectorRegistered);
         assert_eq!(s, AuthFlow::Connected { chat_ready: false });
-        let s = reduce(s, AuthEvent::ChatReady, true, false);
+        let s = reduce(s, AuthEvent::ChatReady);
         assert_eq!(s, AuthFlow::Connected { chat_ready: true });
     }
 
@@ -255,8 +233,6 @@ mod tests {
             reduce(
                 AuthFlow::Connected { chat_ready: true },
                 AuthEvent::LoggedOut,
-                true,
-                true
             ),
             AuthFlow::AwaitingGesture
         );
@@ -265,12 +241,7 @@ mod tests {
     // Token failure during sign-in → Failed { reauth }.
     #[test]
     fn token_failure_is_reauth_failure() {
-        let s = reduce(
-            AuthFlow::SigningIn,
-            AuthEvent::TokenFailed("boom".into()),
-            true,
-            false,
-        );
+        let s = reduce(AuthFlow::SigningIn, AuthEvent::TokenFailed("boom".into()));
         assert_eq!(
             s,
             AuthFlow::Failed {
@@ -290,8 +261,6 @@ mod tests {
                     reauth: true
                 },
                 AuthEvent::SignInRequested,
-                true,
-                false
             ),
             AuthFlow::SigningIn
         );
@@ -302,12 +271,7 @@ mod tests {
     #[test]
     fn disconnected_can_sign_in() {
         assert_eq!(
-            reduce(
-                AuthFlow::Disconnected,
-                AuthEvent::SignInRequested,
-                true,
-                false
-            ),
+            reduce(AuthFlow::Disconnected, AuthEvent::SignInRequested,),
             AuthFlow::SigningIn
         );
     }

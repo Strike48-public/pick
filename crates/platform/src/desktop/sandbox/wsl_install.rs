@@ -53,6 +53,60 @@ pub enum InstallOutcome {
 #[cfg(target_os = "windows")]
 const INSTALL_RESULT_MARKER: &str = r"pentest-sandbox\.wsl-install-result";
 
+/// Absolute path of the install-result marker (`%LOCALAPPDATA%\<marker>`).
+#[cfg(target_os = "windows")]
+fn install_result_marker_path() -> Option<std::path::PathBuf> {
+    std::env::var("LOCALAPPDATA")
+        .ok()
+        .map(|base| std::path::Path::new(&base).join(".wsl-install-result"))
+}
+
+/// Delete any stale install-result marker. Call before [`relaunch_elevated`] so
+/// a prior run's result can't be mistaken for this one's.
+pub fn clear_install_result() {
+    #[cfg(target_os = "windows")]
+    if let Some(path) = install_result_marker_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Read (and consume) the elevated install's result marker, if the child has
+/// written it yet. Returns:
+/// - `None` — no result yet (elevated run still in progress, or user dismissed
+///   the UAC prompt so nothing ran); the caller should keep polling / time out.
+/// - `Some(RebootRequired)` — features/kernel installed, reboot needed.
+/// - `Some(Failed(msg))` — the elevated run reported a failure.
+///
+/// The marker is removed on read so a later poll doesn't re-report a stale
+/// outcome. Always `None` off Windows.
+pub fn poll_install_result() -> Option<InstallOutcome> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let path = install_result_marker_path()?;
+        let contents = std::fs::read_to_string(&path).ok()?;
+        // Consume the marker so we report each elevated run's outcome once.
+        let _ = std::fs::remove_file(&path);
+        let trimmed = contents.trim();
+        if trimmed == "RebootRequired" {
+            Some(InstallOutcome::RebootRequired)
+        } else if let Some(msg) = trimmed.strip_prefix("Failed:") {
+            Some(InstallOutcome::Failed(msg.trim().to_string()))
+        } else if trimmed.is_empty() {
+            // Marker exists but is empty (partial write) — treat as no result yet.
+            None
+        } else {
+            // Unrecognized content — surface it rather than swallow it.
+            Some(InstallOutcome::Failed(format!(
+                "unexpected install-result marker content: {trimmed}"
+            )))
+        }
+    }
+}
+
 /// Return `true` if the current process is running elevated (Administrator).
 ///
 /// On Windows this asks PowerShell whether the current identity is in the
@@ -184,6 +238,9 @@ pub fn relaunch_elevated() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::process::{Command, Stdio};
+
+        // Drop any prior run's marker so a poll can't mistake it for this run.
+        clear_install_result();
 
         // PowerShell run by the elevated child: enable both features, update
         // the kernel, then write the result marker under %LOCALAPPDATA%.

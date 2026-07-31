@@ -200,6 +200,33 @@ pub fn run_wsl_install_blocking() -> pentest_core::WslInstallStatus {
     }
 }
 
+/// Poll for the outcome of a previously-launched ELEVATED WSL install.
+///
+/// After [`run_wsl_install_blocking`] returns [`WslInstallStatus::ElevationLaunched`],
+/// the actual feature-enable + kernel-update runs in a separate elevated
+/// process. That child writes its result to a marker file; this reads (and
+/// consumes) it. Returns `None` while the elevated run is still in flight (or if
+/// the user dismissed the UAC prompt so nothing ran) — the UI should keep
+/// polling for a bounded window. `Some(RebootRequired)`/`Some(Failed)` is the
+/// terminal outcome. Stored in `ConnectorAppConfig` as an optional
+/// `fn() -> Option<WslInstallStatus>` so `pentest-ui` never touches the
+/// desktop-only `wsl_install` module directly.
+pub fn poll_wsl_install_result() -> Option<pentest_core::WslInstallStatus> {
+    use pentest_core::WslInstallStatus;
+    use sandbox::wsl_install::{poll_install_result, InstallOutcome};
+    match poll_install_result() {
+        None => None,
+        Some(InstallOutcome::RebootRequired) => Some(WslInstallStatus::RebootRequired),
+        Some(InstallOutcome::Completed) => Some(WslInstallStatus::Completed),
+        Some(InstallOutcome::Failed(msg)) => Some(WslInstallStatus::Failed(msg)),
+        // The elevated marker only ever carries RebootRequired/Failed, but map
+        // NeedsElevation defensively rather than silently dropping it.
+        Some(InstallOutcome::NeedsElevation) => Some(WslInstallStatus::Failed(
+            "elevation lost mid-install".into(),
+        )),
+    }
+}
+
 /// Desktop platform provider
 pub struct DesktopPlatform;
 

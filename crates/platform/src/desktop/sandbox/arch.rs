@@ -13,10 +13,26 @@
 //! containers natively). The `*_for(bool)` helpers take the arch as a param so
 //! both branches are unit-testable on any host.
 
-/// ArchLinuxARM aarch64 root filesystem tarball. Plain `.tar.gz`, accepted by
-/// both `wsl --import` (WSL backend) and `tar -xzf` (Linux bwrap/proot backend),
-/// so the two share this single source and never drift. The `os.archlinuxarm.org`
-/// host 302-redirects to a geographic mirror; `reqwest` follows redirects.
+/// ArchLinuxARM aarch64 root filesystem tarball. Generic aarch64 build (NOT a
+/// board-specific `-rpi-`/`-chromebook-` image): the sandbox runs this userland
+/// on the host's existing kernel (WSL / Docker VM / Linux), so it only depends
+/// on the CPU instruction set (aarch64), never on board/kernel specifics. Plain
+/// `.tar.gz`, accepted by both `wsl --import` (WSL backend) and `tar -xzf`
+/// (Linux bwrap/proot backend), so the two share this single source and never
+/// drift. `os.archlinuxarm.org` 302-redirects to a geographic mirror; `reqwest`
+/// follows redirects.
+///
+/// KNOWN LIMITATION (integrity): this is fetched over plaintext HTTP with no
+/// checksum. ALARM has no working HTTPS (its cert doesn't match the host) and
+/// publishes ONLY `-latest` — no versioned/dated tarball to pin — plus its
+/// `.md5`/`.sig` sidecars ride the same HTTP channel, so a MITM could serve a
+/// matching bad checksum. A baked SHA256 would defend against MITM, but there is
+/// no stable upstream artifact to pin it to (only `-latest`, which rolls
+/// forward). This matches the existing no-verify posture of the x86_64 desktop
+/// bootstrap and the Android proot rootfs. Closing it would require self-hosting
+/// a frozen copy (e.g. a repo release asset) + baking its hash — deferred until
+/// arm64 warrants that infra. Extraction still fails closed: a corrupt/hostile
+/// rootfs that lacks `bash`/`pacman` is rejected by the post-extract checks.
 pub(super) const ALARM_AARCH64_ROOTFS: &str =
     "http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz";
 

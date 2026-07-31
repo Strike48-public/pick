@@ -65,6 +65,13 @@ pub struct ConnectorAppConfig {
     /// the install affordance is a no-op. Kept as an indirection hook so
     /// `pentest-ui` never depends on the desktop-only `wsl_install` module.
     pub run_wsl_install: Option<fn() -> pentest_core::config::WslInstallStatus>,
+    /// Polls for the outcome of an ELEVATED WSL install after `run_wsl_install`
+    /// returned `ElevationLaunched` (the real work then runs out-of-process).
+    /// `Some(status)` is the terminal outcome (RebootRequired/Failed); `None`
+    /// means still in flight (or the user dismissed the UAC prompt). Desktop
+    /// supplies `pentest_platform::poll_wsl_install_result`; `None` (mobile/web)
+    /// means no elevated path exists, so the UI does not poll.
+    pub poll_wsl_install_result: Option<fn() -> Option<pentest_core::config::WslInstallStatus>>,
     /// When true, render the simplified "Easy Mode" shell (scan + chat) instead
     /// of the full dashboard/sidebar UI. Default target is mobile.
     pub easy_mode: bool,
@@ -362,14 +369,51 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                     "install task panicked: {e}"
                 ))
             });
-            wsl_installing.set(false);
             match status {
                 pentest_core::config::WslInstallStatus::RebootRequired => {
+                    wsl_installing.set(false);
                     wsl_reboot_required.set(true);
                 }
-                pentest_core::config::WslInstallStatus::Completed
-                | pentest_core::config::WslInstallStatus::ElevationLaunched => {}
+                pentest_core::config::WslInstallStatus::Completed => {
+                    wsl_installing.set(false);
+                }
+                pentest_core::config::WslInstallStatus::ElevationLaunched => {
+                    // The real install now runs in the elevated child process,
+                    // which writes its outcome to a marker. Poll for it so the
+                    // user gets reboot/failure feedback instead of a silent
+                    // "installing…" that never resolves. Stay in the installing
+                    // state while polling; time out generously (feature-enable +
+                    // kernel update can take minutes) so we don't spin forever if
+                    // the user dismissed the UAC prompt.
+                    let Some(poll) = cfg.poll_wsl_install_result else {
+                        wsl_installing.set(false);
+                        return;
+                    };
+                    let mut wsl_installing = wsl_installing;
+                    let mut wsl_reboot_required = wsl_reboot_required;
+                    let mut wsl_install_error = wsl_install_error;
+                    // ~5 min: 60 polls x 5s.
+                    for _ in 0..60 {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        let result = tokio::task::spawn_blocking(poll).await.ok().flatten();
+                        match result {
+                            Some(pentest_core::config::WslInstallStatus::RebootRequired) => {
+                                wsl_reboot_required.set(true);
+                                break;
+                            }
+                            Some(pentest_core::config::WslInstallStatus::Failed(msg)) => {
+                                wsl_install_error.set(Some(msg));
+                                break;
+                            }
+                            Some(pentest_core::config::WslInstallStatus::Completed) => break,
+                            // Still in flight, or a non-terminal status — keep polling.
+                            _ => continue,
+                        }
+                    }
+                    wsl_installing.set(false);
+                }
                 pentest_core::config::WslInstallStatus::Failed(msg) => {
+                    wsl_installing.set(false);
                     wsl_install_error.set(Some(msg));
                 }
             }
@@ -446,9 +490,8 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // to keep the closure an Fn.
     let dispatch = std::rc::Rc::new(move |ev: AuthEvent| {
         let mut flow = flow;
-        let auto = settings.peek().auto_connect;
         let prev = flow.peek().clone();
-        let next = reduce(prev.clone(), ev.clone(), easy_mode(), auto);
+        let next = reduce(prev.clone(), ev.clone());
         // Debug-level trace of every auth-flow transition — invaluable for
         // diagnosing sign-in/logout issues; off unless RUST_LOG=debug.
         tracing::debug!("[AUTHFLOW] {:?} --{:?}--> {:?}", prev, ev, next);

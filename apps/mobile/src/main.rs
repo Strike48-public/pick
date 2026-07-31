@@ -17,6 +17,7 @@ const MOBILE_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
     set_sandbox: None,
     sandbox_available: None,
     run_wsl_install: None,
+    poll_wsl_install_result: None,
     // Per-app fallback default only. The effective mode is resolved at runtime
     // as persisted-setting > build-time PICK_EASY_MODE env > this literal, so the
     // mobile builds turn easy mode on via PICK_EASY_MODE=true (see the just
