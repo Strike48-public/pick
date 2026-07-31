@@ -106,6 +106,14 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     let on_logout = props.on_logout;
     let on_easy_mode_change = props.on_easy_mode_change;
 
+    // When embedded in StrikeHub (it spawns us with STRIKEHUB_SOCKET set and
+    // injects the session), the user's identity is owned by the wrapper. A
+    // Pick-side "Log out" would clear only our copy of the token and desync from
+    // StrikeHub — sign-out belongs to the host. Hide the drawer logout in that
+    // case; standalone Pick still shows it. Detection matches the connector/
+    // liveview_server STRIKEHUB_SOCKET check.
+    let embedded_in_strikehub = std::env::var("STRIKEHUB_SOCKET").is_ok();
+
     // The Matrix auth token arrives asynchronously: the connector registers, the
     // browser-OAuth callback writes it into the session store, and this
     // always-mounted panel must re-render so ChatPanel re-reads it and fetches
@@ -350,16 +358,19 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                     }
                 }
             }
-            div { class: "easy-drawer-sep" }
-            // Log out (bottom)
-            button {
-                class: "easy-drawer-item easy-drawer-logout",
-                onclick: move |_| {
-                    drawer_open.set(false);
-                    on_logout.call(());
-                },
-                span { class: "easy-drawer-item-icon", LogOut { size: 18 } }
-                "Log out"
+            // Log out (bottom) — only standalone. Under StrikeHub the wrapper
+            // owns the session, so a Pick-side logout would desync; hide it.
+            if !embedded_in_strikehub {
+                div { class: "easy-drawer-sep" }
+                button {
+                    class: "easy-drawer-item easy-drawer-logout",
+                    onclick: move |_| {
+                        drawer_open.set(false);
+                        on_logout.call(());
+                    },
+                    span { class: "easy-drawer-item-icon", LogOut { size: 18 } }
+                    "Log out"
+                }
             }
         }
         // ---- Settings overlay ----
