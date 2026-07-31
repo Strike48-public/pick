@@ -103,6 +103,13 @@ SigLevel = Never
 BLACKARCH
 fi
 
+# Clear any stale pacman lock. pacman never auto-removes /var/lib/pacman/db.lck,
+# so a previous run interrupted mid-transaction (or a hard WSL shutdown) leaves
+# it behind and every later pacman fails "unable to lock database". WSL1 on
+# arm64 is especially prone to this (slow, emulated I/O gets interrupted). Safe
+# to remove here: setup runs single-threaded and no pacman is live yet.
+rm -f /var/lib/pacman/db.lck 2>/dev/null || true
+
 # System update — --overwrite '*' clears the ArchWSL gcc-libs / libstdc++
 # file conflict that would otherwise abort the transaction.
 pacman -Syu --noconfirm --overwrite '*' 2>&1 || true
@@ -504,7 +511,22 @@ impl WslExecutor {
             args.push(&wsl_cwd);
         }
 
-        args.extend_from_slice(&["--", "/bin/bash", "-c", cmd]);
+        // For pacman commands, clear a stale db.lck in the SAME shell first.
+        // pacman never removes its own lock, so a run interrupted mid-transaction
+        // (or a hard WSL shutdown — common on slow WSL1/arm64) wedges every later
+        // pacman with "unable to lock database". ensure_ready's host-side clear
+        // does not apply to WSL (the distro FS isn't the bwrap rootfs path and
+        // the WSL branch returns before it), so heal it in-guest here. Only for
+        // pacman to avoid prepending to unrelated commands.
+        let pacman_healed;
+        let effective_cmd: &str = if cmd.trim_start().starts_with("pacman") {
+            pacman_healed = format!("rm -f /var/lib/pacman/db.lck 2>/dev/null; {cmd}");
+            &pacman_healed
+        } else {
+            cmd
+        };
+
+        args.extend_from_slice(&["--", "/bin/bash", "-c", effective_cmd]);
 
         let mut command = Command::new("wsl.exe");
         command
@@ -623,6 +645,11 @@ mod tests {
             );
             assert!(script.contains("nameserver 8.8.8.8"), "arch={aarch64}");
             assert!(script.contains("--overwrite"), "arch={aarch64}");
+            // Clears a stale pacman lock before its pacman ops (WSL1/arm64 wedge).
+            assert!(
+                script.contains("rm -f /var/lib/pacman/db.lck"),
+                "arch={aarch64}: setup must clear a stale pacman lock"
+            );
             // The DNS override is now CONDITIONAL: guarded by a getent resolve-test
             // of the mirror host, so we only take over DNS when the existing
             // resolver can't reach our mirror (WSL1/NetBird), not unconditionally.
