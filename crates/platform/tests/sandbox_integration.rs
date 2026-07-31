@@ -233,47 +233,88 @@ mod sandbox_tests {
 
         println!("\n=== Step 3: Test nmap scan via PTY shell ===");
 
-        // Spawn sandboxed PTY shell
+        // Spawn sandboxed PTY shell (WSL on Windows, bwrap/proot on Linux,
+        // Docker on macOS — PtyShell::spawn picks the backend).
         let pty = PtyShell::spawn(24, 80, None, None, ShellMode::Proot)
             .await
             .expect("Failed to spawn PTY shell");
 
-        // Get reader and writer
         let mut reader = pty.try_clone_reader().expect("Failed to get PTY reader");
         let mut writer = pty.take_writer().expect("Failed to get PTY writer");
 
-        // Give shell time to initialize
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        // The PtyShell reader is a plain blocking `Read` with no timeout, and
+        // shells differ in WHEN they first emit (a Linux bwrap/proot PTY prints a
+        // prompt immediately; the Windows WSL2 PTY may not), so a bare
+        // `reader.read()` can block forever — that hung this test on Windows.
+        // Instead, pump the reader on a dedicated thread into a channel and
+        // consume with a wall-clock deadline until the sentinel appears. Portable
+        // across Linux/WSL2/Docker and can never hang the suite.
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let reader_thread = std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break, // EOF: shell closed
+                    Ok(n) => {
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break; // receiver gone (test finished)
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
 
-        // Read initial prompt/output
-        let mut initial_buf = vec![0u8; 4096];
-        let _ = reader.read(&mut initial_buf);
-        println!(
-            "Initial PTY output: {}",
-            String::from_utf8_lossy(&initial_buf)
-        );
-
-        // Run nmap command in PTY (TCP connect scan works without raw sockets)
-        let cmd = "nmap -sT 127.0.0.1 -p 22; echo NMAP_DONE\n";
+        // Run a TCP connect scan (no raw sockets needed) and mark completion with
+        // a unique sentinel we can wait for.
         writer
-            .write_all(cmd.as_bytes())
+            .write_all(b"nmap -sT 127.0.0.1 -p 22; echo NMAP_DONE_SENTINEL\n")
             .expect("Failed to write to PTY");
+        writer.flush().expect("Failed to flush PTY");
 
-        // Wait for command to complete and read output
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        // Accumulate output until the sentinel shows up or we hit the deadline.
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let mut collected = String::new();
+        while std::time::Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(chunk) => {
+                    collected.push_str(&String::from_utf8_lossy(&chunk));
+                    if collected.contains("NMAP_DONE_SENTINEL") {
+                        break;
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
 
-        let mut output = vec![0u8; 8192];
-        let n = reader.read(&mut output).unwrap_or(0);
-        let output_str = String::from_utf8_lossy(&output[..n]);
+        // Tell the interactive shell to exit so the PTY closes and the reader
+        // thread hits EOF. `/bin/bash -l -i` does NOT terminate just from stdin
+        // closing (and PtyShell has no kill() and no Drop that reaps the child),
+        // so `exit` is what actually ends it — without it the reader thread
+        // blocks on read() forever and a join() here would deadlock.
+        let _ = writer.write_all(b"exit\n");
+        let _ = writer.flush();
+        drop(writer);
+        drop(pty);
+        // Reap the reader thread, but never block the test on it: if the shell
+        // somehow doesn't close, joining in a bounded side-thread lets the test
+        // finish and report rather than hang the whole suite (the observed
+        // Windows failure mode). The child dies with the test process anyway.
+        let joiner = std::thread::spawn(move || {
+            let _ = reader_thread.join();
+        });
+        let join_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !joiner.is_finished() && std::time::Instant::now() < join_deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
 
-        println!("PTY nmap output:\n{}", output_str);
-
+        println!("PTY output:\n{collected}");
         assert!(
-            output_str.contains("Nmap scan report")
-                || output_str.contains("Starting Nmap")
-                || output_str.contains("NMAP_DONE"),
-            "PTY nmap should run (got: {})",
-            output_str
+            collected.contains("Nmap scan report")
+                || collected.contains("Starting Nmap")
+                || collected.contains("NMAP_DONE_SENTINEL"),
+            "PTY nmap should run (got: {collected})",
         );
 
         println!("\n=== SUCCESS: Nmap works in both execute_command and PTY shell! ===");
