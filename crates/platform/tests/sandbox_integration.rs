@@ -160,11 +160,14 @@ mod sandbox_tests {
 
     /// Comprehensive test: Install nmap, verify raw sockets work via execute_command and PTY.
     ///
-    /// Desktop-only: it drives the desktop `PtyShell` with `ShellMode::Proot`,
-    /// which is a Linux-desktop concept (proot is a Linux ELF). The other tests
-    /// in this module are platform-agnostic via `get_platform()`; this one is
-    /// intentionally the exception because it exercises the PTY path directly.
-    #[cfg(target_os = "linux")]
+    /// Desktop-only (linux/macos/windows): it drives the desktop `PtyShell`,
+    /// which lives in the `desktop` module and so is absent on android/ios.
+    /// `ShellMode::Proot` here is Pick's generic "run sandboxed" mode, NOT the
+    /// proot binary specifically — `PtyShell::spawn` routes it to whatever
+    /// backend the platform provides: bwrap/proot on Linux, WSL on Windows,
+    /// Docker on macOS (see `build_cmd_for_backend`). So the PTY path is
+    /// exercised on every desktop OS, not just Linux.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[tokio::test]
     #[ignore = "comprehensive end-to-end test, run explicitly"]
     async fn test_sandbox_nmap_raw_sockets_comprehensive() {
