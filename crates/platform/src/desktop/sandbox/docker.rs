@@ -57,9 +57,15 @@ fn dockerfile_contents_for(aarch64: bool) -> String {
 # Configure mirrors
 {mirror_block}
 
-# Fix pacman.conf for container usage
+# Fix pacman.conf for container usage. DisableSandbox: pacman 7's Landlock-based
+# download sandbox is incompatible with many container runtimes (the syscall is
+# blocked/unavailable), which makes -Syu fail; disable it (mirrors the WSL setup
+# script). Enable an existing commented entry, and append one if pacman.conf has
+# none (older configs).
 RUN sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf 2>/dev/null || true && \
-    sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf 2>/dev/null || true
+    sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf 2>/dev/null || true && \
+    sed -i 's/^#DisableSandbox/DisableSandbox/' /etc/pacman.conf 2>/dev/null || true && \
+    (grep -q '^DisableSandbox' /etc/pacman.conf || sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf)
 
 # Initialize pacman keyring and system update
 RUN pacman-key --init && \
@@ -291,9 +297,15 @@ mod tests {
 RUN echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist && \
     echo 'Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch' >> /etc/pacman.d/mirrorlist
 
-# Fix pacman.conf for container usage
+# Fix pacman.conf for container usage. DisableSandbox: pacman 7's Landlock-based
+# download sandbox is incompatible with many container runtimes (the syscall is
+# blocked/unavailable), which makes -Syu fail; disable it (mirrors the WSL setup
+# script). Enable an existing commented entry, and append one if pacman.conf has
+# none (older configs).
 RUN sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf 2>/dev/null || true && \
-    sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf 2>/dev/null || true
+    sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf 2>/dev/null || true && \
+    sed -i 's/^#DisableSandbox/DisableSandbox/' /etc/pacman.conf 2>/dev/null || true && \
+    (grep -q '^DisableSandbox' /etc/pacman.conf || sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf)
 
 # Initialize pacman keyring and system update
 RUN pacman-key --init && \
@@ -315,6 +327,20 @@ WORKDIR /root
     #[test]
     fn x86_64_dockerfile_is_byte_for_byte_unchanged() {
         assert_eq!(dockerfile_contents_for(false), DOCKERFILE_X86_64_GOLDEN);
+    }
+
+    #[test]
+    fn both_dockerfiles_disable_pacman_landlock_sandbox() {
+        // pacman 7's Landlock download sandbox breaks -Syu in container runtimes
+        // where the syscall is blocked; both arches must DisableSandbox (verified
+        // empirically on colima/QEMU arm64 where -Syu failed without it).
+        for aarch64 in [false, true] {
+            let d = dockerfile_contents_for(aarch64);
+            assert!(
+                d.contains("DisableSandbox"),
+                "arch={aarch64}: Dockerfile must disable pacman's Landlock sandbox"
+            );
+        }
     }
 
     #[test]
