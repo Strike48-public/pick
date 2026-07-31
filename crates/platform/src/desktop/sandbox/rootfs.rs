@@ -127,6 +127,14 @@ impl RootfsManager {
         // Set file capabilities on pentest tools that need raw sockets
         self.set_tool_capabilities(&rootfs).await?;
 
+        // pacman's provisioning (installing the `filesystem` package via
+        // arch-chroot/bwrap) can reset the rootfs ROOT dir back to its packaged
+        // mode 0555. Restore owner-write before writing the completion marker —
+        // otherwise the marker write itself fails on the read-only root, the
+        // marker never appears, is_ready() stays false, and every launch
+        // re-provisions from scratch (and later bwrap spawns fail EPERM too).
+        Self::make_owner_writable(&rootfs);
+
         // Create version marker to indicate this rootfs has been updated
         let version_marker = rootfs.join(".rootfs_version");
         tokio::fs::write(&version_marker, "1\n").await?;
@@ -134,6 +142,67 @@ impl RootfsManager {
         tracing::info!("BlackArch rootfs setup complete");
 
         Ok(rootfs)
+    }
+
+    /// Recursively delete `path`, first making the whole tree writable.
+    ///
+    /// The Arch bootstrap archive packs some directories read-only (e.g.
+    /// `etc/ca-certificates/extracted/cadir` is mode 0555). A plain
+    /// `remove_dir_all` cannot delete files inside a read-only dir, and — worse —
+    /// re-extracting the tarball ON TOP of a leftover read-only `cadir` from an
+    /// interrupted run fails with `tar: Cannot create symlink ... Permission
+    /// denied`, permanently wedging every later provision. So before deleting we
+    /// walk the tree and restore write permission on every directory.
+    fn force_remove_dir_all(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::symlink_metadata(path) {
+                // Only chmod real directories (not symlinks) so we can descend.
+                if meta.file_type().is_dir() {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(perms.mode() | 0o700);
+                    let _ = std::fs::set_permissions(path, perms);
+                    if let Ok(entries) = std::fs::read_dir(path) {
+                        for entry in entries.flatten() {
+                            Self::force_remove_dir_all(&entry.path());
+                        }
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(path);
+        // remove_dir_all leaves nothing on success; a file (non-dir) path or a
+        // symlink needs remove_file.
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Recursively add the owner-write bit to every directory under `path`
+    /// (and `path` itself). The Arch/ALARM archives pack some directories
+    /// read-only (0555), including the rootfs root; proot/bwrap need to create
+    /// mount points and pacman needs to write databases inside the tree, so a
+    /// read-only dir makes the sandbox fail at spawn/first-write with
+    /// "Permission denied". Only directories are touched (files keep their
+    /// modes); symlinks are skipped so we don't chase them out of the tree.
+    fn make_owner_writable(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let Ok(meta) = std::fs::symlink_metadata(path) else {
+                return;
+            };
+            if !meta.file_type().is_dir() {
+                return;
+            }
+            let mut perms = meta.permissions();
+            perms.set_mode(perms.mode() | 0o700);
+            let _ = std::fs::set_permissions(path, perms);
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    Self::make_owner_writable(&entry.path());
+                }
+            }
+        }
     }
 
     /// Download and extract the base Arch rootfs
@@ -149,8 +218,12 @@ impl RootfsManager {
                 self.download_file(bootstrap_url(), &tarball_path).await?;
             }
             tracing::info!("Extracting ALARM rootfs...");
+            // --delay-directory-restore: see the x86_64 branch below — ALARM
+            // packs the same read-only cadir, so defer dir-perm restore or the
+            // symlinks inside it fail to extract.
             let status = Command::new("tar")
                 .args([
+                    "--delay-directory-restore",
                     "-xzf",
                     &tarball_path.to_string_lossy(),
                     "-C",
@@ -169,6 +242,10 @@ impl RootfsManager {
                 );
             }
             tokio::fs::remove_file(&tarball_path).await.ok();
+
+            // Ensure the extracted tree is owner-writable (the archive root is
+            // packed 0555; proot/bwrap and pacman need to write inside it).
+            Self::make_owner_writable(rootfs);
 
             if !rootfs.join("bin").join("bash").exists()
                 && !rootfs.join("usr").join("bin").join("bash").exists()
@@ -204,11 +281,36 @@ impl RootfsManager {
 
         tracing::info!("Extracting rootfs...");
 
+        // Remove any leftover staging dir from a previous interrupted extract.
+        // The archive nests everything under `root.x86_64/`, and re-extracting
+        // over a leftover read-only `cadir` there fails (tar can't recreate the
+        // symlinks), so start from a clean staging dir every time.
+        if let Some(subdir) = extracted_subdir_for(false) {
+            let staging = self.config.data_dir.join(subdir);
+            if staging.exists() {
+                tracing::info!(
+                    "Removing stale extraction staging dir {}",
+                    staging.display()
+                );
+                Self::force_remove_dir_all(&staging);
+            }
+        }
+
+        // --delay-directory-restore: the Arch bootstrap packs read-only dirs
+        // (e.g. etc/ca-certificates/extracted/cadir, mode 0555) BEFORE the
+        // symlinks that live inside them. Without this flag GNU tar creates the
+        // dir read-only, then can't write its own children -> "Cannot create
+        // symlink ... Permission denied" and the extract aborts, leaving a
+        // broken rootfs. The flag defers directory permission restoration until
+        // after contents are written. (Reproduced on the current .tar.zst
+        // bootstrap; the older .tar.gz didn't pack it this way, which is why the
+        // gz fallback worked and masked this.)
         let tarball_str = tarball_path.to_string_lossy();
         let extract_result = if tarball_str.ends_with(".zst") {
             Command::new("tar")
                 .args([
                     "--zstd",
+                    "--delay-directory-restore",
                     "-xf",
                     &tarball_str,
                     "-C",
@@ -220,6 +322,7 @@ impl RootfsManager {
         } else {
             Command::new("tar")
                 .args([
+                    "--delay-directory-restore",
                     "-xzf",
                     &tarball_str,
                     "-C",
@@ -244,16 +347,33 @@ impl RootfsManager {
             }
         }
 
-        // The archive extracts to a subdirectory, move contents up
+        // The archive packs its dirs (including the `root.x86_64` root itself)
+        // as mode 0555 (read-only). This bites in THREE places, so restore
+        // owner-write on every directory in the extracted tree BEFORE anything
+        // else touches it:
+        //   1. renaming the staging dir into place needs write on that dir
+        //      (`rename` updates its `..`), else the move fails Permission denied
+        //      and the whole provision aborts — leaving a broken 0555 rootfs that
+        //      is never repaired;
+        //   2. bwrap/proot must create mount points inside the rootfs at spawn;
+        //   3. pacman must write /var/lib/pacman.
+        // Do it on the staging dir first (fixes the rename), then again on the
+        // final rootfs after the move (belt and suspenders / no-move case).
         if let Some(subdir) = extracted_subdir_for(false) {
             let extracted_dir = self.config.data_dir.join(subdir);
-            if extracted_dir.exists() && extracted_dir != *rootfs {
-                if rootfs.exists() {
-                    tokio::fs::remove_dir_all(rootfs).await.ok();
+            if extracted_dir.exists() {
+                Self::make_owner_writable(&extracted_dir);
+                if extracted_dir != *rootfs {
+                    if rootfs.exists() {
+                        // force-remove: a prior rootfs also contains read-only dirs.
+                        Self::force_remove_dir_all(rootfs);
+                    }
+                    tokio::fs::rename(&extracted_dir, rootfs).await?;
                 }
-                tokio::fs::rename(&extracted_dir, rootfs).await?;
             }
         }
+
+        Self::make_owner_writable(rootfs);
 
         tokio::fs::remove_file(&tarball_path).await.ok();
 
