@@ -362,6 +362,22 @@ impl SandboxManager {
         } else {
             tracing::debug!("[SandboxManager::ensure_ready] Rootfs already ready");
         }
+
+        // Clear a stale pacman lock left by a previously-killed run (a scan whose
+        // pacman was interrupted by a timeout/crash leaves `/var/lib/pacman/db.lck`
+        // behind, which wedges EVERY later `pacman` with "unable to lock database"
+        // until it's removed). pacman itself never auto-clears it. The interactive
+        // PTY shell already does this; do it here too so the command-execution path
+        // (execute_command -> tools) self-heals. Safe because SandboxManager runs
+        // one command at a time and provisioning is serialized by SETUP_LOCK.
+        let stale_lock = self.config.rootfs_dir().join("var/lib/pacman/db.lck");
+        if stale_lock.exists() {
+            tracing::warn!(
+                "[SandboxManager::ensure_ready] Removing stale pacman lock {}",
+                stale_lock.display()
+            );
+            let _ = std::fs::remove_file(&stale_lock);
+        }
         Ok(())
     }
 

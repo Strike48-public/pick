@@ -25,12 +25,32 @@
 ))]
 mod sandbox_tests {
     use pentest_platform::CommandExec;
+    use std::sync::OnceLock;
     use std::time::Duration;
+    use tokio::sync::{Mutex, MutexGuard};
+
+    /// Every test in this module drives the SAME global sandbox rootfs (one
+    /// `/var/lib/pacman` DB, one `db.lck`). Rust runs tests in parallel, so
+    /// running them together makes concurrent `pacman` invocations collide on
+    /// the DB lock (`exit_code=1`) and one blocks until its 600s timeout. The
+    /// rootfs manager's SETUP_LOCK only serializes provisioning, not command
+    /// execution. Acquire this shared async guard at the top of each test so the
+    /// suite runs sandbox commands one at a time (a `--test-threads=1` equivalent
+    /// scoped to just these tests).
+    fn sandbox_guard() -> &'static Mutex<()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD.get_or_init(|| Mutex::new(()))
+    }
+
+    async fn lock_sandbox() -> MutexGuard<'static, ()> {
+        sandbox_guard().lock().await
+    }
 
     /// Test that we can execute basic commands in the sandbox as root
     #[tokio::test]
     #[ignore = "downloads rootfs, run explicitly"]
     async fn test_sandbox_whoami() {
+        let _guard = lock_sandbox().await;
         let platform = pentest_platform::get_platform();
 
         let result = platform
@@ -52,6 +72,7 @@ mod sandbox_tests {
     #[tokio::test]
     #[ignore = "downloads rootfs, run explicitly"]
     async fn test_sandbox_pacman_sync() {
+        let _guard = lock_sandbox().await;
         let platform = pentest_platform::get_platform();
 
         // First ensure the sandbox is set up by running a simple command
@@ -76,6 +97,7 @@ mod sandbox_tests {
     #[tokio::test]
     #[ignore = "downloads rootfs and packages, run explicitly"]
     async fn test_sandbox_install_nmap() {
+        let _guard = lock_sandbox().await;
         let platform = pentest_platform::get_platform();
 
         // Sync databases first
@@ -150,6 +172,7 @@ mod sandbox_tests {
         use pentest_platform::desktop::pty_shell::PtyShell;
         use std::io::{Read, Write};
 
+        let _guard = lock_sandbox().await;
         let platform = pentest_platform::get_platform();
 
         println!("=== Step 1: Install nmap via pacman ===");
@@ -257,6 +280,7 @@ mod sandbox_tests {
     #[tokio::test]
     #[ignore = "downloads rootfs and updates all packages, run explicitly"]
     async fn test_sandbox_pacman_update() {
+        let _guard = lock_sandbox().await;
         let platform = pentest_platform::get_platform();
 
         // Full system update with --overwrite to handle any conflicts
