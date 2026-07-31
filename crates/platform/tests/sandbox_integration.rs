@@ -5,10 +5,24 @@
 //! - Command execution as root inside the sandbox
 //! - Package installation via pacman
 //!
+//! They exercise the platform-agnostic sandbox entry point
+//! ([`pentest_platform::get_platform`] → [`CommandExec::execute_command`]), so
+//! the SAME tests run against whatever sandbox the target provides — WSL/bwrap/
+//! proot/Docker on desktop, proot on Android — rather than hard-coding one OS.
+//!
 //! Run with: `cargo test --test sandbox_integration -- --nocapture --ignored`
-//! (ignored by default because they download ~500MB rootfs)
+//! (ignored by default because they download a ~500MB rootfs / provision a
+//! distro). Gated to targets that actually have a command sandbox.
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(
+    test,
+    any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "android"
+    )
+))]
 mod sandbox_tests {
     use pentest_platform::CommandExec;
     use std::time::Duration;
@@ -17,7 +31,7 @@ mod sandbox_tests {
     #[tokio::test]
     #[ignore = "downloads rootfs, run explicitly"]
     async fn test_sandbox_whoami() {
-        let platform = pentest_platform::desktop::DesktopPlatform;
+        let platform = pentest_platform::get_platform();
 
         let result = platform
             .execute_command("whoami", &[], Duration::from_secs(10))
@@ -38,7 +52,7 @@ mod sandbox_tests {
     #[tokio::test]
     #[ignore = "downloads rootfs, run explicitly"]
     async fn test_sandbox_pacman_sync() {
-        let platform = pentest_platform::desktop::DesktopPlatform;
+        let platform = pentest_platform::get_platform();
 
         // First ensure the sandbox is set up by running a simple command
         let _ = platform
@@ -62,7 +76,7 @@ mod sandbox_tests {
     #[tokio::test]
     #[ignore = "downloads rootfs and packages, run explicitly"]
     async fn test_sandbox_install_nmap() {
-        let platform = pentest_platform::desktop::DesktopPlatform;
+        let platform = pentest_platform::get_platform();
 
         // Sync databases first
         let sync_result = platform
@@ -122,7 +136,13 @@ mod sandbox_tests {
         );
     }
 
-    /// Comprehensive test: Install nmap, verify raw sockets work via execute_command and PTY
+    /// Comprehensive test: Install nmap, verify raw sockets work via execute_command and PTY.
+    ///
+    /// Desktop-only: it drives the desktop `PtyShell` with `ShellMode::Proot`,
+    /// which is a Linux-desktop concept (proot is a Linux ELF). The other tests
+    /// in this module are platform-agnostic via `get_platform()`; this one is
+    /// intentionally the exception because it exercises the PTY path directly.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     #[ignore = "comprehensive end-to-end test, run explicitly"]
     async fn test_sandbox_nmap_raw_sockets_comprehensive() {
@@ -130,7 +150,7 @@ mod sandbox_tests {
         use pentest_platform::desktop::pty_shell::PtyShell;
         use std::io::{Read, Write};
 
-        let platform = pentest_platform::desktop::DesktopPlatform;
+        let platform = pentest_platform::get_platform();
 
         println!("=== Step 1: Install nmap via pacman ===");
 
@@ -237,7 +257,7 @@ mod sandbox_tests {
     #[tokio::test]
     #[ignore = "downloads rootfs and updates all packages, run explicitly"]
     async fn test_sandbox_pacman_update() {
-        let platform = pentest_platform::desktop::DesktopPlatform;
+        let platform = pentest_platform::get_platform();
 
         // Full system update with --overwrite to handle any conflicts
         let result = platform

@@ -3,6 +3,12 @@
 //!   cargo test -p pentest-platform --features desktop -- --ignored sandbox
 //! CI runs this in per-OS matrix jobs, each asserting the backend(s) it
 //! provisioned are Working and tolerating the rest as Unavailable.
+//!
+//! Desktop-only: it reaches directly into `pentest_platform::desktop::sandbox`
+//! (the probe/manager), which does not exist under the android/ios feature
+//! builds. The cross-platform sandbox exec path is covered by
+//! `sandbox_integration.rs` via `get_platform()`.
+#![cfg(feature = "desktop")]
 
 use pentest_platform::desktop::sandbox::config::SandboxConfig;
 use pentest_platform::desktop::sandbox::probe::{any_backend_available, probe_all, BackendStatus};
