@@ -866,6 +866,10 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                             terminal_lines
                                 .write()
                                 .push(TerminalLine::error(format!("Pre-approval failed: {e}")));
+                            // Setting status to Disconnected while the flow is in
+                            // Registering is bridged to AuthEvent::TokenFailed by the
+                            // status->flow effect, so easy mode leaves the
+                            // "Signing in…" screen instead of stranding on it.
                             status.set(ConnectorStatus::Disconnected);
                             connecting_step.set(None);
                             return;
@@ -937,6 +941,20 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                         if let Some(step) = *connecting_step.peek() {
                             dispatch(AuthEvent::ConnectorStep(step));
                         }
+                    }
+                    // A connect/registration failure sets status to Disconnected
+                    // (easy mode) or Error (expert). Easy mode routes purely on
+                    // flow(), so if we're mid-connect the flow is stuck in
+                    // Registering; bridge the failure to a flow event so the shell
+                    // leaves the "Connecting…"/"Signing in…" screen instead of
+                    // stranding on it (Cancel-only). Only fire while Registering so
+                    // an idle Disconnected at startup doesn't churn the flow.
+                    ConnectorStatus::Disconnected | ConnectorStatus::Error(_)
+                        if matches!(*flow.peek(), AuthFlow::Registering(_)) =>
+                    {
+                        dispatch(AuthEvent::TokenFailed(
+                            "Connection failed. Please sign in again.".to_string(),
+                        ));
                     }
                     _ => {}
                 }

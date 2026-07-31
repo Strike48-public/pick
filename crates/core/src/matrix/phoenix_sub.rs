@@ -197,8 +197,11 @@ pub fn resolve_ws_url(api_url: &str, ws_url_override: Option<&str>, token: &str)
         Some(base) if !base.is_empty() => {
             let base = base.trim_end_matches('/');
             let encoded_token = urlencoding::encode(token);
-            // The proxy advertises a bare URL (no query); append auth + vsn.
-            format!("{}?token={}&vsn=2.0.0", base, encoded_token)
+            // The proxy normally advertises a bare URL, but if it ever carries a
+            // query string, append with `&` instead of a second `?` (which would
+            // make a malformed URL the WS dial silently fails on).
+            let sep = if base.contains('?') { '&' } else { '?' };
+            format!("{base}{sep}token={encoded_token}&vsn=2.0.0")
         }
         _ => build_ws_url(api_url, token),
     }

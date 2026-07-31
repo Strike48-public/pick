@@ -33,39 +33,54 @@ const TYPE_SRV: u16 = 33;
 /// Sends a PTR query, then reads responses until `timeout_ms` elapses, joining
 /// PTR -> SRV -> A -> TXT records by name into [`MdnsService`] entries.
 pub async fn discover(service_type: &str, timeout_ms: u64) -> Result<Vec<MdnsService>> {
-    let socket = match UdpSocket::bind("0.0.0.0:0") {
-        Ok(s) => s,
-        Err(_) => return Ok(vec![]),
-    };
-
-    // Best-effort multicast setup; failures just mean we might miss replies.
-    let _ = socket.join_multicast_v4(&MDNS_MULTICAST_IP, &Ipv4Addr::UNSPECIFIED);
-    let _ = socket.set_multicast_loop_v4(true);
-    // Short per-recv timeout so we can loop until the overall deadline.
-    let _ = socket.set_read_timeout(Some(Duration::from_millis(250)));
-
-    let query = build_ptr_query(service_type);
-    if socket.send_to(&query, MDNS_MULTICAST_ADDR).is_err() {
+    // Nothing to wait for -> no recv loop, return immediately (also avoids a
+    // zero deadline that would exit the loop before the first recv anyway).
+    if timeout_ms == 0 {
         return Ok(vec![]);
     }
 
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let mut records = RecordSet::default();
-    let mut buf = [0u8; 4096];
+    // The recv loop is a blocking UDP read; run it on a blocking thread so it
+    // doesn't pin an async worker for the whole discovery window.
+    let service_type = service_type.to_string();
+    let services = tokio::task::spawn_blocking(move || {
+        let socket = match UdpSocket::bind("0.0.0.0:0") {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
 
-    while Instant::now() < deadline {
-        match socket.recv_from(&mut buf) {
-            Ok((len, _)) => {
-                if let Some(msg) = parse_dns_message(&buf[..len]) {
-                    records.absorb(msg);
-                }
-            }
-            // Timeout on this recv; keep looping until the overall deadline.
-            Err(_) => continue,
+        // Best-effort multicast setup; failures just mean we might miss replies.
+        let _ = socket.join_multicast_v4(&MDNS_MULTICAST_IP, &Ipv4Addr::UNSPECIFIED);
+        let _ = socket.set_multicast_loop_v4(true);
+        // Short per-recv timeout so we can loop until the overall deadline.
+        let _ = socket.set_read_timeout(Some(Duration::from_millis(250)));
+
+        let query = build_ptr_query(&service_type);
+        if socket.send_to(&query, MDNS_MULTICAST_ADDR).is_err() {
+            return Vec::new();
         }
-    }
 
-    Ok(records.into_services(service_type))
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut records = RecordSet::default();
+        let mut buf = [0u8; 4096];
+
+        while Instant::now() < deadline {
+            match socket.recv_from(&mut buf) {
+                Ok((len, _)) => {
+                    if let Some(msg) = parse_dns_message(&buf[..len]) {
+                        records.absorb(msg);
+                    }
+                }
+                // Timeout on this recv; keep looping until the overall deadline.
+                Err(_) => continue,
+            }
+        }
+
+        records.into_services(&service_type)
+    })
+    .await
+    .unwrap_or_default();
+
+    Ok(services)
 }
 
 /// Build a standard mDNS PTR query for `service_type`.

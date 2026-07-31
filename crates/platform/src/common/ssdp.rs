@@ -9,47 +9,79 @@
 use crate::traits::SsdpDevice;
 use pentest_core::error::Result;
 use std::net::UdpSocket;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Multicast endpoint every SSDP responder listens on.
 const SSDP_MULTICAST_ADDR: &str = "239.255.255.250:1900";
+
+/// Per-`recv` read timeout. Short so the loop can re-check the overall deadline
+/// frequently instead of blocking for the whole discovery window on one recv.
+const RECV_TIMEOUT_MS: u64 = 250;
 
 /// Discover SSDP/UPnP devices by sending an `M-SEARCH` and collecting the
 /// unicast responses until `timeout_ms` elapses.
 ///
 /// Socket-setup or send failures return `Ok(vec![])` rather than an error so a
 /// blocked sandbox degrades gracefully instead of failing the whole scan.
+///
+/// The recv loop is bounded by an overall wall-clock deadline (not the per-recv
+/// timeout) and runs on a blocking thread: a busy network with steady multicast
+/// chatter would otherwise re-arm the read timeout on every datagram and block
+/// far past `timeout_ms`, and a blocking UDP recv on the async executor would
+/// pin a worker for the whole window. Mirrors `mdns::discover`.
 pub async fn discover(timeout_ms: u64) -> Result<Vec<SsdpDevice>> {
-    let socket = match UdpSocket::bind("0.0.0.0:0") {
-        Ok(s) => s,
-        Err(_) => return Ok(vec![]),
-    };
-
-    let _ = socket.set_read_timeout(Some(Duration::from_millis(timeout_ms)));
-    let _ = socket.set_broadcast(true);
-
-    let search_request = "M-SEARCH * HTTP/1.1\r\n\
-        HOST: 239.255.255.250:1900\r\n\
-        MAN: \"ssdp:discover\"\r\n\
-        MX: 2\r\n\
-        ST: ssdp:all\r\n\r\n";
-
-    if socket
-        .send_to(search_request.as_bytes(), SSDP_MULTICAST_ADDR)
-        .is_err()
-    {
+    // A zero (or absurd) timeout must not block: with nothing to wait for, run
+    // no recv loop and return immediately. `set_read_timeout(Some(0))` is an std
+    // error anyway (it would leave the socket in blocking, no-timeout mode).
+    if timeout_ms == 0 {
         return Ok(vec![]);
     }
 
-    let mut devices = Vec::new();
-    let mut buf = [0u8; 2048];
+    let devices = tokio::task::spawn_blocking(move || {
+        let socket = match UdpSocket::bind("0.0.0.0:0") {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
 
-    while let Ok((len, _)) = socket.recv_from(&mut buf) {
-        let response = String::from_utf8_lossy(&buf[..len]);
-        if let Some(device) = parse_ssdp_response(&response) {
-            devices.push(device);
+        // Short per-recv timeout so we can loop until the overall deadline.
+        let _ = socket.set_read_timeout(Some(Duration::from_millis(RECV_TIMEOUT_MS)));
+        let _ = socket.set_broadcast(true);
+
+        let search_request = "M-SEARCH * HTTP/1.1\r\n\
+            HOST: 239.255.255.250:1900\r\n\
+            MAN: \"ssdp:discover\"\r\n\
+            MX: 2\r\n\
+            ST: ssdp:all\r\n\r\n";
+
+        if socket
+            .send_to(search_request.as_bytes(), SSDP_MULTICAST_ADDR)
+            .is_err()
+        {
+            return Vec::new();
         }
-    }
+
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut devices = Vec::new();
+        let mut buf = [0u8; 2048];
+
+        while Instant::now() < deadline {
+            match socket.recv_from(&mut buf) {
+                Ok((len, _)) => {
+                    let response = String::from_utf8_lossy(&buf[..len]);
+                    if let Some(device) = parse_ssdp_response(&response) {
+                        devices.push(device);
+                    }
+                }
+                // Per-recv timeout (or transient error): keep looping until the
+                // overall deadline.
+                Err(_) => continue,
+            }
+        }
+
+        devices
+    })
+    .await
+    .unwrap_or_default();
 
     Ok(devices)
 }

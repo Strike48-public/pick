@@ -153,7 +153,9 @@ fn capitalize_period(p: &str) -> &'static str {
 }
 
 fn format_with_commas(n: i64) -> String {
-    let s = n.abs().to_string();
+    // `unsigned_abs` (not `abs`) so i64::MIN — which has no positive i64 — does
+    // not overflow-panic in debug builds on a hostile/pathological server value.
+    let s = n.unsigned_abs().to_string();
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, b) in bytes.iter().enumerate() {

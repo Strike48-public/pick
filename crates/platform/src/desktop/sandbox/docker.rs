@@ -41,6 +41,16 @@ fn dockerfile_contents_for(aarch64: bool) -> String {
     } else {
         "RUN curl -sL https://blackarch.org/strap.sh -o /tmp/strap.sh && \\\n    chmod +x /tmp/strap.sh && \\\n    /tmp/strap.sh && \\\n    rm /tmp/strap.sh".to_string()
     };
+    // Final DB sync. On aarch64 tolerate failure (`|| true`): BlackArch's arm64
+    // repo coverage is partial, and a 404 on its db must not abort the whole
+    // image build (the base Arch repos already synced above). This matches the
+    // WSL aarch64 path, which also uses `|| true`. x86_64 keeps the strict form
+    // (BlackArch's x86_64 repo is authoritative), preserving the golden Dockerfile.
+    let sync_block = if aarch64 {
+        "RUN pacman -Sy --noconfirm || true"
+    } else {
+        "RUN pacman -Sy --noconfirm"
+    };
     format!(
         r#"{from}
 
@@ -60,7 +70,7 @@ RUN pacman-key --init && \
 {blackarch_block}
 
 # Sync package databases
-RUN pacman -Sy --noconfirm
+{sync_block}
 
 WORKDIR /root
 "#

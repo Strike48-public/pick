@@ -97,7 +97,16 @@ pub fn reduce(state: AuthFlow, event: AuthEvent, easy: bool, _auto: bool) -> Aut
 
         // ---- Connected ----------------------------------------------------
         (S::Connected { .. }, E::ChatReady) => S::Connected { chat_ready: true },
-        (S::Connected { .. }, E::ChatAuthDead) => S::Failed {
+        // A dead chat session is terminal from any in-flight or connected state,
+        // not just Connected. A token restored at startup is only checked for JWT
+        // expiry, not server-side validity, so an unexpired-but-dead token can
+        // surface ChatAuthDead while the flow is still SigningIn/Registering (the
+        // ChatPanel agent-fetch runs concurrently with connector registration).
+        // Handling it only from Connected would drop the event and strand the flow
+        // in Registering. Route to Failed{reauth} from all three.
+        (S::Connected { .. }, E::ChatAuthDead)
+        | (S::Registering(_), E::ChatAuthDead)
+        | (S::SigningIn, E::ChatAuthDead) => S::Failed {
             reason: "Your session expired".to_string(),
             reauth: true,
         },
@@ -173,6 +182,26 @@ mod tests {
             true,
         );
         assert!(matches!(s, AuthFlow::Failed { reauth: true, .. }));
+    }
+
+    // A dead chat session must not be dropped while the flow is still connecting.
+    // A restored-but-server-dead token can surface ChatAuthDead during SigningIn
+    // or Registering (chat agent-fetch runs concurrently with registration);
+    // both must route to Failed{reauth} rather than stranding in Registering.
+    #[test]
+    fn chat_auth_dead_from_in_flight_states_fails_reauth() {
+        for state in [
+            AuthFlow::SigningIn,
+            AuthFlow::Registering(ConnectingStep::SigningIn),
+            AuthFlow::Registering(ConnectingStep::Connecting),
+            AuthFlow::Registering(ConnectingStep::Registering),
+        ] {
+            let s = reduce(state.clone(), AuthEvent::ChatAuthDead, true, false);
+            assert!(
+                matches!(s, AuthFlow::Failed { reauth: true, .. }),
+                "ChatAuthDead from {state:?} should fail-reauth, got {s:?}"
+            );
+        }
     }
 
     // No token at startup: always show sign-in overlay.
