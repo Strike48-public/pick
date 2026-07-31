@@ -51,6 +51,19 @@ pub fn InteractiveShell(
         )));
         tracing::info!("[shell] init effect fired (mode={current_mode})");
         spawn(async move {
+            // SMOKE TEST: prove whether document::eval executes JS at all on this
+            // platform/transport before the real shell init. On WebView2 the
+            // shell_init JS never runs (no console output, eval never resolves),
+            // so confirm here whether eval round-trips at all over the liveview
+            // bridge. This log tells us: reached-here → spawn ran; eval Ok/Err →
+            // eval resolved; neither → eval future hangs (transport dead).
+            tracing::info!("[shell] SMOKE: spawn body entered; calling document::eval");
+            match document::eval("console.log('[Shell] SMOKE eval ran'); 42").await {
+                Ok(v) => tracing::info!("[shell] SMOKE eval returned Ok: {v:?}"),
+                Err(e) => tracing::warn!("[shell] SMOKE eval returned Err: {e:?}"),
+            }
+            tracing::info!("[shell] SMOKE: past eval await; proceeding to teardown+init");
+
             // Tear down any existing terminal before (re-)initializing
             let _ = document::eval(
                 r#"
