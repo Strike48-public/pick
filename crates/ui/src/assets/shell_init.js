@@ -58,6 +58,42 @@
         ];
     }
 
+    // Wait until the shell container has a real, non-zero layout size before
+    // creating the terminal. The shell pane is persistent (always mounted,
+    // CSS-toggled via `hidden`), so this init effect can run while the pane is
+    // still `display:none` (0×0). restty builds its WebGL2 renderer against the
+    // container's size at `term.open()` time — if that happens at 0×0 it locks
+    // in a dead 1×1 grid ("[init webgl2] canvas=1x1 grid=1x1") that never
+    // resizes or connects, leaving the pane stuck on "Starting shell...".
+    // WebKit/WKWebView tolerate the later reflow; Chromium/WebView2 (Windows)
+    // does not — so on Windows the shell hung. Gate on non-zero size so
+    // `term.open()` always runs against the visible dimensions.
+    await new Promise(function(resolve) {
+        var isSized = function() {
+            return container.clientWidth > 0 && container.clientHeight > 0;
+        };
+        if (isSized()) {
+            resolve();
+            return;
+        }
+        var done = false;
+        var finish = function() {
+            if (done) return;
+            done = true;
+            try { ro.disconnect(); } catch (e) { /* ignore */ }
+            clearTimeout(timer);
+            resolve();
+        };
+        var ro = new ResizeObserver(function() {
+            if (isSized()) finish();
+        });
+        ro.observe(container);
+        // Fallback: don't wait forever if the pane never reports a size
+        // (e.g. observer never fires). Proceed anyway after a bounded wait so
+        // the resize-driven `updateSize()` below can still recover it later.
+        var timer = setTimeout(finish, 10000);
+    });
+
     // Track whether we've ever connected (to avoid showing
     // "[Connection closed]" from the initial "disconnected" status)
     var hasConnected = false;
