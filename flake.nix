@@ -51,17 +51,24 @@
         cmdLineToolsVersion = "9.0";
         platformToolsVersion = "36.0.2";
         buildToolsVersions = [ "35.0.1" ];
-        platformVersions = [ "35" "36" ];
+        platformVersions = [ "30" "35" "36" ];
         includeNDK = true;
         ndkVersions = [ ndkVersion ];
-        # Emulator + a rootable google_apis x86_64 system image for android-36,
-        # matching what `just emulator-setup` / `just emulator` expect. These are
-        # multi-GB; they only download when someone actually enters the devshell
-        # needing an AVD.
+        # Emulator + rootable google_apis system images. x86_64 for android-36
+        # (the fast, KVM-accelerated dev AVD that `just emulator-setup` /
+        # `just emulator` expect) and arm64-v8a for android-30 (a foreign-arch
+        # guest, runs under TCG — no KVM — to validate Pick's aarch64 proot
+        # sandbox). The composed emulator already ships qemu-system-aarch64
+        # -headless, so arm64 guests boot on this x86_64 host; only the image
+        # was missing. These are multi-GB; they only download when someone
+        # actually enters the devshell needing an AVD.
+        #
+        # abiVersions × platformVersions is a cross-product, so this pulls both
+        # x86_64 and arm64-v8a images for every listed API level.
         includeEmulator = true;
         includeSystemImages = true;
         systemImageTypes = [ "google_apis" ];
-        abiVersions = [ "x86_64" ];
+        abiVersions = [ "x86_64" "arm64-v8a" ];
       };
       androidSdk = androidComposition.androidsdk;
       androidHome = "${androidSdk}/libexec/android-sdk";
