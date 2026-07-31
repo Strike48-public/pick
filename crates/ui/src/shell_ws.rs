@@ -64,6 +64,9 @@ async fn handle_socket(
     cwd: Option<PathBuf>,
     shell_mode: ShellMode,
 ) {
+    tracing::info!(
+        "[shell_ws] handle_socket: spawning PTY shell (mode={shell_mode:?}, {cols}x{rows})"
+    );
     let pty = match PtyShell::spawn(cols, rows, None, cwd.as_deref(), shell_mode).await {
         Ok(pty) => pty,
         Err(e) => {
@@ -71,6 +74,7 @@ async fn handle_socket(
             return;
         }
     };
+    tracing::info!("[shell_ws] PtyShell::spawn returned OK; wiring reader/writer");
 
     let reader = match pty.try_clone_reader() {
         Ok(r) => r,
@@ -101,16 +105,31 @@ async fn handle_socket(
         use std::io::Read;
         let mut reader = reader;
         let mut buf = [0u8; 4096];
+        let mut total: u64 = 0;
+        let mut first = true;
+        tracing::info!("[shell_ws] PTY reader loop started; blocking on first read()");
         loop {
             match reader.read(&mut buf) {
-                Ok(0) => break,
+                Ok(0) => {
+                    tracing::info!("[shell_ws] PTY reader hit EOF after {total} bytes");
+                    break;
+                }
                 Ok(n) => {
+                    if first {
+                        tracing::info!("[shell_ws] PTY reader got FIRST {n} bytes");
+                        first = false;
+                    }
+                    total += n as u64;
                     let text = String::from_utf8_lossy(&buf[..n]).to_string();
                     if pty_tx.blocking_send(text).is_err() {
+                        tracing::info!("[shell_ws] PTY reader: channel closed, stopping");
                         break;
                     }
                 }
-                Err(_) => break,
+                Err(e) => {
+                    tracing::warn!("[shell_ws] PTY reader error after {total} bytes: {e}");
+                    break;
+                }
             }
         }
     });
