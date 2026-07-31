@@ -49,6 +49,7 @@ pub fn InteractiveShell(
             "[shell] initializing (mode={})",
             current_mode
         )));
+        tracing::info!("[shell] init effect fired (mode={current_mode})");
         spawn(async move {
             // Tear down any existing terminal before (re-)initializing
             let _ = document::eval(
@@ -61,15 +62,16 @@ pub fn InteractiveShell(
             )
             .await;
             match document::eval(&js).await {
-                Ok(_) => {
+                Ok(v) => {
+                    tracing::info!("[shell] init eval returned Ok: {v:?}");
                     crate::liveview_server::push_terminal_line(TerminalLine::success(
                         "[shell] terminal connected".to_string(),
                     ));
                 }
                 Err(e) => {
-                    tracing::warn!("JS eval failed (shell init): {e}");
+                    tracing::warn!("JS eval failed (shell init): {e:?}");
                     crate::liveview_server::push_terminal_line(TerminalLine::error(format!(
-                        "[shell] init failed: {e}"
+                        "[shell] init failed: {e:?}"
                     )));
                 }
             }

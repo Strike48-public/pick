@@ -1,7 +1,12 @@
 (async function() {
+    console.log('[Shell] init script start');
     const BASE = '__LIVEVIEW_BASE__';
     const container = document.getElementById('shell-container');
-    if (!container) return;
+    if (!container) {
+        console.error('[Shell] init aborted: #shell-container not found in DOM');
+        return;
+    }
+    console.log('[Shell] container found; size=' + container.clientWidth + 'x' + container.clientHeight);
 
     // Detect if we're inside StrikeHub's iframe (IPC mode).
     // Windows: http://dioxus.index.html/connector/{id}/liveview  (hostname = dioxus.index.html)
@@ -36,6 +41,7 @@
     // Load the restty bundle via script tag if not already loaded
     // (In Strike48 mode, it's already inlined in <head>)
     if (!window.ResttyXterm) {
+        console.log('[Shell] loading restty.js from ' + httpBase + '/assets/restty.js');
         await new Promise(function(resolve, reject) {
             var script = document.createElement('script');
             script.src = httpBase + '/assets/restty.js';
@@ -47,6 +53,7 @@
             document.head.appendChild(script);
         });
     }
+    console.log('[Shell] restty ready (ResttyXterm=' + (!!window.ResttyXterm) + '); awaiting non-zero container size');
 
     // Detect Strike48 iframe context: font is embedded as ArrayBuffer global
     // because CSP blocks CDN font fetches and local-fonts permission is denied.
@@ -93,6 +100,7 @@
         // the resize-driven `updateSize()` below can still recover it later.
         var timer = setTimeout(finish, 10000);
     });
+    console.log('[Shell] size gate passed; container=' + container.clientWidth + 'x' + container.clientHeight + '; creating terminal');
 
     // Track whether we've ever connected (to avoid showing
     // "[Connection closed]" from the initial "disconnected" status)
