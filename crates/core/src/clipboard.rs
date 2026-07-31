@@ -54,8 +54,17 @@ pub fn clear_clipboard_handler_for_test() {
 mod tests {
     use super::*;
 
+    // COPY_HANDLER is a process-global; the two tests below both mutate it.
+    // Rust runs tests multi-threaded by default, so without serialization they
+    // race — `copy_text_uses_registered_handler` can set the handler between the
+    // other test's `clear` and its `is_available()` assert, flaking on some
+    // platforms/orderings (observed failing on macOS, passing on Linux). This
+    // lock forces the two to run one at a time.
+    static TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn copy_text_errors_when_no_handler() {
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         clear_clipboard_handler_for_test();
         assert!(!is_available());
         assert!(copy_text("hello").is_err());
@@ -64,6 +73,7 @@ mod tests {
     #[test]
     fn copy_text_uses_registered_handler() {
         use std::sync::{Arc, Mutex};
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let seen = Arc::new(Mutex::new(String::new()));
         let seen2 = seen.clone();
         set_clipboard_handler(move |t| {
