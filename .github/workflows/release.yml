@@ -235,6 +235,14 @@ jobs:
       # a FlakeHub/cachix cache later if release-build time becomes a problem.)
       - uses: DeterminateSystems/nix-installer-action@main
 
+      # Fetch the Termux proot runtime (proot + libtalloc + busybox +
+      # libandroid-shmem) into android-jniLibs/ before building. android-jniLibs/
+      # is gitignored (fetched artifacts), and _inject-android-lib copies it into
+      # the APK/AAB. Without this the build ships no proot binaries and the
+      # interactive shell fails to spawn at runtime. Matches the CI android job.
+      - name: Fetch Android proot runtime
+        run: nix develop --command just fetch-proot
+
       # STRIKE48_HOST is baked at build time (mobile has no runtime env). Without
       # it the app has no backend URL, so the OAuth sign-in browser never opens
       # (Url::parse of an empty base fails). Matches the CI android job.

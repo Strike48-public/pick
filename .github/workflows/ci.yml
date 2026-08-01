@@ -167,6 +167,14 @@ jobs:
       # Build through the nix flake so PR CI uses the exact same toolchain,
       # SDK/NDK, dx, build-tools and aapt2 as local `just build-android`.
       - uses: DeterminateSystems/nix-installer-action@main
+      # Fetch the Termux proot runtime (proot + libtalloc + busybox +
+      # libandroid-shmem) into android-jniLibs/ BEFORE building. android-jniLibs/
+      # is gitignored (fetched artifacts, not source), and _inject-android-lib
+      # copies whatever is there into the APK. Without this the APK builds but
+      # ships no proot binaries, so the interactive shell fails to spawn at
+      # runtime ("proot binary not found"). Mirrors the local dev prerequisite.
+      - name: Fetch Android proot runtime
+        run: nix develop --command just fetch-proot
       - name: Build debug APK
         env:
           STRIKE48_HOST: https://studio.strike48.com
