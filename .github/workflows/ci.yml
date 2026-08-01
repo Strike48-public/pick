@@ -27,7 +27,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev protobuf-compiler libpcap-dev
       - uses: dtolnay/rust-toolchain@stable
+      # shared-key ties check/clippy/test to ONE cache: they compile the same
+      # workspace + features, so the first to run populates it and the others
+      # restore instead of building the crate graph from scratch three times.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-linux
       - run: cargo check --workspace --locked --features pentest-platform/desktop-pcap
 
   fmt:
@@ -53,6 +58,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-linux
       - run: cargo clippy --workspace --locked --features pentest-platform/desktop-pcap -- -D warnings
 
   test:
@@ -74,6 +81,8 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev protobuf-compiler libpcap-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-linux
       - run: cargo test --workspace --locked --features pentest-platform/desktop-pcap
 
   check-macos:
@@ -167,6 +176,34 @@ jobs:
       # Build through the nix flake so PR CI uses the exact same toolchain,
       # SDK/NDK, dx, build-tools and aapt2 as local `just build-android`.
       - uses: DeterminateSystems/nix-installer-action@main
+      # Cache nix store paths (toolchain, Android SDK/NDK, dx, gradle) across runs
+      # and between nix jobs, backed by the GitHub Actions cache. Turns the cold
+      # multi-minute `nix develop` toolchain build into a near-instant restore.
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      # Cache cargo downloads + the Android cross-compile target dir. Shared
+      # registry/git key with android-crux (same crate graph) so they don't each
+      # re-download ~1165 crates; per-job target key for incremental reuse across
+      # runs. `just build-android` runs cargo via nix but still uses ~/.cargo and
+      # ./target, so a plain actions/cache is the robust choice here (Swatinem's
+      # action expects rustc on PATH, which lives inside `nix develop`).
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-android-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-android-${{ runner.os }}-
+      # Cache Gradle's downloaded dependencies + wrapper across runs.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'android-lib/**/*.gradle*') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
       # Fetch the Termux proot runtime (proot + libtalloc + busybox +
       # libandroid-shmem) into android-jniLibs/ BEFORE building. android-jniLibs/
       # is gitignored (fetched artifacts, not source), and _inject-android-lib
@@ -222,6 +259,27 @@ jobs:
       # Same nix flake as the Android Build job: cross-compiles the crux-ffi .so,
       # refreshes it into jniLibs (patchelf SONAME), then assembles the APK.
       - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      # Shares the cargo-android-* key with the Android Build job (same crate
+      # graph) so the two Android jobs reuse one another's registry/git + target
+      # cross-compile artifacts instead of each building the workspace cold.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-android-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-android-${{ runner.os }}-
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'android-lib/**/*.gradle*') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
       - name: Build android-crux debug APK
         env:
           STRIKE48_HOST: https://studio.strike48.com
@@ -237,6 +295,16 @@ jobs:
       # local Mac build host. build-ios-crux cross-compiles the crux-ffi static lib
       # the xcodeproj links, then xcodebuild against the committed scheme.
       - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-ios-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-ios-${{ runner.os }}-
       - name: Build ios-crux (simulator)
         env:
           STRIKE48_HOST: https://studio.strike48.com
