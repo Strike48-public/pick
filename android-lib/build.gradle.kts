@@ -10,6 +10,11 @@ android {
 
     defaultConfig {
         minSdk = 24
+        // Contribute keep rules to the consuming app's R8 config so the release
+        // (minified) build does not strip the JNI-only-referenced classes in
+        // this package (ConnectorBridge etc.). Without this the release APK/AAB
+        // crashes at first JNI call with ClassNotFoundException. See the file.
+        consumerProguardFiles("consumer-rules.pro")
     }
 
     kotlinOptions {

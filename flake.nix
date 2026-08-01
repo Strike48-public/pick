@@ -134,6 +134,7 @@
           just
           unzip           # _verify-android-apk inspects the APK's dex entries
           patchelf        # android-crux-refresh-so sets the .so SONAME
+          bundletool      # AAB -> universal installable APK (bundle-android-universal-apk)
         ]);
 
         # Native build deps. libclang is for bindgen (rquickjs-sys ships no

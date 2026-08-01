@@ -235,19 +235,43 @@ jobs:
       # a FlakeHub/cachix cache later if release-build time becomes a problem.)
       - uses: DeterminateSystems/nix-installer-action@main
 
+      # STRIKE48_HOST is baked at build time (mobile has no runtime env). Without
+      # it the app has no backend URL, so the OAuth sign-in browser never opens
+      # (Url::parse of an empty base fails). Matches the CI android job.
       - name: Build APK (release, arm64)
+        env:
+          STRIKE48_HOST: https://studio.strike48.com
         run: nix develop --command just build-android-release
+
+      # AAB is the Play-distribution deliverable (issue #279). It is UNSIGNED —
+      # release signing needs the Play upload key we do not have yet; wire that
+      # in here once the key exists. The universal APK is converted from the AAB
+      # and debug-signed by bundletool purely so the release bundle's output is
+      # installable for testing.
+      - name: Build AAB + universal APK (release)
+        env:
+          STRIKE48_HOST: https://studio.strike48.com
+        run: |
+          nix develop --command just bundle-android
+          nix develop --command just bundle-android-universal-apk
 
       - name: Package
         run: |
           mkdir -p dist
           cp target/dx/pentest-mobile/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk \
              dist/pentest-connector-android-arm64.apk
+          cp target/dx/pentest-mobile/release/android/app/app/build/outputs/bundle/release/app-release.aab \
+             dist/pentest-connector-android-release-unsigned.aab
+          cp target/dx/pentest-mobile/release/android/pentest-connector-android-universal.apk \
+             dist/pentest-connector-android-universal.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: dist/pentest-connector-android-arm64.apk
+          path: |
+            dist/pentest-connector-android-arm64.apk
+            dist/pentest-connector-android-release-unsigned.aab
+            dist/pentest-connector-android-universal.apk
 
   # ===========================================
   # iOS Build (requires macOS + signing)

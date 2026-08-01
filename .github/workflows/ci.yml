@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `labeled` lets the Android artifact steps (gated on the `build-apk` label)
+    # run when the label is added to an existing PR, not only on push.
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   contents: read
@@ -168,6 +171,40 @@ jobs:
         env:
           STRIKE48_HOST: https://studio.strike48.com
         run: nix develop --command just build-android
+
+      # Installable artifacts, gated on the `build-apk` PR label so we only pay
+      # the extra build time when someone actually wants a test build. Adds:
+      #   - the debug APK just built (arm64 + x86_64 — installs on devices AND
+      #     the x86_64 emulator)
+      #   - a release AAB (issue #279 deliverable, unsigned — no Play key yet)
+      #   - a universal APK converted from that AAB (debug-signed by bundletool
+      #     so it is installable for testing)
+      - name: Build release AAB + universal APK
+        if: contains(github.event.pull_request.labels.*.name, 'build-apk')
+        env:
+          STRIKE48_HOST: https://studio.strike48.com
+        run: |
+          nix develop --command just bundle-android
+          nix develop --command just bundle-android-universal-apk
+
+      - name: Stage Android artifacts
+        if: contains(github.event.pull_request.labels.*.name, 'build-apk')
+        run: |
+          mkdir -p dist
+          cp target/dx/pentest-mobile/debug/android/app/app/build/outputs/apk/debug/app-debug.apk \
+             dist/pick-android-debug.apk
+          cp target/dx/pentest-mobile/release/android/app/app/build/outputs/bundle/release/app-release.aab \
+             dist/pick-android-release-unsigned.aab
+          cp target/dx/pentest-mobile/release/android/pentest-connector-android-universal.apk \
+             dist/pick-android-universal.apk
+
+      - name: Upload Android artifacts
+        if: contains(github.event.pull_request.labels.*.name, 'build-apk')
+        uses: actions/upload-artifact@v4
+        with:
+          name: pick-android-${{ github.event.pull_request.number }}
+          path: dist/pick-android-*
+          if-no-files-found: error
 
   android-crux:
     name: Android Crux Build

@@ -448,7 +448,22 @@ run-android:
     adb shell am force-stop com.strike48.pentest_connector
     adb shell am start -n com.strike48.pentest_connector/dev.dioxus.main.MainActivity
 
-# Bundle mobile app for Android distribution
+# Bundle mobile app for Android distribution as an Android App Bundle (.aab).
+#
+# NOTE: we deliberately do NOT use `dx bundle` here. `dx bundle` regenerates the
+# Gradle project AND runs Gradle in a single step, leaving no window to inject
+# the `android-lib` module (ConnectorBridge etc.) — the resulting bundle would
+# build but crash at runtime with ClassNotFoundException. Instead we mirror
+# `build-android-release`: `dx build` per target, then `_inject-android-lib`,
+# then drive Gradle's `bundleRelease` task ourselves.
+#
+# The .aab is UNSIGNED (release signing needs the Play upload key we don't have
+# yet). It is the distribution deliverable for issue #279; install-testing uses
+# `bundle-android-universal-apk` (below), which converts it to an installable
+# APK via bundletool + a throwaway debug key.
+#
+# By default builds both arm64 and x86_64. Override with:
+#   ANDROID_TARGETS="aarch64-linux-android" just bundle-android
 bundle-android:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -471,7 +486,80 @@ bundle-android:
     # Unset global CC/CXX that would override the target-specific ones
     unset CC CXX
 
-    {{dx}} bundle --platform android --package pentest-mobile
+    # Mobile is easy-mode-first: bake PICK_EASY_MODE at build time (see the debug
+    # build-android recipe). Override with PICK_EASY_MODE=false.
+    export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
+    echo "PICK_EASY_MODE=$PICK_EASY_MODE"
+
+    # Build each Rust target. See build-android comment for why this loop matters.
+    targets="${ANDROID_TARGETS:-aarch64-linux-android x86_64-linux-android}"
+    for target in $targets; do
+        echo "==> Building Rust for $target (release, aab)..."
+        {{dx}} build --platform android --package pentest-mobile --release --target "$target"
+    done
+
+    # Re-inject AFTER dx (which regenerates settings.gradle and build.gradle.kts).
+    just _inject-android-lib target/dx/pentest-mobile/release/android/app
+
+    # `clean` is required for the same reason as build-android: settings.gradle
+    # changes don't invalidate Gradle's task fingerprints, so a stale bundle
+    # missing android-lib could otherwise be produced.
+    pushd target/dx/pentest-mobile/release/android/app > /dev/null
+    ./gradlew clean bundleRelease
+    popd > /dev/null
+
+    AAB=target/dx/pentest-mobile/release/android/app/app/build/outputs/bundle/release/app-release.aab
+    if [ ! -f "$AAB" ]; then
+        echo "ERROR: expected AAB not found at $AAB" >&2
+        exit 1
+    fi
+    echo "AAB built: $AAB ($(wc -c < "$AAB") bytes)"
+
+# Convert the release AAB into an installable universal APK for testing.
+#
+# An .aab cannot be installed with `adb install`. bundletool expands it into an
+# APK set; `--mode=universal` yields a single APK covering all ABIs. bundletool
+# requires the APK set to be signed, so we generate a THROWAWAY debug keystore
+# (never for distribution — purely to make the artifact installable). Run
+# `just bundle-android` first (or CI runs both in sequence).
+bundle-android-universal-apk:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    AAB=target/dx/pentest-mobile/release/android/app/app/build/outputs/bundle/release/app-release.aab
+    if [ ! -f "$AAB" ]; then
+        echo "ERROR: $AAB not found — run 'just bundle-android' first." >&2
+        exit 1
+    fi
+
+    OUT=target/dx/pentest-mobile/release/android
+    KEYSTORE="$OUT/debug-universal.keystore"
+    APKS="$OUT/app-release-universal.apks"
+    APK="$OUT/pentest-connector-android-universal.apk"
+
+    # Throwaway debug keystore (regenerated each run; NOT for distribution).
+    rm -f "$KEYSTORE"
+    keytool -genkeypair -v \
+        -keystore "$KEYSTORE" \
+        -storepass android -keypass android \
+        -alias androiddebugkey \
+        -keyalg RSA -keysize 2048 -validity 10000 \
+        -dname "CN=Pick Debug, OU=CI, O=Strike48, L=NA, S=NA, C=US"
+
+    rm -f "$APKS"
+    bundletool build-apks \
+        --bundle="$AAB" \
+        --output="$APKS" \
+        --mode=universal \
+        --ks="$KEYSTORE" \
+        --ks-pass=pass:android \
+        --ks-key-alias=androiddebugkey \
+        --key-pass=pass:android
+
+    # The .apks archive is a zip; the universal APK is at universal.apk inside it.
+    rm -f "$APK"
+    unzip -p "$APKS" universal.apk > "$APK"
+    echo "Universal APK: $APK ($(wc -c < "$APK") bytes)"
 
 # ============ Proot (Termux-patched) ============
 
