@@ -18,13 +18,21 @@ pub struct OttData {
 }
 
 /// Wire shape of the `POST /api/connectors/pre-approve` 201 response.
+///
+/// `matrix_wss_url` is optional: the connector derives its WebSocket URL from
+/// the API base at runtime and never reads this field, but some deployments
+/// (e.g. studio.strike48.com) omit it from the response entirely. Requiring it
+/// made `serde_json::from_str` fail with "missing field `matrix_wss_url`",
+/// which aborted registration after an otherwise-successful sign-in. Keep it
+/// optional so its absence is tolerated.
 #[derive(Debug, Deserialize)]
 struct PreApproveResponse {
     token: String,
     tenant_id: String,
     keycloak_url: String,
     #[allow(dead_code)]
-    matrix_wss_url: String,
+    #[serde(default)]
+    matrix_wss_url: Option<String>,
 }
 
 pub(crate) fn parse_pre_approve_response(body: &str, api_base: &str) -> Result<OttData> {
@@ -154,6 +162,25 @@ mod tests {
     fn parse_error_on_missing_token() {
         let body = r#"{"tenant_id":"t","keycloak_url":"k","matrix_wss_url":"w"}"#;
         assert!(parse_pre_approve_response(body, "https://api.test").is_err());
+    }
+
+    #[test]
+    fn parses_when_matrix_wss_url_absent() {
+        // Regression: studio.strike48.com omits matrix_wss_url from the
+        // pre-approve response. The field is unused (the connector derives its
+        // WS URL from the API base), so its absence must NOT fail parsing — it
+        // previously aborted registration after a successful sign-in with
+        // "missing field `matrix_wss_url`".
+        let body = r#"{
+            "token": "ott_abc",
+            "tenant_id": "019f86b4-d2bf-7f56-89cf-30485d8a956b",
+            "keycloak_url": "https://auth.strike48.com/realms/personal-x"
+        }"#;
+        let ott = parse_pre_approve_response(body, "https://studio.strike48.com")
+            .expect("must parse without matrix_wss_url");
+        assert_eq!(ott.token, "ott_abc");
+        assert_eq!(ott.tenant_id, "019f86b4-d2bf-7f56-89cf-30485d8a956b");
+        assert_eq!(ott.matrix_url, "https://studio.strike48.com");
     }
 
     #[tokio::test]
