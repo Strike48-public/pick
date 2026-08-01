@@ -64,6 +64,7 @@ pub fn InteractiveShell(
             init = SHELL_INIT_JS
                 .replace("__LIVEVIEW_BASE__", LIVEVIEW_BASE)
                 .replace("__SHELL_MODE__", &current_mode)
+                .replace("__SHELL_TOKEN__", crate::shell_ws::shell_token())
         );
 
         crate::liveview_server::push_terminal_line(TerminalLine::info(format!(

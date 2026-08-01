@@ -172,6 +172,7 @@
     // connectPty sends initial resize on connect, routes keyboard input
     // to the PTY (no local echo), and renders PTY output automatically.
     var shellMode = '__SHELL_MODE__';
+    var shellToken = '__SHELL_TOKEN__';
     // In a real browser (liveview / Studio proxy), derive the WebSocket URL
     // from the page origin so it works through HTTPS proxies.  In a Dioxus
     // desktop/mobile webview, use the hardcoded LIVEVIEW_BASE.
@@ -182,12 +183,12 @@
         // Extract the bridge base and route through /ws/{connector_id}/ws/shell
         var wsBridgeBase = window.__MATRIX_WS_URL__.replace(/\/ws\/graphql$/, '');
         var connectorId = location.pathname.split('/')[2]; // /connector/{id}/...
-        wsUrl = wsBridgeBase + '/ws/' + connectorId + '/ws/shell?cols=80&rows=24&mode=' + shellMode;
+        wsUrl = wsBridgeBase + '/ws/' + connectorId + '/ws/shell?cols=80&rows=24&mode=' + shellMode + '&token=' + shellToken;
     } else if (isRealBrowser) {
         var wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        wsUrl = wsProto + '//' + location.host + '/ws/shell?cols=80&rows=24&mode=' + shellMode;
+        wsUrl = wsProto + '//' + location.host + '/ws/shell?cols=80&rows=24&mode=' + shellMode + '&token=' + shellToken;
     } else {
-        wsUrl = BASE.replace('http', 'ws') + '/ws/shell?cols=80&rows=24&mode=' + shellMode;
+        wsUrl = BASE.replace('http', 'ws') + '/ws/shell?cols=80&rows=24&mode=' + shellMode + '&token=' + shellToken;
     }
     console.log('[Shell] Connecting via connectPty to:', wsUrl);
 
