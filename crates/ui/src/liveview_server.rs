@@ -415,44 +415,88 @@ pub async fn start_liveview_server(
         });
     }
 
-    // Standalone mode: PID-based IPC address (Unix socket or named pipe)
-    // to avoid conflicts when multiple connectors run simultaneously.
-    let addr = IpcAddr::for_agent(std::process::id());
-    let listener = IpcListener::bind(&addr)?;
-    tracing::info!("LiveView server listening on {}", addr);
+    // Standalone mode. Android and non-Android diverge: the Android WebView
+    // cannot reach a unix domain socket (and /tmp is not writable in the app
+    // sandbox), so on Android we bind a localhost TCP port the WebView CAN
+    // reach. On desktop we keep the PID-based unix socket / named pipe, which
+    // avoids port collisions when multiple connectors run on one host.
+    #[cfg(target_os = "android")]
+    {
+        let bind_addr = format!("127.0.0.1:{}", port);
+        let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+        tracing::info!("LiveView TCP server listening on {}", bind_addr);
 
-    let addr_clone = addr.clone();
-    tokio::spawn(async move {
-        tracing::info!("LiveView server task started");
-        let server = axum::serve(listener, router.into_make_service());
-
-        tokio::select! {
-            result = server => {
-                tracing::warn!("LiveView server exited: {:?}", result);
-                if let Err(e) = result {
-                    tracing::error!("LiveView server error: {}", e);
+        tokio::spawn(async move {
+            tracing::info!("LiveView server task started (Android TCP mode)");
+            let server = axum::serve(listener, router.into_make_service());
+            tokio::select! {
+                result = server => {
+                    tracing::warn!("LiveView server exited: {:?}", result);
+                    if let Err(e) = result {
+                        tracing::error!("LiveView server error: {}", e);
+                    }
+                }
+                _ = async {
+                    while !shutdown_clone.load(Ordering::SeqCst) {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                } => {
+                    tracing::info!("LiveView server shutting down");
                 }
             }
-            _ = async {
-                while !shutdown_clone.load(Ordering::SeqCst) {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            tracing::warn!("LiveView server task ending");
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        return Ok(LiveViewHandle {
+            shutdown,
+            port,
+            ipc_addr: None,
+        });
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        // PID-based IPC address (Unix socket or named pipe) to avoid conflicts
+        // when multiple connectors run simultaneously.
+        let addr = IpcAddr::for_agent(std::process::id());
+        let listener = IpcListener::bind(&addr)?;
+        tracing::info!("LiveView server listening on {}", addr);
+
+        let addr_clone = addr.clone();
+        tokio::spawn(async move {
+            tracing::info!("LiveView server task started");
+            let server = axum::serve(listener, router.into_make_service());
+
+            tokio::select! {
+                result = server => {
+                    tracing::warn!("LiveView server exited: {:?}", result);
+                    if let Err(e) = result {
+                        tracing::error!("LiveView server error: {}", e);
+                    }
                 }
-            } => {
-                tracing::info!("LiveView server shutting down");
+                _ = async {
+                    while !shutdown_clone.load(Ordering::SeqCst) {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                } => {
+                    tracing::info!("LiveView server shutting down");
+                }
             }
-        }
-        addr_clone.cleanup();
-        tracing::warn!("LiveView server task ending");
-    });
+            addr_clone.cleanup();
+            tracing::warn!("LiveView server task ending");
+        });
 
-    // Wait a moment for the server to start
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // Wait a moment for the server to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    Ok(LiveViewHandle {
-        shutdown,
-        port,
-        ipc_addr: Some(addr),
-    })
+        Ok(LiveViewHandle {
+            shutdown,
+            port,
+            ipc_addr: Some(addr),
+        })
+    }
 }
 
 // Non-liveview stubs
