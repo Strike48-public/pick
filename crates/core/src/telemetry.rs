@@ -141,6 +141,13 @@ pub fn set_enabled(enabled: bool) {
     }
 }
 
+/// Whether telemetry should mark itself enabled given the init guard's own
+/// report. A rejected/invalid DSN yields a *disabled* client rather than an
+/// error, so trusting `sentry::init` returning is wrong — ask the guard.
+fn guard_reports_enabled(guard: &sentry::ClientInitGuard) -> bool {
+    guard.is_enabled()
+}
+
 /// Build and install a live Sentry client, storing the guard. Private: callers
 /// go through [`init`] or [`set_enabled`]. No-op when the DSN is absent or the
 /// `STRIKE48_TELEMETRY` env kill-switch is set, or a client is already live.
@@ -200,15 +207,20 @@ fn install(device_id: &str, easy_mode: bool) {
         scope.set_tag("app.channel", channel(easy_mode));
     });
 
+    let enabled = guard_reports_enabled(&guard);
     if let Ok(mut g) = GUARD.lock() {
         *g = Some(guard);
     }
-    ENABLED.store(true, Ordering::Relaxed);
-    tracing::info!(
-        "telemetry initialized (env={}, channel={})",
-        environment(),
-        channel(easy_mode)
-    );
+    ENABLED.store(enabled, Ordering::Relaxed);
+    if enabled {
+        tracing::info!(
+            "telemetry initialized (env={}, channel={})",
+            environment(),
+            channel(easy_mode)
+        );
+    } else {
+        tracing::warn!("telemetry DSN rejected; client disabled, no events will be sent");
+    }
 }
 
 /// Flush any queued telemetry to Sentry, blocking up to `timeout`. The shell
@@ -453,5 +465,16 @@ mod tests {
         assert!(!ENABLED.load(Ordering::Relaxed));
         set_enabled(true);
         assert!(!ENABLED.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn disabled_guard_does_not_enable_telemetry() {
+        // sentry::init(()) with no DSN yields a DISABLED client (not an error).
+        // Confirmed: init only panics on an *invalid* DSN string; empty options have none.
+        let guard = sentry::init(());
+        assert!(
+            !guard_reports_enabled(&guard),
+            "no-DSN client must report disabled"
+        );
     }
 }

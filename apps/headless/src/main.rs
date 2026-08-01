@@ -199,6 +199,9 @@ async fn main() -> anyhow::Result<()> {
         connector.shutdown();
     }
 
+    // Flush any queued telemetry before exit so batched events survive termination.
+    pentest_core::telemetry::flush();
+
     Ok(())
 }
 
