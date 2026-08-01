@@ -192,11 +192,15 @@
           # Point the justfile's `dx` (defaults to ~/.dx/bin/dx) at the Nix CLI.
           export DX_PATH="$(command -v dx)"
 
-          # Test binaries dynamically link openssl (via native-tls); without the
-          # nix openssl lib on the loader path they fail at runtime with
-          # "libssl.so.3: cannot open shared object file". buildInputs only
-          # affects the compile/link env, not the runtime loader, so export it.
-          export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.openssl ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          # Test binaries dynamically link several C libs at runtime: openssl
+          # (native-tls), libpcap (the desktop-pcap capture path), and libxcb
+          # (pulled in by the `screenshots` crate's X11 backend). Without these
+          # nix libs on the loader path they fail at runtime with
+          # "lib{ssl.so.3,pcap.so.1,xcb.so.1}: cannot open shared object file".
+          # buildInputs only affects the compile/link env, not the runtime
+          # loader, so export it. (CI has these installed system-wide, so this
+          # only bites inside `nix develop`.)
+          export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.openssl pkgs.libpcap pkgs.xorg.libxcb ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         '';
       };
 
