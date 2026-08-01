@@ -6,9 +6,6 @@ members = [
     "crates/ui",
     "crates/tools",
     "crates/cyberchef",
-    "crates/crux-core",
-    "crates/crux-ffi",
-    "crates/crux-middleware",
     "apps/desktop",
     "apps/web",
     "apps/mobile",
@@ -109,23 +106,6 @@ codegen-units = 1
 # binaries. (panic = "abort" would save a few MB more but is deliberately left
 # off: it turns an isolated tokio task panic into a whole-process abort.)
 strip = true
-
-# Release profile for the crux-ffi native libs. The `#[no_mangle]` extern "C"
-# entry points MUST survive into a *static* archive (iOS .a): with `strip = true`
-# the macOS linker dead-strips them (the archive is only pulled in by the symbols
-# the shell references, and nothing inside the crate references them), leaving a
-# lib with zero `pick_*` symbols. A cdylib (Android .so) force-exports its symbol
-# table so it is unaffected — but the iOS static lib needs symbols kept. Build the
-# FFI libs with `--profile release-ffi`.
-[profile.release-ffi]
-inherits = "release"
-strip = false
-# Fat LTO dead-code-eliminates the `#[no_mangle]` extern "C" entry points from a
-# *static* archive on macOS/iOS (nothing inside the crate references them, and a
-# staticlib has no export list to root them — unlike the Android cdylib). Turning
-# LTO off keeps them. The FFI shim is tiny, so losing cross-crate LTO here costs
-# almost nothing in size/speed.
-lto = false
 
 # Local patch of dioxus-asset-resolver 0.7.9: upstream native.rs:58 does
 # `strip_prefix("/").unwrap()`, which panics (StripPrefixError) whenever the
