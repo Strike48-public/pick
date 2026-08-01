@@ -153,13 +153,22 @@ pub fn DocumentsPanel(props: DocumentsPanelProps) -> Element {
                 let auth_token = auth_token.clone();
                 spawn(async move {
                     let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
-                    if let Ok(content) = client
+                    match client
                         .get_document_content(&doc.conversation_id, &doc.id)
                         .await
                     {
-                        meta_map
-                            .write()
-                            .insert(doc.id.clone(), ReportMeta::parse(&content));
+                        Ok(content) => {
+                            meta_map
+                                .write()
+                                .insert(doc.id.clone(), ReportMeta::parse(&content));
+                        }
+                        Err(e) => {
+                            // Memoize as "fetched, no metadata" so a transient
+                            // failure doesn't re-fan-out every poll, and surface
+                            // it in the log rather than dropping it silently.
+                            tracing::warn!("report metadata fetch failed for {}: {e}", doc.id);
+                            meta_map.write().insert(doc.id.clone(), None);
+                        }
                     }
                 });
             }
@@ -311,13 +320,22 @@ pub fn ConversationDocs(props: ConversationDocsProps) -> Element {
                 let auth_token = auth_token.clone();
                 spawn(async move {
                     let client = MatrixChatClient::new(api_url).with_auth_token(auth_token);
-                    if let Ok(content) = client
+                    match client
                         .get_document_content(&doc.conversation_id, &doc.id)
                         .await
                     {
-                        meta_map
-                            .write()
-                            .insert(doc.id.clone(), ReportMeta::parse(&content));
+                        Ok(content) => {
+                            meta_map
+                                .write()
+                                .insert(doc.id.clone(), ReportMeta::parse(&content));
+                        }
+                        Err(e) => {
+                            // Memoize as "fetched, no metadata" so a transient
+                            // failure doesn't re-fan-out every poll, and surface
+                            // it in the log rather than dropping it silently.
+                            tracing::warn!("report metadata fetch failed for {}: {e}", doc.id);
+                            meta_map.write().insert(doc.id.clone(), None);
+                        }
                     }
                 });
             }
