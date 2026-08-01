@@ -20,11 +20,18 @@ use crate::matrix::OttData;
 /// leading `connectors-` host label, trims a trailing `/`, and applies the TLS
 /// choice as the scheme.
 pub fn derive_api_url(host: &str, use_tls: bool) -> String {
-    let scheme = if use_tls { "https" } else { "http" };
+    let host_lower = host.to_lowercase();
+    let secure_schemes = ["https://", "wss://", "grpcs://"];
+    let input_is_secure = secure_schemes.iter().any(|p| host_lower.starts_with(p));
+    // An explicit secure input is never downgraded, even when use_tls is false.
+    let scheme = if use_tls || input_is_secure {
+        "https"
+    } else {
+        "http"
+    };
     let schemes = [
         "grpc://", "grpcs://", "http://", "https://", "ws://", "wss://",
     ];
-    let host_lower = host.to_lowercase();
     let mut bare_host = host;
     for prefix in &schemes {
         if host_lower.starts_with(prefix) {
@@ -116,5 +123,27 @@ mod tests {
     #[test]
     fn bare_host_gets_scheme() {
         assert_eq!(derive_api_url("example.com", true), "https://example.com");
+    }
+
+    #[test]
+    fn explicit_https_is_not_downgraded_to_http() {
+        // A user who typed https must never have their bearer JWT sent over http.
+        assert_eq!(
+            derive_api_url("https://host.example", false),
+            "https://host.example"
+        );
+        assert_eq!(
+            derive_api_url("wss://host.example", false),
+            "https://host.example"
+        );
+    }
+
+    #[test]
+    fn explicit_insecure_scheme_still_honors_use_tls_false() {
+        // ws:// / http:// with use_tls=false stays http (localhost dev).
+        assert_eq!(
+            derive_api_url("ws://localhost:3030/", false),
+            "http://localhost:3030"
+        );
     }
 }
