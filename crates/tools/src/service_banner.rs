@@ -304,3 +304,40 @@ impl ServiceBannerTool {
         Ok((data, provenance))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pentest_core::tools::{PentestTool, ToolContext};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn batch_rejects_target_with_empty_host() {
+        let tool = ServiceBannerTool;
+        let ctx = ToolContext::default();
+        let params = json!({ "targets": [ { "host": "", "port": 22 } ] });
+        let result = tool.execute(params, &ctx).await.unwrap();
+        assert!(!result.success, "empty host must fail");
+        assert!(result.error.is_some(), "error message must be present");
+    }
+
+    #[tokio::test]
+    async fn batch_rejects_target_with_missing_port() {
+        let tool = ServiceBannerTool;
+        let ctx = ToolContext::default();
+        let params = json!({ "targets": [ { "host": "10.0.0.1" } ] });
+        let result = tool.execute(params, &ctx).await.unwrap();
+        assert!(!result.success, "missing port must fail");
+        assert!(result.error.is_some(), "error message must be present");
+    }
+
+    #[tokio::test]
+    async fn empty_targets_array_falls_through_to_single_mode_error() {
+        let tool = ServiceBannerTool;
+        let ctx = ToolContext::default();
+        let params = json!({ "targets": [] });
+        let result = tool.execute(params, &ctx).await.unwrap();
+        assert!(!result.success, "no host in single mode must error");
+        assert!(result.error.is_some(), "error message must be present");
+    }
+}
