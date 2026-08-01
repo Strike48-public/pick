@@ -63,6 +63,11 @@ pub fn stage_ott_for_sdk(ott: &OttData) -> Result<PathBuf> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| Error::Matrix(format!("cannot create OTT dir: {e}")))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
     }
     let json = serde_json::json!({
         "token": ott.token,
@@ -70,13 +75,25 @@ pub fn stage_ott_for_sdk(ott: &OttData) -> Result<PathBuf> {
         "keycloak_url": ott.keycloak_url,
     })
     .to_string();
-    std::fs::write(&path, json)
-        .map_err(|e| Error::Matrix(format!("cannot write OTT file: {e}")))?;
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600) // create AT 0600 — never a permissive window
+            .open(&path)
+            .map_err(|e| Error::Matrix(format!("cannot open OTT file: {e}")))?;
+        f.write_all(json.as_bytes())
+            .map_err(|e| Error::Matrix(format!("cannot write OTT file: {e}")))?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&path, json)
+            .map_err(|e| Error::Matrix(format!("cannot write OTT file: {e}")))?;
     }
 
     Ok(path)
@@ -134,6 +151,12 @@ pub async fn pre_approve(api_url: &str, jwt: &str, connector_type: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Both stage_writes_sdk_shaped_json_and_roundtrips and
+    // stage_writes_0600_even_under_permissive_umask mutate process globals
+    // (HOME and umask respectively). Lock to prevent concurrent runs from racing.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     const SAMPLE_201: &str = r#"{
         "token": "ott_8Ucs8wG8RRMX-YEm2un24D4MrOiiF7tGaj5cArlwSN0",
@@ -229,6 +252,7 @@ mod tests {
 
     #[test]
     fn stage_writes_sdk_shaped_json_and_roundtrips() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let ott = OttData {
             token: "ott_xyz".to_string(),
             matrix_url: "https://api.strike48.test".to_string(),
@@ -267,5 +291,64 @@ mod tests {
             None => std::env::remove_var("HOME"),
         }
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    struct UmaskGuard(u32);
+    #[cfg(unix)]
+    impl Drop for UmaskGuard {
+        fn drop(&mut self) {
+            unsafe {
+                libc_umask(self.0);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_writes_0600_even_under_permissive_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // A permissive umask is the real-world hazard: std::fs::write creates the
+        // file honoring umask, so a later chmod leaves a window at 0644/0664.
+        let _umask_guard = UmaskGuard(unsafe { libc_umask(0o002) });
+        let ott = OttData {
+            token: "ott_perm".into(),
+            matrix_url: "https://api.test".into(),
+            keycloak_url: "https://auth/realms/x".into(),
+            tenant_id: "tid".into(),
+        };
+        let tmp = std::env::temp_dir().join(format!("pick-ott-umask-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let prev_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &tmp);
+
+        let path = stage_ott_for_sdk(&ott).expect("stage");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "OTT file must be 0600 regardless of umask"
+        );
+        let dir_mode = std::fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(dir_mode & 0o777, 0o700, "OTT dir must be 0700");
+
+        match prev_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    extern "C" {
+        fn umask(mask: u32) -> u32;
+    }
+    #[cfg(unix)]
+    unsafe fn libc_umask(mask: u32) -> u32 {
+        umask(mask)
     }
 }
