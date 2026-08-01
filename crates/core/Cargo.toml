@@ -59,6 +59,9 @@ native-tls = "0.2"
 # URL encoding
 urlencoding = "2.1"
 
+# CSPRNG for OAuth `state` generation (already present transitively via rustls).
+getrandom = "0.2"
+
 # Browser-based OAuth login (optional, desktop only)
 open = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }

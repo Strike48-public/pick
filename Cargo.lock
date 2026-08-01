@@ -6845,6 +6845,7 @@ dependencies = [
  "chrono",
  "dirs",
  "futures",
+ "getrandom 0.2.17",
  "native-tls",
  "open",
  "pentest-platform",
