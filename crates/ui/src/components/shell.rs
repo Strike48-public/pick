@@ -59,12 +59,23 @@ pub fn InteractiveShell(
                 if (loading) loading.style.display = '';
             })();
         "#;
+        // Authoritative StrikeHub-embedded signal for the JS: StrikeHub spawns
+        // us with STRIKEHUB_SOCKET set (same check as liveview_server.rs and
+        // easy_mode.rs). Passing it in avoids the JS guessing from the webview
+        // origin, which is identical for embedded and standalone builds and so
+        // mis-detected standalone Android as StrikeHub (restty.js 404 -> blank
+        // shell).
+        let is_strikehub = std::env::var("STRIKEHUB_SOCKET").is_ok();
         let js = format!(
             "{teardown}\n{init}",
             init = SHELL_INIT_JS
                 .replace("__LIVEVIEW_BASE__", LIVEVIEW_BASE)
                 .replace("__SHELL_MODE__", &current_mode)
                 .replace("__SHELL_TOKEN__", crate::shell_ws::shell_token())
+                .replace(
+                    "__IS_STRIKEHUB__",
+                    if is_strikehub { "true" } else { "false" }
+                )
         );
 
         crate::liveview_server::push_terminal_line(TerminalLine::info(format!(

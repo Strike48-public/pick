@@ -8,15 +8,30 @@
     }
     console.log('[Shell] container found; size=' + container.clientWidth + 'x' + container.clientHeight);
 
-    // Detect if we're inside StrikeHub's iframe (IPC mode).
-    // Windows: http://dioxus.index.html/connector/{id}/liveview  (hostname = dioxus.index.html)
-    // Linux:   dioxus://index.html/connector/{id}/liveview       (protocol = dioxus:)
-    var isStrikeHub = location.hostname === 'dioxus.index.html' || location.protocol === 'dioxus:';
+    // Whether we are embedded in StrikeHub (IPC mode). This is the AUTHORITATIVE
+    // signal from Rust: shell.rs substitutes __IS_STRIKEHUB__ with the boolean
+    // literal `true`/`false` from `std::env::var("STRIKEHUB_SOCKET").is_ok()` —
+    // the same check liveview_server.rs / easy_mode.rs use. It must NOT be
+    // guessed from the webview origin: the Dioxus webview origin is identical
+    // for StrikeHub-embedded AND standalone builds, so the old
+    // hostname/protocol heuristic wrongly treated standalone Android (origin
+    // https://dioxus.index.html) as StrikeHub and routed asset/WS loads through
+    // a bridge that does not exist there (restty.js 404 -> blank shell).
+    var isStrikeHub = __IS_STRIKEHUB__;
 
-    // Detect if we're in a real browser (http/https) vs a Dioxus webview
-    // (dioxus://index.html). In the browser/liveview case, derive URLs from
-    // the page origin so they work through proxies (e.g. Strike48 Studio).
-    var isRealBrowser = !isStrikeHub && (location.protocol === 'http:' || location.protocol === 'https:');
+    // Detect the Dioxus native webview (desktop/mobile) vs a real browser tab.
+    // The Android webview reports protocol `https:` with hostname
+    // `dioxus.index.html`; the Linux webview uses the `dioxus:` protocol. Either
+    // way it is NOT a real browser and must use the hardcoded LIVEVIEW_BASE
+    // (127.0.0.1:3030) rather than `location.origin` (which is the bogus
+    // dioxus.index.html host). This is a legitimate webview-vs-browser signal,
+    // distinct from the StrikeHub-embedded question above.
+    var isDioxusWebview = location.hostname === 'dioxus.index.html' || location.protocol === 'dioxus:';
+
+    // Real browser (liveview / Strike48 Studio proxy): derive URLs from the page
+    // origin so they work through HTTPS proxies. Excludes StrikeHub and the
+    // native webview.
+    var isRealBrowser = !isStrikeHub && !isDioxusWebview && (location.protocol === 'http:' || location.protocol === 'https:');
 
     var httpBase;
     if (isStrikeHub) {
