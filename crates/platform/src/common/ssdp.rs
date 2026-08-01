@@ -6,6 +6,7 @@
 //! plus desktop). Android and iOS both call [`discover`]; desktop uses the
 //! richer `ssdp-client` crate instead.
 
+use crate::common::probe::ProbeOutcome;
 use crate::traits::SsdpDevice;
 use pentest_core::error::Result;
 use std::net::UdpSocket;
@@ -17,6 +18,67 @@ const SSDP_MULTICAST_ADDR: &str = "239.255.255.250:1900";
 /// Per-`recv` read timeout. Short so the loop can re-check the overall deadline
 /// frequently instead of blocking for the whole discovery window on one recv.
 const RECV_TIMEOUT_MS: u64 = 250;
+
+/// Like [`discover`] but also reports whether the probe actually ran. `discover`
+/// delegates to this and discards the outcome for call sites that only want the
+/// device list.
+pub async fn discover_with_outcome(timeout_ms: u64) -> (Vec<SsdpDevice>, ProbeOutcome) {
+    if timeout_ms == 0 {
+        return (Vec::new(), ProbeOutcome::Skipped("zero timeout".into()));
+    }
+    tokio::task::spawn_blocking(move || {
+        let socket = match UdpSocket::bind("0.0.0.0:0") {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    Vec::new(),
+                    ProbeOutcome::Skipped(format!("bind failed: {e}")),
+                )
+            }
+        };
+        if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(RECV_TIMEOUT_MS))) {
+            // Without a read timeout the recv loop would block past the deadline.
+            return (
+                Vec::new(),
+                ProbeOutcome::Skipped(format!("set_read_timeout failed: {e}")),
+            );
+        }
+        let _ = socket.set_broadcast(true);
+        let search_request = "M-SEARCH * HTTP/1.1\r\n\
+            HOST: 239.255.255.250:1900\r\n\
+            MAN: \"ssdp:discover\"\r\n\
+            MX: 2\r\n\
+            ST: ssdp:all\r\n\r\n";
+        if let Err(e) = socket.send_to(search_request.as_bytes(), SSDP_MULTICAST_ADDR) {
+            return (
+                Vec::new(),
+                ProbeOutcome::Skipped(format!("send failed: {e}")),
+            );
+        }
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut devices = Vec::new();
+        let mut buf = [0u8; 2048];
+        while Instant::now() < deadline {
+            match socket.recv_from(&mut buf) {
+                Ok((len, _)) => {
+                    let response = String::from_utf8_lossy(&buf[..len]);
+                    if let Some(device) = parse_ssdp_response(&response) {
+                        devices.push(device);
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        (devices, ProbeOutcome::Ran)
+    })
+    .await
+    .unwrap_or_else(|_| {
+        (
+            Vec::new(),
+            ProbeOutcome::Skipped("probe task panicked".into()),
+        )
+    })
+}
 
 /// Discover SSDP/UPnP devices by sending an `M-SEARCH` and collecting the
 /// unicast responses until `timeout_ms` elapses.
@@ -30,60 +92,7 @@ const RECV_TIMEOUT_MS: u64 = 250;
 /// far past `timeout_ms`, and a blocking UDP recv on the async executor would
 /// pin a worker for the whole window. Mirrors `mdns::discover`.
 pub async fn discover(timeout_ms: u64) -> Result<Vec<SsdpDevice>> {
-    // A zero (or absurd) timeout must not block: with nothing to wait for, run
-    // no recv loop and return immediately. `set_read_timeout(Some(0))` is an std
-    // error anyway (it would leave the socket in blocking, no-timeout mode).
-    if timeout_ms == 0 {
-        return Ok(vec![]);
-    }
-
-    let devices = tokio::task::spawn_blocking(move || {
-        let socket = match UdpSocket::bind("0.0.0.0:0") {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
-
-        // Short per-recv timeout so we can loop until the overall deadline.
-        let _ = socket.set_read_timeout(Some(Duration::from_millis(RECV_TIMEOUT_MS)));
-        let _ = socket.set_broadcast(true);
-
-        let search_request = "M-SEARCH * HTTP/1.1\r\n\
-            HOST: 239.255.255.250:1900\r\n\
-            MAN: \"ssdp:discover\"\r\n\
-            MX: 2\r\n\
-            ST: ssdp:all\r\n\r\n";
-
-        if socket
-            .send_to(search_request.as_bytes(), SSDP_MULTICAST_ADDR)
-            .is_err()
-        {
-            return Vec::new();
-        }
-
-        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-        let mut devices = Vec::new();
-        let mut buf = [0u8; 2048];
-
-        while Instant::now() < deadline {
-            match socket.recv_from(&mut buf) {
-                Ok((len, _)) => {
-                    let response = String::from_utf8_lossy(&buf[..len]);
-                    if let Some(device) = parse_ssdp_response(&response) {
-                        devices.push(device);
-                    }
-                }
-                // Per-recv timeout (or transient error): keep looping until the
-                // overall deadline.
-                Err(_) => continue,
-            }
-        }
-
-        devices
-    })
-    .await
-    .unwrap_or_default();
-
-    Ok(devices)
+    Ok(discover_with_outcome(timeout_ms).await.0)
 }
 
 /// Parse a single SSDP `HTTP/1.1 200 OK` response into an [`SsdpDevice`].
@@ -149,5 +158,15 @@ mod tests {
     fn no_location_yields_none() {
         let resp = "HTTP/1.1 200 OK\r\nServer: foo\r\n\r\n";
         assert!(parse_ssdp_response(resp).is_none());
+    }
+
+    #[tokio::test]
+    async fn zero_timeout_reports_skipped_not_empty_ran() {
+        let (devices, outcome) = discover_with_outcome(0).await;
+        assert!(devices.is_empty());
+        assert!(
+            matches!(outcome, crate::common::probe::ProbeOutcome::Skipped(_)),
+            "a zero-timeout probe did not run; must be Skipped, not Ran"
+        );
     }
 }

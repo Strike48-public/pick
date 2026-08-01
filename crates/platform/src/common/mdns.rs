@@ -12,6 +12,7 @@
 //! malformed packet yields fewer records rather than a panic. Socket failures
 //! return `Ok(vec![])` so a blocked sandbox degrades gracefully.
 
+use crate::common::probe::ProbeOutcome;
 use crate::traits::MdnsService;
 use pentest_core::error::Result;
 use std::collections::HashMap;
@@ -28,35 +29,51 @@ const TYPE_PTR: u16 = 12;
 const TYPE_TXT: u16 = 16;
 const TYPE_SRV: u16 = 33;
 
-/// Discover mDNS/DNS-SD services of `service_type` (e.g. `_http._tcp.local.`).
-///
-/// Sends a PTR query, then reads responses until `timeout_ms` elapses, joining
-/// PTR -> SRV -> A -> TXT records by name into [`MdnsService`] entries.
-pub async fn discover(service_type: &str, timeout_ms: u64) -> Result<Vec<MdnsService>> {
+/// Like [`discover`] but also reports whether the probe actually ran. `discover`
+/// delegates to this and discards the outcome for call sites that only want the
+/// service list.
+pub async fn discover_with_outcome(
+    service_type: &str,
+    timeout_ms: u64,
+) -> (Vec<MdnsService>, ProbeOutcome) {
     // Nothing to wait for -> no recv loop, return immediately (also avoids a
     // zero deadline that would exit the loop before the first recv anyway).
     if timeout_ms == 0 {
-        return Ok(vec![]);
+        return (Vec::new(), ProbeOutcome::Skipped("zero timeout".into()));
     }
 
     // The recv loop is a blocking UDP read; run it on a blocking thread so it
     // doesn't pin an async worker for the whole discovery window.
     let service_type = service_type.to_string();
-    let services = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let socket = match UdpSocket::bind("0.0.0.0:0") {
             Ok(s) => s,
-            Err(_) => return Vec::new(),
+            Err(e) => {
+                return (
+                    Vec::new(),
+                    ProbeOutcome::Skipped(format!("bind failed: {e}")),
+                )
+            }
         };
 
         // Best-effort multicast setup; failures just mean we might miss replies.
         let _ = socket.join_multicast_v4(&MDNS_MULTICAST_IP, &Ipv4Addr::UNSPECIFIED);
         let _ = socket.set_multicast_loop_v4(true);
         // Short per-recv timeout so we can loop until the overall deadline.
-        let _ = socket.set_read_timeout(Some(Duration::from_millis(250)));
+        if let Err(e) = socket.set_read_timeout(Some(Duration::from_millis(250))) {
+            // Without a read timeout the recv loop would block past the deadline.
+            return (
+                Vec::new(),
+                ProbeOutcome::Skipped(format!("set_read_timeout failed: {e}")),
+            );
+        }
 
         let query = build_ptr_query(&service_type);
-        if socket.send_to(&query, MDNS_MULTICAST_ADDR).is_err() {
-            return Vec::new();
+        if let Err(e) = socket.send_to(&query, MDNS_MULTICAST_ADDR) {
+            return (
+                Vec::new(),
+                ProbeOutcome::Skipped(format!("send failed: {e}")),
+            );
         }
 
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
@@ -75,12 +92,23 @@ pub async fn discover(service_type: &str, timeout_ms: u64) -> Result<Vec<MdnsSer
             }
         }
 
-        records.into_services(&service_type)
+        (records.into_services(&service_type), ProbeOutcome::Ran)
     })
     .await
-    .unwrap_or_default();
+    .unwrap_or_else(|_| {
+        (
+            Vec::new(),
+            ProbeOutcome::Skipped("probe task panicked".into()),
+        )
+    })
+}
 
-    Ok(services)
+/// Discover mDNS/DNS-SD services of `service_type` (e.g. `_http._tcp.local.`).
+///
+/// Sends a PTR query, then reads responses until `timeout_ms` elapses, joining
+/// PTR -> SRV -> A -> TXT records by name into [`MdnsService`] entries.
+pub async fn discover(service_type: &str, timeout_ms: u64) -> Result<Vec<MdnsService>> {
+    Ok(discover_with_outcome(service_type, timeout_ms).await.0)
 }
 
 /// Build a standard mDNS PTR query for `service_type`.
@@ -451,5 +479,15 @@ mod tests {
     #[test]
     fn malformed_message_is_safe() {
         assert!(parse_dns_message(&[0, 0, 0]).is_none());
+    }
+
+    #[tokio::test]
+    async fn zero_timeout_reports_skipped() {
+        let (svcs, outcome) = discover_with_outcome("_http._tcp.local.", 0).await;
+        assert!(svcs.is_empty());
+        assert!(matches!(
+            outcome,
+            crate::common::probe::ProbeOutcome::Skipped(_)
+        ));
     }
 }

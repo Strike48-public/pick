@@ -9,6 +9,9 @@ pub mod ssdp;
 /// Platform-agnostic mDNS/DNS-SD discovery (pure-std UDP multicast).
 pub mod mdns;
 
+/// Shared outcome type for best-effort network discovery probes.
+pub mod probe;
+
 use crate::traits::{port_to_service, ArpEntry, PortState, ScanResult, ScannedPort};
 use std::io;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
