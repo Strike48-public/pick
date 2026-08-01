@@ -135,6 +135,11 @@
           unzip           # _verify-android-apk inspects the APK's dex entries
           patchelf        # android-crux-refresh-so sets the .so SONAME
           bundletool      # AAB -> universal installable APK (bundle-android-universal-apk)
+          curl            # fetch-proot downloads Termux .deb packages; use the
+                          # nix curl (built against the same glibc as the shell)
+                          # rather than the runner's system curl, which fails with
+                          # `GLIBC_ABI_DT_X86_64_PLT not found` under nix develop.
+          cacert          # CA bundle so the nix curl trusts HTTPS in CI
         ]);
 
         # Native build deps. libclang is for bindgen (rquickjs-sys ships no
