@@ -279,6 +279,51 @@ _inject-android-lib proj:
         cp -n "$arch"lib*.so.* "$dest/" 2>/dev/null || true
     done
 
+    # Allow the dx WebView to reach the localhost TCP LiveView server
+    # (http://127.0.0.1:3030). The Dioxus WebView renders under a custom scheme;
+    # without these cross-origin settings the shell's fetch/WebSocket to
+    # 127.0.0.1:3030 is blocked. dx regenerates RustWebView.kt every build, so
+    # (like the android-lib injection) this must run after dx and be idempotent.
+    # android.webkit.* is already imported in the generated file, so
+    # WebSettings.MIXED_CONTENT_ALWAYS_ALLOW resolves without a new import.
+    webview_file="{{proj}}/app/src/main/kotlin/dev/dioxus/main/RustWebView.kt"
+    anchor="settings.javaScriptCanOpenWindowsAutomatically = true"
+    if [ ! -f "$webview_file" ]; then
+        echo "ERROR: generated RustWebView.kt not found at $webview_file" >&2
+        exit 1
+    fi
+    if ! grep -q "MIXED_CONTENT_ALWAYS_ALLOW" "$webview_file"; then
+        if ! grep -qF "$anchor" "$webview_file"; then
+            echo "ERROR: RustWebView.kt anchor not found ('$anchor'); dx template changed." >&2
+            exit 1
+        fi
+        # Insert the four settings immediately after the anchor line. Use awk
+        # (no heredoc): every line of a just recipe body must be indented, and a
+        # column-0 heredoc body makes just's own parser choke before bash ever
+        # runs. awk keeps this to a single indented invocation.
+        awk -v anchor="$anchor" '
+            { print }
+            index($0, anchor) {
+                print "        settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW"
+                print "        @Suppress(\"DEPRECATION\")"
+                print "        settings.allowUniversalAccessFromFileURLs = true"
+                print "        settings.allowContentAccess = true"
+                print "        settings.allowFileAccess = true"
+            }
+        ' "$webview_file" > "$webview_file.tmp" && mv "$webview_file.tmp" "$webview_file"
+    fi
+    if ! grep -q "MIXED_CONTENT_ALWAYS_ALLOW" "$webview_file"; then
+        echo "ERROR: failed to inject WebView cross-origin settings into $webview_file" >&2
+        exit 1
+    fi
+
+    # Copy restty.js into the APK assets so the WebView asset path can serve it
+    # (the LiveView server also serves it over HTTP, this is the belt-and-braces
+    # asset copy the original Android shell shipped).
+    assets_dir="{{proj}}/app/src/main/assets/assets"
+    mkdir -p "$assets_dir"
+    cp crates/ui/src/assets/restty.js "$assets_dir/restty.js"
+
 # Verify the produced APK contains the kotlin bridge class.
 #
 # A silently-stripped `ConnectorBridge` class causes the app to crash on first
