@@ -629,8 +629,10 @@ build-syscall-compat:
     echo "Done! syscall_compat shims built in android-jniLibs/"
 
 # Termux package versions
-proot_version := "5.1.107-70"
+proot_version := "5.1.107.89"
 talloc_version := "2.4.3"
+busybox_version := "1.38.0-1"
+shmem_version := "0.7"
 termux_repo := "https://packages.termux.dev/apt/termux-main/pool/main"
 
 # Download Termux proot + dependencies for Android (x86_64 + arm64)
@@ -677,6 +679,42 @@ fetch-proot:
         # Android only packages lib*.so files, so rename libtalloc.so.2 -> libtalloc.so
         cp -f "./data/data/com.termux/files/usr/lib/libtalloc.so.2" "$dest/libtalloc.so"
         echo "  -> libtalloc.so ($(wc -c < "$dest/libtalloc.so") bytes)"
+
+        # Download and extract busybox. The Android proot layer uses busybox
+        # applets (via symlinks it creates at runtime in the app files dir) to
+        # bootstrap/extract the BlackArch rootfs; without libbusybox.so the shell
+        # fails with "busybox binary not found". Packaged as lib*.so so the APK
+        # ships it in jniLibs like proot.
+        echo "Downloading busybox {{busybox_version}}..."
+        curl -sL "{{termux_repo}}/b/busybox/busybox_{{busybox_version}}_${arch}.deb" -o "$TMP/busybox_${arch}.deb"
+        mkdir -p "$TMP/busybox_${arch}"
+        cd "$TMP/busybox_${arch}"
+        ar x "../busybox_${arch}.deb"
+        tar xf data.tar.xz
+        # Modern Termux busybox is split: usr/bin/busybox is a tiny (~4KB)
+        # launcher stub, while the real ~870KB applet multiplexer lives at
+        # usr/lib/libbusybox.so.<ver>. Ship the REAL binary as libbusybox.so
+        # (the proot layer runs it directly via applet symlinks).
+        bb_src=$(ls ./data/data/com.termux/files/usr/lib/libbusybox.so.* 2>/dev/null | grep -v '\.so$' | head -1)
+        if [ -z "$bb_src" ]; then
+            echo "ERROR: real busybox lib not found in package" >&2
+            exit 1
+        fi
+        cp -f "$bb_src" "$dest/libbusybox.so"
+        echo "  -> libbusybox.so ($(wc -c < "$dest/libbusybox.so") bytes)"
+
+        # Download and extract libandroid-shmem. proot links against it for SysV
+        # IPC (shmget/shmat), which bare Android lacks; without it proot fails at
+        # load with `library "libandroid-shmem.so" not found`. It is in proot's
+        # ELF NEEDED list, so it must ship in jniLibs alongside libproot.so.
+        echo "Downloading libandroid-shmem {{shmem_version}}..."
+        curl -sL "{{termux_repo}}/liba/libandroid-shmem/libandroid-shmem_{{shmem_version}}_${arch}.deb" -o "$TMP/shmem_${arch}.deb"
+        mkdir -p "$TMP/shmem_${arch}"
+        cd "$TMP/shmem_${arch}"
+        ar x "../shmem_${arch}.deb"
+        tar xf data.tar.xz
+        cp -f "./data/data/com.termux/files/usr/lib/libandroid-shmem.so" "$dest/libandroid-shmem.so"
+        echo "  -> libandroid-shmem.so ($(wc -c < "$dest/libandroid-shmem.so") bytes)"
 
         # Use patchelf to change NEEDED from libtalloc.so.2 to libtalloc.so
         # This avoids needing symlinks at runtime (Android's /data/app is read-only)
