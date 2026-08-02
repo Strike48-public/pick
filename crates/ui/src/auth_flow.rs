@@ -88,10 +88,12 @@ pub fn reduce(state: AuthFlow, event: AuthEvent) -> AuthFlow {
 
         // ---- Sign-in in flight -------------------------------------------
         (S::SigningIn, E::TokenObtained) => S::Registering(ConnectingStep::SigningIn),
-        (S::SigningIn, E::TokenFailed(reason)) => S::Failed {
-            reason,
-            reauth: true,
-        },
+        (S::SigningIn, E::TokenFailed(reason)) | (S::Registering(_), E::TokenFailed(reason)) => {
+            S::Failed {
+                reason,
+                reauth: true,
+            }
+        }
 
         // ---- Connector connect -------------------------------------------
         (S::Registering(_), E::ConnectorStep(step)) => S::Registering(step),
@@ -274,5 +276,27 @@ mod tests {
             reduce(AuthFlow::Disconnected, AuthEvent::SignInRequested,),
             AuthFlow::SigningIn
         );
+    }
+
+    // TokenFailed from Registering must route to Failed{reauth} (not strand in
+    // Registering). A registration failure (e.g. server pre-approve returns HTTP 500)
+    // fires TokenFailed while in Registering(_); without handling it, the app stays
+    // in the connecting screen forever. Mirror the ChatAuthDead precedent.
+    #[test]
+    fn token_failed_from_registering_fails_reauth() {
+        for state in [
+            AuthFlow::Registering(ConnectingStep::SigningIn),
+            AuthFlow::Registering(ConnectingStep::Connecting),
+            AuthFlow::Registering(ConnectingStep::Registering),
+        ] {
+            let s = reduce(
+                state.clone(),
+                AuthEvent::TokenFailed("pre-approve 500".into()),
+            );
+            assert!(
+                matches!(s, AuthFlow::Failed { reauth: true, .. }),
+                "TokenFailed from {state:?} must fail-reauth (not strand in Registering), got {s:?}"
+            );
+        }
     }
 }
