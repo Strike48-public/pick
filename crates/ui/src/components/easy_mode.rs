@@ -49,6 +49,12 @@ pub struct EasyModeShellProps {
     pub on_easy_mode_change: EventHandler<bool>,
     /// Fired when the user taps "Sign in" on the overlay.
     pub on_sign_in: EventHandler<()>,
+    /// The current Strike48 host, prefilled into the "Change server" entry.
+    #[props(default)]
+    pub current_host: String,
+    /// Fired with the raw URL when the user saves a new endpoint in "Change
+    /// server". The parent normalizes, updates config, and persists.
+    pub on_endpoint_save: EventHandler<String>,
     /// Fired when chat-level auth events occur (ChatReady, ChatAuthDead).
     pub on_chat_event: EventHandler<crate::auth_flow::AuthEvent>,
     /// Optional banner rendered in the content area, just below the brand bar
@@ -96,6 +102,8 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     let mut report_meta = use_signal(|| None::<ReportMeta>);
     // Whether the full-screen Reports list overlay is open (Docs icon).
     let mut show_docs = use_signal(|| false);
+    // Whether the "Change server" URL entry modal is open.
+    let mut show_endpoint_entry = use_signal(|| false);
     // Left slide-over navigation drawer (hamburger).
     let mut drawer_open = use_signal(|| false);
     // Full-screen Settings overlay (opened from the drawer).
@@ -474,22 +482,58 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                             }
                         }
                     }
+                    // Change the Strike48 endpoint (URL only; tenant is resolved
+                    // server-side by the OAuth pre-approve flow).
+                    div { class: "easy-settings-row",
+                        div { class: "easy-settings-text",
+                            div { class: "easy-settings-label", "Strike48 server" }
+                            div { class: "easy-settings-desc", "{props.current_host}" }
+                        }
+                        button {
+                            class: "easy-settings-action-btn",
+                            "aria-label": "Change Strike48 server",
+                            onclick: move |_| {
+                                show_settings.set(false);
+                                show_endpoint_entry.set(true);
+                            },
+                            "Change"
+                        }
+                    }
                 }
             }
         }
-        if matches!(flow(), crate::auth_flow::AuthFlow::AwaitingGesture | crate::auth_flow::AuthFlow::Failed { reauth: true, .. } | crate::auth_flow::AuthFlow::Disconnected) {
-            div { class: "easy-doc-screen easy-overlay",
-                div { class: "easy-signin",
-                    p { class: "easy-signin-title", "Sign in to connect to Strike48" }
-                    p { class: "easy-signin-sub", "Sign in to register this connector and start scanning. We'll open your browser to complete sign-in." }
-                    button {
-                        class: "action-card",
-                        onclick: move |_| {
-                            props.on_sign_in.call(());
-                        },
-                        span { class: "action-card-label", "Sign in" }
+        if matches!(
+            flow(),
+            crate::auth_flow::AuthFlow::AwaitingGesture
+                | crate::auth_flow::AuthFlow::Failed { reauth: true, .. }
+                | crate::auth_flow::AuthFlow::Disconnected
+        ) {
+            {
+                // Surface the failure reason when the offline state came from a
+                // Failed transition; a plain Disconnected/AwaitingGesture has none.
+                let reason = match flow() {
+                    crate::auth_flow::AuthFlow::Failed { reason, .. } => Some(reason),
+                    _ => None,
+                };
+                rsx! {
+                    crate::components::OfflineScreen {
+                        reason,
+                        on_sign_in: move |_| props.on_sign_in.call(()),
+                        on_retry: move |_| props.on_sign_in.call(()),
+                        on_change_server: move |_| show_endpoint_entry.set(true),
                     }
                 }
+            }
+        }
+        // "Change server" URL entry, above the offline screen when open.
+        if show_endpoint_entry() {
+            crate::components::EndpointEntry {
+                initial: props.current_host.clone(),
+                on_save: move |raw: String| {
+                    show_endpoint_entry.set(false);
+                    props.on_endpoint_save.call(raw);
+                },
+                on_cancel: move |_| show_endpoint_entry.set(false),
             }
         }
 

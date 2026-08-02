@@ -1089,6 +1089,17 @@ body {
     color: rgba(233, 238, 235, 0.5);
     margin-top: 2px;
 }
+.easy-settings-action-btn {
+    padding: 6px 12px;
+    border: none;
+    background: none;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--em-brand);
+    cursor: pointer;
+    border-radius: var(--em-radius-control);
+}
+.easy-settings-action-btn:active { opacity: 0.7; }
 
 /* iOS-style toggle switch */
 /* Switch control — a <button> (not a checkbox; the liveview form-data converter
