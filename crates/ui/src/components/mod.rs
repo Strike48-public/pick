@@ -15,6 +15,7 @@ mod cyberchef_sortable_tests;
 mod dashboard;
 pub mod documents_panel;
 pub mod easy_mode;
+pub mod endpoint_entry;
 pub mod extension;
 pub mod file_browser;
 pub mod help_modal;
@@ -60,6 +61,7 @@ pub use cyberchef_page::CyberChefPage;
 pub use dashboard::*;
 pub use documents_panel::{ConversationDocs, DocumentViewer, DocumentsPanel};
 pub use easy_mode::{easy_mode_scan_prompt, EasyModeShell};
+pub use endpoint_entry::EndpointEntry;
 pub use extension::{
     provide_view_registry, use_view_registry, ExtensionView, ViewCategory, ViewProvider,
     ViewRegistry,
