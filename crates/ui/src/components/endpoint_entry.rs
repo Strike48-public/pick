@@ -13,7 +13,13 @@ use pentest_core::config::ConnectorConfig;
 /// Props for [`EndpointEntry`].
 #[derive(Props, Clone, PartialEq)]
 pub struct EndpointEntryProps {
-    pub initial: String,
+    /// The URL being edited. Hoisted into the parent [`EasyModeShell`] so it
+    /// survives this component remounting — which happens when the parent's
+    /// props churn (e.g. auth_token/tenant_id clearing on logout) forces
+    /// EasyModeShell to re-render and rebuild the overlay subtree. If the state
+    /// lived here in a local `use_signal`, that remount would blank the field
+    /// mid-typing; keeping it in the stable parent makes it durable.
+    pub url: Signal<String>,
     pub on_save: EventHandler<String>,
     pub on_cancel: EventHandler<()>,
 }
@@ -23,7 +29,7 @@ pub struct EndpointEntryProps {
 /// preview; an empty or malformed URL shows an inline error and disables Save.
 #[component]
 pub fn EndpointEntry(props: EndpointEntryProps) -> Element {
-    let mut url = use_signal(|| props.initial.clone());
+    let mut url = props.url;
 
     // Validation + preview, recomputed on every keystroke.
     let value = url.read().clone();

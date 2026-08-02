@@ -104,6 +104,14 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     let mut show_docs = use_signal(|| false);
     // Whether the "Change server" URL entry modal is open.
     let mut show_endpoint_entry = use_signal(|| false);
+    // The URL being edited in the "Change server" modal. Hoisted OUT of
+    // EndpointEntry into this stable parent so it survives EndpointEntry
+    // remounting. On logout, EasyModeShell's props churn (auth_token cleared,
+    // tenant_id changed, current_host re-read) forces a re-render that rebuilds
+    // the overlay subtree and would blank a child-local URL signal. This parent
+    // is never unmounted across the Connected→LoggedOut→AwaitingGesture flow,
+    // so the value persists. Seeded from `current_host` when the modal opens.
+    let mut endpoint_url = use_signal(String::new);
     // Left slide-over navigation drawer (hamburger).
     let mut drawer_open = use_signal(|| false);
     // Full-screen Settings overlay (opened from the drawer).
@@ -492,9 +500,13 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                         button {
                             class: "easy-settings-action-btn",
                             "aria-label": "Change Strike48 server",
-                            onclick: move |_| {
-                                show_settings.set(false);
-                                show_endpoint_entry.set(true);
+                            onclick: {
+                                let host = props.current_host.clone();
+                                move |_| {
+                                    show_settings.set(false);
+                                    endpoint_url.set(host.clone());
+                                    show_endpoint_entry.set(true);
+                                }
                             },
                             "Change"
                         }
@@ -528,7 +540,13 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                         reason,
                         on_sign_in: move |_| props.on_sign_in.call(()),
                         on_retry: move |_| props.on_sign_in.call(()),
-                        on_change_server: move |_| show_endpoint_entry.set(true),
+                        on_change_server: {
+                            let host = props.current_host.clone();
+                            move |_| {
+                                endpoint_url.set(host.clone());
+                                show_endpoint_entry.set(true);
+                            }
+                        },
                     }
                 }
             }
@@ -537,10 +555,12 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
         if show_endpoint_entry() {
             crate::components::EndpointEntry {
                 // Stable key so a re-render of the surrounding overlay siblings
-                // preserves this component's identity (and its in-progress URL
-                // `use_signal`) instead of remounting and blanking the field.
+                // preserves this component's identity across re-renders. The
+                // in-progress URL now lives in the hoisted `endpoint_url` signal
+                // owned by this stable parent, so even if EndpointEntry does
+                // remount (e.g. on the logout prop churn) the field is not lost.
                 key: "{\"easy-endpoint-entry\"}",
-                initial: props.current_host.clone(),
+                url: endpoint_url,
                 on_save: move |raw: String| {
                     show_endpoint_entry.set(false);
                     props.on_endpoint_save.call(raw);
