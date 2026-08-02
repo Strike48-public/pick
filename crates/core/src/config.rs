@@ -1530,4 +1530,22 @@ mod tests {
             assert_eq!(t, back);
         }
     }
+
+    #[test]
+    fn app_settings_roundtrips_last_config_host() {
+        let s = AppSettings {
+            last_config: Some(ConnectorConfig {
+                host: "wss://user-chosen.example".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.last_config.unwrap().host,
+            "wss://user-chosen.example",
+            "a persisted endpoint must survive restart"
+        );
+    }
 }
