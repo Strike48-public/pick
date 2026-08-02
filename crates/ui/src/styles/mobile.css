@@ -869,6 +869,15 @@ body {
 }
 .easy-signin .action-card:active { filter: brightness(0.92); }
 .easy-signin .action-card-label { font-size: 18px; font-weight: 600; }
+.easy-signin-secondary {
+    background: none;
+    border: none;
+    color: var(--em-text);
+    font-size: 15px;
+    padding: 14px 12px;
+    cursor: pointer;
+}
+.easy-signin-secondary:active { opacity: 0.7; }
 
 /* Full-screen in-app report viewer (replaces the Easy Mode screen). */
 .easy-doc-viewer { display: flex; flex-direction: column; flex: 1 1 auto; height: 100%; min-height: 0; position: relative; }
