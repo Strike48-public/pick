@@ -517,6 +517,14 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                 };
                 rsx! {
                     crate::components::OfflineScreen {
+                        // Stable key: these overlays are conditional siblings that
+                        // appear/disappear as `flow()` flips during the connector
+                        // retry loop. Without stable identity, non-keyed diffing can
+                        // shift a later sibling (EndpointEntry) into a new slot and
+                        // remount it — blanking its `use_signal(initial)` URL state
+                        // mid-typing. Keys pin component identity across re-renders.
+                        // (Dioxus rejects bare literals, hence the interpolated form.)
+                        key: "{\"easy-offline-screen\"}",
                         reason,
                         on_sign_in: move |_| props.on_sign_in.call(()),
                         on_retry: move |_| props.on_sign_in.call(()),
@@ -528,6 +536,10 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
         // "Change server" URL entry, above the offline screen when open.
         if show_endpoint_entry() {
             crate::components::EndpointEntry {
+                // Stable key so a re-render of the surrounding overlay siblings
+                // preserves this component's identity (and its in-progress URL
+                // `use_signal`) instead of remounting and blanking the field.
+                key: "{\"easy-endpoint-entry\"}",
                 initial: props.current_host.clone(),
                 on_save: move |raw: String| {
                     show_endpoint_entry.set(false);
