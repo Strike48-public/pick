@@ -499,6 +499,10 @@ pub fn WorkspaceApp() -> Element {
                 on_easy_mode_change: on_easy_mode_change,
                 on_sign_in: move |_| {},
                 on_chat_event: move |_ev| {},
+                current_host: matrix_api_url.read().clone(),
+                on_endpoint_save: move |raw: String| {
+                    matrix_api_url.set(raw);
+                },
             }
         } else {
             KeyboardShortcuts {

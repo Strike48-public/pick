@@ -1274,6 +1274,40 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                     on_easy_mode_change: on_easy_mode_change,
                                     on_sign_in: move |_| d1(AuthEvent::SignInRequested),
                                     on_chat_event: move |ev| d2(ev),
+                                    current_host: config.read().host.clone(),
+                                    on_endpoint_save: move |raw: String| {
+                                        // Normalize the typed URL the same way the
+                                        // expert connect form does. On failure, log
+                                        // and keep the old endpoint (the modal already
+                                        // validated, so this should not fire).
+                                        let normalized = match ConnectorConfig::normalize_host(&raw) {
+                                            Ok(n) => n.value,
+                                            Err(e) => {
+                                                tracing::warn!("change-server: rejected URL {raw:?}: {e}");
+                                                return;
+                                            }
+                                        };
+                                        // Derive the chat API URL from the new host.
+                                        let api = pentest_core::connector_registration::derive_api_url(
+                                            &normalized,
+                                            config.peek().use_tls,
+                                        );
+                                        // Update in-memory config + chat URL signals.
+                                        {
+                                            let mut c = config.write();
+                                            c.host = normalized.clone();
+                                        }
+                                        matrix_api_url.set(api.clone());
+                                        // Persist so the new endpoint survives restart
+                                        // (last_config wins over the baked default at
+                                        // startup — see connector_app.rs:455).
+                                        {
+                                            let mut s = settings.write();
+                                            s.last_config = Some(config.peek().clone());
+                                            s.matrix_api_url = api;
+                                            let _ = save_settings(&s);
+                                        }
+                                    },
                                     sandbox_available: sandbox_available(),
                                     shell_mode: settings.read().shell_mode,
                                     on_shell_mode_change: move |mode: ShellMode| {
