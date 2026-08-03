@@ -164,7 +164,7 @@ pub fn resolve_against_subnets(
 }
 
 /// True if a raw target is one of the recognized sentinels (case-insensitive).
-pub fn is_sentinel(raw: &str) -> bool {
+pub(crate) fn is_sentinel(raw: &str) -> bool {
     matches!(
         raw.trim().to_ascii_lowercase().as_str(),
         SENTINEL_CURRENT | SENTINEL_AUTO | SENTINEL_ALL
@@ -173,16 +173,33 @@ pub fn is_sentinel(raw: &str) -> bool {
 
 /// Resolve a raw target against the host's live network context.
 ///
-/// Fetches [`network_context`] (scan-free) and delegates to
-/// [`resolve_against_subnets`]. Only performs the interface enumeration when the
-/// target is actually a sentinel *or* a concrete address worth range-checking -
-/// a hostname passes straight through without touching the network.
+/// Delegates to [`resolve_against_subnets`], but only performs the (scan-free)
+/// interface enumeration via [`network_context`] when the target actually needs
+/// it: a sentinel (`auto`/`current`/`all`) that must expand to real subnets, or
+/// a concrete IPv4 literal worth range-checking for the out-of-subnet advisory.
+/// A hostname (or any non-IPv4 literal) passes straight through without touching
+/// the network, since there is nothing to resolve or range-check against.
 pub async fn resolve_scan_target(raw: &str) -> Result<ResolvedTargets, ResolveError> {
-    let subnets: Vec<Subnet> = network_context().await.unwrap_or_else(|e| {
-        tracing::warn!("network_context unavailable while resolving target: {}", e);
+    let subnets: Vec<Subnet> = if needs_subnet_context(raw) {
+        network_context().await.unwrap_or_else(|e| {
+            tracing::warn!("network_context unavailable while resolving target: {}", e);
+            Vec::new()
+        })
+    } else {
         Vec::new()
-    });
+    };
     resolve_against_subnets(raw, &subnets)
+}
+
+/// Whether resolving `raw` needs the host's subnet context at all.
+///
+/// True only for a sentinel (must expand to real subnets) or a concrete IPv4
+/// literal (range-checked for the out-of-subnet advisory). A hostname or any
+/// non-IPv4 literal has nothing to resolve or range-check, so enumeration is
+/// skipped - keeping the "hostname passes straight through without touching the
+/// network" contract [`resolve_scan_target`] documents actually true.
+fn needs_subnet_context(raw: &str) -> bool {
+    is_sentinel(raw) || target_ipv4(raw.trim()).is_some()
 }
 
 /// Validated, ready-to-scan targets plus any advisory to surface.
@@ -357,5 +374,20 @@ mod tests {
         assert!(is_sentinel("ALL"));
         assert!(!is_sentinel("10.0.8.0/22"));
         assert!(!is_sentinel("scanme.nmap.org"));
+    }
+
+    #[test]
+    fn needs_subnet_context_only_for_sentinels_and_ipv4() {
+        // Sentinels must expand -> need enumeration.
+        assert!(needs_subnet_context("auto"));
+        assert!(needs_subnet_context("current"));
+        assert!(needs_subnet_context(" ALL "));
+        // Concrete IPv4 (host or CIDR) -> range-checked, needs enumeration.
+        assert!(needs_subnet_context("10.0.8.50"));
+        assert!(needs_subnet_context("192.168.1.0/24"));
+        // Hostname / non-IPv4 literal -> nothing to resolve; must NOT touch the
+        // network. This is the H1 contract: skip enumeration for a hostname.
+        assert!(!needs_subnet_context("scanme.nmap.org"));
+        assert!(!needs_subnet_context("example.com"));
     }
 }

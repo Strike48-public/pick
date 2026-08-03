@@ -14,6 +14,20 @@ use crate::external::install::ensure_tool_installed;
 use crate::external::runner::{param_str_opt, CommandBuilder};
 use crate::util::param_bool;
 
+/// Minimum wall-clock a single subnet's netdiscover run is granted, regardless
+/// of how the total budget divides across subnets. Below this a per-subnet slice
+/// is too short for the ARP sweep to surface anything, so many active subnets
+/// (VPN + docker + wifi + wired) would otherwise all starve.
+const MIN_PER_RANGE_TIMEOUT_SECS: u64 = 10;
+
+/// Per-subnet timeout: split `total_secs` across `n_ranges`, but never below
+/// [`MIN_PER_RANGE_TIMEOUT_SECS`]. When the floor binds, total time exceeds the
+/// requested budget rather than running scans too short to complete. Pure so the
+/// starvation boundary is unit-testable.
+fn per_range_timeout_secs(total_secs: u64, n_ranges: usize) -> u64 {
+    (total_secs / n_ranges.max(1) as u64).max(MIN_PER_RANGE_TIMEOUT_SECS)
+}
+
 pub struct NetdiscoverTool;
 
 #[async_trait]
@@ -57,7 +71,8 @@ impl PentestTool for NetdiscoverTool {
                 "timeout",
                 ParamType::Integer,
                 "Total timeout in seconds, split across subnets when 'auto'/'all' \
-                 expands to several (each gets total/N, floored at 1s).",
+                 expands to several (each gets total/N, with a per-subnet minimum \
+                 so many subnets don't starve).",
                 json!(60),
             ))
             .platforms(vec![Platform::Desktop, Platform::Tui])
@@ -96,9 +111,14 @@ impl PentestTool for NetdiscoverTool {
                 };
 
             // Split the timeout budget across subnets so N subnets total ~=
-            // `timeout_secs`, not N x timeout_secs. Floored at 1s per subnet.
+            // `timeout_secs`, not N x timeout_secs. Floored at a per-subnet
+            // MINIMUM so a many-subnet host (VPN + docker + wifi + wired) can't
+            // starve every range: with a 60s budget and 61 subnets, integer
+            // division would give 0 -> a useless 1s each and nothing completes.
+            // Below the floor we let the total exceed `timeout_secs` (each subnet
+            // still gets a workable slice) rather than run scans that can't finish.
             let per_range_timeout =
-                Duration::from_secs((timeout_secs / ranges.len().max(1) as u64).max(1));
+                Duration::from_secs(per_range_timeout_secs(timeout_secs, ranges.len()));
 
             let mut hosts = Vec::new();
             let mut failed_ranges: Vec<String> = Vec::new();
@@ -163,5 +183,31 @@ impl PentestTool for NetdiscoverTool {
             }))
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn per_range_timeout_splits_budget_when_few_subnets() {
+        // Normal case: 60s over 4 subnets -> 15s each (above the floor).
+        assert_eq!(per_range_timeout_secs(60, 4), 15);
+        // Single range (or none) gets the whole budget.
+        assert_eq!(per_range_timeout_secs(60, 1), 60);
+        assert_eq!(per_range_timeout_secs(60, 0), 60);
+    }
+
+    #[test]
+    fn per_range_timeout_floors_so_many_subnets_dont_starve() {
+        // The M2 bug: 60s / 61 subnets floors to 0 -> 1s each and nothing
+        // completes. The floor must keep each subnet workable instead.
+        assert_eq!(per_range_timeout_secs(60, 61), MIN_PER_RANGE_TIMEOUT_SECS);
+        // Right at the boundary where the split would dip below the floor.
+        assert_eq!(per_range_timeout_secs(60, 7), MIN_PER_RANGE_TIMEOUT_SECS); // 60/7=8 -> floored
+        assert_eq!(per_range_timeout_secs(60, 6), 10); // 60/6=10 == floor, exact
+                                                       // Never returns the useless sub-floor slice the bug produced.
+        assert!(per_range_timeout_secs(60, 100) >= MIN_PER_RANGE_TIMEOUT_SECS);
     }
 }
