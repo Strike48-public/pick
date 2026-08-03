@@ -141,6 +141,13 @@ pub struct SafetyCheckResult {
     pub checks: Vec<CheckResult>,
     /// Network topology map if available.
     pub network_map: Option<NetworkMap>,
+    /// Active IPv4 subnets this host is on, derived scan-free from interface
+    /// netmasks (e.g. `["10.0.8.0/22", "10.0.40.0/24"]`). This is the reusable
+    /// source of truth for "what network am I actually on" - it lets a scan
+    /// target resolve to `auto`/`current` and lets the agent be seeded with real
+    /// subnets instead of guessing a range. Empty if enumeration failed.
+    #[serde(default)]
+    pub active_subnets: Vec<String>,
     /// Actionable recommendations.
     pub recommendations: Vec<Recommendation>,
     /// Timestamp when check was performed.

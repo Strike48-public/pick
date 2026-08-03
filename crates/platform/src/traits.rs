@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use pentest_core::error::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::time::Duration;
 
 /// Combined platform provider trait
@@ -307,14 +308,100 @@ pub struct DeviceInfo {
     pub platform_specific: PlatformDetails,
 }
 
+/// A single address bound to a network interface, with its prefix length.
+///
+/// Modeled per-address (not per-interface) because a single interface can carry
+/// several addresses on different prefixes - a dual-stack NIC (IPv4 + IPv6) or a
+/// host with a secondary v4 on another subnet. A per-interface scalar prefix
+/// would be ambiguous for exactly the multi-homed case network discovery needs
+/// to get right, so the prefix travels with the address it describes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterfaceAddr {
+    /// The IP address, without any CIDR suffix (e.g. "10.0.8.42").
+    pub ip: String,
+    /// CIDR prefix length for this address (e.g. `Some(22)` for a /22), or
+    /// `None` when the backend could not determine it.
+    pub prefix_len: Option<u8>,
+}
+
+impl InterfaceAddr {
+    /// Construct from an IP string and an optional prefix.
+    pub fn new(ip: impl Into<String>, prefix_len: Option<u8>) -> Self {
+        Self {
+            ip: ip.into(),
+            prefix_len,
+        }
+    }
+
+    /// Parse the address into an [`IpAddr`], dropping any accidental CIDR
+    /// suffix. Returns `None` for a malformed address.
+    pub fn parse_ip(&self) -> Option<IpAddr> {
+        let bare = self.ip.split('/').next().unwrap_or(&self.ip);
+        bare.parse().ok()
+    }
+}
+
 /// Network interface information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkInterface {
     pub name: String,
-    pub ip_addresses: Vec<String>,
+    /// Addresses bound to this interface, each carrying its own prefix length.
+    pub addresses: Vec<InterfaceAddr>,
     pub mac_address: Option<String>,
     pub is_up: bool,
     pub is_loopback: bool,
+}
+
+impl NetworkInterface {
+    /// The interface's IP addresses as bare strings (no prefix), preserving the
+    /// pre-`InterfaceAddr` ergonomics for the many call sites that only need the
+    /// address, not its prefix.
+    pub fn ip_strings(&self) -> Vec<String> {
+        self.addresses.iter().map(|a| a.ip.clone()).collect()
+    }
+
+    /// True if the interface has at least one bound address.
+    pub fn has_addresses(&self) -> bool {
+        !self.addresses.is_empty()
+    }
+}
+
+/// Parse an `ip addr`-style address token (e.g. `"10.0.8.42/22"` or a bare
+/// `"10.0.8.42"`) into an [`InterfaceAddr`].
+///
+/// The prefix is taken verbatim from the `/N` suffix when present and parseable;
+/// a missing or malformed suffix yields `prefix_len == None` rather than a
+/// guessed default. Shared by the Linux `ip addr` fallback parsers (desktop and
+/// Android) so the token handling stays consistent and unit-testable.
+pub fn interface_addr_from_token(token: &str) -> InterfaceAddr {
+    let mut parts = token.splitn(2, '/');
+    let ip = parts.next().unwrap_or(token).to_string();
+    let prefix_len = parts.next().and_then(|p| p.parse::<u8>().ok());
+    InterfaceAddr { ip, prefix_len }
+}
+
+/// Convert an IPv4 netmask (e.g. `255.255.252.0`) to a CIDR prefix length
+/// (e.g. `22`).
+///
+/// Returns `None` for a non-contiguous mask (bits not left-packed, e.g.
+/// `255.0.255.0`), which is not a valid CIDR netmask and must not be silently
+/// coerced into a plausible-looking prefix. Kept free of I/O so the conversion
+/// is unit-testable.
+pub fn prefix_len_from_ipv4_netmask(mask: std::net::Ipv4Addr) -> Option<u8> {
+    let bits = u32::from(mask);
+    let ones = bits.count_ones();
+    // A valid netmask is `ones` contiguous 1s followed by zeros. Reconstruct that
+    // canonical mask and compare; a mismatch means the mask was non-contiguous.
+    let canonical = if ones == 0 {
+        0
+    } else {
+        u32::MAX << (32 - ones)
+    };
+    if bits == canonical {
+        Some(ones as u8)
+    } else {
+        None
+    }
 }
 
 /// WiFi network information
@@ -491,4 +578,108 @@ pub struct WifiCaptureStats {
     pub ivs: u32,            // For WEP
     pub has_handshake: bool, // For WPA
     pub data_packets: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn netmask_to_prefix_covers_common_prefixes() {
+        // The exact conversion network discovery relies on: a /22 host (the
+        // multi-homed case this work targets) must yield 22, not a guessed /24.
+        assert_eq!(
+            prefix_len_from_ipv4_netmask(Ipv4Addr::new(255, 255, 252, 0)),
+            Some(22)
+        );
+        assert_eq!(
+            prefix_len_from_ipv4_netmask(Ipv4Addr::new(255, 255, 255, 0)),
+            Some(24)
+        );
+        assert_eq!(
+            prefix_len_from_ipv4_netmask(Ipv4Addr::new(255, 255, 255, 128)),
+            Some(25)
+        );
+        assert_eq!(
+            prefix_len_from_ipv4_netmask(Ipv4Addr::new(255, 0, 0, 0)),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn netmask_to_prefix_handles_boundaries() {
+        assert_eq!(
+            prefix_len_from_ipv4_netmask(Ipv4Addr::new(0, 0, 0, 0)),
+            Some(0)
+        );
+        assert_eq!(
+            prefix_len_from_ipv4_netmask(Ipv4Addr::new(255, 255, 255, 255)),
+            Some(32)
+        );
+    }
+
+    #[test]
+    fn netmask_to_prefix_rejects_noncontiguous_mask() {
+        // A non-contiguous mask is not a valid CIDR netmask. It has the same
+        // popcount as /16 (16 one-bits), so a naive count_ones() would wrongly
+        // report /16; we must reject it as None instead of inventing a prefix.
+        assert_eq!(
+            prefix_len_from_ipv4_netmask(Ipv4Addr::new(255, 0, 255, 0)),
+            None
+        );
+    }
+
+    #[test]
+    fn interface_addr_from_token_keeps_prefix() {
+        // The /22 that the old parser discarded (forcing a /24 assumption
+        // downstream) must survive.
+        let a = interface_addr_from_token("10.0.8.42/22");
+        assert_eq!(a.ip, "10.0.8.42");
+        assert_eq!(a.prefix_len, Some(22));
+
+        // Bare address (no suffix): prefix unknown, not guessed.
+        let b = interface_addr_from_token("10.0.0.5");
+        assert_eq!(b.ip, "10.0.0.5");
+        assert_eq!(b.prefix_len, None);
+
+        // IPv6 with prefix parses the same way.
+        let c = interface_addr_from_token("fe80::1/64");
+        assert_eq!(c.ip, "fe80::1");
+        assert_eq!(c.prefix_len, Some(64));
+
+        // Malformed suffix -> None, no panic.
+        let d = interface_addr_from_token("10.0.0.5/notaprefix");
+        assert_eq!(d.ip, "10.0.0.5");
+        assert_eq!(d.prefix_len, None);
+    }
+
+    #[test]
+    fn interface_addr_parse_ip_strips_cidr_suffix() {
+        assert_eq!(
+            InterfaceAddr::new("10.0.8.42/22", Some(22)).parse_ip(),
+            Some("10.0.8.42".parse().unwrap())
+        );
+        assert_eq!(
+            InterfaceAddr::new("10.0.8.42", Some(22)).parse_ip(),
+            Some("10.0.8.42".parse().unwrap())
+        );
+        assert_eq!(InterfaceAddr::new("not-an-ip", None).parse_ip(), None);
+    }
+
+    #[test]
+    fn ip_strings_flattens_addresses() {
+        let iface = NetworkInterface {
+            name: "eth0".to_string(),
+            addresses: vec![
+                InterfaceAddr::new("10.0.8.42", Some(22)),
+                InterfaceAddr::new("fe80::1", Some(64)),
+            ],
+            mac_address: None,
+            is_up: true,
+            is_loopback: false,
+        };
+        assert_eq!(iface.ip_strings(), vec!["10.0.8.42", "fe80::1"]);
+        assert!(iface.has_addresses());
+    }
 }
