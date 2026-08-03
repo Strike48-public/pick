@@ -75,13 +75,21 @@ pub fn apply_event(msgs: &mut Vec<ChatMessage>, ev: &ConversationStreamEvent) ->
             // backend/web client treat it as "grows rather than increments" and
             // reset the last text part. Appending would repeat text
             // ("Perfect" -> "PerfectPerfect!" -> ...). Replace instead.
-            match msg.parts.last_mut() {
-                Some(MessagePart::Text(text)) => {
-                    text.clone_from(content);
-                }
-                _ => {
-                    msg.parts.push(MessagePart::Text(content.clone()));
-                }
+            //
+            // There is exactly one logical text part per message. Find and update
+            // it in place, wherever it sits. Using `last_mut()` here caused a bug:
+            // once a tool-call part became the last element (e.g. with parallel
+            // tool calls), a later cumulative text delta pushed a SECOND Text part
+            // after the tools, so the same text rendered both above and below the
+            // calls until the stream settled.
+            if let Some(MessagePart::Text(text)) = msg
+                .parts
+                .iter_mut()
+                .find(|p| matches!(p, MessagePart::Text(_)))
+            {
+                text.clone_from(content);
+            } else {
+                msg.parts.push(MessagePart::Text(content.clone()));
             }
 
             // Keep .text in sync (also cumulative).
@@ -110,13 +118,16 @@ pub fn apply_event(msgs: &mut Vec<ChatMessage>, ev: &ConversationStreamEvent) ->
             };
 
             // Cumulative, like MessagePartStreamingEvent — replace, don't append.
-            match msg.parts.last_mut() {
-                Some(MessagePart::Thinking(thinking)) => {
-                    thinking.clone_from(content);
-                }
-                _ => {
-                    msg.parts.push(MessagePart::Thinking(content.clone()));
-                }
+            // Find and update the existing Thinking part in place (same fix as
+            // Text handler to prevent duplication with parallel tool calls).
+            if let Some(MessagePart::Thinking(thinking)) = msg
+                .parts
+                .iter_mut()
+                .find(|p| matches!(p, MessagePart::Thinking(_)))
+            {
+                thinking.clone_from(content);
+            } else {
+                msg.parts.push(MessagePart::Thinking(content.clone()));
             }
 
             ApplyOutcome::default()
@@ -454,5 +465,74 @@ mod tests {
         );
         assert_eq!(out.error.as_deref(), Some("rate limited"));
         assert_eq!(out.status, Some(AgentStatus::Error));
+    }
+
+    #[test]
+    fn parallel_tool_calls_do_not_duplicate_text() {
+        // Regression test: when multiple parallel tool calls are invoked,
+        // cumulative text deltas should update the FIRST Text part in place,
+        // not push a second Text part after the tool calls.
+        let mut msgs = vec![];
+
+        // 1. Text delta arrives
+        apply_event(
+            &mut msgs,
+            &ConversationStreamEvent::PartStreaming {
+                message_id: "m1".into(),
+                content: "Starting tools".into(),
+            },
+        );
+
+        // 2. First tool call starts
+        apply_event(
+            &mut msgs,
+            &ConversationStreamEvent::ToolCallStarted {
+                tool_call_id: "t1".into(),
+                tool_name: "tool_a".into(),
+            },
+        );
+
+        // 3. Second tool call starts (parallel)
+        apply_event(
+            &mut msgs,
+            &ConversationStreamEvent::ToolCallStarted {
+                tool_call_id: "t2".into(),
+                tool_name: "tool_b".into(),
+            },
+        );
+
+        // 4. Another cumulative text delta arrives
+        apply_event(
+            &mut msgs,
+            &ConversationStreamEvent::PartStreaming {
+                message_id: "m1".into(),
+                content: "Starting tools now".into(),
+            },
+        );
+
+        // Should have exactly ONE message with ONE Text part (before the tools)
+        assert_eq!(msgs.len(), 1);
+        let text_parts: Vec<_> = msgs[0]
+            .parts
+            .iter()
+            .filter(|p| matches!(p, MessagePart::Text(_)))
+            .collect();
+        assert_eq!(
+            text_parts.len(),
+            1,
+            "Expected exactly 1 Text part, found {}",
+            text_parts.len()
+        );
+
+        // Text part should have the latest cumulative content
+        match &msgs[0].parts[0] {
+            MessagePart::Text(text) => assert_eq!(text, "Starting tools now"),
+            _ => panic!("First part should be Text"),
+        }
+
+        // Text part should appear BEFORE the tool calls
+        assert!(matches!(msgs[0].parts[0], MessagePart::Text(_)));
+        assert!(matches!(msgs[0].parts[1], MessagePart::ToolCall(_)));
+        assert!(matches!(msgs[0].parts[2], MessagePart::ToolCall(_)));
     }
 }
