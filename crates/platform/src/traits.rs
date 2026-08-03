@@ -212,6 +212,40 @@ pub enum PortState {
     Unreachable,
 }
 
+/// Host-level reachability inferred from a single-host scan's port tally (#337).
+///
+/// Distinct from per-port [`PortState`]: it answers "did the host respond at
+/// all?", which per-port states can't express on their own. The critical
+/// honesty constraint (#337): an all-timeout scan must **not** assert the host
+/// is *down* — a live host behind a default-drop firewall produces the identical
+/// zero-response signature. [`NoResponse`](Self::NoResponse) is that honest
+/// middle state; the operator/agent must not read it as a proven-dead host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostReachability {
+    /// At least one probe got a definitive answer from the host (an `Open` or an
+    /// actively-`Closed`/refused port). The host is up and reachable.
+    Reachable,
+    /// Every probe failed with an errno-supplied unreachable (host/network
+    /// unreachable, or sandbox/capability block) — no packet reached the target.
+    /// A scan failure, not a fact about the host (#306).
+    Unreachable,
+    /// At least one port was scanned, nothing was `Unreachable`, and **zero**
+    /// probes got a response — every port timed out (`Filtered`). The host is
+    /// either down or silently dropping all packets; this state deliberately
+    /// does not choose between them (#337). Never present it as "host down".
+    NoResponse,
+}
+
+impl HostReachability {
+    /// Default for an older/persisted [`ScanResult`] that predates this field.
+    /// `Reachable` is the neutral choice — it makes no unreachable/no-response
+    /// claim about legacy data we can't re-derive.
+    fn default_for_deser() -> Self {
+        Self::Reachable
+    }
+}
+
 /// Scanned port result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScannedPort {
@@ -237,6 +271,13 @@ pub struct ScanResult {
     /// on a fully successful scan; populated so a caller can tell "we checked
     /// and found nothing" apart from "we could not check".
     pub errors: Vec<String>,
+    /// Host-level reachability inferred from the port tally (#337). Lets an
+    /// all-timeout scan of a dead-or-firewalled host ([`HostReachability::NoResponse`])
+    /// be told apart from a reachable host with everything closed
+    /// ([`HostReachability::Reachable`]) — without falsely asserting "down".
+    /// `#[serde(default)]` so a persisted/older result deserializes.
+    #[serde(default = "HostReachability::default_for_deser")]
+    pub reachability: HostReachability,
 }
 
 /// ARP table entry
