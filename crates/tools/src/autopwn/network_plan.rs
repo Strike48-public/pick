@@ -10,6 +10,50 @@ use pentest_platform::{get_platform, SystemInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+/// Derive the sweep CIDR and the local IPv4 to plan around, from an interface's
+/// addresses.
+///
+/// Selects the first usable IPv4 address (like `network_context`), never the
+/// first address of any family — a garbage CIDR such as `"fe80::1.0/24"` must
+/// never reach the attack plan → nmap. Resolution:
+///
+/// * IPv4 + known prefix → real netmask math (`subnet_cidr_v4`).
+/// * IPv4 + missing prefix → `warn!` (matching the module's clamp-logging
+///   observability) then a `/24` derived **via `subnet_cidr_v4`** (correct
+///   network base, not a string-sliced guess). The prefix is unknown, not the
+///   family, so a bounded /24 keeps planning moving while staying observable.
+/// * No IPv4 at all → `Error::InvalidParams`, rather than fabricating a CIDR
+///   from an IPv6/other-family string.
+fn derive_scan_cidr(
+    addresses: &[pentest_platform::InterfaceAddr],
+    iface_name: &str,
+) -> Result<(String, String)> {
+    let (v4, prefix, ip) = addresses
+        .iter()
+        .find_map(|a| match a.parse_ip() {
+            Some(std::net::IpAddr::V4(v4)) => Some((v4, a.prefix_len, a.ip.clone())),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            Error::InvalidParams(format!(
+                "interface {iface_name} has no IPv4 address to plan a network scan around"
+            ))
+        })?;
+
+    let cidr = match prefix {
+        Some(p) => crate::network_context::subnet_cidr_v4(v4, p),
+        None => {
+            tracing::warn!(
+                "interface {} address {} has no known prefix; assuming /24 for the scan CIDR",
+                iface_name,
+                ip
+            );
+            crate::network_context::subnet_cidr_v4(v4, 24)
+        }
+    };
+    Ok((cidr, ip))
+}
+
 /// Network-based attack plan
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkAttackPlan {
@@ -103,25 +147,12 @@ impl PentestTool for AutoPwnNetworkPlanTool {
                 .find(|i| i.is_up && i.has_addresses())
                 .ok_or_else(|| Error::InvalidParams("No active network interface found".into()))?;
 
-            let local_addr = active_iface
-                .addresses
-                .first()
-                .ok_or_else(|| Error::InvalidParams("No IP address assigned".into()))?;
-            let local_ip = local_addr.ip.clone();
-
-            // Derive the network CIDR from the interface's real prefix (no longer
-            // assuming /24). IPv4 with a known prefix uses the shared netmask
-            // math; a missing prefix or non-IPv4 address falls back to the prior
-            // /24-of-first-three-octets behavior so planning still proceeds.
-            let network_cidr = match (local_addr.parse_ip(), local_addr.prefix_len) {
-                (Some(std::net::IpAddr::V4(v4)), Some(prefix)) => {
-                    crate::network_context::subnet_cidr_v4(v4, prefix)
-                }
-                _ => format!(
-                    "{}.0/24",
-                    &local_ip[..local_ip.rfind('.').unwrap_or(local_ip.len())]
-                ),
-            };
+            // Derive the scan CIDR + the local IPv4 to plan around. Picks the
+            // first usable IPv4 (mirroring network_context) rather than the first
+            // address of any family, so an IPv6-first interface can't produce a
+            // garbage CIDR fed into the attack plan.
+            let (network_cidr, local_ip) =
+                derive_scan_cidr(&active_iface.addresses, &active_iface.name)?;
 
             tracing::info!("  Network:    {}", network_cidr);
             tracing::info!("  Local IP:   {}", local_ip);
@@ -405,5 +436,50 @@ mod tests {
             NetworkAttackType::Reconnaissance
         ));
         assert!(plan.estimated_duration_min < 10);
+    }
+
+    use pentest_platform::InterfaceAddr;
+
+    #[test]
+    fn derive_cidr_uses_real_prefix_for_ipv4() {
+        // The core fix: a /22 host resolves to its real /22 base via netmask math.
+        let addrs = vec![InterfaceAddr::new("10.0.11.5", Some(22))];
+        let (cidr, ip) = derive_scan_cidr(&addrs, "eth0").unwrap();
+        assert_eq!(cidr, "10.0.8.0/22");
+        assert_eq!(ip, "10.0.11.5");
+    }
+
+    #[test]
+    fn derive_cidr_skips_ipv6_and_picks_ipv4() {
+        // An IPv6-first interface must NOT yield a garbage CIDR like
+        // "fe80::1.0/24"; the IPv4 address is selected instead.
+        let addrs = vec![
+            InterfaceAddr::new("fe80::1", Some(64)),
+            InterfaceAddr::new("192.168.40.130", Some(24)),
+        ];
+        let (cidr, ip) = derive_scan_cidr(&addrs, "wlan0").unwrap();
+        assert_eq!(cidr, "192.168.40.0/24");
+        assert_eq!(ip, "192.168.40.130");
+        // Never fabricates from the IPv6 string.
+        assert!(!cidr.contains("fe80"));
+    }
+
+    #[test]
+    fn derive_cidr_ipv4_missing_prefix_assumes_24_via_netmask() {
+        // Missing prefix (not family) -> bounded /24, computed by subnet_cidr_v4
+        // (real network base), never a string-sliced "10.0.11.0/24" that could
+        // mangle a non-.0 host or an IPv6 string.
+        let addrs = vec![InterfaceAddr::new("10.0.11.5", None)];
+        let (cidr, _) = derive_scan_cidr(&addrs, "eth0").unwrap();
+        assert_eq!(cidr, "10.0.11.0/24");
+    }
+
+    #[test]
+    fn derive_cidr_no_ipv4_is_an_error_not_a_garbage_cidr() {
+        // IPv6-only interface: refuse rather than fabricate a CIDR. This is the
+        // reachability half the PR widened (Android now enumerates inet6).
+        let addrs = vec![InterfaceAddr::new("2001:db8::5", Some(64))];
+        let err = derive_scan_cidr(&addrs, "tun0").unwrap_err();
+        assert!(matches!(err, Error::InvalidParams(_)));
     }
 }
