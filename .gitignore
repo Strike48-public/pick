@@ -44,6 +44,8 @@ logs/
 
 # Operator test-identities for differential-authz testing (pick#162).
 # Holds real target credentials (cookies/JWT/headers) - never commit.
+# The loader (identities_file_path) prefers a cwd `identities.json` when present,
+# so a file copied from the template next to it here is both loaded AND ignored.
 # The committed template `identities.example.json` is deliberately re-included.
 identities.json
 identities.*.json

@@ -628,6 +628,23 @@ mod tests {
     }
 
     #[test]
+    fn build_injection_anonymous_from_real_loader_injects_nothing() {
+        // Regression for #317 H1: end-to-end through the PRODUCTION loader, not
+        // a hand-built store. Earlier this passed only because `ctx_with` seeded
+        // a placeholder the loader never created; the loader skipped empty-
+        // session entries, so `identity_ref: "unauth"` (what both specialist
+        // prompts tell the LLM to emit) resolved to None and hard-errored.
+        let path = std::env::temp_dir().join("pick-exec-anon-e2e.json");
+        std::fs::write(&path, r#"[{"label":"unauth","role":"anonymous"}]"#).unwrap();
+        let loaded = pentest_core::identity::load_identities_from_file(&path).expect("loader ok");
+        let ctx = ToolContext::default().with_identities(loaded.store);
+        let args = build_identity_injection("curl", "unauth", &ctx)
+            .expect("anonymous from real loader injects nothing, does not error");
+        assert!(args.is_empty());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn injected_auth_header_redacts_in_effective_command() {
         // The injected secret must be scrubbed from effective_command (which
         // reaches evidence/report) but retained in the exact command.

@@ -182,12 +182,40 @@ impl IdentityStore {
 /// set, otherwise `identities.json` in the connector's config dir. The path is
 /// not required to exist - a missing file simply means no identities.
 pub fn identities_file_path() -> PathBuf {
-    if let Ok(p) = std::env::var(IDENTITIES_FILE_ENV) {
+    let env_override = std::env::var(IDENTITIES_FILE_ENV).ok();
+    let cwd_candidate = PathBuf::from("identities.json");
+    let cwd_present = cwd_candidate.is_file();
+    resolve_identities_path(
+        env_override.as_deref(),
+        cwd_present,
+        cwd_candidate,
+        crate::settings::settings_dir().join("identities.json"),
+    )
+}
+
+/// Pure resolution logic for [`identities_file_path`], split out so the
+/// precedence rules are testable without mutating process-global cwd/env.
+///
+/// Precedence: explicit `PICK_IDENTITIES_FILE` (if non-blank) > a cwd
+/// `identities.json` that exists > the per-user settings-dir path. Preferring
+/// the cwd file when present is what makes the natural "copy the template and
+/// edit it in place" workflow load, and aligns the loaded path with the one the
+/// repo `.gitignore` protects (#317 H3).
+fn resolve_identities_path(
+    env_override: Option<&str>,
+    cwd_present: bool,
+    cwd_path: PathBuf,
+    settings_path: PathBuf,
+) -> PathBuf {
+    if let Some(p) = env_override {
         if !p.trim().is_empty() {
             return PathBuf::from(p);
         }
     }
-    crate::settings::settings_dir().join("identities.json")
+    if cwd_present {
+        return cwd_path;
+    }
+    settings_path
 }
 
 /// Load operator-provided identities from a JSON file.
@@ -222,9 +250,14 @@ pub fn load_identities_from_file(path: &Path) -> Result<LoadedIdentities> {
     let mut references = Vec::with_capacity(entries.len());
     let mut store = IdentityStore::new();
     for entry in entries {
-        if !entry.session.is_empty() {
-            store.insert(entry.label.clone(), SessionMaterial::new(entry.session));
-        }
+        // Every provisioned label gets a store slot - anonymous identities with
+        // an empty `session` get an empty [`SessionMaterial`]. This keeps a
+        // resolvable-but-empty identity distinct from an unknown label: the
+        // former injects nothing and runs (that IS the anonymous identity), the
+        // latter still misses and fails loud. Skipping empty entries here made
+        // the LLM-instructed `identity_ref: "unauth"` unreachable (it resolved
+        // to `None` and errored "not a provisioned test identity").
+        store.insert(entry.label.clone(), SessionMaterial::new(entry.session));
         references.push(TestIdentity {
             label: entry.label,
             role: entry.role,
@@ -397,25 +430,91 @@ mod tests {
             .unwrap();
         assert_eq!(admin.role, IdentityRole::Privileged);
 
-        // The store holds only the two with session material.
-        assert_eq!(loaded.store.len(), 2);
+        // Every label gets a store slot; anonymous resolves to empty material.
+        assert_eq!(loaded.store.len(), 3);
         assert_eq!(
             loaded.store.resolve("user_a").map(SessionMaterial::expose),
             Some("Cookie: sid=aaa")
+        );
+        assert_eq!(
+            loaded
+                .store
+                .resolve("unauth")
+                .map(SessionMaterial::is_empty),
+            Some(true),
+            "anonymous identity resolves to empty material, not a miss"
         );
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
-    fn anonymous_entry_has_reference_but_no_store_slot() {
+    fn anonymous_entry_resolves_to_empty_material_not_a_miss() {
+        // Regression for #317 H1: the LLM emits `identity_ref: "unauth"` (both
+        // specialist prompts instruct it). A provisioned anonymous identity must
+        // resolve to Some(empty) so the injection fast-path injects nothing and
+        // runs - NOT `None`, which the tool treats as "unprovisioned" and errors.
         let path = write_temp("anon", r#"[{"label":"unauth","role":"anonymous"}]"#);
         let loaded = load_identities_from_file(&path).expect("loads");
         assert_eq!(loaded.references.len(), 1);
+        let material = loaded
+            .store
+            .resolve("unauth")
+            .expect("anonymous identity is provisioned in the store");
         assert!(
-            loaded.store.resolve("unauth").is_none(),
+            material.is_empty(),
             "anonymous identity carries no session material"
         );
+        // An unprovisioned label still misses - fail-loud path is intact.
+        assert!(loaded.store.resolve("never-provisioned").is_none());
         std::fs::remove_file(&path).ok();
+    }
+
+    // ---- path resolution (#317 H3) ----
+
+    #[test]
+    fn path_prefers_env_override_when_set() {
+        let got = resolve_identities_path(
+            Some("/explicit/override.json"),
+            true, // cwd file present - env must still win
+            PathBuf::from("identities.json"),
+            PathBuf::from("/settings/identities.json"),
+        );
+        assert_eq!(got, PathBuf::from("/explicit/override.json"));
+    }
+
+    #[test]
+    fn path_ignores_blank_env_override() {
+        let got = resolve_identities_path(
+            Some("   "),
+            false,
+            PathBuf::from("identities.json"),
+            PathBuf::from("/settings/identities.json"),
+        );
+        assert_eq!(got, PathBuf::from("/settings/identities.json"));
+    }
+
+    #[test]
+    fn path_prefers_cwd_file_over_settings_dir() {
+        // #317 H3: a cwd `identities.json` (the gitignore-protected path) must be
+        // loaded in preference to the settings-dir path when it exists.
+        let got = resolve_identities_path(
+            None,
+            true,
+            PathBuf::from("identities.json"),
+            PathBuf::from("/settings/identities.json"),
+        );
+        assert_eq!(got, PathBuf::from("identities.json"));
+    }
+
+    #[test]
+    fn path_falls_back_to_settings_dir_without_cwd_file() {
+        let got = resolve_identities_path(
+            None,
+            false,
+            PathBuf::from("identities.json"),
+            PathBuf::from("/settings/identities.json"),
+        );
+        assert_eq!(got, PathBuf::from("/settings/identities.json"));
     }
 
     #[test]

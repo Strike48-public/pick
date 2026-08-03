@@ -24,8 +24,11 @@ pub struct ProbeCommand {
     /// keeps it off every wire/agent/report boundary by construction, not by
     /// best-effort scrubbing. `effective_command` is the redacted form that does
     /// cross the boundary. `default` lets a value deserialized from the wire
-    /// (where the field is absent) round-trip to an empty string rather than
-    /// failing. See pick#162 / #317 review.
+    /// (where the field is now absent) round-trip to an empty string rather than
+    /// failing. Back-compat: evidence files persisted *before* this field became
+    /// `skip_serializing` still carry a `command` key and deserialize cleanly
+    /// (serde reads it, and only downstream `effective_command` is consumed), so
+    /// no schema-version bump or migration is required. See pick#162 / #317 review.
     #[serde(skip_serializing, default)]
     pub command: String,
 
@@ -386,6 +389,30 @@ mod tests {
             !wire_str.contains("sk-super-secret-token-abcdef1234567890"),
             "secret leaked onto the wire: {wire_str}"
         );
+    }
+
+    #[test]
+    fn probe_command_deserializes_legacy_wire_with_command_present() {
+        // #317 H2 back-compat: `command` gained `#[serde(skip_serializing,
+        // default)]`, so evidence files persisted BEFORE this change still carry
+        // a `command` key. They must deserialize cleanly (serde consumes the key
+        // via the field, applying `default` only when absent) — never error on a
+        // replayed old-format file. The redacted `effective_command` is what
+        // downstream reads, and it survives regardless.
+        let legacy = r#"{
+            "command": "curl -H \"Authorization: Bearer old-secret\" https://x.example",
+            "effective_command": "curl -H \"Authorization: <REDACTED>\" https://x.example"
+        }"#;
+        let back: ProbeCommand = serde_json::from_str(legacy).expect("legacy wire deserializes");
+        assert_eq!(
+            back.effective_command,
+            r#"curl -H "Authorization: <REDACTED>" https://x.example"#
+        );
+        // A new-format file (no `command` key) also deserializes, defaulting to "".
+        let current = r#"{"effective_command":"nmap -sV 10.0.0.1"}"#;
+        let back2: ProbeCommand = serde_json::from_str(current).expect("current wire deserializes");
+        assert_eq!(back2.command, "");
+        assert_eq!(back2.effective_command, "nmap -sV 10.0.0.1");
     }
 
     #[test]
