@@ -847,6 +847,28 @@ body {
     margin: 0;
     max-width: 300px;
 }
+/* Error/reason text can be arbitrarily large (e.g. a server that returns a
+   full HTML page as its error body). Bound it to a scrollable box and wrap
+   long unbroken strings, so it can never push the Retry / Change-server
+   buttons off-screen. */
+.easy-signin-error {
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--em-text);
+    opacity: 0.8;
+    margin: 0;
+    max-width: 320px;
+    max-height: 30vh;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    white-space: pre-wrap;
+    text-align: left;
+    padding: 10px 12px;
+    border-radius: var(--em-radius-control);
+    background: var(--em-surface, rgba(255,255,255,0.04));
+    border: 1px solid var(--em-border);
+}
 /* The sign-in overlay's retry button is the only remaining .action-card in the
    easy-mode surfaces (the Home scan tile is now .easy-hero-scan). Style it here
    as the sage CTA pill (matching "Scan My Network"), overriding the

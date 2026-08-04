@@ -21,6 +21,20 @@ pub struct OfflineScreenProps {
 /// connection/auth failure: show the reason and emphasize "Try again". When
 /// `None` (a plain disconnect or a cancelled sign-in), show a neutral prompt and
 /// emphasize "Sign in". "Change server" is always offered as a secondary action.
+/// Cap the failure reason so a pathological error body (e.g. a server that
+/// returns a full HTML error page) can't dominate the screen. The CSS
+/// (`.easy-signin-error`) also bounds + scrolls it, but truncating here keeps
+/// the DOM small and the text readable. Trims on a char boundary.
+fn truncate_reason(reason: &str) -> String {
+    const MAX: usize = 500;
+    let trimmed = reason.trim();
+    if trimmed.chars().count() <= MAX {
+        return trimmed.to_string();
+    }
+    let cut: String = trimmed.chars().take(MAX).collect();
+    format!("{cut}…")
+}
+
 #[component]
 pub fn OfflineScreen(props: OfflineScreenProps) -> Element {
     let failed = props.reason.is_some();
@@ -29,7 +43,7 @@ pub fn OfflineScreen(props: OfflineScreenProps) -> Element {
             div { class: "easy-signin",
                 if let Some(reason) = props.reason.clone() {
                     p { class: "easy-signin-title", "Couldn't connect to Strike48" }
-                    p { class: "easy-signin-sub", "{reason}" }
+                    p { class: "easy-signin-error", "{truncate_reason(&reason)}" }
                 } else {
                     p { class: "easy-signin-title", "You're not connected" }
                     p { class: "easy-signin-sub", "Sign in to register this connector and start scanning. We'll open your browser to complete sign-in." }
@@ -56,5 +70,38 @@ pub fn OfflineScreen(props: OfflineScreenProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_reason;
+
+    #[test]
+    fn short_reason_is_unchanged() {
+        assert_eq!(truncate_reason("Login timed out"), "Login timed out");
+    }
+
+    #[test]
+    fn whitespace_is_trimmed() {
+        assert_eq!(truncate_reason("  boom  "), "boom");
+    }
+
+    #[test]
+    fn huge_reason_is_capped_with_ellipsis() {
+        // A 3KB HTML blob (like a Keycloak error page) must be bounded.
+        let blob = "<!DOCTYPE html>".to_string() + &"x".repeat(3000);
+        let out = truncate_reason(&blob);
+        assert!(out.chars().count() <= 501, "must cap to MAX+ellipsis");
+        assert!(out.ends_with('…'), "must show it was truncated");
+    }
+
+    #[test]
+    fn multibyte_reason_truncates_on_char_boundary() {
+        // All multibyte chars — must not panic slicing mid-codepoint.
+        let s = "é".repeat(1000);
+        let out = truncate_reason(&s);
+        assert!(out.ends_with('…'));
+        assert!(out.chars().count() <= 501);
     }
 }
