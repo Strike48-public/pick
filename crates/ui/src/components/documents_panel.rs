@@ -266,6 +266,13 @@ pub fn ConversationDocs(props: ConversationDocsProps) -> Element {
     // block, None for legacy). Memoized so a report is fetched once.
     let mut meta_map = use_signal(std::collections::HashMap::<String, Option<ReportMeta>>::new);
 
+    // The conversation id the currently-running poll loop is scoped to. Guards
+    // against (a) blanking the list on a transient `None` cid and (b) spawning a
+    // second poll loop every time this effect re-runs (agent_id/conversation_id
+    // are signals that can churn on unrelated chat updates — a fresh `spawn` per
+    // re-run leaked overlapping infinite loops, all calling `docs.set`, which is
+    // what made the panel flicker ~1×/sec instead of updating on its own 5s tick).
+    let mut polling_cid = use_signal(|| None::<String>);
     {
         let api_url = api_url.clone();
         let auth_token = auth_token.clone();
@@ -274,27 +281,53 @@ pub fn ConversationDocs(props: ConversationDocsProps) -> Element {
             let cid = conversation_id();
             let api_url = api_url.clone();
             let auth_token = auth_token.clone();
-            // No conversation yet, or not connected → nothing to show.
+
+            // No conversation yet, or not connected. Do NOT clear `docs` here —
+            // a transient `None` (e.g. mid chat-state update) would blank the
+            // panel and it would repopulate on the next poll, causing a flicker.
+            // Keep the last-known list; it's replaced only when a real query for
+            // an actual conversation resolves, or when the conversation changes.
             let Some(cid) = cid else {
-                docs.set(Vec::new());
                 return;
             };
             if auth_token.is_empty() || api_url.is_empty() {
                 return;
             }
+
+            // Only (re)start the poll loop when the conversation actually changes.
+            // If we're already polling this cid, the running loop keeps it fresh —
+            // re-running the effect for an unrelated dep change must not spawn a
+            // second loop.
+            if polling_cid.peek().as_deref() == Some(cid.as_str()) {
+                return;
+            }
+            // Conversation switched: clear the previous chat's docs so they don't
+            // linger, then mark this cid as the one we're polling.
+            docs.set(Vec::new());
+            polling_cid.set(Some(cid.clone()));
+
             spawn(async move {
                 // Poll so a report written mid-conversation appears on its own.
+                // Exit when the active conversation has moved on (a newer effect
+                // run took over), so stale loops don't accumulate.
                 loop {
+                    if polling_cid.peek().as_deref() != Some(cid.as_str()) {
+                        break;
+                    }
                     let client =
                         MatrixChatClient::new(api_url.clone()).with_auth_token(auth_token.clone());
                     if let Ok(list) = client.list_documents(aid.as_deref()).await {
-                        let mut mine: Vec<DocumentSummary> = list
-                            .into_iter()
-                            .filter(|d| d.conversation_id == cid)
-                            .collect();
-                        // Newest first (timestamp is ISO-8601, so lexical sort works).
-                        mine.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-                        docs.set(mine);
+                        // Only apply if still the active conversation (the await
+                        // may have outlived a conversation switch).
+                        if polling_cid.peek().as_deref() == Some(cid.as_str()) {
+                            let mut mine: Vec<DocumentSummary> = list
+                                .into_iter()
+                                .filter(|d| d.conversation_id == cid)
+                                .collect();
+                            // Newest first (ISO-8601 timestamp, lexical sort works).
+                            mine.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+                            docs.set(mine);
+                        }
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
