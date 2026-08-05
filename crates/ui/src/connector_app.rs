@@ -302,12 +302,34 @@ fn derive_api_url(host: &str, use_tls: bool) -> String {
 /// }
 /// ```
 pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
+    // ---- sandbox availability ----
+    // Whether a command-sandbox backend (bwrap/proot/docker/WSL) is usable on
+    // this machine. Desktop supplies a blocking probe via the config hook; a
+    // `None` hook (mobile/web) means "always available" (mobile has its proot
+    // path). Read this signal to gate the Settings toggle, show a Windows
+    // install banner, and pick the startup shell mode. Computed BEFORE the
+    // settings default below so the default can honor it.
+    let sandbox_available = use_signal(|| cfg.sandbox_available.map(|f| f()).unwrap_or(true));
+    tracing::debug!("sandbox_available at startup: {}", sandbox_available());
+
     // ---- persisted settings ----
+    let has_sandbox = sandbox_available();
     let mut settings = use_signal(move || {
         let mut s = load_settings();
         s.ensure_device_id();
         if cfg.default_proot && s.shell_mode == ShellMode::Native && s.last_config.is_none() {
             s.shell_mode = ShellMode::Proot;
+        }
+        // Never start in a sandbox mode that can't run: if no backend is
+        // available (e.g. macOS without Docker, Windows without WSL), fall back
+        // to Native rather than trying a sandbox that will fail every command.
+        // The user can turn sandboxing on later once a backend exists; the
+        // Settings toggle still allows that when `sandbox_available` flips true.
+        if s.shell_mode == ShellMode::Proot && !has_sandbox {
+            tracing::info!(
+                "no sandbox backend available; starting in Native shell mode instead of Proot"
+            );
+            s.shell_mode = ShellMode::Native;
         }
         let _ = save_settings(&s);
         if let Some(set_sb) = cfg.set_sandbox {
@@ -316,15 +338,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         s
     });
     let device_id = settings.peek().device_id.clone();
-
-    // ---- sandbox availability ----
-    // Whether a command-sandbox backend (bwrap/proot/docker/WSL) is usable on
-    // this machine. Desktop supplies a blocking probe via the config hook; a
-    // `None` hook (mobile/web) means "always available" (mobile has its proot
-    // path). Later tasks read this signal to gate the Settings toggle and show a
-    // Windows install banner.
-    let sandbox_available = use_signal(|| cfg.sandbox_available.map(|f| f()).unwrap_or(true));
-    tracing::debug!("sandbox_available at startup: {}", sandbox_available());
 
     // ---- Windows WSL install banner state ----
     // The banner surfaces only on Windows when no sandbox backend is available

@@ -450,32 +450,51 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                             span { class: "easy-toggle-track" }
                         }
                     }
-                    // Scan mode: Sandboxed (isolated Linux sandbox) vs Native
-                    // (run tools on this host). Sandboxed is only selectable when
-                    // a backend is available — matches the expert Settings gate.
+                    // Scan mode: Sandboxed (isolated sandbox) vs Native (run tools
+                    // on this host). Turning sandbox OFF (-> Native) is ALWAYS
+                    // allowed — running on the host needs no backend. Turning it ON
+                    // (-> Proot) requires a sandbox backend, so that direction is
+                    // gated on availability. Previously the toggle was disabled
+                    // whenever no backend was available, which also blocked
+                    // switching to Native — leaving the user stuck on a
+                    // sandbox mode that can't run (e.g. macOS with no Docker).
                     {
-                        let sandbox_on = props.sandbox_available
-                            && props.shell_mode == pentest_core::config::ShellMode::Proot;
+                        let sandbox_on =
+                            props.shell_mode == pentest_core::config::ShellMode::Proot;
                         let avail = props.sandbox_available;
                         let on_change = props.on_shell_mode_change;
+                        // Only block the toggle when it can't act: sandbox is off
+                        // AND no backend exists to turn it on.
+                        let locked = !sandbox_on && !avail;
+                        // Name the platform's sandbox backend correctly in the
+                        // "unavailable" hint. The UI crate compiles per-connector-
+                        // host, so cfg! reflects the host the connector runs on.
+                        let install_hint = if cfg!(target_os = "windows") {
+                            "install WSL"
+                        } else if cfg!(target_os = "macos") {
+                            "start Docker"
+                        } else {
+                            "install a sandbox backend"
+                        };
                         rsx! {
                             div { class: "easy-settings-row",
                                 div { class: "easy-settings-text",
                                     div { class: "easy-settings-label", "Sandboxed scanning" }
                                     div { class: "easy-settings-desc",
                                         if avail {
-                                            "Run scanning tools inside an isolated Linux sandbox (recommended). Turn off to run them directly on this machine."
+                                            "Run scanning tools inside an isolated sandbox (recommended). Turn off to run them directly on this machine."
                                         } else {
-                                            "No sandbox available — install WSL for isolated scanning. Tools run directly on this machine for now."
+                                            "No sandbox available — {install_hint} for isolated scanning. Tools run directly on this machine for now."
                                         }
                                     }
                                 }
                                 button {
                                     class: if sandbox_on { "easy-toggle easy-toggle-on" } else { "easy-toggle" },
-                                    disabled: !avail,
+                                    disabled: locked,
                                     "aria-label": "Toggle sandboxed scanning",
                                     onclick: move |_| {
-                                        if !avail {
+                                        // Turning ON requires a backend; turning OFF never does.
+                                        if !sandbox_on && !avail {
                                             return;
                                         }
                                         let next = if sandbox_on {
