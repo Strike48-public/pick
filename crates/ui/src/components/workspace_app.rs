@@ -369,9 +369,6 @@ pub fn WorkspaceApp() -> Element {
             let mut matrix_api_url = matrix_api_url;
             let mut matrix_auth_token = matrix_auth_token;
             spawn(async move {
-                // TEMP INSTRUMENTATION (Windows/WebView2 streaming diagnosis):
-                // confirm the effect ran and the eval was dispatched.
-                tracing::info!("[WS_TOKEN_DEBUG] token-pickup effect started, dispatching eval");
                 let mut eval = document::eval(
                     r#"
                     // Push the injected creds to Rust over the eval reverse channel
@@ -384,17 +381,10 @@ pub fn WorkspaceApp() -> Element {
                     // (dioxus.send now routes over the LiveView WS on WebView2 too —
                     // see the vendored dioxus-liveview query.rs window.ipc fix.)
                     function readCreds() {
-                        var st = window.__MATRIX_SESSION_TOKEN__;
-                        var au = window.__MATRIX_API_URL__;
-                        var wu = window.__MATRIX_WS_URL__;
                         return JSON.stringify({
-                            t: st || '',
-                            u: au || '',
-                            w: wu || '',
-                            dbg_t_type: typeof st,
-                            dbg_t_len: (st ? String(st).length : 0),
-                            dbg_u_type: typeof au,
-                            dbg_keys: Object.keys(window).filter(function(k){return k.indexOf('MATRIX')>=0;}).join(',')
+                            t: window.__MATRIX_SESSION_TOKEN__ || '',
+                            u: window.__MATRIX_API_URL__ || '',
+                            w: window.__MATRIX_WS_URL__ || ''
                         });
                     }
                     // Push immediately, then re-push every 250ms for ~10s to win the
@@ -412,25 +402,11 @@ pub fn WorkspaceApp() -> Element {
                 // Receive pushes on the eval channel (works on WebView2 + WebKitGTK).
                 while let Ok(json_str) = eval.recv::<String>().await {
                     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) else {
-                        tracing::warn!(
-                            "[WS_TOKEN_DEBUG] eval push arrived but was not valid JSON: {json_str}"
-                        );
                         continue;
                     };
                     let token = parsed.get("t").and_then(|v| v.as_str()).unwrap_or_default();
                     let url = parsed.get("u").and_then(|v| v.as_str()).unwrap_or_default();
                     let ws_url = parsed.get("w").and_then(|v| v.as_str()).unwrap_or_default();
-
-                    // TEMP INSTRUMENTATION: log EVERY push, including empties, with
-                    // what the browser reported about the globals' presence.
-                    tracing::info!(
-                        "[WS_TOKEN_DEBUG] push: t_type={:?} t_len={:?} u_type={:?} matrix_keys={:?} (parsed token len={})",
-                        parsed.get("dbg_t_type").and_then(|v| v.as_str()).unwrap_or("?"),
-                        parsed.get("dbg_t_len"),
-                        parsed.get("dbg_u_type").and_then(|v| v.as_str()).unwrap_or("?"),
-                        parsed.get("dbg_keys").and_then(|v| v.as_str()).unwrap_or("?"),
-                        token.len(),
-                    );
 
                     if !token.is_empty() && token != crate::session::get_auth_token() {
                         tracing::info!(
