@@ -16,7 +16,7 @@
 **Status**: PASSED
 
 Verified integration:
-- Symlink created: `target/dx/pentest-mobile/debug/android/app/android-lib` → `/home/jtomek/Code/pick/android-lib`
+- Symlink created: `target/dx/pentest-mobile/debug/android/app/android-lib` → `<repo>/android-lib`
 - Entry in `settings.gradle`: `include ':android-lib'`
 - Dependency in `app/build.gradle.kts`: `implementation(project(":android-lib"))`
 - Gradle build succeeded with android-lib bundled
@@ -49,7 +49,7 @@ just run-android
 ADB verification:
 ```bash
 adb devices -l
-# 56180DLCH000AV         device usb:3-1.1.1 product:blazer model:Pixel_10_Pro device:blazer
+# <device-serial>         device usb:3-1.1.1 product:blazer model:Pixel_10_Pro device:blazer
 ```
 
 Package verification:
