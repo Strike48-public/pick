@@ -55,12 +55,12 @@ fn resolve_asset_path_from_filesystem(path: &str) -> Option<PathBuf> {
     // If there's no asset root, we use the cargo manifest dir as the root, or the current dir
     if !uri_path.exists() || uri_path.starts_with("/assets/") {
         let bundle_root = get_asset_root();
-        // A requested path that does not begin with `/` (e.g. a relative
-        // `assets/...` or a Windows-style path) makes `strip_prefix("/")`
-        // return Err — the upstream `.unwrap()` panics there, taking down the
-        // whole app. Fall back to the path as-is (so we return `None`, "asset
-        // not found") instead of crashing, and log the offending path so the
-        // real source of the request is visible.
+        // [STRIKE48-PATCH strip-prefix-panic] A requested path that does not
+        // begin with `/` (e.g. a relative `assets/...` or a Windows-style path)
+        // makes `strip_prefix("/")` return Err — the upstream `.unwrap()` panics
+        // there, taking down the whole app. Fall back to the path as-is (so we
+        // return `None`, "asset not found") instead of crashing, and log the
+        // offending path so the real source of the request is visible.
         let relative_path = match uri_path.strip_prefix("/") {
             Ok(p) => p,
             Err(_) => {

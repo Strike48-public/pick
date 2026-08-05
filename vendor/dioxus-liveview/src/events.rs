@@ -56,7 +56,7 @@ impl HtmlEventConverter for SerializedHtmlEventConverter {
     }
 
     fn convert_form_data(&self, event: &PlatformEventData) -> FormData {
-        // PATCHED (Strike48/pick): upstream 0.7.9 does `.unwrap()` here, which
+        // [STRIKE48-PATCH form-downcast] upstream 0.7.9 does `.unwrap()` here, which
         // aborts the whole process when the downcast is `None`. On the desktop
         // WebView2 transport an `oninput`/`onchange` event can arrive without a
         // `SerializedFormData` payload (the serialized shape doesn't round-trip

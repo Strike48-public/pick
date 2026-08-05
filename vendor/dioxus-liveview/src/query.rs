@@ -29,7 +29,18 @@ let dioxus = {
     },
 
     send: function (value) {
-        window.ipc.postMessage(
+        // [STRIKE48-PATCH webview2-ipc] Send over the LiveView WebSocket, NOT the
+        // raw window.ipc. On WebView2 (Windows) wry installs its own window.ipc =
+        // { postMessage: s => window.chrome.webview.postMessage(s) }, which
+        // routes to WebView2's native IPC sink — the embedded connector has no
+        // handler there, so query/dioxus.send frames vanish and the reverse
+        // channel silently dies (DOM events survive only because the interpreter
+        // captured the ws-backed ipc at init as window.interpreter.ipc). Prefer
+        // that ws-backed wrapper; on WebKitGTK it's the same object as window.ipc.
+        var _ipc = (window.interpreter && window.interpreter.ipc)
+            ? window.interpreter.ipc
+            : window.ipc;
+        _ipc.postMessage(
             JSON.stringify({
                 "method":"query",
                 "params": {
@@ -123,7 +134,14 @@ impl QueryEngine {
                             "returned_value": true
                         }}
                     }};
-                    window.ipc.postMessage(
+                    // [STRIKE48-PATCH webview2-ipc] Same fix as dioxus.send above:
+                    // route the eval return value over the ws-backed
+                    // interpreter.ipc, not the wry-clobbered window.ipc (which is
+                    // WebView2 native IPC on Windows and drops the frame).
+                    let _ipc = (window.interpreter && window.interpreter.ipc)
+                        ? window.interpreter.ipc
+                        : window.ipc;
+                    _ipc.postMessage(
                         JSON.stringify(returned_value)
                     );
                 }})

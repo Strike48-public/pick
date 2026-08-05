@@ -107,19 +107,14 @@ codegen-units = 1
 # off: it turns an isolated tokio task panic into a whole-process abort.)
 strip = true
 
-# Local patch of dioxus-asset-resolver 0.7.9: upstream native.rs:58 does
-# `strip_prefix("/").unwrap()`, which panics (StripPrefixError) whenever the
-# webview requests an asset path that neither exists on disk nor starts with
-# `/` — reproducible on Windows when opening the expert sidebar, taking down
-# the whole app. The vendored copy replaces that unwrap with a graceful
-# fallback (return "not found" + log the path). Remove once fixed upstream.
-# Local patch of dioxus-liveview 0.7.9: upstream events.rs convert_form_data
-# does `.downcast::<SerializedFormData>().unwrap()`, which aborts the whole
-# process when the downcast is None — an `oninput`/`onchange` event on the
-# desktop WebView2 transport can arrive without a Form payload, so it panics on
-# the first keystroke in a text field. The vendored copy falls back to an empty
-# form instead of crashing. 0.7.9 is the latest 0.7.x (next is 0.8.0-alpha,
-# still affected); remove once fixed upstream.
+# Vendored forks of two dioxus 0.7.9 crates, each carrying local Strike48/pick
+# patches (all still needed as of 0.8.0-alpha). Every change is marked in-source
+# with `[STRIKE48-PATCH <slug>]` and cataloged in the crate's PATCHES.md:
+#   vendor/dioxus-asset-resolver/PATCHES.md  — strip-prefix-panic (Windows asset crash)
+#   vendor/dioxus-liveview/PATCHES.md        — webview2-ipc (dioxus.send reverse channel
+#                                              dead on WebView2), form-downcast (input crash)
+# To audit: `git grep -n STRIKE48-PATCH vendor/`. On upgrade, re-vendor then
+# re-apply per each PATCHES.md; drop any patch that has landed upstream.
 [patch.crates-io]
 dioxus-asset-resolver = { path = "vendor/dioxus-asset-resolver" }
 dioxus-liveview = { path = "vendor/dioxus-liveview" }

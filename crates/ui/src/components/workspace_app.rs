@@ -381,6 +381,8 @@ pub fn WorkspaceApp() -> Element {
                     // a setInterval that fires after return sends into a dead binding
                     // (nothing arrives). Instead we loop with awaited setTimeout and
                     // park forever, exactly like installChatSendBridge in input.rs.
+                    // (dioxus.send now routes over the LiveView WS on WebView2 too —
+                    // see the vendored dioxus-liveview query.rs window.ipc fix.)
                     function readCreds() {
                         var st = window.__MATRIX_SESSION_TOKEN__;
                         var au = window.__MATRIX_API_URL__;
