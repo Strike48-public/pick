@@ -12,13 +12,28 @@ pub fn generate_theme_css(theme: Theme, radius: BorderRadius, density: Density) 
     let radius_value = get_radius_value(radius);
     let spacing = get_density_spacing(density);
 
-    // IBM Plex fonts for Strike48 and Sage themes
+    // IBM Plex fonts for Strike48 and Sage themes.
+    //
+    // We list `'IBM Plex Sans'` / `'IBM Plex Mono'` first in the stack so the
+    // font is picked up when a user has it installed locally (developers
+    // often do) or when a future build bundles the WOFF2 files. The previous
+    // `@import url('https://fonts.googleapis.com/...')` was intentionally
+    // removed: this UI runs inside Matrix's sandboxed iframe, whose CSP
+    // (`matrix_studio/lib/matrix_studio/controllers/app_controller/security.ex`)
+    // sets `font-src {origin} data:` with the explicit comment "no https: -
+    // prevents token exfiltration". The remote import always fails there and
+    // showed as a red CSP violation in every console. Falling back through
+    // the system-font stack keeps Sage/Strike48 legible without leaking a
+    // request to any external origin. To restore Plex specifically, embed
+    // the WOFF2 files in `assets/` and inject them as base64 `@font-face`
+    // rules — the pattern is proven in `liveview_connector/injections.rs`
+    // (JetBrains Mono is already shipped that way).
     let (font_import, font_sans, font_mono) = if matches!(
         theme,
         Theme::Strike48 | Theme::Sage | Theme::SageLight
     ) {
         (
-            "@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');\n",
+            "",
             "'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji'",
             "'IBM Plex Mono', ui-monospace, monospace",
         )
@@ -1569,9 +1584,27 @@ mod tests {
     }
 
     #[test]
-    fn sage_css_has_plex_font_and_extra_tokens() {
+    fn sage_css_declares_plex_font_and_extra_tokens() {
         let css = generate_theme_css(Theme::Sage, BorderRadius::Soft, Density::Comfortable);
-        assert!(css.contains("IBM+Plex+Sans"), "Sage should import IBM Plex");
+        // The old assertion looked for the Google Fonts URL literal
+        // (`"IBM+Plex+Sans"`). That URL was removed because Matrix's sandbox
+        // CSP forbids external font-src (see the doc-comment on
+        // `generate_theme_css`). What remains — and what we want to pin —
+        // is that Sage still declares `'IBM Plex Sans'` first in its
+        // font-family stack, so a system-installed or later-bundled Plex is
+        // still picked up.
+        assert!(
+            css.contains("'IBM Plex Sans'"),
+            "Sage should list IBM Plex Sans first in the font-family stack"
+        );
+        assert!(
+            css.contains("'IBM Plex Mono'"),
+            "Sage should list IBM Plex Mono first in the mono font-family stack"
+        );
+        assert!(
+            !css.contains("fonts.googleapis.com"),
+            "Sage MUST NOT emit an external font @import — Matrix's sandbox CSP blocks it"
+        );
         assert!(
             css.contains("--sage-tint:"),
             "Sage should emit extra tokens"
