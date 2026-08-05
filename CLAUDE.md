@@ -169,10 +169,12 @@ Screenshot capture fails gracefully in headless CI environments (Wayland/X11 not
 
 | Workflow | Purpose | Trigger |
 |----------|---------|---------|
-| Multi-Arch Docker | Build arm64/amd64 images | PR, push to main |
-| Helm Publish | Package Helm chart | PR, push to main |
-| PII Check | Scan for sensitive data | PR |
-| Rust Tests | Run test suite | PR, push to main |
+| CI (`ci.yml`) | check / clippy `-D warnings` / test (Linux + macOS lanes) | PR, push |
+| Multi-Arch Docker | Build arm64/amd64 images | PR, push, tags |
+| Helm Publish | Package Helm chart | PR, push, tags |
+| PII Check | Scan for sensitive data | PR, push |
+| Build proot | Build the pinned `openat2` proot binary | push, tags, manual |
+| Release | Build + publish release artifacts | push tags, manual |
 
 ### Build Time Expectations
 
