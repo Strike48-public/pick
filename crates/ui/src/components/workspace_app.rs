@@ -342,7 +342,7 @@ pub fn WorkspaceApp() -> Element {
             .or_else(|_| std::env::var("MATRIX_URL"))
             .unwrap_or_default()
     });
-    let mut matrix_auth_token = use_signal(|| {
+    let matrix_auth_token = use_signal(|| {
         let session_token = crate::session::get_auth_token();
         if !session_token.is_empty() {
             return session_token;
@@ -352,50 +352,76 @@ pub fn WorkspaceApp() -> Element {
     let mut chat_mailbox: Signal<Option<String>> = use_signal(|| None);
     let mut conversation_mailbox: Signal<Option<String>> = use_signal(|| None);
 
-    // Poll for bridge-injected credentials (window.__MATRIX_SESSION_TOKEN__ etc.)
-    // The bridge injects these into the HTML but the scripts may not have executed
-    // by the time the component mounts — polling handles the race reliably.
+    // Pick up bridge-injected credentials (window.__MATRIX_SESSION_TOKEN__ etc.).
+    // StrikeHub injects these globals into the connector page's HTML; pick reads
+    // them back over the Dioxus eval channel.
+    //
+    // We use a JS-INITIATED PUSH (`dioxus.send(...)` read via `eval.recv()`), NOT
+    // the eval RETURN-value channel (`document::eval("return …")`). The return
+    // channel is dropped by Windows WebView2 — the token never arrived, the
+    // session store stayed empty, and WS auth (/ws/shell, conversationEvents) was
+    // rejected in a retry loop, so chat never streamed (Linux/WebKitGTK worked).
+    // `dioxus.send()` rides the WebView IPC (window.ipc.postMessage), which
+    // delivers on WebView2 AND WebKitGTK. The token still originates from the
+    // browser global — only the transport changed.
     {
         use_effect(move || {
+            let mut matrix_api_url = matrix_api_url;
+            let mut matrix_auth_token = matrix_auth_token;
             spawn(async move {
-                loop {
-                    // Pick up session token from bridge injection
-                    if let Ok(val) = document::eval(
-                        "return JSON.stringify({ t: window.__MATRIX_SESSION_TOKEN__ || '', u: window.__MATRIX_API_URL__ || '', w: window.__MATRIX_WS_URL__ || '' })"
-                    ).await {
-                        if let Some(json_str) = val.as_str() {
-                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
-                                let token = parsed.get("t").and_then(|v| v.as_str()).unwrap_or_default();
-                                let url = parsed.get("u").and_then(|v| v.as_str()).unwrap_or_default();
-                                let ws_url = parsed.get("w").and_then(|v| v.as_str()).unwrap_or_default();
-
-                                if !token.is_empty() {
-                                    let current = crate::session::get_auth_token();
-                                    if token != current {
-                                        tracing::info!(
-                                            "[WorkspaceApp] picked up session token from browser (len={})",
-                                            token.len()
-                                        );
-                                        crate::session::set_auth_token(token);
-                                        matrix_auth_token.set(token.to_string());
-                                    }
-                                }
-                                if !url.is_empty() && matrix_api_url.peek().is_empty() {
-                                    tracing::info!("[WorkspaceApp] picked up API URL from browser: {}", url);
-                                    matrix_api_url.set(url.to_string());
-                                }
-                                // Proxy-advertised subscription socket URL. Stored in
-                                // the session so the chat subscription dials the proxy
-                                // (same authenticated origin as HTTP) instead of Matrix
-                                // directly. Only set once.
-                                if !ws_url.is_empty() && crate::session::get_ws_url_override().is_none() {
-                                    tracing::info!("[WorkspaceApp] picked up WS URL from browser: {}", ws_url);
-                                    crate::session::set_ws_url_override(ws_url);
-                                }
-                            }
-                        }
+                let mut eval = document::eval(
+                    r#"
+                    // Push the injected creds to Rust as they become available.
+                    // dioxus.send() uses the WebView IPC, which works on WebView2
+                    // (unlike returning a value from eval, which WebView2 drops).
+                    function pushCreds() {
+                        dioxus.send(JSON.stringify({
+                            t: window.__MATRIX_SESSION_TOKEN__ || '',
+                            u: window.__MATRIX_API_URL__ || '',
+                            w: window.__MATRIX_WS_URL__ || ''
+                        }));
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    pushCreds();
+                    // Re-push briefly in case the injected <script> runs after mount
+                    // (race), and to catch a token that lands slightly later. Stop
+                    // once the token is present or after ~10s (40 * 250ms).
+                    let tries = 0;
+                    const iv = setInterval(() => {
+                        pushCreds();
+                        if ((window.__MATRIX_SESSION_TOKEN__ || '') !== '' || ++tries > 40) {
+                            clearInterval(iv);
+                        }
+                    }, 250);
+                    "#,
+                );
+                // Receive pushes on the eval channel (works on WebView2 + WebKitGTK).
+                while let Ok(json_str) = eval.recv::<String>().await {
+                    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) else {
+                        continue;
+                    };
+                    let token = parsed.get("t").and_then(|v| v.as_str()).unwrap_or_default();
+                    let url = parsed.get("u").and_then(|v| v.as_str()).unwrap_or_default();
+                    let ws_url = parsed.get("w").and_then(|v| v.as_str()).unwrap_or_default();
+
+                    if !token.is_empty() && token != crate::session::get_auth_token() {
+                        tracing::info!(
+                            "[WorkspaceApp] picked up session token from browser (len={})",
+                            token.len()
+                        );
+                        crate::session::set_auth_token(token);
+                        matrix_auth_token.set(token.to_string());
+                    }
+                    if !url.is_empty() && matrix_api_url.peek().is_empty() {
+                        tracing::info!("[WorkspaceApp] picked up API URL from browser: {}", url);
+                        matrix_api_url.set(url.to_string());
+                    }
+                    // Proxy-advertised subscription socket URL. Stored in the session
+                    // so the chat subscription dials the proxy (same authenticated
+                    // origin as HTTP) instead of Matrix directly. Only set once.
+                    if !ws_url.is_empty() && crate::session::get_ws_url_override().is_none() {
+                        tracing::info!("[WorkspaceApp] picked up WS URL from browser: {}", ws_url);
+                        crate::session::set_ws_url_override(ws_url);
+                    }
                 }
             });
         });
