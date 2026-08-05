@@ -370,11 +370,29 @@ pub fn deliver_native_oauth_callback(callback_url: &str) -> bool {
     };
 
     // Validate the state parameter against the value we generated for this login.
+    // A login is already known to be in flight (the sender existed above), which
+    // is the primary anti-forgery guard here. On top of that:
+    //   * both present AND equal   -> trust.
+    //   * both present but DIFFERENT -> reject (forged/replayed callback).
+    //   * server did not echo state (got=None) -> accept with a warning, matching
+    //     the iOS relaxation: some servers (e.g. plg's /auth/login) don't
+    //     round-trip `state`, and the OS custom-scheme routing + the in-flight
+    //     sender already bind this callback to the login we initiated. Rejecting
+    //     a valid token purely for missing state would break native sign-in.
     let expected = NATIVE_OAUTH_STATE.lock().ok().and_then(|mut g| g.take());
     let got = state_from_callback_url(callback_url);
-    if expected.is_none() || got.is_none() || expected != got {
-        tracing::warn!("[BROWSER_AUTH] native OAuth state mismatch; rejected");
-        return false;
+    match (expected, got) {
+        (Some(exp), Some(g)) if exp != g => {
+            tracing::warn!("[BROWSER_AUTH] native OAuth state mismatch; rejected");
+            return false;
+        }
+        (_, None) => {
+            tracing::warn!(
+                "[BROWSER_AUTH] native OAuth callback omitted state; accepting on \
+                 in-flight-login + custom-scheme binding (server did not echo state)"
+            );
+        }
+        _ => {}
     }
 
     let Some(token) = token_from_callback_url(callback_url) else {
@@ -436,15 +454,31 @@ async fn try_native_web_auth_session(base: &str) -> crate::error::Result<Option<
     .map_err(crate::error::Error::Matrix)?;
 
     tracing::info!("[BROWSER_AUTH] iOS: web auth session returned a callback URL");
-    // Validate the state before trusting the callback: the session returns the
-    // callback URL in-process, so a mismatch means the redirect was not the one
-    // we initiated.
+    // Validate the state before trusting the callback. Two cases:
+    //   * state echoed AND matches   -> trust (best case).
+    //   * state echoed but DIFFERENT -> reject: this is a forged/replayed
+    //     callback, exactly the hijack `state` defends against.
+    //   * state ABSENT (server didn't echo it) -> accept with a warning.
+    // The absent-state relaxation is native-only and safe here because
+    // `ASWebAuthenticationSession` hands the callback back IN-PROCESS and the OS
+    // only routes our exact custom scheme (`com.strike48.pentest`) to the session
+    // WE initiated — the OS already binds the response to our request, so the
+    // CSRF nonce is far less load-bearing than in the desktop loopback flow
+    // (where any local process could POST to the callback port). Some servers
+    // (e.g. plg's /auth/login relay) simply don't round-trip `state`; rejecting a
+    // valid in-process token purely for that would break native sign-in.
     match state_from_callback_url(&callback_url) {
         Some(got) if got == state => {}
-        _ => {
+        Some(_) => {
             return Err(crate::error::Error::Matrix(
                 "iOS web auth state mismatch".to_string(),
             ));
+        }
+        None => {
+            tracing::warn!(
+                "[BROWSER_AUTH] iOS: callback omitted state; accepting on in-process \
+                 custom-scheme binding (server did not echo state)"
+            );
         }
     }
     let token = token_from_callback_url(&callback_url).ok_or_else(|| {
@@ -1351,6 +1385,24 @@ mod native_oauth_tests {
             "matching state must deliver"
         );
         assert_eq!(rx.blocking_recv().unwrap(), "tok123");
+    }
+
+    #[test]
+    fn deliver_accepts_absent_state_with_token() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Server did not echo `state` (e.g. plg's /auth/login relay), but a login
+        // is in flight and the token is present. The in-flight sender + OS
+        // custom-scheme routing bind this callback to our request, so we accept
+        // and deliver rather than rejecting a valid token. (Regression guard for
+        // the native-flow relaxation of Tomek finding #2's strict state check.)
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        arm_oauth_for_test(tx, "expected-state");
+        let url = "com.strike48.pentest://oauth/callback?access_token=tok456";
+        assert!(
+            deliver_native_oauth_callback(url),
+            "absent state + in-flight login + token must deliver"
+        );
+        assert_eq!(rx.blocking_recv().unwrap(), "tok456");
     }
 
     #[test]
