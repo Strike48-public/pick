@@ -34,7 +34,10 @@ impl PentestTool for NmapVulnTool {
             .param(ToolParam::required(
                 "target",
                 ParamType::String,
-                "Target IP or hostname",
+                "Target IP, CIDR, or hostname, or a sentinel: 'current' (this \
+                 host's primary subnet), 'auto'/'all' (every active local \
+                 subnet). Prefer a sentinel over guessing a range for local \
+                 scans - it uses the host's real interface subnets.",
             ))
             .param(ToolParam::optional(
                 "timeout",
@@ -63,10 +66,15 @@ impl PentestTool for NmapVulnTool {
 
             let timeout_secs = crate::util::param_u64(&params, "timeout", 600);
 
+            // Resolve auto/current/all -> real subnets, validate, warn if
+            // out-of-subnet. nmap accepts multiple positional targets, so a
+            // multi-subnet resolution fans out in one invocation.
+            let prepared = crate::scan_target::prepare_scan_targets(&target).await?;
+
             let builder = CommandBuilder::new()
                 .arg("-sV", "")
                 .arg("--script", "vuln")
-                .positional(&target);
+                .extend(&prepared.targets);
 
             let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -83,6 +91,8 @@ impl PentestTool for NmapVulnTool {
 
             Ok(json!({
                 "target": target,
+                "resolved_targets": prepared.targets,
+                "out_of_subnet_warning": prepared.warning,
                 "vulnerabilities": vulns,
                 "count": vulns.len(),
                 "output": result.stdout,
