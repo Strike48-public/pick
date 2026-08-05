@@ -69,7 +69,7 @@ unsafe fn walk_ifaddrs(ifap: *mut libc::ifaddrs) -> Vec<NetworkInterface> {
                 let flags = ifa.ifa_flags as libc::c_int;
                 ifaces.push(NetworkInterface {
                     name: name.clone(),
-                    ip_addresses: Vec::new(),
+                    addresses: Vec::new(),
                     mac_address: None,
                     is_up: flags & libc::IFF_UP != 0,
                     is_loopback: flags & libc::IFF_LOOPBACK != 0,
@@ -87,12 +87,16 @@ unsafe fn walk_ifaddrs(ifap: *mut libc::ifaddrs) -> Vec<NetworkInterface> {
                 // s_addr is stored in network byte order; to_ne_bytes yields
                 // those bytes back in order regardless of host endianness.
                 let ip = std::net::Ipv4Addr::from(sin.sin_addr.s_addr.to_ne_bytes());
-                ifaces[idx].ip_addresses.push(ip.to_string());
+                ifaces[idx]
+                    .addresses
+                    .push(InterfaceAddr::new(ip.to_string(), None));
             }
             libc::AF_INET6 => {
                 let sin6 = &*(ifa.ifa_addr as *const libc::sockaddr_in6);
                 let ip = std::net::Ipv6Addr::from(sin6.sin6_addr.s6_addr);
-                ifaces[idx].ip_addresses.push(ip.to_string());
+                ifaces[idx]
+                    .addresses
+                    .push(InterfaceAddr::new(ip.to_string(), None));
             }
             libc::AF_LINK => {
                 let sdl = &*(ifa.ifa_addr as *const libc::sockaddr_dl);
@@ -201,9 +205,9 @@ mod tests {
             .find(|i| i.is_loopback)
             .expect("a loopback interface should exist");
         assert!(
-            lo.ip_addresses.iter().any(|ip| ip == "127.0.0.1"),
+            lo.ip_strings().iter().any(|ip| ip == "127.0.0.1"),
             "loopback should report 127.0.0.1, got {:?}",
-            lo.ip_addresses
+            lo.ip_strings()
         );
     }
 }

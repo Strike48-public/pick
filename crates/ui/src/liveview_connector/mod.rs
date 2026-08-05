@@ -729,7 +729,7 @@ impl LiveViewConnector {
             .await
             .unwrap_or_default()
             .into_iter()
-            .flat_map(|iface| iface.ip_addresses)
+            .flat_map(|iface| iface.ip_strings())
             .filter(|ip| {
                 ip.parse::<std::net::IpAddr>()
                     .map(|addr| addr.is_ipv4() && !addr.is_loopback())
