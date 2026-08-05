@@ -48,6 +48,15 @@ pub fn is_sandbox_enabled() -> bool {
 #[cfg(not(feature = "desktop"))]
 pub fn set_use_sandbox(_use_sandbox: bool) {}
 
+/// Whether a command-sandbox backend is usable. Desktop probes real backends
+/// (bwrap/proot/docker/WSL); non-desktop targets have no host command sandbox,
+/// so report unavailable. Lets cross-target UI code (e.g. `WorkspaceApp`) call
+/// this without a `#[cfg]` at every call site.
+#[cfg(not(feature = "desktop"))]
+pub fn sandbox_available_blocking() -> bool {
+    false
+}
+
 /// Re-export capture session management for desktop
 #[cfg(feature = "desktop")]
 pub use desktop::{

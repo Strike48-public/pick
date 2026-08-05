@@ -279,9 +279,35 @@ pub fn WorkspaceApp() -> Element {
     });
 
     // Persisted settings (shell mode, downloads)
-    let mut settings = use_signal(|| {
-        let s = load_settings();
+    // Whether a command-sandbox backend is usable on this host (bwrap/proot/
+    // docker/WSL). StrikeHub-hosted connectors run WorkspaceApp, so this gates
+    // the easy-mode "Sandboxed scanning" toggle here too — not just connector_app.
+    // Non-desktop targets report false (no host command sandbox).
+    let sandbox_available = use_signal(pentest_platform::sandbox_available_blocking);
+
+    let has_sandbox = sandbox_available();
+    let mut settings = use_signal(move || {
+        let mut s = load_settings();
+        // Never start in a sandbox mode that can't run (e.g. macOS without Docker,
+        // Windows without WSL): coerce Proot -> Native so scans don't fail every
+        // command. The toggle lets the user re-enable it once a backend exists.
+        let resolved =
+            pentest_core::config::resolve_shell_mode(s.shell_mode, false, false, has_sandbox);
+        if resolved != s.shell_mode {
+            tracing::info!(
+                "[WorkspaceApp] startup shell mode {:?} -> {:?} (sandbox_available={})",
+                s.shell_mode,
+                resolved,
+                has_sandbox
+            );
+            s.shell_mode = resolved;
+        }
         let _ = save_settings(&s);
+        #[cfg(all(
+            feature = "shell-ws",
+            not(any(target_os = "android", target_os = "ios"))
+        ))]
+        pentest_platform::set_use_sandbox(s.shell_mode == ShellMode::Proot);
         s
     });
 
@@ -533,6 +559,20 @@ pub fn WorkspaceApp() -> Element {
                 current_host: matrix_api_url.read().clone(),
                 on_endpoint_save: move |raw: String| {
                     matrix_api_url.set(raw);
+                },
+                // Sandbox toggle wiring (was omitted -> defaulted to
+                // sandbox_available=true + no-op handler, so the toggle showed ON
+                // and couldn't move on hosts without a backend, e.g. macOS w/o
+                // Docker). Thread the real probe result, mode, and a persisting
+                // handler through.
+                sandbox_available: sandbox_available(),
+                shell_mode: settings.read().shell_mode,
+                on_shell_mode_change: move |mode: ShellMode| {
+                    let mut s = settings.write();
+                    s.shell_mode = mode;
+                    let _ = save_settings(&s);
+                    #[cfg(all(feature = "shell-ws", not(any(target_os = "android", target_os = "ios"))))]
+                    pentest_platform::set_use_sandbox(mode == ShellMode::Proot);
                 },
             }
         } else {
