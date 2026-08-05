@@ -317,19 +317,25 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     let mut settings = use_signal(move || {
         let mut s = load_settings();
         s.ensure_device_id();
-        if cfg.default_proot && s.shell_mode == ShellMode::Native && s.last_config.is_none() {
-            s.shell_mode = ShellMode::Proot;
-        }
-        // Never start in a sandbox mode that can't run: if no backend is
-        // available (e.g. macOS without Docker, Windows without WSL), fall back
-        // to Native rather than trying a sandbox that will fail every command.
-        // The user can turn sandboxing on later once a backend exists; the
-        // Settings toggle still allows that when `sandbox_available` flips true.
-        if s.shell_mode == ShellMode::Proot && !has_sandbox {
+        // Resolve the startup shell mode: first-run Proot bias for easy-mode-first
+        // builds, then coerce to Native when no sandbox backend exists so we never
+        // try a sandbox that fails every command (macOS without Docker, Windows
+        // without WSL). See `resolve_shell_mode`.
+        let resolved = pentest_core::config::resolve_shell_mode(
+            s.shell_mode,
+            cfg.default_proot,
+            s.last_config.is_none(),
+            has_sandbox,
+        );
+        if resolved != s.shell_mode {
             tracing::info!(
-                "no sandbox backend available; starting in Native shell mode instead of Proot"
+                "startup shell mode: {:?} -> {:?} (default_proot={}, sandbox_available={})",
+                s.shell_mode,
+                resolved,
+                cfg.default_proot,
+                has_sandbox
             );
-            s.shell_mode = ShellMode::Native;
+            s.shell_mode = resolved;
         }
         let _ = save_settings(&s);
         if let Some(set_sb) = cfg.set_sandbox {

@@ -827,6 +827,34 @@ pub fn resolve_easy_mode(settings_easy_mode: Option<bool>, app_default: bool) ->
     app_default
 }
 
+/// Resolve the effective shell/scan mode at startup from the persisted mode and
+/// the environment, in this order:
+///  1. First-run bias: if `default_proot` (a mobile/easy-mode-first build) and
+///     the user has never connected (`first_run`) and the persisted mode is the
+///     `Native` default, prefer `Proot`.
+///  2. Backend reality: a sandbox mode (`Proot`) is only viable when a sandbox
+///     backend is available. When `sandbox_available` is false (e.g. macOS
+///     without Docker, Windows without WSL), coerce to `Native` — trying to run
+///     every command in a sandbox that doesn't exist fails the whole scan. The
+///     user can re-enable sandboxing from Settings once a backend appears.
+///
+/// Pure so it can be unit-tested; `connector_app` calls it at startup.
+pub fn resolve_shell_mode(
+    persisted: ShellMode,
+    default_proot: bool,
+    first_run: bool,
+    sandbox_available: bool,
+) -> ShellMode {
+    let mut mode = persisted;
+    if default_proot && mode == ShellMode::Native && first_run {
+        mode = ShellMode::Proot;
+    }
+    if mode == ShellMode::Proot && !sandbox_available {
+        mode = ShellMode::Native;
+    }
+    mode
+}
+
 /// Telemetry is opt-out: enabled by default so PLG usage analytics work, with a
 /// settings toggle to disable it.
 fn default_telemetry_enabled() -> bool {
@@ -1073,6 +1101,56 @@ mod tests {
     fn app_settings_defaults_wsl_banner_not_dismissed() {
         let s = AppSettings::default();
         assert!(!s.wsl_banner_dismissed);
+    }
+
+    #[test]
+    fn shell_mode_coerces_to_native_when_no_backend() {
+        // Persisted Proot but no sandbox backend (macOS w/o Docker, Windows w/o
+        // WSL): must fall back to Native, not try a sandbox that can't run.
+        assert_eq!(
+            resolve_shell_mode(ShellMode::Proot, false, false, false),
+            ShellMode::Native
+        );
+    }
+
+    #[test]
+    fn shell_mode_keeps_proot_when_backend_available() {
+        assert_eq!(
+            resolve_shell_mode(ShellMode::Proot, false, false, true),
+            ShellMode::Proot
+        );
+    }
+
+    #[test]
+    fn shell_mode_first_run_prefers_proot_only_with_backend() {
+        // Easy-mode-first build, never connected, Native persisted:
+        // prefer Proot when a backend exists...
+        assert_eq!(
+            resolve_shell_mode(ShellMode::Native, true, true, true),
+            ShellMode::Proot
+        );
+        // ...but stay Native when no backend (don't bias into an unrunnable mode).
+        assert_eq!(
+            resolve_shell_mode(ShellMode::Native, true, true, false),
+            ShellMode::Native
+        );
+    }
+
+    #[test]
+    fn shell_mode_no_first_run_bias_after_first_connect() {
+        // default_proot but already connected before: don't flip Native->Proot.
+        assert_eq!(
+            resolve_shell_mode(ShellMode::Native, true, false, true),
+            ShellMode::Native
+        );
+    }
+
+    #[test]
+    fn shell_mode_native_stays_native() {
+        assert_eq!(
+            resolve_shell_mode(ShellMode::Native, false, false, true),
+            ShellMode::Native
+        );
     }
 
     #[test]
