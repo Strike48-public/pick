@@ -374,18 +374,18 @@ pub fn WorkspaceApp() -> Element {
                 tracing::info!("[WS_TOKEN_DEBUG] token-pickup effect started, dispatching eval");
                 let mut eval = document::eval(
                     r#"
-                    // Push the injected creds to Rust as they become available.
-                    // dioxus.send() uses the WebView IPC, which works on WebView2
-                    // (unlike returning a value from eval, which WebView2 drops).
-                    function pushCreds() {
-                        // TEMP: report what we ACTUALLY see for each global — type
-                        // (undefined vs string) and length — so we can tell
-                        // "global not in this document's scope" from "present but
-                        // empty" from "present with token".
+                    // Push the injected creds to Rust over the eval reverse channel
+                    // (dioxus.send -> eval.recv). CRITICAL: the eval script must NOT
+                    // return while we still want to send — in LiveView the `dioxus`
+                    // send binding is torn down once the top-level script returns, so
+                    // a setInterval that fires after return sends into a dead binding
+                    // (nothing arrives). Instead we loop with awaited setTimeout and
+                    // park forever, exactly like installChatSendBridge in input.rs.
+                    function readCreds() {
                         var st = window.__MATRIX_SESSION_TOKEN__;
                         var au = window.__MATRIX_API_URL__;
                         var wu = window.__MATRIX_WS_URL__;
-                        dioxus.send(JSON.stringify({
+                        return JSON.stringify({
                             t: st || '',
                             u: au || '',
                             w: wu || '',
@@ -393,19 +393,18 @@ pub fn WorkspaceApp() -> Element {
                             dbg_t_len: (st ? String(st).length : 0),
                             dbg_u_type: typeof au,
                             dbg_keys: Object.keys(window).filter(function(k){return k.indexOf('MATRIX')>=0;}).join(',')
-                        }));
+                        });
                     }
-                    pushCreds();
-                    // Re-push briefly in case the injected <script> runs after mount
-                    // (race), and to catch a token that lands slightly later. Stop
-                    // once the token is present or after ~10s (40 * 250ms).
+                    // Push immediately, then re-push every 250ms for ~10s to win the
+                    // mount/inject race, then keep the script alive (never return) so
+                    // dioxus.send stays valid for the pushes above.
                     let tries = 0;
-                    const iv = setInterval(() => {
-                        pushCreds();
-                        if ((window.__MATRIX_SESSION_TOKEN__ || '') !== '' || ++tries > 40) {
-                            clearInterval(iv);
-                        }
-                    }, 250);
+                    while (true) {
+                        dioxus.send(readCreds());
+                        if ((window.__MATRIX_SESSION_TOKEN__ || '') !== '' || ++tries > 40) break;
+                        await new Promise(function(r) { setTimeout(r, 250); });
+                    }
+                    await new Promise(function() {});
                     "#,
                 );
                 // Receive pushes on the eval channel (works on WebView2 + WebKitGTK).
