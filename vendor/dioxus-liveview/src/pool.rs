@@ -177,7 +177,18 @@ pub async fn run(mut vdom: VirtualDom, ws: impl LiveViewSocket) -> Result<(), Li
                         ws.send(text_frame("__pong__")).await?;
                     }
                     Some(Ok(evt)) => {
-                        if let Ok(message) = serde_json::from_str::<IpcMessage>(&String::from_utf8_lossy(evt)) {
+                        // TEMP INSTRUMENTATION (Windows/WebView2 upstream-frame diagnosis):
+                        // log every inbound frame's first 120 bytes so we can see
+                        // whether the browser's upstream WS delivers Event frames
+                        // (DOM events) AND Query frames (dioxus.send pushes) — or
+                        // nothing — through StrikeHub's Windows iframe proxy.
+                        {
+                            let raw = String::from_utf8_lossy(evt);
+                            let head: String = raw.chars().take(120).collect();
+                            tracing::info!("[LV_WS_DEBUG] inbound frame ({} bytes): {}", evt.len(), head);
+                        }
+                        match serde_json::from_str::<IpcMessage>(&String::from_utf8_lossy(evt)) {
+                          Ok(message) => {
                             match message {
                                 IpcMessage::Event(evt) => {
                                     // Intercept the mounted event and insert a custom element type
@@ -200,9 +211,18 @@ pub async fn run(mut vdom: VirtualDom, ws: impl LiveViewSocket) -> Result<(), Li
                                     );
                                 }
                                 IpcMessage::Query(result) => {
+                                    tracing::info!("[LV_WS_DEBUG] Query frame received (dioxus.send push landed server-side)");
                                     query_engine.send(result);
                                 },
                             }
+                          }
+                          Err(e) => {
+                            // A frame that arrived but did NOT match IpcMessage — e.g.
+                            // a malformed query. Surface it so we don't silently drop.
+                            let raw = String::from_utf8_lossy(evt);
+                            let head: String = raw.chars().take(120).collect();
+                            tracing::warn!("[LV_WS_DEBUG] inbound frame did NOT parse as IpcMessage ({e}): {head}");
+                          }
                         }
                     }
                     // log this I guess? when would we get an error here?
