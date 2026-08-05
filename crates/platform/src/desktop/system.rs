@@ -49,15 +49,24 @@ pub async fn get_network_interfaces() -> Result<Vec<NetworkInterface>> {
         Ok(interfaces
             .into_iter()
             .map(|iface| {
-                let ip_addresses: Vec<String> = iface
+                let addresses: Vec<InterfaceAddr> = iface
                     .addr
                     .into_iter()
-                    .map(|addr| addr.ip().to_string())
+                    .map(|addr| {
+                        // netmask is per-address; convert an IPv4 mask to a CIDR
+                        // prefix. IPv6 masks (and a missing/non-contiguous v4
+                        // mask) yield None rather than a fabricated prefix.
+                        let prefix_len = match addr.netmask() {
+                            Some(std::net::IpAddr::V4(mask)) => prefix_len_from_ipv4_netmask(mask),
+                            _ => None,
+                        };
+                        InterfaceAddr::new(addr.ip().to_string(), prefix_len)
+                    })
                     .collect();
 
                 NetworkInterface {
                     name: iface.name,
-                    ip_addresses,
+                    addresses,
                     mac_address: iface.mac_addr,
                     is_up: true,        // network-interface doesn't provide this
                     is_loopback: false, // would need to check IP
@@ -104,7 +113,7 @@ async fn get_network_interfaces_fallback() -> Result<Vec<NetworkInterface>> {
 
                     current_iface = Some(NetworkInterface {
                         name,
-                        ip_addresses: Vec::new(),
+                        addresses: Vec::new(),
                         mac_address: None,
                         is_up,
                         is_loopback,
@@ -112,18 +121,13 @@ async fn get_network_interfaces_fallback() -> Result<Vec<NetworkInterface>> {
                 }
             } else if let Some(ref mut iface) = current_iface {
                 let trimmed = line.trim();
-                if trimmed.starts_with("inet ") {
+                if trimmed.starts_with("inet ") || trimmed.starts_with("inet6 ") {
                     let parts: Vec<&str> = trimmed.split_whitespace().collect();
                     if parts.len() >= 2 {
-                        // Extract IP without subnet mask
-                        let ip = parts[1].split('/').next().unwrap_or(parts[1]);
-                        iface.ip_addresses.push(ip.to_string());
-                    }
-                } else if trimmed.starts_with("inet6 ") {
-                    let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                    if parts.len() >= 2 {
-                        let ip = parts[1].split('/').next().unwrap_or(parts[1]);
-                        iface.ip_addresses.push(ip.to_string());
+                        // `ip addr` prints the address with its prefix, e.g.
+                        // "inet 10.0.8.42/22" - keep the prefix instead of
+                        // discarding it (the /24 assumption this PR removes).
+                        iface.addresses.push(interface_addr_from_token(parts[1]));
                     }
                 } else if trimmed.starts_with("link/ether ") {
                     let parts: Vec<&str> = trimmed.split_whitespace().collect();
@@ -478,7 +482,7 @@ pub async fn check_wifi_connection_status(
     // Find active WiFi interfaces (up + has IP)
     let active_wifi: Vec<_> = interfaces
         .iter()
-        .filter(|i| i.is_up && !i.ip_addresses.is_empty() && is_wifi_name(&i.name))
+        .filter(|i| i.is_up && i.has_addresses() && is_wifi_name(&i.name))
         .collect();
 
     // Find all WiFi interfaces (even if down)
