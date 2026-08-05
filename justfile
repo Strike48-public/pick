@@ -828,6 +828,13 @@ build-ios:
     #!/usr/bin/env bash
     set -euo pipefail
     unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH
+    # Mobile is easy-mode-first: bake PICK_EASY_MODE at build time so iOS matches
+    # Android (build-android does the same). Mobile has no runtime env, so the
+    # default must be baked via option_env!; without this iOS fell back to the
+    # neutral expert-mode literal in apps/mobile/src/main.rs. Override with
+    # PICK_EASY_MODE=false; the in-app Settings toggle still wins at runtime.
+    export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
+    echo "PICK_EASY_MODE=$PICK_EASY_MODE"
     {{dx}} build --platform ios --package pentest-mobile
 
 # Run mobile app on iOS simulator (debug, hot-reload)
