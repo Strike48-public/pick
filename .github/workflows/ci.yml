@@ -101,13 +101,26 @@ jobs:
       - run: cargo check --package pentest-headless --package pentest-platform --package pentest-core --locked --features pentest-platform/desktop-pcap
       - run: cargo test --package pentest-platform --package pentest-core --lib --locked --features pentest-platform/desktop-pcap,pentest-core/browser-auth
 
-  # Type-check the iOS build. The mobile app and the platform/tools crates carry
-  # cfg(target_os = "ios") code (e.g. crates/platform/src/ios/*) that NO other CI
-  # job compiles — the Linux/macOS-host jobs all target the host. A workspace-wide
-  # struct change can therefore break the iOS build invisibly (it did: a
-  # NetworkInterface field rename compiled everywhere except ios/system.rs). A
-  # `cargo check` against the iOS target catches that class of break without the
-  # Xcode signing/provisioning ceremony a full `dx build`/`.ipa` would require.
+  # Type-check the iOS build of pentest-platform. Its cfg(target_os = "ios")
+  # code (crates/platform/src/ios/*) is compiled by NO other CI job — the
+  # Linux/macOS-host jobs all target the host — so a workspace-wide change can
+  # break the iOS build invisibly (it did: a NetworkInterface field rename
+  # compiled everywhere except ios/system.rs).
+  #
+  # CRITICAL: use the SAME features the mobile app uses for iOS
+  # (`--no-default-features --features ios`). pentest-platform defaults to the
+  # `desktop` feature, which pulls `keyring` -> `apple-native-keyring-store`,
+  # and that crate hard-errors on iOS without its `protected` feature. The app
+  # never hits this because apps/mobile depends on pentest-platform with
+  # default-features = false, features = ["ios"]; the CI check must match.
+  # (Verified on the macOS iOS build host: default features reproduce the
+  # `protected` compile_error!; --no-default-features --features ios builds
+  # clean for aarch64-apple-ios.)
+  #
+  # Scoped to pentest-platform: it holds the ios/ cfg code and is where this
+  # regression class lands. A full mobile-app / .ipa build needs Xcode SDK
+  # provisioning (rquickjs-sys/objc2 build scripts) and is left to the local
+  # `dx build --platform ios` workflow, not this type-check gate.
   check-ios:
     name: Check (iOS)
     runs-on: macos-latest
@@ -119,14 +132,10 @@ jobs:
         run: brew install protobuf
       - uses: dtolnay/rust-toolchain@stable
         with:
-          # Device + simulator triples: device is the shipping target; the
-          # sim slice is what the local Xcode/dx workflow links against.
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+          targets: aarch64-apple-ios
       - uses: Swatinem/rust-cache@v2
-      - name: Check iOS (device)
-        run: cargo check --package pentest-mobile --package pentest-platform --package pentest-tools --locked --target aarch64-apple-ios
-      - name: Check iOS (simulator)
-        run: cargo check --package pentest-mobile --package pentest-platform --package pentest-tools --locked --target aarch64-apple-ios-sim
+      - name: Check pentest-platform for iOS
+        run: cargo check --package pentest-platform --no-default-features --features ios --locked --target aarch64-apple-ios
 
   gitleaks:
     name: Gitleaks
