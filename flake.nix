@@ -192,15 +192,20 @@
           # Point the justfile's `dx` (defaults to ~/.dx/bin/dx) at the Nix CLI.
           export DX_PATH="$(command -v dx)"
 
-          # Test binaries dynamically link several C libs at runtime: openssl
-          # (native-tls), libpcap (the desktop-pcap capture path), and libxcb
-          # (pulled in by the `screenshots` crate's X11 backend). Without these
-          # nix libs on the loader path they fail at runtime with
-          # "lib{ssl.so.3,pcap.so.1,xcb.so.1}: cannot open shared object file".
-          # buildInputs only affects the compile/link env, not the runtime
-          # loader, so export it. (CI has these installed system-wide, so this
-          # only bites inside `nix develop`.)
-          export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.openssl pkgs.libpcap pkgs.xorg.libxcb ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          # The desktop binary dynamically links a stack of C libs at runtime:
+          # openssl (native-tls), libpcap (desktop-pcap), libxcb (screenshots
+          # X11 backend), plus the whole GTK/WebKit UI stack (webkitgtk, gtk3,
+          # cairo, gdk-pixbuf, pango, glib, libsoup) and xdotool. buildInputs
+          # only affects the compile/link env, not the runtime loader, so
+          # `cargo run` from `nix develop` fails with e.g.
+          # "libxdo.so.3: cannot open shared object file". Export them all.
+          # (CI has these installed system-wide, so this only bites inside
+          # `nix develop`.)
+          export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
+            pkgs.openssl pkgs.libpcap pkgs.xorg.libxcb
+            pkgs.webkitgtk_4_1 pkgs.gtk3 pkgs.cairo pkgs.gdk-pixbuf
+            pkgs.pango pkgs.glib pkgs.libsoup_3 pkgs.xdotool
+          ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
           # The desktop webview (WebKitGTK) fetches the mermaid/echarts CDN over
           # HTTPS via GIO/libsoup. GIO's TLS backend lives in a glib-networking
