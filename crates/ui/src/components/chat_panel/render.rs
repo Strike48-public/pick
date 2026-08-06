@@ -228,7 +228,79 @@ pub fn render_markdown(input: &str) -> String {
     let parser = Parser::new_ext(input, options);
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
+
+    // While a fenced viz block is still streaming in, its closing ``` hasn't
+    // arrived yet — but pulldown-cmark renders an unclosed fence identically to
+    // a closed one, so the chart post-processor (chart_processor.js) would try
+    // to render an incomplete diagram/chart and flash a parse error on every
+    // streaming tick. Detect the trailing OPEN fence and rename its language
+    // class so the processor skips it until the fence closes; the block shows as
+    // plain code meanwhile, then renders once complete. Only the LAST fence can
+    // be open mid-stream (a later block requires the previous one to have
+    // closed), so neutralizing the last matching class is correct.
+    match trailing_open_fence_lang(input).as_deref() {
+        Some("mermaid") => hide_last_viz_class(&mut html_output, "language-mermaid"),
+        Some("echarts") => hide_last_viz_class(&mut html_output, "language-echarts"),
+        Some("echart") => hide_last_viz_class(&mut html_output, "language-echart"),
+        _ => {}
+    }
+
     html_output
+}
+
+/// The first word of the info string of the currently-open trailing fenced code
+/// block, lowercased, or `None` when the source ends outside any fence (all
+/// blocks closed) or the open block has no language. Used to tell whether a
+/// viz block is still streaming so it isn't rendered until its fence closes.
+fn trailing_open_fence_lang(src: &str) -> Option<String> {
+    // `open_lang` is `Some(lang)` while inside a fence, `None` when closed;
+    // `fence` remembers the opening fence char + length so we match its closer.
+    let mut open_lang: Option<Option<String>> = None;
+    let mut fence: Option<(char, usize)> = None;
+
+    for line in src.lines() {
+        let trimmed = line.trim_start();
+        // A fence may be indented up to 3 spaces; more makes it code content.
+        if line.len() - trimmed.len() > 3 {
+            continue;
+        }
+        let first = match trimmed.chars().next() {
+            Some(c) if c == '`' || c == '~' => c,
+            _ => continue,
+        };
+        let run = trimmed.chars().take_while(|&c| c == first).count();
+        if run < 3 {
+            continue;
+        }
+        let info = trimmed[run..].trim();
+        match fence {
+            None => {
+                // Opening fence: remember its first info word as the language.
+                let lang = info.split_whitespace().next().map(str::to_ascii_lowercase);
+                fence = Some((first, run));
+                open_lang = Some(lang);
+            }
+            Some((fc, flen)) => {
+                // A closing fence uses the same char, at least as long, no info.
+                if first == fc && run >= flen && info.is_empty() {
+                    fence = None;
+                    open_lang = None;
+                }
+                // Otherwise it's just content inside the open block — ignore.
+            }
+        }
+    }
+
+    open_lang.flatten()
+}
+
+/// Rename the last `class="{token}"` to `class="{token}-pending"` so the chart
+/// processor's `code.{token}` selector no longer matches it. No-op if absent.
+fn hide_last_viz_class(html: &mut String, token: &str) {
+    let needle = format!("class=\"{token}\"");
+    if let Some(pos) = html.rfind(&needle) {
+        html.replace_range(pos..pos + needle.len(), &format!("class=\"{token}-pending\""));
+    }
 }
 
 /// JS snippet that loads mermaid + echarts CDN scripts and defines
@@ -739,7 +811,66 @@ fn load_screenshots_from_result(result_json: &str) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::webwright_display_name;
+    use super::{render_markdown, trailing_open_fence_lang, webwright_display_name};
+
+    #[test]
+    fn open_mermaid_fence_is_detected_while_streaming() {
+        // Fence opened, no closing ``` yet — the block is still streaming.
+        let src = "Here is a diagram:\n```mermaid\ngraph TD\n  A --> B";
+        assert_eq!(trailing_open_fence_lang(src).as_deref(), Some("mermaid"));
+    }
+
+    #[test]
+    fn closed_mermaid_fence_is_not_flagged() {
+        // Fully streamed block: closing ``` present -> eligible to render.
+        let src = "```mermaid\ngraph TD\n  A --> B\n```";
+        assert_eq!(trailing_open_fence_lang(src), None);
+    }
+
+    #[test]
+    fn closed_block_then_open_block_flags_only_the_open_one() {
+        // A completed mermaid block, then a second block still streaming. Only
+        // the trailing open block should be neutralized; the first stays live.
+        let src = "```mermaid\ngraph TD\n  A --> B\n```\ntext\n```echarts\n{\"x\":";
+        assert_eq!(trailing_open_fence_lang(src).as_deref(), Some("echarts"));
+    }
+
+    #[test]
+    fn open_fence_without_language_returns_none() {
+        // A plain ``` fence carries no viz language, so nothing to hide.
+        let src = "```\nsome code\nmore code";
+        assert_eq!(trailing_open_fence_lang(src), None);
+    }
+
+    #[test]
+    fn prose_with_no_fence_returns_none() {
+        assert_eq!(trailing_open_fence_lang("just some text\nno fences here"), None);
+    }
+
+    #[test]
+    fn streaming_mermaid_class_is_neutralized_but_closed_is_not() {
+        // While open, the emitted class is renamed so the processor skips it.
+        let open = render_markdown("```mermaid\ngraph TD\n  A --> B");
+        assert!(
+            open.contains("language-mermaid-pending"),
+            "open fence should be neutralized: {open}"
+        );
+        assert!(
+            !open.contains("class=\"language-mermaid\""),
+            "open fence must not carry the live class: {open}"
+        );
+
+        // Once closed, the live class is present so it renders exactly once.
+        let closed = render_markdown("```mermaid\ngraph TD\n  A --> B\n```");
+        assert!(
+            closed.contains("language-mermaid"),
+            "closed fence should carry the live class: {closed}"
+        );
+        assert!(
+            !closed.contains("language-mermaid-pending"),
+            "closed fence must not be neutralized: {closed}"
+        );
+    }
 
     // End-to-end guard for the render.rs truncation call site (#287). Unlike the
     // three sidebar/history/agent_selector sites (inline in rsx! and gated on a
