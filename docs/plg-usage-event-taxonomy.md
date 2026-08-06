@@ -203,7 +203,7 @@ that routes around it (panics, tracing integration, third-party crumbs).
   a toggle, plus a one-line mention in the first-run/easy-mode flow linking to the privacy
   note. The toggle takes effect on next launch (client init is once-per-process); the UI MUST
   say so.
-- **Build-time kill switch:** absent `SENTRY_DSN` at compile time, telemetry is a hard no-op.
+- **Build-time kill switch:** absent `PICK_SENTRY_DSN` at compile time, telemetry is a hard no-op.
   Forks and local/dev builds send nothing by construction. Only release CI injects the DSN.
 
 ## Sentry project layout

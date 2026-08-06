@@ -23,9 +23,17 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Baked into release builds via option_env!("SENTRY_DSN") for usage telemetry
-  # (#278). Absent/empty in forks and PRs -> telemetry compiles to a no-op.
-  SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+  # Baked into release builds via option_env!("PICK_SENTRY_DSN") for usage
+  # telemetry (#278). Named PICK_SENTRY_DSN (not the SDK's magic SENTRY_DSN) so
+  # it's distinct from StrikeHub's own DSN and never read implicitly at runtime.
+  # Absent/empty in forks and PRs -> telemetry compiles to a no-op.
+  PICK_SENTRY_DSN: ${{ secrets.PICK_SENTRY_DSN }}
+  # The Sentry environment for released builds. Baked in via
+  # option_env!("STRIKE48_SENTRY_ENV") (telemetry::environment). Explicit here
+  # because the mobile release-ffi libs build with debug_assertions OFF and have
+  # no runtime env, so without this they'd fall through to the profile default.
+  # Set as a workflow-level env so every build job inherits it.
+  STRIKE48_SENTRY_ENV: production
 
 jobs:
   # ===========================================

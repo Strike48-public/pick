@@ -10,8 +10,11 @@
 //! properties are restricted to safe enums/counts. Telemetry is opt-out
 //! (enabled by default) and honors the `telemetry_enabled` setting.
 //!
-//! The Sentry DSN is baked at build time via `option_env!("SENTRY_DSN")`; when
-//! it's absent (local dev, forks) telemetry is a no-op — nothing is sent.
+//! The Sentry DSN is baked at build time via `option_env!("PICK_SENTRY_DSN")`;
+//! when it's absent (local dev, forks) telemetry is a no-op — nothing is sent.
+//! Named `PICK_SENTRY_DSN` (not the SDK's magic `SENTRY_DSN`) so it can't be
+//! confused with StrikeHub's own DSN or picked up implicitly by the SDK at
+//! runtime — Pick's DSN is always the compile-time one.
 //!
 //! NOTE: the event names below (`scan.start`, `tool.run`, `network.check`) are
 //! PROVISIONAL, pending the shared taxonomy spec (project-management#101). They
@@ -45,20 +48,27 @@ pub const SENTRY_TRACE_HEADER: &str = "sentry_trace";
 pub const BAGGAGE_HEADER: &str = "baggage";
 
 /// Compile-time DSN. `None` (the default in local/dev builds) disables Sentry
-/// entirely — release CI injects `SENTRY_DSN` so shipped builds report.
-const DSN: Option<&str> = option_env!("SENTRY_DSN");
+/// entirely — release CI injects `PICK_SENTRY_DSN` so shipped builds report.
+/// Deliberately NOT the SDK's magic `SENTRY_DSN` name: Pick's DSN is always the
+/// one compiled in, never one the SDK might read from the ambient env of a host
+/// process (e.g. StrikeHub) that spawned us.
+const DSN: Option<&str> = option_env!("PICK_SENTRY_DSN");
 
 /// The build environment reported to Sentry. Resolved in priority order:
 ///   1. `STRIKE48_SENTRY_ENV` baked at BUILD time (`option_env!`) — the source
 ///      that works for the mobile FFI libs, which have no runtime environment.
 ///   2. `STRIKE48_SENTRY_ENV` at RUNTIME (`std::env::var`) — for the desktop /
 ///      headless path where the process env is set.
-///   3. The build profile: `development` under debug, else `production`.
+///   3. The fallback `development` when nothing is set.
 ///
-/// The mobile `release-ffi` libs build with debug_assertions OFF, so without an
-/// explicit override they'd tag as `production`; a local dev build sets
-/// `STRIKE48_SENTRY_ENV=development` at build time to keep test traffic out of
-/// the production environment.
+/// `production` is **opt-in only**: the tagged release workflow sets
+/// `STRIKE48_SENTRY_ENV=production` at build time, so only shipped artifacts
+/// report as production. Everything else — local dev, branch builds, ad-hoc
+/// `--release` builds, and the mobile `release-ffi` libs (which build with
+/// debug_assertions OFF) — falls through to `development` rather than silently
+/// claiming to be production. That keeps test-run traffic out of the production
+/// environment automatically; set `STRIKE48_SENTRY_ENV=staging` on a branch
+/// build to bucket it distinctly.
 fn environment() -> String {
     if let Some(env) = option_env!("STRIKE48_SENTRY_ENV") {
         if !env.is_empty() {
@@ -70,11 +80,7 @@ fn environment() -> String {
             return env;
         }
     }
-    if cfg!(debug_assertions) {
-        "development".to_string()
-    } else {
-        "production".to_string()
-    }
+    "development".to_string()
 }
 
 /// The Sentry traces (span) sample rate, resolved in priority order:
@@ -127,6 +133,20 @@ fn form_factor() -> &'static str {
         "mobile"
     } else {
         "desktop"
+    }
+}
+
+/// The hosting context tag (`app.host`): whether this connector is running
+/// embedded in StrikeHub (which spawns Pick with `STRIKEHUB_SOCKET` set for IPC)
+/// or as a standalone app. StrikeHub runs its OWN Sentry in a separate process
+/// with a separate DSN; this tag lets Pick's dashboard tell embedded usage from
+/// standalone without conflating the two. Same signal every other subsystem uses
+/// (liveview_server, shell, easy_mode).
+fn host_context() -> &'static str {
+    if std::env::var_os("STRIKEHUB_SOCKET").is_some() {
+        "strikehub"
+    } else {
+        "standalone"
     }
 }
 
@@ -228,6 +248,11 @@ fn install(device_id: &str, easy_mode: bool) {
             traces_sample_rate: traces_sample_rate(),
             // Never attach the connecting server URL or request bodies.
             send_default_pii: false,
+            // Defense-in-depth scrub of anything credential-shaped that slips
+            // into an event, on top of `send_default_pii: false` and the
+            // caller-side "safe values only" discipline. Mirrors StrikeHub's
+            // `before_send` (sh-core/src/sentry_init.rs).
+            before_send: Some(std::sync::Arc::new(redact_event)),
             ..Default::default()
         },
     ));
@@ -243,6 +268,7 @@ fn install(device_id: &str, easy_mode: bool) {
         scope.set_tag("app.arch", std::env::consts::ARCH);
         scope.set_tag("app.mode", form_factor());
         scope.set_tag("app.channel", channel(easy_mode));
+        scope.set_tag("app.host", host_context());
     });
 
     let enabled = guard_reports_enabled(&guard);
@@ -273,6 +299,31 @@ pub fn flush() {
         let flushed = client.flush(Some(std::time::Duration::from_secs(3)));
         tracing::debug!("telemetry flush requested (drained={flushed})");
     }
+}
+
+/// `before_send` hook: last-line redaction of credential-shaped data from any
+/// event before it leaves the device. Pick's primary defense is `send_default_pii:
+/// false` plus caller-side discipline (only safe enums/counts in span props), but
+/// this catches anything that slips through — e.g. an `authorization` header or a
+/// `*token*`-named field on a captured error. Mirrors StrikeHub's `before_send`.
+fn redact_event(
+    mut event: sentry::protocol::Event<'static>,
+) -> Option<sentry::protocol::Event<'static>> {
+    if let Some(ref mut request) = event.request {
+        for (key, value) in request.headers.iter_mut() {
+            let k = key.to_lowercase();
+            if k == "authorization" || k == "cookie" || k.contains("token") {
+                *value = "[REDACTED]".to_string();
+            }
+        }
+    }
+    for (key, value) in event.extra.iter_mut() {
+        let k = key.to_lowercase();
+        if k.contains("token") || k.contains("secret") || k.contains("password") {
+            *value = serde_json::Value::String("[REDACTED]".to_string());
+        }
+    }
+    Some(event)
 }
 
 /// Attach the authenticated PLG identity once the user connects. Still
@@ -450,10 +501,12 @@ mod tests {
     }
 
     #[test]
-    fn environment_profile_default_and_override() {
+    fn environment_defaults_to_development_and_honors_override() {
         // One test (not two) so the env var can't race a sibling running in
-        // parallel. Default in debug/test builds is "development"; the override
-        // wins when set. Restore prior state to avoid leaking into other tests.
+        // parallel. With nothing set the env is "development" (production is
+        // opt-in only, set explicitly by the release workflow); the runtime
+        // override wins when present, so a branch build can bucket itself as
+        // "staging". Restore prior state to avoid leaking into other tests.
         let prior = std::env::var("STRIKE48_SENTRY_ENV").ok();
         std::env::remove_var("STRIKE48_SENTRY_ENV");
         assert_eq!(environment(), "development");
@@ -506,6 +559,60 @@ mod tests {
     fn form_factor_is_desktop_in_host_tests() {
         // The test suite runs on a desktop host target.
         assert_eq!(form_factor(), "desktop");
+    }
+
+    #[test]
+    fn host_context_reflects_strikehub_socket() {
+        // Single test so the shared env var can't race parallel siblings.
+        // Absent -> standalone; present (any value) -> strikehub. Restore prior.
+        let prior = std::env::var("STRIKEHUB_SOCKET").ok();
+        std::env::remove_var("STRIKEHUB_SOCKET");
+        assert_eq!(host_context(), "standalone");
+
+        std::env::set_var("STRIKEHUB_SOCKET", "/tmp/strikehub.sock");
+        assert_eq!(host_context(), "strikehub");
+
+        match prior {
+            Some(v) => std::env::set_var("STRIKEHUB_SOCKET", v),
+            None => std::env::remove_var("STRIKEHUB_SOCKET"),
+        }
+    }
+
+    #[test]
+    fn redact_event_scrubs_credentials() {
+        use sentry::protocol::{Event, Request};
+
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert("Authorization".to_string(), "Bearer secret".to_string());
+        headers.insert("X-Session-Token".to_string(), "abc123".to_string());
+        headers.insert("Accept".to_string(), "application/json".to_string());
+        let req = Request {
+            headers,
+            ..Default::default()
+        };
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert("access_token".to_string(), "leaked".into());
+        extra.insert("tool".to_string(), "nmap".into());
+        let event = Event {
+            request: Some(req),
+            extra,
+            ..Default::default()
+        };
+
+        let out = redact_event(event).expect("event should pass through");
+        let req = out.request.unwrap();
+        assert_eq!(req.headers.get("Authorization").unwrap(), "[REDACTED]");
+        assert_eq!(req.headers.get("X-Session-Token").unwrap(), "[REDACTED]");
+        // Non-sensitive headers/fields are left intact.
+        assert_eq!(req.headers.get("Accept").unwrap(), "application/json");
+        assert_eq!(
+            out.extra.get("access_token").unwrap(),
+            &serde_json::Value::String("[REDACTED]".into())
+        );
+        assert_eq!(
+            out.extra.get("tool").unwrap(),
+            &serde_json::Value::String("nmap".into())
+        );
     }
 
     #[test]
