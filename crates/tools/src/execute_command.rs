@@ -104,11 +104,23 @@ impl PentestTool for ExecuteCommandTool {
         // identity, resolve it to its auth header and splice the correct
         // per-binary flag ahead of the user args. resolve_identity never
         // reveals the secret to the LLM; the connector injects it locally here.
+        //
+        // `applied_identity` records what was injected so provenance can (a)
+        // scrub the exact secret from `effective_command` by value, and (b)
+        // attribute the response to the identity — a differential-authz finding
+        // is only meaningful with the principal attached (#317 review #3/#6).
+        let mut applied_identity: Option<AppliedIdentity> = None;
         if let Some(label) = params.get("identity_ref").and_then(|v| v.as_str()) {
             match build_identity_injection(&command, label, ctx) {
                 // Prepend so tool-specific positional args (e.g. a target URL)
                 // stay last, matching how these binaries expect flags.
-                Ok(mut injected) => {
+                Ok(injection) => {
+                    applied_identity = Some(AppliedIdentity {
+                        label: label.to_string(),
+                        secret: injection.injected_secret,
+                    });
+
+                    let mut injected = injection.args;
                     injected.extend(std::mem::take(&mut args));
                     args = injected;
                 }
@@ -148,10 +160,24 @@ impl PentestTool for ExecuteCommandTool {
             } else {
                 result.stdout.as_str()
             };
+
+            // When an identity was injected, scrub its exact secret from the
+            // effective (published) command by value and attribute the probe to
+            // the identity label so a reviewer can tell which principal produced
+            // the response (#317 review #3/#6). A non-empty secret is the auth
+            // header; an anonymous identity injects nothing but still attributes.
+            let probe_command = match &applied_identity {
+                Some(AppliedIdentity { label, secret }) => {
+                    ProbeCommand::from_exact_redacting_secret(full_command, secret)
+                        .with_description(format!("authenticated as test identity: {label}"))
+                }
+                None => ProbeCommand::from_exact(full_command),
+            };
+
             let provenance = Provenance::new(
                 "shell",
                 shell_version(),
-                ProbeCommand::from_exact(full_command),
+                probe_command,
                 truncate_excerpt(excerpt_source),
             );
 
@@ -220,6 +246,34 @@ fn classify_command_outcome(result: ToolResult) -> ToolResult {
     }
 }
 
+/// What `build_identity_injection` produced: the argv fragment to splice in,
+/// plus the exact secret value it injected (empty for an anonymous identity) so
+/// the caller can scrub it from published provenance by value (#317 review #3).
+struct IdentityInjection {
+    args: Vec<String>,
+    injected_secret: String,
+}
+
+// Manual Debug: never print `injected_secret` (it is the raw auth header). The
+// whole point of this type is to keep that value out of every sink; a derived
+// Debug would defeat it in logs and test panic output.
+impl std::fmt::Debug for IdentityInjection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdentityInjection")
+            .field("args_len", &self.args.len())
+            .field("has_secret", &!self.injected_secret.is_empty())
+            .finish()
+    }
+}
+
+/// A test identity that was actually applied to this command, captured for
+/// provenance: `label` attributes the response to a principal (#317 review #6),
+/// `secret` is the exact injected value scrubbed from `effective_command` (#3).
+struct AppliedIdentity {
+    label: String,
+    secret: String,
+}
+
 /// Join `command` and its `args` into a single shell-like string suitable
 /// for `ProbeCommand.command`. Arguments containing whitespace are quoted.
 fn format_full_command(command: &str, args: &[String]) -> String {
@@ -284,7 +338,11 @@ fn header_flags_for(binary: &str, header: &str) -> Option<Vec<String>> {
 ///
 /// Returns `Ok(vec![])` (inject nothing) when the identity is anonymous (empty
 /// material): running with no auth *is* that identity, so it is not a failure.
-fn build_identity_injection(command: &str, label: &str, ctx: &ToolContext) -> Result<Vec<String>> {
+fn build_identity_injection(
+    command: &str,
+    label: &str,
+    ctx: &ToolContext,
+) -> Result<IdentityInjection> {
     let material = ctx.resolve_identity(label).ok_or_else(|| {
         pentest_core::error::Error::InvalidParams(format!(
             "identity_ref '{label}' is not a provisioned test identity; \
@@ -294,16 +352,27 @@ fn build_identity_injection(command: &str, label: &str, ctx: &ToolContext) -> Re
 
     // Anonymous identity: no material to inject. Running as-is IS this identity.
     if material.is_empty() {
-        return Ok(Vec::new());
+        return Ok(IdentityInjection {
+            args: Vec::new(),
+            injected_secret: String::new(),
+        });
     }
 
     let binary = binary_basename(command);
-    header_flags_for(binary, material.expose()).ok_or_else(|| {
+    let header = material.expose();
+    let args = header_flags_for(binary, header).ok_or_else(|| {
         pentest_core::error::Error::InvalidParams(format!(
             "identity_ref '{label}' cannot be injected into '{binary}': no \
              supported custom-header flag for this binary (supported: curl, \
              ffuf, wget, sqlmap). Refusing to run with the identity dropped."
         ))
+    })?;
+
+    Ok(IdentityInjection {
+        args,
+        // The exact injected header value, kept so provenance can scrub it from
+        // the published command by value rather than hoping a regex matches.
+        injected_secret: header.to_string(),
     })
 }
 
@@ -599,11 +668,14 @@ mod tests {
     #[test]
     fn build_injection_known_label_curl_injects_material() {
         let ctx = ctx_with("user_a", "Cookie: sid=secret-abc");
-        let args = build_identity_injection("curl", "user_a", &ctx).expect("known label injects");
+        let injection =
+            build_identity_injection("curl", "user_a", &ctx).expect("known label injects");
         assert_eq!(
-            args,
+            injection.args,
             vec!["-H".to_string(), "Cookie: sid=secret-abc".to_string()]
         );
+        // The exact injected secret is captured so provenance can scrub it by value.
+        assert_eq!(injection.injected_secret, "Cookie: sid=secret-abc");
     }
 
     #[test]
@@ -622,9 +694,10 @@ mod tests {
         // An anonymous identity carries no material: inject nothing and succeed
         // (running with no auth IS that identity), never fail.
         let ctx = ctx_with("anon", "");
-        let args =
+        let injection =
             build_identity_injection("curl", "anon", &ctx).expect("anonymous injects nothing");
-        assert!(args.is_empty());
+        assert!(injection.args.is_empty());
+        assert!(injection.injected_secret.is_empty());
     }
 
     #[test]
@@ -638,9 +711,9 @@ mod tests {
         std::fs::write(&path, r#"[{"label":"unauth","role":"anonymous"}]"#).unwrap();
         let loaded = pentest_core::identity::load_identities_from_file(&path).expect("loader ok");
         let ctx = ToolContext::default().with_identities(loaded.store);
-        let args = build_identity_injection("curl", "unauth", &ctx)
+        let injection = build_identity_injection("curl", "unauth", &ctx)
             .expect("anonymous from real loader injects nothing, does not error");
-        assert!(args.is_empty());
+        assert!(injection.args.is_empty());
         std::fs::remove_file(&path).ok();
     }
 
@@ -663,6 +736,41 @@ mod tests {
         assert!(prov.probe_commands[0].command.contains("secrettoken123"));
     }
 
+    #[test]
+    fn exotic_shape_identity_header_is_scrubbed_by_value_not_pattern() {
+        // #317 review #3: a short, non-hex, oddly-named header value slips past
+        // every redact() regex (no `authorization:`/`cookie:`/keyword, < 32 hex,
+        // < 40 base64). Because the injected secret is KNOWN, from_exact_redacting_secret
+        // scrubs it by exact substring, so it never reaches effective_command
+        // (which is published to reports) regardless of shape.
+        let secret = "X-Api-Id: ab12cd";
+        let full = format_full_command(
+            "curl",
+            &[
+                "-H".to_string(),
+                secret.to_string(),
+                "https://x.test".to_string(),
+            ],
+        );
+
+        // Baseline: pattern redaction alone does NOT catch this shape.
+        assert!(
+            pentest_core::provenance::redact(&full).contains("ab12cd"),
+            "precondition: this shape is not caught by pattern redaction"
+        );
+
+        // Fix: value-scrub removes it from the published form.
+        let pc = ProbeCommand::from_exact_redacting_secret(full, secret);
+        assert!(
+            !pc.effective_command.contains("ab12cd"),
+            "exotic-shape secret leaked into effective_command: {}",
+            pc.effective_command
+        );
+        assert!(pc.effective_command.contains("<REDACTED>"));
+        // Exact form retained (but never serialized).
+        assert!(pc.command.contains("ab12cd"));
+    }
+
     #[tokio::test]
     async fn execute_unknown_identity_ref_fails_without_running() {
         // identity_ref pointing at no known identity fails closed BEFORE any
@@ -679,6 +787,42 @@ mod tests {
         assert_eq!(result.outcome, ToolOutcome::Failed);
         assert!(!result.success);
         assert!(result.error.unwrap_or_default().contains("ghost"));
+    }
+
+    #[tokio::test]
+    async fn execute_with_identity_attributes_provenance_and_scrubs_secret() {
+        // #317 review #6 (attribution) + #3 (value-scrub), end-to-end through
+        // execute/1. curl against an unroutable host still RUNS (produces
+        // provenance) but makes no real network call, so this is deterministic.
+        // Guards the WIRING: the identity label must reach provenance.description
+        // and the injected secret must never appear in effective_command.
+        pentest_platform::set_use_sandbox(false);
+        let tool = ExecuteCommandTool;
+        let ctx = ToolContext::default().with_identities(IdentityStore::from_pairs([(
+            "user_a",
+            SessionMaterial::new("X-Api-Id: ab12cd"),
+        )]));
+        let params = json!({
+            "command": "curl",
+            "args": ["--max-time", "1", "http://127.0.0.1:1/x"],
+            "identity_ref": "user_a",
+        });
+
+        let result = tool.execute(params, &ctx).await.expect("execute ok");
+        let prov = result.provenance.expect("command run produces provenance");
+        let pc = &prov.probe_commands[0];
+
+        // Attribution reached provenance (survives the wire; command does not).
+        assert_eq!(
+            pc.description.as_deref(),
+            Some("authenticated as test identity: user_a")
+        );
+        // The exotic-shape secret is scrubbed from the published form by value.
+        assert!(
+            !pc.effective_command.contains("ab12cd"),
+            "identity secret leaked into effective_command: {}",
+            pc.effective_command
+        );
     }
 
     #[tokio::test]

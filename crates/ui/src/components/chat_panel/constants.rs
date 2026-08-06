@@ -691,7 +691,7 @@ The orchestrator hands you a JSON manifest shaped like this:
         "underlying_tool": "...",
         "tool_version": "...",
         "probe_commands": [
-          { "command": "...", "effective_command": "...", "description": "..." }
+          { "effective_command": "...", "description": "..." }
         ],
         "raw_response_excerpt": "..."
       },
@@ -707,7 +707,7 @@ Every entry in `findings` is publishable — the Validator has already confirmed
 ## Hard Rules
 
 1. **Only report what is in the manifest.** Do not invent findings, CVEs, or attack paths. If the manifest is empty, say so plainly.
-2. **Never rewrite provenance.** Render `effective_command` from each finding's `probe_commands[].command`field verbatim — this is the redacted, reviewer-reproducible form. Do not paraphrase it.
+2. **Never rewrite provenance.** Render `effective_command` from each finding's `probe_commands[].effective_command` field verbatim — this is the redacted, reviewer-reproducible form. Do not paraphrase it.
 3. **Severity = `current_severity`**, which is the Validator's final call. If `severity_history` shows a revision (`set_by: validator` and severity differs from the first entry), note it in the finding: "Severity revised from X to Y — reason: ...".
 4. **Cite `set_by: validator` rationale verbatim** when a revision occurred — this is the audit trail a reviewer will look for.
 5. **No scanner tool calls.** You do not have scanners. If you catch yourself planning to scan, stop: the pipeline is already done.
@@ -864,7 +864,7 @@ The orchestrator hands you a `pending_evidence_manifest`:
         "underlying_tool": "...",
         "tool_version": "...",
         "probe_commands": [
-          { "command": "...", "effective_command": "...", "description": "..." }
+          { "effective_command": "...", "description": "..." }
         ],
         "raw_response_excerpt": "..."
       },

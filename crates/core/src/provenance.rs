@@ -53,6 +53,33 @@ impl ProbeCommand {
         }
     }
 
+    /// Build a `ProbeCommand` when a specific secret value is *known* to be
+    /// present in the command (e.g. an injected differential-authz identity
+    /// header). The known secret is scrubbed by exact substring BEFORE the
+    /// pattern-based [`redact`] runs, so `effective_command` is safe regardless
+    /// of the secret's shape — closing the gap where a short, non-hex, oddly
+    /// named header value (`-H "X-Api-Id: ab12cd"`) would slip past every regex
+    /// and land verbatim in a customer-facing report (#317 review, Lens 10b:
+    /// security-by-construction over best-effort scrubbing). `command` (the
+    /// exact form) is retained in the struct but is never serialized.
+    pub fn from_exact_redacting_secret(command: impl Into<String>, secret: &str) -> Self {
+        let command = command.into();
+
+        // Exact-substring scrub of the known secret first; then the regex pass
+        // catches anything else (user-supplied creds in the same command line).
+        let pre_scrubbed = if secret.is_empty() {
+            command.clone()
+        } else {
+            command.replace(secret, REDACTION)
+        };
+
+        Self {
+            command,
+            effective_command: redact(&pre_scrubbed),
+            description: None,
+        }
+    }
+
     /// Attach a one-line purpose description.
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
@@ -413,6 +440,58 @@ mod tests {
         let back2: ProbeCommand = serde_json::from_str(current).expect("current wire deserializes");
         assert_eq!(back2.command, "");
         assert_eq!(back2.effective_command, "nmap -sV 10.0.0.1");
+    }
+
+    #[test]
+    fn from_exact_redacting_secret_scrubs_arbitrary_shape_by_value() {
+        // #317 review #3: a known secret is scrubbed by exact substring BEFORE
+        // pattern redaction, so it never lands in effective_command even when its
+        // shape defeats every regex (short, non-hex, non-keyword header value).
+        let secret = "X-Api-Id: ab12cd";
+        let cmd = format!(r#"curl -H "{secret}" https://x.test"#);
+
+        // Precondition: pattern redaction alone does not catch this shape.
+        assert!(redact(&cmd).contains("ab12cd"));
+
+        let pc = ProbeCommand::from_exact_redacting_secret(cmd, secret);
+        assert!(
+            !pc.effective_command.contains("ab12cd"),
+            "known secret leaked: {}",
+            pc.effective_command
+        );
+        assert!(pc.effective_command.contains(REDACTION));
+        assert!(
+            pc.command.contains("ab12cd"),
+            "exact form retained in-memory"
+        );
+    }
+
+    #[test]
+    fn from_exact_redacting_empty_secret_falls_back_to_pattern_only() {
+        // An anonymous identity injects no secret; the empty-secret path must not
+        // blank the whole command (empty substring replace) — it just pattern-redacts.
+        let pc = ProbeCommand::from_exact_redacting_secret("curl https://x.test", "");
+        assert_eq!(pc.effective_command, "curl https://x.test");
+    }
+
+    #[test]
+    fn identity_attribution_description_survives_the_wire() {
+        // #317 review #6: the identity label reaches serialized provenance via the
+        // description, so a reviewer can attribute the response to a principal even
+        // though the raw command (which carried the injected header) is not serialized.
+        let pc = ProbeCommand::from_exact_redacting_secret(
+            r#"curl -H "Cookie: sid=secret" https://x.test"#,
+            "Cookie: sid=secret",
+        )
+        .with_description("authenticated as test identity: user_a");
+        let p = Provenance::new("shell", "test", pc, "");
+
+        let wire = serde_json::to_string(&p).expect("serialize");
+        assert!(wire.contains("authenticated as test identity: user_a"));
+        assert!(
+            !wire.contains("sid=secret"),
+            "secret leaked on the wire: {wire}"
+        );
     }
 
     #[test]
