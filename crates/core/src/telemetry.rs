@@ -77,6 +77,41 @@ fn environment() -> String {
     }
 }
 
+/// The Sentry traces (span) sample rate, resolved in priority order:
+///   1. `STRIKE48_SENTRY_TRACES_SAMPLE_RATE` baked at BUILD time (`option_env!`)
+///      — the source that reaches the mobile FFI libs (no runtime env).
+///   2. `STRIKE48_SENTRY_TRACES_SAMPLE_RATE` at RUNTIME (`std::env::var`) — for
+///      the desktop / headless path.
+///   3. Default [`DEFAULT_TRACES_SAMPLE_RATE`].
+///
+/// Parsed as a float and clamped to `0.0..=1.0`; an unparseable/out-of-range
+/// value falls through to the default. Previously this was hard-coded to `1.0`
+/// (100% span sampling), which — on a connector that emits a span per tool run
+/// and network check — burned through the Sentry spans quota and paused
+/// ingestion. A lower default keeps volume sane; set the env var to `1.0` to
+/// capture everything when debugging.
+const DEFAULT_TRACES_SAMPLE_RATE: f32 = 0.1;
+
+fn traces_sample_rate() -> f32 {
+    fn parse(v: &str) -> Option<f32> {
+        v.trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|r| (0.0..=1.0).contains(r))
+    }
+    if let Some(v) = option_env!("STRIKE48_SENTRY_TRACES_SAMPLE_RATE") {
+        if let Some(r) = parse(v) {
+            return r;
+        }
+    }
+    if let Ok(v) = std::env::var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE") {
+        if let Some(r) = parse(&v) {
+            return r;
+        }
+    }
+    DEFAULT_TRACES_SAMPLE_RATE
+}
+
 /// The app channel tag: easy mode vs the full advanced UI.
 fn channel(easy_mode: bool) -> &'static str {
     if easy_mode {
@@ -183,11 +218,14 @@ fn install(device_id: &str, easy_mode: bool) {
             // Release-health sessions power DAU/WAU + crash-free rate.
             auto_session_tracking: true,
             session_mode: sentry::SessionMode::Application,
-            // Send all activity transactions (see `record`). These are the
-            // who/how usage signal and are low-volume, so full sampling is fine;
-            // revisit if volume grows. Without this, start_transaction is
-            // sampled out and nothing reaches Traces.
-            traces_sample_rate: 1.0,
+            // Span sampling for activity transactions (see `record`). Defaults to
+            // DEFAULT_TRACES_SAMPLE_RATE and is overridable via
+            // STRIKE48_SENTRY_TRACES_SAMPLE_RATE (build-time or runtime). Was 1.0
+            // (100%), which exhausted the Sentry spans quota and paused ingestion
+            // — a connector emits a span per tool run / network check. A rate of
+            // 0.0 disables span sampling entirely (start_transaction is sampled
+            // out and nothing reaches Traces); set 1.0 to capture everything.
+            traces_sample_rate: traces_sample_rate(),
             // Never attach the connecting server URL or request bodies.
             send_default_pii: false,
             ..Default::default()
@@ -433,6 +471,35 @@ mod tests {
     fn channel_reflects_mode() {
         assert_eq!(channel(true), "easy");
         assert_eq!(channel(false), "advanced");
+    }
+
+    #[test]
+    fn traces_sample_rate_default_override_and_clamp() {
+        // One test so the shared env var can't race parallel siblings. Restore
+        // prior state at the end. (option_env! baked value is None in tests, so
+        // only the runtime env + default paths are exercised here.)
+        let prior = std::env::var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE").ok();
+
+        std::env::remove_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE");
+        assert_eq!(traces_sample_rate(), DEFAULT_TRACES_SAMPLE_RATE);
+
+        std::env::set_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE", "1.0");
+        assert_eq!(traces_sample_rate(), 1.0);
+
+        std::env::set_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE", "0");
+        assert_eq!(traces_sample_rate(), 0.0);
+
+        // Out-of-range and unparseable fall back to the default (never panics the
+        // sentry builder, whose setter rejects values outside [0,1]).
+        std::env::set_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE", "5");
+        assert_eq!(traces_sample_rate(), DEFAULT_TRACES_SAMPLE_RATE);
+        std::env::set_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE", "nope");
+        assert_eq!(traces_sample_rate(), DEFAULT_TRACES_SAMPLE_RATE);
+
+        match prior {
+            Some(v) => std::env::set_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE", v),
+            None => std::env::remove_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE"),
+        }
     }
 
     #[test]
