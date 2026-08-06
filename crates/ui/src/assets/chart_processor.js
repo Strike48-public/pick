@@ -15,6 +15,21 @@
         div.appendChild(note);
     }
 
+    // Last-good rendered SVG per streaming viz block, keyed by the stable
+    // data-viz-key that Rust stamps on an open (still-streaming) fence. While a
+    // mermaid block streams in it is re-parsed every tick; the intermediate text
+    // often isn't valid yet, so on a parse failure we show the last frame that
+    // DID parse (from here) instead of flashing an error. Cleared when the block
+    // finally renders successfully closed. Bounded so a long session can't grow
+    // it without limit.
+    var vizLastGood = (window.__vizLastGood = window.__vizLastGood || {});
+    function rememberGood(key, svg) {
+        if (!key) return;
+        vizLastGood[key] = svg;
+        var keys = Object.keys(vizLastGood);
+        if (keys.length > 64) delete vizLastGood[keys[0]];
+    }
+
     // Load Mermaid
     if (!window.mermaid) {
         var ms = document.createElement('script');
@@ -91,28 +106,66 @@
 
         // Mermaid
         if (window.mermaid) {
+            // A block still streaming carries data-viz-open (Rust stamps it on
+            // the trailing OPEN fence). We render those too — optimistically —
+            // but must NOT mark them processed, so each streaming tick re-parses
+            // the grown text. Closed blocks lack the marker and render once.
             var blocks = container.querySelectorAll('pre code.language-mermaid:not([data-processed])');
             blocks.forEach(function(block, idx) {
-                block.setAttribute('data-processed', 'true');
+                var isOpen = block.getAttribute('data-viz-open') === 'true';
+                var vizKey = block.getAttribute('data-viz-key') || '';
                 var pre = block.closest('pre') || block;
                 var code = block.textContent || block.innerText;
+
+                // Only closed blocks are terminal — mark them so we don't
+                // re-render. Open blocks stay unprocessed for the next tick.
+                if (!isOpen) block.setAttribute('data-processed', 'true');
+
                 var div = document.createElement('div');
                 div.className = 'chat-viz-block';
                 div.id = 'chat-mermaid-' + Date.now() + '-' + idx;
                 div.style.cssText = 'background:rgba(0,0,0,0.3);border-radius:6px;padding:12px;margin:8px 0;overflow:auto;width:100%;box-sizing:border-box;';
+
+                // Show the last good render immediately (if any) so an open block
+                // that currently fails to parse doesn't flash — it holds the
+                // previous frame until the new text parses or the fence closes.
+                var prior = vizKey ? vizLastGood[vizKey] : null;
+                if (prior) {
+                    div.innerHTML = prior;
+                    var pv = div.querySelector('svg');
+                    if (pv) { pv.style.display='block'; pv.style.width='100%'; pv.style.height='auto'; pv.style.minHeight='80px'; }
+                }
+
+                function onFail(msg) {
+                    if (isOpen) {
+                        // Still streaming: keep the last-good frame (already in
+                        // `div` if we had one). With no prior render, leave the
+                        // raw code block untouched so nothing flashes — a later
+                        // tick (or the closing fence) will render it. Don't mark
+                        // processed; don't surface the error yet.
+                        if (!prior) return; // leave <pre> in place
+                        if (div.parentNode == null && pre.parentNode) pre.parentNode.replaceChild(div, pre);
+                        return;
+                    }
+                    // Closed and still failing: this is a real error — show it.
+                    renderChartError(div, 'Mermaid error', msg);
+                    if (pre.parentNode) pre.parentNode.replaceChild(div, pre);
+                }
+
                 try {
                     window.mermaid.render(div.id + '-svg', code).then(function(result) {
                         div.innerHTML = result.svg;
                         var svg = div.querySelector('svg');
                         if (svg) { svg.style.display='block'; svg.style.width='100%'; svg.style.height='auto'; svg.style.minHeight='80px'; }
                         makeExpandable(div);
+                        if (vizKey) rememberGood(vizKey, result.svg);
+                        if (pre.parentNode) pre.parentNode.replaceChild(div, pre);
                     }).catch(function(err) {
-                        renderChartError(div, 'Mermaid error', err.message);
+                        onFail(err && err.message);
                     });
                 } catch(e) {
-                    renderChartError(div, 'Mermaid error', e.message);
+                    onFail(e && e.message);
                 }
-                pre.parentNode.replaceChild(div, pre);
             });
         }
 
