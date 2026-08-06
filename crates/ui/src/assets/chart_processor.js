@@ -61,8 +61,12 @@
             + 'background:rgba(0,0,0,0.85);align-items:center;justify-content:center;padding:32px;box-sizing:border-box;';
         var inner = document.createElement('div');
         inner.className = 'viz-fullscreen-inner';
-        inner.style.cssText = 'max-width:96vw;max-height:92vh;overflow:auto;background:#1b211e;'
-            + 'border-radius:10px;padding:20px;box-sizing:border-box;';
+        // Fill the padded viewport (the modal supplies 32px padding) and center
+        // the diagram, so a small diagram scales UP to the available space
+        // rather than shrink-wrapping the container to its intrinsic size.
+        inner.style.cssText = 'width:100%;height:100%;overflow:auto;background:#1b211e;'
+            + 'border-radius:10px;padding:20px;box-sizing:border-box;'
+            + 'display:flex;align-items:center;justify-content:center;';
         var close = document.createElement('button');
         close.textContent = '✕';
         close.setAttribute('aria-label', 'Close');
@@ -80,7 +84,23 @@
         modal.__show = function(svgMarkup) {
             inner.innerHTML = svgMarkup;
             var s = inner.querySelector('svg');
-            if (s) { s.style.width = '100%'; s.style.height = 'auto'; s.removeAttribute('height'); }
+            if (s) {
+                // Mermaid stamps an inline `max-width:NNNpx` on the <svg> (its
+                // intrinsic size), which caps `width:100%` at the small original
+                // size. Clear it and let the SVG scale to the full container
+                // while preserving aspect ratio via the viewBox.
+                s.style.maxWidth = 'none';
+                s.style.maxHeight = 'none';
+                s.style.width = '100%';
+                s.style.height = '100%';
+                s.removeAttribute('width');
+                s.removeAttribute('height');
+                // With a viewBox (mermaid always sets one) this scales the SVG
+                // to fill the container, letterboxing to preserve aspect ratio.
+                if (!s.getAttribute('preserveAspectRatio')) {
+                    s.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+                }
+            }
             modal.style.display = 'flex';
         };
         return modal;

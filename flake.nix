@@ -150,7 +150,7 @@
         # panics ("Unable to find libclang"). Nix's libclang has an RPATH to its
         # own libstdc++, so it loads cleanly and deterministically.
         nativeBuildInputs = with pkgs; [ pkg-config protobuf libclang ];
-        buildInputs = with pkgs; [ openssl libpcap gtk3 dbus webkitgtk_4_1 libsoup_3 xdotool ];
+        buildInputs = with pkgs; [ openssl libpcap gtk3 dbus webkitgtk_4_1 libsoup_3 xdotool glib-networking ];
 
         env = {
           # rusqlite bundled needs cc (host builds)
@@ -201,6 +201,14 @@
           # loader, so export it. (CI has these installed system-wide, so this
           # only bites inside `nix develop`.)
           export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.openssl pkgs.libpcap pkgs.xorg.libxcb ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+          # The desktop webview (WebKitGTK) fetches the mermaid/echarts CDN over
+          # HTTPS via GIO/libsoup. GIO's TLS backend lives in a glib-networking
+          # gio module (libgiognutls.so); without it on GIO_EXTRA_MODULES the
+          # webview's fetch fails with "TLS support is not available" and viz
+          # blocks never render. buildInputs puts glib-networking in the closure
+          # but doesn't wire up the module path, so export it explicitly.
+          export GIO_EXTRA_MODULES="${pkgs.glib-networking}/lib/gio/modules''${GIO_EXTRA_MODULES:+:$GIO_EXTRA_MODULES}"
         '';
       };
 

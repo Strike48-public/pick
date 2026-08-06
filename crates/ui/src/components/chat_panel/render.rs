@@ -233,10 +233,49 @@ pub fn render_markdown(input: &str) -> String {
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
 
-    let parser = Parser::new_ext(input, options);
+    let normalized = unescape_code_fences(input);
+    let parser = Parser::new_ext(&normalized, options);
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
     html_output
+}
+
+/// Undo a backslash that escapes a code-fence marker at line start
+/// (`\`\`\`mermaid` -> `\`\`\``mermaid`). Some agent outputs escape the fence
+/// backticks; CommonMark then reads `\`` as a literal backtick and the leftover
+/// `` opens an inline code span that swallows the rest of the message, so a viz
+/// block (and everything after it) renders as garbled one-line text. Only a
+/// backslash directly preceding a run of 3+ back-tick/tilde fence chars at the
+/// start of a line (after up to 3 spaces of indent) is stripped, so escaped
+/// backticks inside prose are untouched.
+fn unescape_code_fences(input: &str) -> std::borrow::Cow<'_, str> {
+    if !input.contains("\\```") && !input.contains("\\~~~") {
+        return std::borrow::Cow::Borrowed(input);
+    }
+    let mut out = String::with_capacity(input.len());
+    for (i, line) in input.split_inclusive('\n').enumerate() {
+        // Preserve the original line terminator; operate on the content.
+        let (content, nl) = match line.strip_suffix('\n') {
+            Some(c) => (c, "\n"),
+            None => (line, ""),
+        };
+        let trimmed = content.trim_start_matches(' ');
+        let indent = content.len() - trimmed.len();
+        let is_fence = indent <= 3 && trimmed.starts_with('\\') && {
+            let after = &trimmed[1..];
+            after.starts_with("```") || after.starts_with("~~~")
+        };
+        if is_fence {
+            // Drop just the escaping backslash; keep indent + the fence + info.
+            out.push_str(&content[..indent]);
+            out.push_str(&trimmed[1..]);
+        } else {
+            out.push_str(content);
+        }
+        out.push_str(nl);
+        let _ = i;
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// Render markdown and annotate a still-streaming viz block so the chart
@@ -828,7 +867,36 @@ fn load_screenshots_from_result(result_json: &str) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_markdown_streaming, trailing_open_fence_lang, webwright_display_name};
+    use super::{
+        render_markdown, render_markdown_streaming, trailing_open_fence_lang,
+        webwright_display_name,
+    };
+
+    #[test]
+    fn escaped_code_fence_still_renders_as_a_mermaid_block() {
+        // Some agent outputs escape the fence backticks (\```mermaid). Without
+        // normalization CommonMark treats \` as a literal backtick and the rest
+        // opens an inline code span, so the diagram renders as garbled one-line
+        // text. We strip the escaping backslash so it parses as a real fence.
+        let src = "intro\n\n\\```mermaid\ngraph TD\n  A --> B\n\\```\n";
+        let html = render_markdown(src);
+        assert!(
+            html.contains("class=\"language-mermaid\""),
+            "escaped fence should still yield a mermaid code block: {html}"
+        );
+    }
+
+    #[test]
+    fn escaped_backticks_in_prose_are_left_alone() {
+        // A backslash-backtick mid-line (not a fence) must be untouched.
+        let src = "use \\`code\\` spans normally";
+        let html = render_markdown(src);
+        // No fenced code block should be produced.
+        assert!(
+            !html.contains("<pre>"),
+            "prose must not become a code block: {html}"
+        );
+    }
 
     #[test]
     fn open_mermaid_fence_is_detected_while_streaming() {
