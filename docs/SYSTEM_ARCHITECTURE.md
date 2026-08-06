@@ -7,6 +7,11 @@
 
 ---
 
+> **⚠️ Vision / Roadmap — not current-state.** This document describes the aspirational
+> Pick + StrikeKit ecosystem architecture, including integrations and components that are
+> planned but not yet implemented. For the authoritative description of what Pick actually
+> does today, see [ARCHITECTURE.md](../ARCHITECTURE.md) at the repository root.
+
 ## Executive Summary
 
 Pick and StrikeKit form a comprehensive penetration testing platform with multiple deployment modes, C2 options, and AI orchestration. The system supports standalone operation, enterprise C2 integration (Mythic, Cobalt Strike, GoPhish), and autonomous AI-driven pentesting.
