@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Generate the Pick Android launcher-icon set from the strike48 brand SVGs into
-# apps/mobile/icons/res/, which the android build recipe copies over dx's
+# apps/mobile/icons/res/, which the android build recipe copies OVER dx's
 # generated (stock green-robot) mipmaps. Re-run after changing the source SVGs.
 #
-# Produces, per density (mdpi/hdpi/xhdpi/xxhdpi/xxxhdpi):
-#   - mipmap-<d>/ic_launcher.png        legacy square icon (full appicon SVG)
-#   - mipmap-<d>/ic_launcher_round.png  legacy round icon (same art)
-#   - mipmap-<d>/ic_launcher_foreground.png  adaptive foreground (mark, safe-zone)
-# plus the adaptive-icon XML + background color that reference them.
+# We emit the legacy icons as .webp with dx's exact filenames (ic_launcher.webp,
+# ic_launcher_round.webp) so the copy overwrites dx's in place — no duplicate
+# resource, no delete step. Produces, per density (mdpi..xxxhdpi):
+#   - mipmap-<d>/ic_launcher.webp        legacy square icon (full appicon SVG)
+#   - mipmap-<d>/ic_launcher_round.webp  legacy round icon (same art)
+#   - mipmap-<d>/ic_launcher_foreground.webp  adaptive foreground (mark, safe-zone)
+# plus the adaptive-icon XML (mipmap-anydpi-v26) + background color (values/).
 #
-# Requires resvg (rendered via `nix run nixpkgs#resvg`).
+# Requires resvg + imagemagick (rendered via `nix run nixpkgs#...`).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -24,19 +26,25 @@ declare -A LEGACY=( [mdpi]=48 [hdpi]=72 [xhdpi]=96 [xxhdpi]=144 [xxxhdpi]=192 )
 declare -A ADAPTIVE=( [mdpi]=108 [hdpi]=162 [xhdpi]=216 [xxhdpi]=324 [xxxhdpi]=432 )
 
 resvg() { nix run nixpkgs#resvg -- "$@"; }
+# SVG -> WEBP at the given size (resvg renders PNG; magick converts to webp).
+svg2webp() {
+    local svg="$1" size="$2" out="$3" tmp
+    tmp="$(mktemp --suffix=.png)"
+    resvg --width "$size" --height "$size" "$svg" "$tmp"
+    nix run nixpkgs#imagemagick -- "$tmp" "$out"
+    rm -f "$tmp"
+}
 
 rm -rf "$RES"
 for d in "${!LEGACY[@]}"; do
     dir="$RES/mipmap-$d"
     mkdir -p "$dir"
-    lsz=${LEGACY[$d]}
-    asz=${ADAPTIVE[$d]}
-    resvg --width "$lsz" --height "$lsz" "$APPICON" "$dir/ic_launcher.png"
-    cp "$dir/ic_launcher.png" "$dir/ic_launcher_round.png"
-    resvg --width "$asz" --height "$asz" "$FOREGROUND" "$dir/ic_launcher_foreground.png"
+    svg2webp "$APPICON" "${LEGACY[$d]}" "$dir/ic_launcher.webp"
+    cp "$dir/ic_launcher.webp" "$dir/ic_launcher_round.webp"
+    svg2webp "$FOREGROUND" "${ADAPTIVE[$d]}" "$dir/ic_launcher_foreground.webp"
 done
 
-# Adaptive icon: references the foreground PNG + a solid brand background color.
+# Adaptive icon (API 26+): references the foreground + a solid brand background.
 mkdir -p "$RES/mipmap-anydpi-v26" "$RES/values"
 cat > "$RES/mipmap-anydpi-v26/ic_launcher.xml" <<'XML'
 <?xml version="1.0" encoding="utf-8"?>
@@ -53,4 +61,4 @@ cat > "$RES/values/ic_launcher_background.xml" <<XML
 </resources>
 XML
 
-echo "Generated Pick Android launcher icons into $RES"
+echo "Generated Pick Android launcher icons (webp) into $RES"

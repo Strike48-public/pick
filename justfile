@@ -407,27 +407,24 @@ _inject-android-lib proj:
 
     # Replace dx's stock (green-robot) launcher icon with the strike48 brand
     # icon. dx regenerates res/mipmap-* on every build, so — like the other
-    # patches here — this runs after `dx build` and is idempotent. The prebuilt
-    # PNG set lives in apps/mobile/icons/res (regenerate via
-    # apps/mobile/icons/gen-android-icons.sh after changing the source SVGs).
-    # We must first delete dx's generated art or aapt sees two resources with the
-    # same name: dx emits ic_launcher.webp + a vector ic_launcher_foreground.xml
-    # and an ic_launcher_background.xml color; ours are .png + a color in
-    # values/. Remove the conflicting generated files, then copy ours in.
+    # patches here — this runs after `dx build` and is idempotent. The brand set
+    # (apps/mobile/icons/res, regenerate via apps/mobile/icons/gen-android-icons.sh)
+    # uses dx's EXACT filenames (ic_launcher.webp / _round.webp / _foreground.webp
+    # + the adaptive XML + background color), so this copy overwrites dx's art in
+    # place — no duplicate-resource error, no delete step needed.
     icon_src="apps/mobile/icons/res"
     res_dir="{{proj}}/app/src/main/res"
     if [ ! -d "$icon_src" ]; then
         echo "ERROR: brand icon set not found at $icon_src (run apps/mobile/icons/gen-android-icons.sh)" >&2
         exit 1
     fi
-    # Drop dx's generated launcher art (both raster and the adaptive vector layers).
-    find "$res_dir" -type f \( -name 'ic_launcher.webp' -o -name 'ic_launcher_round.webp' \) -delete 2>/dev/null || true
-    rm -f "$res_dir"/drawable*/ic_launcher_foreground.xml 2>/dev/null || true
-    rm -f "$res_dir"/drawable*/ic_launcher_background.xml 2>/dev/null || true
-    rm -f "$res_dir"/values*/ic_launcher_background.xml 2>/dev/null || true
-    # Copy our brand mipmaps + adaptive XML + background color over the top.
+    # Clear any launcher .png left in the generated res dir by an older build
+    # (we used to emit .png; dx never cleans stale output, so a leftover
+    # ic_launcher.png would collide with our ic_launcher.webp -> "Duplicate
+    # resources"). Harmless when absent.
+    find "$res_dir" -type f -name 'ic_launcher*.png' -delete 2>/dev/null || true
     cp -r "$icon_src"/. "$res_dir"/
-    if [ ! -f "$res_dir/mipmap-xxxhdpi/ic_launcher.png" ]; then
+    if [ ! -f "$res_dir/mipmap-xxxhdpi/ic_launcher.webp" ]; then
         echo "ERROR: failed to inject brand launcher icon into $res_dir" >&2
         exit 1
     fi
