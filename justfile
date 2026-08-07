@@ -197,6 +197,104 @@ dvwa-down *ARGS:
     MATRIX_API_URL="${MATRIX_API_URL:-stub}" \
         docker compose "${env_args[@]}" -f "{{dvwa_compose}}" down --remove-orphans {{ARGS}}
 
+# ============ StrikeHub (PLG) demo (matrix#3519) ============
+
+# Compose file + its env for the Pick + DVWA StrikeHub (PLG) demo. Sibling of the
+# dvwa-* recipes: bound to a personal tenant via an OTT (STRIKE48_TOKEN), not a
+# fixed tenant UUID. Override PLG_ENV to point at a different env file (the
+# init-dev plg:pick tasks generate .env.plg).
+plg_compose := "docker-compose.plg.yml"
+plg_env := env_var_or_default("PLG_ENV", ".env.plg")
+
+# Validate the compose file + assert the DVWA isolation invariant (no live daemon
+# needed beyond `docker compose config`). Same tripwire as dvwa-check: fails if a
+# future edit re-exposes the deliberately-vulnerable DVWA — publishes a host port,
+# flips scan-net off `internal`, or attaches dvwa to the backend network.
+plg-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Stub env so the mandatory ${VAR:?} interpolations resolve for a pure config
+    # render. Note: STRIKE48_TOKEN (the OTT) is mandatory here — the PLG binding —
+    # whereas STRIKE48_TENANT is intentionally NOT set (dropped from this stack).
+    RENDERED=$(STRIKE48_HOST=grpc://stub:80 STRIKE48_TOKEN=ott_stub MATRIX_API_URL=https://stub \
+        docker compose -f "{{plg_compose}}" config) \
+    python3 -c '
+    import os, sys, yaml
+    d = yaml.safe_load(os.environ["RENDERED"])
+    s, n = d["services"], d["networks"]
+    # `docker compose config` renders service networks as a dict (name -> opts|None),
+    # not a list — normalize to the set of network names before asserting.
+    dvwa_nets = set(s["dvwa"]["networks"] or [])
+    errs = []
+    if "ports" in s["dvwa"]: errs.append("dvwa publishes host ports (must not)")
+    if dvwa_nets != {"scan-net"}: errs.append("dvwa networks != {scan-net}: %s" % sorted(dvwa_nets))
+    if n["scan-net"].get("internal") is not True: errs.append("scan-net is not internal:true")
+    if "backend-net" in dvwa_nets: errs.append("dvwa attached to backend-net (must not)")
+    # PLG-specific: STRIKE48_TENANT must NOT be baked into the pick env (the OTT is
+    # the binding); a stray STRIKE48_TENANT would signal a bad clone from the dvwa file.
+    pick_env = s["pick"]["environment"]
+    if isinstance(pick_env, list):
+        pick_keys = {e.split("=", 1)[0] for e in pick_env}
+    else:
+        pick_keys = set(pick_env)
+    if "STRIKE48_TENANT" in pick_keys: errs.append("pick env sets STRIKE48_TENANT (PLG binds via OTT, must not)")
+    if "STRIKE48_TOKEN" not in pick_keys: errs.append("pick env missing STRIKE48_TOKEN (the OTT is the PLG binding)")
+    if errs:
+        print("plg-check FAILED:"); [print("  -", e) for e in errs]; sys.exit(1)
+    print("plg-check OK: config valid + DVWA isolated + PLG bound via OTT (no STRIKE48_TENANT)")
+    '
+
+# Bring up the Pick + DVWA StrikeHub (PLG) stack (pick scans dvwa; registers via OTT)
+plg-up *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -f "{{plg_env}}" ]]; then
+        echo "error: {{plg_env}} not found — copy .env.plg.example to {{plg_env}} and set STRIKE48_TOKEN (the StrikeHub-minted OTT)" >&2
+        exit 1
+    fi
+    docker compose --env-file "{{plg_env}}" -f "{{plg_compose}}" up --build -d {{ARGS}}
+    # `up -d` returns once containers are STARTED, not proven healthy — pick has no
+    # healthcheck (it's an outbound client), so confirm it didn't immediately exit
+    # rather than blindly claiming success (a crash-on-boot would otherwise be hidden).
+    # `ps --status running -q pick` prints the id only while pick is actually running.
+    sleep 2
+    if [[ -z "$(docker compose --env-file "{{plg_env}}" -f "{{plg_compose}}" ps --status running -q pick)" ]]; then
+        echo "error: pick container is not running — check 'docker compose -f {{plg_compose}} logs pick'" >&2
+        exit 1
+    fi
+    # pick is running, but "running" is NOT proof it registered: the connector SDK
+    # RETRIES on registration failure (expired/invalid OTT, unreachable backend), so
+    # it stays `running` while never appearing in StrikeHub. Don't assert online here
+    # — tell the operator how to confirm it, so a silent registration failure isn't
+    # masked as success.
+    echo "Pick + DVWA (PLG) started (pick container running)."
+    echo "Registering with the OTT — Pick should appear online/approved AUTOMATICALLY in"
+    echo "StrikeHub -> Devices (no manual approval; the OTT is pre-approval)."
+    echo "Confirm: 'docker compose -f {{plg_compose}} logs pick' should show a register-with-ott/online line."
+    echo "If it never appears, the OTT may have expired (15-min TTL) — re-mint and re-run, or check backend reachability."
+
+# Tear down the Pick + DVWA StrikeHub (PLG) stack (add --volumes to also drop the creds volume)
+plg-down *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The compose model has mandatory ${VAR:?} interpolations; if they can't
+    # resolve, `down` aborts at model-parse time and leaves DVWA (a deliberately
+    # vulnerable app, restart: unless-stopped) running. `down` never USES these
+    # values (it identifies containers by compose project/service, not by env), so
+    # default any that are unset to a stub — teardown then always succeeds even when
+    # {{plg_env}} is absent (deleted after up, or brought up via exported vars).
+    # The `:-` only substitutes when a var is unset, so a real value already in the
+    # shell env is preserved; --env-file is still passed when present. (Shell env
+    # takes precedence over --env-file in compose, but for `down` neither matters.)
+    # NOTE: default STRIKE48_TOKEN (not STRIKE48_TENANT) — this stack's mandatory
+    # interpolation is the OTT, so teardown must stub THAT to parse the model.
+    env_args=()
+    [[ -f "{{plg_env}}" ]] && env_args=(--env-file "{{plg_env}}")
+    STRIKE48_HOST="${STRIKE48_HOST:-stub}" \
+    STRIKE48_TOKEN="${STRIKE48_TOKEN:-stub}" \
+    MATRIX_API_URL="${MATRIX_API_URL:-stub}" \
+        docker compose "${env_args[@]}" -f "{{plg_compose}}" down --remove-orphans {{ARGS}}
+
 # ============ Web (Liveview) ============
 
 # Build web app
