@@ -15,6 +15,10 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# MSRV floor driven by the egui/eframe 0.34 family (rust-version = "1.92").
+# This declares the floor so `cargo` errors on older toolchains; it does NOT
+# pin a channel. CI intentionally floats on `dtolnay/rust-toolchain@stable`.
+rust-version = "1.92"
 authors = ["Strike48"]
 license = "MIT"
 repository = "https://github.com/Strike48-public/pick"

@@ -78,7 +78,7 @@ petgraph = "0.8"  # Graph data structure (upgraded from 0.6)
 ## Run the POC
 
 ```bash
-cd /home/jtomek/Code/pick
+cd <repo-root>
 RUSTUP_TOOLCHAIN= cargo run --example egui_graph_poc
 ```
 

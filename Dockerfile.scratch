@@ -12,7 +12,7 @@
 # ----------------------------------------------------------
 # Stage 1: cargo-chef planner
 # ----------------------------------------------------------
-FROM --platform=$BUILDPLATFORM rust:1.88-bookworm AS chef
+FROM --platform=$BUILDPLATFORM rust:1.92-bookworm AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
@@ -24,7 +24,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 # ----------------------------------------------------------
 # Stage 2: Builder
 # ----------------------------------------------------------
-FROM --platform=$BUILDPLATFORM rust:1.88-bookworm AS builder
+FROM --platform=$BUILDPLATFORM rust:1.92-bookworm AS builder
 
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
