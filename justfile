@@ -863,6 +863,47 @@ build-ios:
     export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
     echo "PICK_EASY_MODE=$PICK_EASY_MODE"
     {{dx}} build --platform ios --package pick
+    just _inject-ios-icon target/dx/pick/debug/ios/Pick.app
+
+# Compile the strike48 AppIcon into an iOS .app bundle. dx does not manage iOS
+# icons at all (no xcassets handling), so — like _inject-android-lib — we patch
+# the generated bundle after `dx build`: actool compiles
+# apps/mobile/icons/ios/AppIcon.appiconset into Assets.car + emits the
+# CFBundleIcons plist keys, which we merge into the app's Info.plist. macOS-only
+# (actool ships with Xcode). Idempotent: re-run after every `dx build`.
+_inject-ios-icon app:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    APP="{{app}}"
+    ICONSET="apps/mobile/icons/ios/AppIcon.appiconset"
+    if [ ! -d "$APP" ]; then echo "ERROR: app bundle not found: $APP" >&2; exit 1; fi
+    if [ ! -d "$ICONSET" ]; then echo "ERROR: appiconset not found: $ICONSET" >&2; exit 1; fi
+    ACTOOL="$(xcrun --find actool)"
+    # actool wants the .xcassets parent dir; wrap the appiconset in a temp catalog.
+    WORK="$(mktemp -d)"
+    trap 'rm -rf "$WORK"' EXIT
+    mkdir -p "$WORK/Assets.xcassets"
+    cp -R "$ICONSET" "$WORK/Assets.xcassets/"
+    # Minimal catalog Contents.json.
+    printf '{\n  "info" : { "author" : "xcode", "version" : 1 }\n}\n' > "$WORK/Assets.xcassets/Contents.json"
+    # Compile: emits Assets.car + AppIcon*.png into $APP and writes the icon
+    # plist keys (CFBundleIcons etc.) to a partial plist we merge next.
+    PARTIAL="$WORK/partial.plist"
+    "$ACTOOL" "$WORK/Assets.xcassets" \
+        --compile "$APP" \
+        --app-icon AppIcon \
+        --platform iphoneos \
+        --minimum-deployment-target 14.0 \
+        --output-partial-info-plist "$PARTIAL" \
+        --output-format human-readable-text
+    # Merge the icon keys into the app's Info.plist.
+    PLIST="$APP/Info.plist"
+    /usr/libexec/PlistBuddy -c "Merge $PARTIAL" "$PLIST"
+    if [ ! -f "$APP/Assets.car" ]; then
+        echo "ERROR: actool did not produce Assets.car in $APP" >&2
+        exit 1
+    fi
+    echo "Injected iOS AppIcon (Assets.car) into $APP"
 
 # Run mobile app on iOS simulator (debug, hot-reload)
 run-ios:
