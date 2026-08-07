@@ -16,7 +16,7 @@
 **Status**: PASSED
 
 Verified integration:
-- Symlink created: `target/dx/pentest-mobile/debug/android/app/android-lib` → `/home/jtomek/Code/pick/android-lib`
+- Symlink created: `target/dx/pick/debug/android/app/android-lib` → `/home/jtomek/Code/pick/android-lib`
 - Entry in `settings.gradle`: `include ':android-lib'`
 - Dependency in `app/build.gradle.kts`: `implementation(project(":android-lib"))`
 - Gradle build succeeded with android-lib bundled

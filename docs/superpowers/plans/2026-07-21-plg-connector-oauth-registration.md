@@ -983,11 +983,11 @@ The iOS app builds on the Mac VM (engineering@10.10.0.8), checkout at `/Users/en
 git push origin HEAD
 
 # On the VM: pull + build
-ssh engineering@10.10.0.8 'cd /Users/engineering/src/github.com/Strike48-public/pick && git pull --ff-only && unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH && nix develop --command dx build --platform ios --package pentest-mobile 2>&1 | tail -5'
+ssh engineering@10.10.0.8 'cd /Users/engineering/src/github.com/Strike48-public/pick && git pull --ff-only && unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH && nix develop --command dx build --platform ios --package pick 2>&1 | tail -5'
 
 # On the VM: install + launch (plg host, NO tenant, insecure TLS for dev studio)
 ssh engineering@10.10.0.8 '
-APP="/Users/engineering/src/github.com/Strike48-public/pick/target/dx/pentest-mobile/debug/ios/PentestMobile.app"
+APP="/Users/engineering/src/github.com/Strike48-public/pick/target/dx/pick/debug/ios/Pick.app"
 xcrun simctl terminate booted com.strike48.pentest_connector 2>/dev/null
 xcrun simctl install booted "$APP"
 SIMCTL_CHILD_STRIKE48_HOST="wss://plg.strike48.test" \

@@ -1,12 +1,16 @@
 [package]
-name = "pentest-mobile"
+name = "pick"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "pentest-mobile"
+# dx derives the mobile app label from PascalCase of this bin name
+# ("pick" -> "Pick"), ignoring [bundle] name. Keep it "pick" so the Android
+# launcher / iOS home screen show "Pick". This also names the dx output dir
+# (target/dx/pick/...), which the justfile and CI reference.
+name = "pick"
 path = "src/main.rs"
 
 [dependencies]

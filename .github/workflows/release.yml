@@ -59,12 +59,12 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/pentest-connector dist/
-          cd dist && tar -czvf pentest-connector-linux-x86_64.tar.gz pentest-connector
+          cd dist && tar -czvf pick-linux-x86_64.tar.gz pentest-connector
 
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-linux-x86_64
-          path: dist/pentest-connector-linux-x86_64.tar.gz
+          path: dist/pick-linux-x86_64.tar.gz
 
   build-desktop-windows:
     name: Desktop (Windows)
@@ -103,12 +103,12 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item target/release/pentest-connector.exe dist/
-          Compress-Archive -Path dist/pentest-connector.exe -DestinationPath dist/pentest-connector-windows-x86_64.zip
+          Compress-Archive -Path dist/pentest-connector.exe -DestinationPath dist/pick-windows-x86_64.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-windows-x86_64
-          path: dist/pentest-connector-windows-x86_64.zip
+          path: dist/pick-windows-x86_64.zip
 
   build-desktop-macos:
     name: Desktop (macOS ${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }})
@@ -191,12 +191,12 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/pentest-connector dist/
-          cd dist && tar -czvf pentest-connector-macos-${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }}.tar.gz pentest-connector
+          cd dist && tar -czvf pick-macos-${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }}.tar.gz pentest-connector
 
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-macos-${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }}
-          path: dist/pentest-connector-macos-*.tar.gz
+          path: dist/pick-macos-*.tar.gz
 
   # ===========================================
   # Web Build
@@ -221,12 +221,12 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/pentest-web dist/
-          cd dist && tar -czvf ../pentest-connector-web.tar.gz pentest-web
+          cd dist && tar -czvf ../pick-web.tar.gz pentest-web
 
       - uses: actions/upload-artifact@v4
         with:
           name: web-wasm
-          path: pentest-connector-web.tar.gz
+          path: pick-web.tar.gz
 
   # ===========================================
   # Android Build
@@ -292,20 +292,20 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          cp target/dx/pentest-mobile/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk \
-             dist/pentest-connector-android-arm64.apk
-          cp target/dx/pentest-mobile/release/android/app/app/build/outputs/bundle/release/app-release.aab \
-             dist/pentest-connector-android-release-unsigned.aab
-          cp target/dx/pentest-mobile/release/android/pentest-connector-android-universal.apk \
-             dist/pentest-connector-android-universal.apk
+          cp target/dx/pick/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk \
+             dist/pick-android-arm64.apk
+          cp target/dx/pick/release/android/app/app/build/outputs/bundle/release/app-release.aab \
+             dist/pick-android-release-unsigned.aab
+          cp target/dx/pick/release/android/pick-android-universal.apk \
+             dist/pick-android-universal.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
           path: |
-            dist/pentest-connector-android-arm64.apk
-            dist/pentest-connector-android-release-unsigned.aab
-            dist/pentest-connector-android-universal.apk
+            dist/pick-android-arm64.apk
+            dist/pick-android-release-unsigned.aab
+            dist/pick-android-universal.apk
 
   # ===========================================
   # iOS Build (requires macOS + signing)
@@ -331,24 +331,24 @@ jobs:
       - name: Build (Simulator)
         run: |
           export PATH="$HOME/.dx/bin:$PATH"
-          dx build --platform ios --package pentest-mobile --release || echo "iOS build requires signing"
+          dx build --platform ios --package pick --release || echo "iOS build requires signing"
 
       # Note: Real iOS builds require Apple Developer signing
       - name: Package (if built)
         run: |
           mkdir -p dist
-          if [ -d "target/dx/pentest-mobile/release/ios" ]; then
-            cd target/dx/pentest-mobile/release/ios
-            zip -r ../../../../../dist/pentest-connector-ios.zip .
+          if [ -d "target/dx/pick/release/ios" ]; then
+            cd target/dx/pick/release/ios
+            zip -r ../../../../../dist/pick-ios.zip .
           else
             echo "iOS build artifacts not found (signing required)"
-            touch dist/pentest-connector-ios-placeholder.txt
+            touch dist/pick-ios-placeholder.txt
           fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: ios-build
-          path: dist/pentest-connector-ios*
+          path: dist/pick-ios*
 
   # ===========================================
   # Headless (pentest-agent) Builds
@@ -373,12 +373,12 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/pentest-agent dist/
-          cd dist && tar -czvf pentest-agent-linux-x86_64.tar.gz pentest-agent
+          cd dist && tar -czvf pick-agent-linux-x86_64.tar.gz pentest-agent
 
       - uses: actions/upload-artifact@v4
         with:
           name: headless-linux-x86_64
-          path: dist/pentest-agent-linux-x86_64.tar.gz
+          path: dist/pick-agent-linux-x86_64.tar.gz
 
   build-headless-windows:
     name: Headless (Windows)
@@ -417,12 +417,12 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item target/release/pentest-agent.exe dist/
-          Compress-Archive -Path dist/pentest-agent.exe -DestinationPath dist/pentest-agent-windows-x86_64.zip
+          Compress-Archive -Path dist/pentest-agent.exe -DestinationPath dist/pick-agent-windows-x86_64.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: headless-windows-x86_64
-          path: dist/pentest-agent-windows-x86_64.zip
+          path: dist/pick-agent-windows-x86_64.zip
 
   build-headless-macos:
     name: Headless (macOS ${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }})
@@ -505,12 +505,12 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/pentest-agent dist/
-          cd dist && tar -czvf pentest-agent-${{ matrix.target == 'aarch64-apple-darwin' && 'darwin-aarch64' || 'darwin-x86_64' }}.tar.gz pentest-agent
+          cd dist && tar -czvf pick-agent-${{ matrix.target == 'aarch64-apple-darwin' && 'darwin-aarch64' || 'darwin-x86_64' }}.tar.gz pentest-agent
 
       - uses: actions/upload-artifact@v4
         with:
           name: headless-macos-${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }}
-          path: dist/pentest-agent-*.tar.gz
+          path: dist/pick-agent-*.tar.gz
 
   # ===========================================
   # Create Release
@@ -564,21 +564,23 @@ jobs:
 
             | Platform | Architecture | Download |
             |----------|--------------|----------|
-            | Linux | x86_64 | `pentest-connector-linux-x86_64.tar.gz` |
-            | Windows | x86_64 | `pentest-connector-windows-x86_64.zip` |
-            | macOS | x86_64 | `pentest-connector-macos-x86_64.tar.gz` |
-            | macOS | Apple Silicon | `pentest-connector-macos-aarch64.tar.gz` |
-            | Web | WASM | `pentest-connector-web.tar.gz` |
-            | Android | APK | `pentest-connector-android.apk` |
+            | Linux | x86_64 | `pick-linux-x86_64.tar.gz` |
+            | Windows | x86_64 | `pick-windows-x86_64.zip` |
+            | macOS | x86_64 | `pick-macos-x86_64.tar.gz` |
+            | macOS | Apple Silicon | `pick-macos-aarch64.tar.gz` |
+            | Web | WASM | `pick-web.tar.gz` |
+            | Android | APK (arm64) | `pick-android-arm64.apk` |
+            | Android | APK (universal) | `pick-android-universal.apk` |
+            | Android | AAB (Play) | `pick-android-release-unsigned.aab` |
 
-            #### Headless (pentest-agent)
+            #### Headless agent
 
             | Platform | Architecture | Download |
             |----------|--------------|----------|
-            | Linux | x86_64 | `pentest-agent-linux-x86_64.tar.gz` |
-            | Windows | x86_64 | `pentest-agent-windows-x86_64.zip` |
-            | macOS | x86_64 | `pentest-agent-darwin-x86_64.tar.gz` |
-            | macOS | Apple Silicon | `pentest-agent-darwin-aarch64.tar.gz` |
+            | Linux | x86_64 | `pick-agent-linux-x86_64.tar.gz` |
+            | Windows | x86_64 | `pick-agent-windows-x86_64.zip` |
+            | macOS | x86_64 | `pick-agent-darwin-x86_64.tar.gz` |
+            | macOS | Apple Silicon | `pick-agent-darwin-aarch64.tar.gz` |
 
             ### Checksums
 

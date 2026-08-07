@@ -6923,23 +6923,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pentest-mobile"
-version = "0.1.0"
-dependencies = [
- "android_logger",
- "dioxus",
- "jni 0.21.1",
- "log",
- "ndk-context",
- "openssl",
- "pentest-core",
- "pentest-platform",
- "pentest-tools",
- "pentest-ui",
- "tracing",
-]
-
-[[package]]
 name = "pentest-platform"
 version = "0.1.0"
 dependencies = [
@@ -7254,6 +7237,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e57fef6bc5981e38c2ce2d63bfa546861309f875b8a75f092d1d54ae2d64f266"
 dependencies = [
  "siphasher 1.0.3",
+]
+
+[[package]]
+name = "pick"
+version = "0.1.0"
+dependencies = [
+ "android_logger",
+ "dioxus",
+ "jni 0.21.1",
+ "log",
+ "ndk-context",
+ "openssl",
+ "pentest-core",
+ "pentest-platform",
+ "pentest-tools",
+ "pentest-ui",
+ "tracing",
 ]
 
 [[package]]

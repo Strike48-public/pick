@@ -405,6 +405,33 @@ _inject-android-lib proj:
     mkdir -p "$assets_dir"
     cp crates/ui/src/assets/restty.js "$assets_dir/restty.js"
 
+    # Replace dx's stock (green-robot) launcher icon with the strike48 brand
+    # icon. dx regenerates res/mipmap-* on every build, so — like the other
+    # patches here — this runs after `dx build` and is idempotent. The prebuilt
+    # PNG set lives in apps/mobile/icons/res (regenerate via
+    # apps/mobile/icons/gen-android-icons.sh after changing the source SVGs).
+    # We must first delete dx's generated art or aapt sees two resources with the
+    # same name: dx emits ic_launcher.webp + a vector ic_launcher_foreground.xml
+    # and an ic_launcher_background.xml color; ours are .png + a color in
+    # values/. Remove the conflicting generated files, then copy ours in.
+    icon_src="apps/mobile/icons/res"
+    res_dir="{{proj}}/app/src/main/res"
+    if [ ! -d "$icon_src" ]; then
+        echo "ERROR: brand icon set not found at $icon_src (run apps/mobile/icons/gen-android-icons.sh)" >&2
+        exit 1
+    fi
+    # Drop dx's generated launcher art (both raster and the adaptive vector layers).
+    find "$res_dir" -type f \( -name 'ic_launcher.webp' -o -name 'ic_launcher_round.webp' \) -delete 2>/dev/null || true
+    rm -f "$res_dir"/drawable*/ic_launcher_foreground.xml 2>/dev/null || true
+    rm -f "$res_dir"/drawable*/ic_launcher_background.xml 2>/dev/null || true
+    rm -f "$res_dir"/values*/ic_launcher_background.xml 2>/dev/null || true
+    # Copy our brand mipmaps + adaptive XML + background color over the top.
+    cp -r "$icon_src"/. "$res_dir"/
+    if [ ! -f "$res_dir/mipmap-xxxhdpi/ic_launcher.png" ]; then
+        echo "ERROR: failed to inject brand launcher icon into $res_dir" >&2
+        exit 1
+    fi
+
 # Verify the produced APK contains the kotlin bridge class.
 #
 # A silently-stripped `ConnectorBridge` class causes the app to crash on first
@@ -500,21 +527,21 @@ build-android:
     targets="${ANDROID_TARGETS:-aarch64-linux-android x86_64-linux-android}"
     for target in $targets; do
         echo "==> Building Rust for $target..."
-        {{dx}} build --platform android --package pentest-mobile --target "$target"
+        {{dx}} build --platform android --package pick --target "$target"
     done
 
     # Re-inject AFTER dx (which regenerates settings.gradle and build.gradle.kts).
-    just _inject-android-lib target/dx/pentest-mobile/debug/android/app
+    just _inject-android-lib target/dx/pick/debug/android/app
 
     # `clean` is required: gradle's incremental task cache doesn't notice when
     # `_inject-android-lib` adds the kotlin module (settings.gradle changes
     # don't invalidate downstream task fingerprints), so without clean it can
     # silently package a stale APK that omits ConnectorBridge.
-    pushd target/dx/pentest-mobile/debug/android/app > /dev/null
+    pushd target/dx/pick/debug/android/app > /dev/null
     ./gradlew clean assembleDebug
     popd > /dev/null
 
-    just _verify-android-apk target/dx/pentest-mobile/debug/android/app/app/build/outputs/apk/debug/app-debug.apk
+    just _verify-android-apk target/dx/pick/debug/android/app/app/build/outputs/apk/debug/app-debug.apk
 
 # Build mobile app for Android (release)
 #
@@ -551,25 +578,25 @@ build-android-release:
     targets="${ANDROID_TARGETS:-aarch64-linux-android x86_64-linux-android}"
     for target in $targets; do
         echo "==> Building Rust for $target (release)..."
-        {{dx}} build --platform android --package pentest-mobile --release --target "$target"
+        {{dx}} build --platform android --package pick --release --target "$target"
     done
 
     # Re-inject AFTER dx (which regenerates settings.gradle and build.gradle.kts).
-    just _inject-android-lib target/dx/pentest-mobile/release/android/app
+    just _inject-android-lib target/dx/pick/release/android/app
 
     # See build-android comment for why `clean` is required.
-    pushd target/dx/pentest-mobile/release/android/app > /dev/null
+    pushd target/dx/pick/release/android/app > /dev/null
     ./gradlew clean assembleRelease
     popd > /dev/null
 
-    just _verify-android-apk target/dx/pentest-mobile/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk
+    just _verify-android-apk target/dx/pick/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk
 
 # Build, install, and launch Android app on connected device/emulator
 run-android:
     #!/usr/bin/env bash
     set -euo pipefail
     just build-android
-    APK="target/dx/pentest-mobile/debug/android/app/app/build/outputs/apk/debug/app-debug.apk"
+    APK="target/dx/pick/debug/android/app/app/build/outputs/apk/debug/app-debug.apk"
     adb install -r "$APK"
     adb shell am force-stop com.strike48.pentest_connector
     adb shell am start -n com.strike48.pentest_connector/dev.dioxus.main.MainActivity
@@ -621,20 +648,20 @@ bundle-android:
     targets="${ANDROID_TARGETS:-aarch64-linux-android x86_64-linux-android}"
     for target in $targets; do
         echo "==> Building Rust for $target (release, aab)..."
-        {{dx}} build --platform android --package pentest-mobile --release --target "$target"
+        {{dx}} build --platform android --package pick --release --target "$target"
     done
 
     # Re-inject AFTER dx (which regenerates settings.gradle and build.gradle.kts).
-    just _inject-android-lib target/dx/pentest-mobile/release/android/app
+    just _inject-android-lib target/dx/pick/release/android/app
 
     # `clean` is required for the same reason as build-android: settings.gradle
     # changes don't invalidate Gradle's task fingerprints, so a stale bundle
     # missing android-lib could otherwise be produced.
-    pushd target/dx/pentest-mobile/release/android/app > /dev/null
+    pushd target/dx/pick/release/android/app > /dev/null
     ./gradlew clean bundleRelease
     popd > /dev/null
 
-    AAB=target/dx/pentest-mobile/release/android/app/app/build/outputs/bundle/release/app-release.aab
+    AAB=target/dx/pick/release/android/app/app/build/outputs/bundle/release/app-release.aab
     if [ ! -f "$AAB" ]; then
         echo "ERROR: expected AAB not found at $AAB" >&2
         exit 1
@@ -652,16 +679,16 @@ bundle-android-universal-apk:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    AAB=target/dx/pentest-mobile/release/android/app/app/build/outputs/bundle/release/app-release.aab
+    AAB=target/dx/pick/release/android/app/app/build/outputs/bundle/release/app-release.aab
     if [ ! -f "$AAB" ]; then
         echo "ERROR: $AAB not found — run 'just bundle-android' first." >&2
         exit 1
     fi
 
-    OUT=target/dx/pentest-mobile/release/android
+    OUT=target/dx/pick/release/android
     KEYSTORE="$OUT/debug-universal.keystore"
     APKS="$OUT/app-release-universal.apks"
-    APK="$OUT/pentest-connector-android-universal.apk"
+    APK="$OUT/pick-android-universal.apk"
 
     # Throwaway debug keystore (regenerated each run; NOT for distribution).
     rm -f "$KEYSTORE"
@@ -835,14 +862,14 @@ build-ios:
     # PICK_EASY_MODE=false; the in-app Settings toggle still wins at runtime.
     export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
     echo "PICK_EASY_MODE=$PICK_EASY_MODE"
-    {{dx}} build --platform ios --package pentest-mobile
+    {{dx}} build --platform ios --package pick
 
 # Run mobile app on iOS simulator (debug, hot-reload)
 run-ios:
     #!/usr/bin/env bash
     set -euo pipefail
     unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH
-    {{dx}} serve --platform ios --package pentest-mobile
+    {{dx}} serve --platform ios --package pick
 
 # ============ All Targets ============
 

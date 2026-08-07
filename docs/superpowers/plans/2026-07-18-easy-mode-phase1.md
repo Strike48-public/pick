@@ -79,7 +79,7 @@ Expected: exactly the three lines in `apps/web/src/main.rs`, `apps/desktop/src/m
 
 - [ ] **Step 4: Verify it compiles**
 
-Run: `nix develop --command cargo check -p pentest-desktop -p pentest-mobile`
+Run: `nix develop --command cargo check -p pentest-desktop -p pick`
 Expected: `Finished` with no errors. (A missing-field error here means a construction site was missed in Step 2/3.)
 
 - [ ] **Step 5: Commit**
@@ -280,7 +280,7 @@ Add `EasyModeShell` to the `use crate::components::{…}` list at the top of `cr
 
 - [ ] **Step 3: Verify it compiles and clippy is clean**
 
-Run: `nix develop --command cargo clippy -p pentest-desktop -p pentest-mobile --features pentest-ui/shell-ws -- -D warnings`
+Run: `nix develop --command cargo clippy -p pentest-desktop -p pick --features pentest-ui/shell-ws -- -D warnings`
 Expected: `Finished`, no warnings. If `--features` errors for the binary crates, fall back to `nix develop --command cargo clippy --workspace -- -D warnings`.
 
 - [ ] **Step 4: Visually verify Easy Mode (desktop, fast loop)**

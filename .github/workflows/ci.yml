@@ -272,11 +272,11 @@ jobs:
         if: contains(github.event.pull_request.labels.*.name, 'build-apk')
         run: |
           mkdir -p dist
-          cp target/dx/pentest-mobile/debug/android/app/app/build/outputs/apk/debug/app-debug.apk \
+          cp target/dx/pick/debug/android/app/app/build/outputs/apk/debug/app-debug.apk \
              dist/pick-android-debug.apk
-          cp target/dx/pentest-mobile/release/android/app/app/build/outputs/bundle/release/app-release.aab \
+          cp target/dx/pick/release/android/app/app/build/outputs/bundle/release/app-release.aab \
              dist/pick-android-release-unsigned.aab
-          cp target/dx/pentest-mobile/release/android/pentest-connector-android-universal.apk \
+          cp target/dx/pick/release/android/pick-android-universal.apk \
              dist/pick-android-universal.apk
 
       - name: Upload Android artifacts

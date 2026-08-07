@@ -122,7 +122,7 @@ the recipe's existing conventions (idempotent, self-verifying, abort loudly on a
 missing anchor).
 
 - **WebView settings injection** into
-  `target/dx/pentest-mobile/<profile>/android/app/app/src/main/kotlin/dev/dioxus/main/MainActivity.kt`:
+  `target/dx/pick/<profile>/android/app/app/src/main/kotlin/dev/dioxus/main/MainActivity.kt`:
   after the `super.onWebViewCreate(webView)` call, insert:
   ```kotlin
   webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW

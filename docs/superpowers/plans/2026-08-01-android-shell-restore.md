@@ -434,7 +434,7 @@ Expected: `BUILD SUCCESSFUL` and `OK: ConnectorBridge present in APK` (the injec
 
 - [ ] **Step 3: Verify the settings actually landed in the generated file**
 
-Run: `grep -c "MIXED_CONTENT_ALWAYS_ALLOW" target/dx/pentest-mobile/debug/android/app/app/src/main/kotlin/dev/dioxus/main/RustWebView.kt && ls -la target/dx/pentest-mobile/debug/android/app/app/src/main/assets/assets/restty.js`
+Run: `grep -c "MIXED_CONTENT_ALWAYS_ALLOW" target/dx/pick/debug/android/app/app/src/main/kotlin/dev/dioxus/main/RustWebView.kt && ls -la target/dx/pick/debug/android/app/app/src/main/assets/assets/restty.js`
 Expected: `1` and the `restty.js` file listed with non-zero size.
 
 - [ ] **Step 4: Commit**
@@ -468,7 +468,7 @@ nix develop --command bash -c '
   ANDROID_TARGETS="x86_64-linux-android" just build-android
   ADB="$ANDROID_HOME/platform-tools/adb"
   "$ADB" -s emulator-5554 uninstall com.strike48.pentest_connector 2>/dev/null || true
-  "$ADB" -s emulator-5554 install target/dx/pentest-mobile/debug/android/app/app/build/outputs/apk/debug/app-debug.apk
+  "$ADB" -s emulator-5554 install target/dx/pick/debug/android/app/app/build/outputs/apk/debug/app-debug.apk
   "$ADB" -s emulator-5554 shell monkey -p com.strike48.pentest_connector -c android.intent.category.LAUNCHER 1
 '
 ```
@@ -501,7 +501,7 @@ nix develop --command bash -c '
   D="192.168.1.128:46133"
   "$ADB" connect "$D" || true
   "$ADB" -s "$D" uninstall com.strike48.pentest_connector 2>/dev/null || true
-  "$ADB" -s "$D" install target/dx/pentest-mobile/debug/android/app/app/build/outputs/apk/debug/app-debug.apk
+  "$ADB" -s "$D" install target/dx/pick/debug/android/app/app/build/outputs/apk/debug/app-debug.apk
   "$ADB" -s "$D" shell monkey -p com.strike48.pentest_connector -c android.intent.category.LAUNCHER 1
 '
 ```
