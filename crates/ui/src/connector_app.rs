@@ -1326,6 +1326,19 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                             s.matrix_api_url = api;
                                             let _ = save_settings(&s);
                                         }
+                                        // Kick off a fresh sign-in against the new
+                                        // server. Without this the endpoint updates
+                                        // silently but the flow stays parked on the
+                                        // "Couldn't connect" screen (Failed/AwaitingGesture)
+                                        // — the user changed the server and nothing
+                                        // happened. SignInRequested advances Failed{reauth}
+                                        // / AwaitingGesture / Disconnected -> SigningIn,
+                                        // which drives the connect effect.
+                                        tracing::info!(
+                                            "change-server: reconnecting to {}",
+                                            config.peek().host
+                                        );
+                                        dispatch(AuthEvent::SignInRequested);
                                     },
                                     sandbox_available: sandbox_available(),
                                     shell_mode: settings.read().shell_mode,
