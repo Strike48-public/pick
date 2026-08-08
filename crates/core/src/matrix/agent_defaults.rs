@@ -674,7 +674,10 @@ mod tests {
             msg.contains("Tools available on THIS connector"),
             "should carry the availability preamble"
         );
-        assert!(msg.contains("http_request"), "should list the advertised tools");
+        assert!(
+            msg.contains("http_request"),
+            "should list the advertised tools"
+        );
         assert!(
             msg.contains("port_scan"),
             "should list the advertised tools"
@@ -685,7 +688,10 @@ mod tests {
             "should still include the red-team persona"
         );
         // Empty list -> bare persona (no preamble), so nothing breaks pre-registration.
-        assert_eq!(system_message_with_available_tools(&[]), RED_TEAM_SYSTEM_PROMPT);
+        assert_eq!(
+            system_message_with_available_tools(&[]),
+            RED_TEAM_SYSTEM_PROMPT
+        );
     }
 
     #[test]
@@ -700,7 +706,13 @@ mod tests {
             sys.contains("Self-serve report format"),
             "system prompt should carry the self-serve report format section"
         );
-        for needle in ["frontmatter", "document_write", "scope", "severity", "findings"] {
+        for needle in [
+            "frontmatter",
+            "document_write",
+            "scope",
+            "severity",
+            "findings",
+        ] {
             assert!(
                 sys.contains(needle),
                 "system prompt should describe the report field '{needle}'"

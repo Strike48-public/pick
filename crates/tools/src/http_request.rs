@@ -33,9 +33,7 @@ pub struct HttpRequestTool;
 
 /// Allowed HTTP methods. Restricting to a known set keeps the tool from being
 /// coerced into exotic verbs and gives a clear error on typos.
-const ALLOWED_METHODS: &[&str] = &[
-    "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS",
-];
+const ALLOWED_METHODS: &[&str] = &["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 
 #[async_trait]
 impl PentestTool for HttpRequestTool {

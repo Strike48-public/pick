@@ -75,6 +75,7 @@ pub use external::{
 // module itself stays compiled so its own `#[cfg(test)]` unit test builds under
 // `cargo test`; the tool is just not surfaced to callers of the registry in
 // release builds.
+pub use http_request::HttpRequestTool;
 #[cfg(feature = "inject-test-evidence")]
 pub use inject_test_evidence::InjectTestEvidenceTool;
 pub use lateral_movement::LateralMovementTool;
@@ -90,7 +91,6 @@ pub use smb_enum::SmbEnumTool;
 pub use spawn_specialist::SpawnSpecialistTool;
 pub use ssdp_discover::SsdpDiscoverTool;
 pub use traffic_capture::TrafficCaptureTool;
-pub use http_request::HttpRequestTool;
 pub use web_vuln_scan::WebVulnScanTool;
 pub use webwright::WebwrightTool;
 pub use wifi_scan::WifiScanTool;

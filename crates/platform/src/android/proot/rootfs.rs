@@ -227,7 +227,9 @@ async fn download_file_with_retry(
                 if attempt < MAX_ATTEMPTS {
                     send_progress(
                         progress,
-                        &format!("\r\n  Download failed, retrying ({attempt}/{MAX_ATTEMPTS})...\r\n"),
+                        &format!(
+                            "\r\n  Download failed, retrying ({attempt}/{MAX_ATTEMPTS})...\r\n"
+                        ),
                     )
                     .await;
                     tokio::time::sleep(std::time::Duration::from_secs(3 * attempt as u64)).await;
