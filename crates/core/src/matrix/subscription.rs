@@ -24,6 +24,14 @@ type WsError = tokio_tungstenite::tungstenite::Error;
 /// Heartbeat cadence. Phoenix drops idle sockets; keep it well under the
 /// server timeout.
 const HEARTBEAT_INTERVAL_SECS: u64 = 25;
+/// Read-inactivity watchdog. A healthy Phoenix socket sends a `phx_reply` to
+/// every heartbeat, so we should see an inbound frame at least every
+/// HEARTBEAT_INTERVAL_SECS. If NOTHING arrives for this long, the socket has
+/// silently stalled (open, no Close/EOF/error — e.g. the stream dropped
+/// mid-response) and `read.next()` would otherwise block forever with no
+/// reconnect. Treat it as a disconnect so the supervisor reconnects. Set to
+/// >2x the heartbeat so a single lost reply doesn't trip it.
+const READ_STALL_TIMEOUT_SECS: u64 = 60;
 /// Upper bound on a single connect attempt, and on the wait for each
 /// `phx_reply` ok, so a silent server can never hang the supervisor.
 const CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -300,9 +308,21 @@ async fn connect_and_run(
     // Skip the immediate first tick so the first heartbeat lands one interval out.
     heartbeat.tick().await;
 
+    // Read-inactivity watchdog: reset on every inbound frame. If it fires, the
+    // socket has stalled silently (no Close/error/EOF) and we must reconnect —
+    // otherwise the stream hangs mid-response forever (the iOS "stopped
+    // streaming" symptom). `Sleep` is pinned so it can be reset in place.
+    let stall = tokio::time::sleep(Duration::from_secs(READ_STALL_TIMEOUT_SECS));
+    tokio::pin!(stall);
+
     loop {
         tokio::select! {
             maybe_msg = read.next() => {
+                // Any inbound frame (event, heartbeat reply, ping) proves the
+                // socket is alive — reset the stall watchdog.
+                stall
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + Duration::from_secs(READ_STALL_TIMEOUT_SECS));
                 match maybe_msg {
                     Some(Ok(WsMessage::Text(text))) => {
                         match serde_json::from_str::<Value>(&text) {
@@ -342,6 +362,14 @@ async fn connect_and_run(
                     tracing::warn!("subscription: heartbeat send failed: {e}");
                     return ConnectOutcome::DisconnectedAfterLive;
                 }
+            }
+            _ = &mut stall => {
+                // No inbound frame for READ_STALL_TIMEOUT_SECS — not even a
+                // heartbeat reply. The socket is silently dead; reconnect.
+                tracing::warn!(
+                    "subscription: no data for {READ_STALL_TIMEOUT_SECS}s (stalled), reconnecting"
+                );
+                return ConnectOutcome::DisconnectedAfterLive;
             }
         }
     }
@@ -411,5 +439,18 @@ mod tests {
         assert_eq!(ds[0], 500);
         assert!(ds.iter().all(|d| *d <= 5000));
         assert!(ds[5] == 5000); // capped
+    }
+
+    #[test]
+    fn stall_timeout_exceeds_two_heartbeats() {
+        // The read-inactivity watchdog must be comfortably longer than the
+        // heartbeat interval: a healthy socket receives a phx_reply every
+        // HEARTBEAT_INTERVAL_SECS, so the watchdog must tolerate at least one
+        // missed reply without tripping. If someone lowers the stall timeout
+        // below ~2x the heartbeat, healthy connections would flap.
+        assert!(
+            READ_STALL_TIMEOUT_SECS >= 2 * HEARTBEAT_INTERVAL_SECS,
+            "stall timeout ({READ_STALL_TIMEOUT_SECS}s) must exceed 2x heartbeat ({HEARTBEAT_INTERVAL_SECS}s)"
+        );
     }
 }
