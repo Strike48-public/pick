@@ -566,7 +566,16 @@ async fn try_native_android_oauth(base: &str) -> crate::error::Result<Option<Str
     }
 
     tracing::info!("[BROWSER_AUTH] Android: opening browser for native OAuth -> {login_url}");
-    open_url_via_opener(&login_url);
+    // If the browser never actually opened, fail NOW with a clear message rather
+    // than blocking 5 minutes on a callback that can't arrive. Drop the oneshot
+    // we just registered so a later attempt starts clean.
+    if let Err(e) = open_url_via_opener(&login_url) {
+        let _ = NATIVE_OAUTH_TX.lock().map(|mut g| g.take());
+        let _ = NATIVE_OAUTH_STATE.lock().map(|mut g| g.take());
+        return Err(crate::error::Error::Matrix(format!(
+            "couldn't open a browser to sign in ({e}). Check the server address and that a browser is installed."
+        )));
+    }
 
     // Wait for the Activity to deliver the token (or time out). A first-time
     // interactive browser sign-in (Keycloak form + consent, on a cold browser)
@@ -606,26 +615,37 @@ async fn try_native_android_oauth(base: &str) -> crate::error::Result<Option<Str
 }
 
 /// Open a URL using the registered platform browser opener, falling back to
-/// `open::that`. Shared by the Android native-OAuth and loopback flows.
+/// `open::that`. Shared by the Android native-OAuth and loopback flows. Returns
+/// `Err` when NO opener could launch the URL, so the caller can fail fast with a
+/// clear message instead of blocking on a callback that will never arrive (the
+/// browser never actually opened). A custom opener that reports success wins; a
+/// custom-opener error falls through to `open::that` before giving up.
 #[cfg(feature = "browser-auth")]
-fn open_url_via_opener(url: &str) {
+fn open_url_via_opener(url: &str) -> Result<(), String> {
     if let Ok(opener_lock) = BROWSER_OPENER.lock() {
         if let Some(ref opener) = *opener_lock {
             match opener(url) {
                 Ok(_) => {
                     tracing::info!("[BROWSER_AUTH] Browser opened via custom opener");
-                    return;
+                    return Ok(());
                 }
-                Err(e) => tracing::warn!("[BROWSER_AUTH] Custom browser opener failed: {e}"),
+                Err(e) => {
+                    tracing::warn!("[BROWSER_AUTH] Custom browser opener failed: {e}");
+                }
             }
         }
     }
-    if let Err(e) = open::that(url) {
-        tracing::error!(
-            "[BROWSER_AUTH] Failed to open browser: {e}. Please open this URL manually:\n{url}"
-        );
-    } else {
-        tracing::info!("[BROWSER_AUTH] Browser opened via open::that()");
+    match open::that(url) {
+        Ok(_) => {
+            tracing::info!("[BROWSER_AUTH] Browser opened via open::that()");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!(
+                "[BROWSER_AUTH] Failed to open browser: {e}. Please open this URL manually:\n{url}"
+            );
+            Err(format!("could not open a browser: {e}"))
+        }
     }
 }
 
@@ -1041,7 +1061,14 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
     let login_url = format!("{}/auth/login?redirect={}", base, encoded_redirect);
     tracing::info!("[BROWSER_AUTH] Opening browser to: {}", login_url);
 
-    open_url_via_opener(&login_url);
+    // If no browser could be launched, fail fast (and stop the loopback server)
+    // instead of waiting out the full timeout for a callback that can't come.
+    if let Err(e) = open_url_via_opener(&login_url) {
+        server_handle.abort();
+        return Err(crate::error::Error::Matrix(format!(
+            "couldn't open a browser to sign in ({e}). Check the server address and that a browser is installed."
+        )));
+    }
 
     tracing::info!("[BROWSER_AUTH] Waiting for token (120s timeout)...");
 
