@@ -513,6 +513,30 @@ build-android:
     export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
     echo "PICK_EASY_MODE=$PICK_EASY_MODE"
 
+    # Bake the PLG target host so a debug install can sign in without manually
+    # typing a server (mobile has no runtime env; the host reaches the binary via
+    # option_env!("STRIKE48_HOST") — same mechanism release CI uses). NOT
+    # hardcoded to an operator-specific URL (CLAUDE.md): export STRIKE48_HOST
+    # before the build to set it. Absent, the app boots to the connect form
+    # (the escape hatch) instead of silently failing sign-in.
+    if [ -n "${STRIKE48_HOST:-}" ]; then
+        export STRIKE48_HOST
+        echo "STRIKE48_HOST=$STRIKE48_HOST (baked)"
+    else
+        echo "STRIKE48_HOST not set — app will show the connect form (set it to bake a default)"
+    fi
+
+    # Dev-only: bake MATRIX_TLS_INSECURE so a debug build can talk to a *.test
+    # server with a self-signed / private-CA cert (main.rs reads it via
+    # option_env! -> client uses danger_accept_invalid_certs). Without it, HTTPS
+    # to plg.strike48.test fails with "certificate verify failed" and the app
+    # shows "Connection failed". NEVER set this for a release/store build — real
+    # hosts (studio.strike48.com) have valid certs.
+    if [ -n "${MATRIX_TLS_INSECURE:-}" ]; then
+        export MATRIX_TLS_INSECURE
+        echo "MATRIX_TLS_INSECURE=$MATRIX_TLS_INSECURE (baked — dev only)"
+    fi
+
     # Drop dev debuginfo — large disk the APK doesn't need. Overridable; output
     # correctness is unchanged.
     export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
