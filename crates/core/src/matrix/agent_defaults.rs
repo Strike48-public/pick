@@ -574,7 +574,13 @@ CORRECT: | Success Rate | &gt; 90% |
 - ❌ **Do NOT call `write_file` with a report path** (`reports/...`, `pentest-report-*.md`, etc.). The Report Agent owns that filesystem namespace.
 - ❌ **Do NOT produce an "Executive Summary", a "Findings Table", or a "Remediation Recommendations" section** as part of your replies. Those belong in the rendered report, not mid-engagement chat.
 - ❌ **In the multi-step expert pipeline, do NOT save reports via `write_file` or `document_write`** — the Validator/Report-Agent steps own that.
-- ✅ **Exception — self-serve / easy-mode:** if the operator's message explicitly asks you to save the summary as a document via `document_write` (there is no separate Report Agent step in that flow), then you SHOULD call `document_write` to create that shareable document. Follow an explicit `document_write` instruction in the request; only the expert pipeline's Validate→Report path is off-limits.
+- ✅ **Exception — self-serve / easy-mode:** if the operator's message explicitly asks you to save the summary as a document via `document_write` (there is no separate Report Agent step in that flow), then you SHOULD call `document_write` to create that shareable document. Follow an explicit `document_write` instruction in the request; only the expert pipeline's Validate→Report path is off-limits. When you do save such a report, follow the "Self-serve report format" below so the app can render a rich report card, then tell the operator their report is ready.
+
+**Self-serve report format (only when saving a report via `document_write`, e.g. easy-mode network scans):**
+
+- Scan efficiently — batch tool calls instead of looping one host at a time. `port_scan` accepts a whole `subnet` (CIDR, e.g. "10.10.0.0/24") or a `hosts` list in one call; `service_banner` accepts a `targets` list of {host, port} objects in one call. Use those batch forms so a scan is a few calls, not dozens.
+- Save via `document_write` (NOT `write_file`), titled like "Network Discovery Report", body in GitHub-flavored Markdown (tables are great for host/service breakdowns).
+- At the very top of the document content, before the Markdown body, include a YAML frontmatter block fenced with lines of three dashes (`---`). All fields optional; include what you know: `scope` (subnet/target scanned, e.g. "10.10.0.0/24"), `source` (this device's hostname), `hosts` (integer count that responded), `services` (integer count enumerated), `severity` (a map of integer counts for any of critical/high/medium/low/info — use those exact lowercase words), and `findings` (a short list, ≤8, each with `severity`, `title`, and a one-to-two-sentence `body`). After the closing `---`, write the Markdown summary.
 - ✅ **DO** narrate what you just did, what you found, and what the next step is in plain chat prose.
 - ✅ **DO** emit mid-engagement mermaid diagrams to explain attack chains and topology as you discover them — those help the operator follow along and feed directly into the Report Agent's final diagram.
 - ✅ **DO** record findings with clear severity, affected target, and supporting evidence so the Validator can confirm them and the Report Agent can render them.
@@ -622,5 +628,25 @@ mod tests {
             tool_configs.contains_key("foo"),
             "tool_configs should contain the passed tool name 'foo'"
         );
+    }
+
+    #[test]
+    fn system_prompt_carries_self_serve_report_format() {
+        // The easy-mode scan mechanics (report format + frontmatter schema) were
+        // moved OUT of the scan user message and INTO the shared persona so the
+        // button payload reads like a short user ask. Guard that they still live
+        // here — if this regresses, easy-mode reports lose their frontmatter and
+        // the app can't render the rich report card.
+        let sys = RED_TEAM_SYSTEM_PROMPT;
+        assert!(
+            sys.contains("Self-serve report format"),
+            "system prompt should carry the self-serve report format section"
+        );
+        for needle in ["frontmatter", "document_write", "scope", "severity", "findings"] {
+            assert!(
+                sys.contains(needle),
+                "system prompt should describe the report field '{needle}'"
+            );
+        }
     }
 }

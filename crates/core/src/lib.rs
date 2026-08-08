@@ -41,37 +41,18 @@ pub mod workspace;
 /// so UI code can name it as `pentest_core::WslInstallStatus`.
 pub use config::WslInstallStatus;
 
-/// The canned chat message the Easy Mode "Scan" button sends. It instructs the
-/// server-side agent to enumerate local interfaces, scan the local subnet, and
-/// write a report document of the findings. Kept as one place so the wording is
-/// consistent and testable.
+/// The canned chat message the Easy Mode "Scan" button sends. Deliberately
+/// short: it states the intent + the explicit `document_write` trigger the
+/// shared agent persona keys on to enter self-serve report mode (see
+/// `RED_TEAM_SYSTEM_PROMPT`, "Self-serve report format"). The scan strategy
+/// (batching), the report title/Markdown format, and the frontmatter schema all
+/// live in that system prompt — NOT here — so this reads like a real user ask
+/// rather than a wall of operator instructions. The `document_write` mention is
+/// the load-bearing part: the persona only saves an easy-mode report when the
+/// message explicitly asks for it.
 pub fn easy_mode_scan_prompt() -> String {
-    "Discover the devices on my local network: enumerate my network interfaces, \
-     scan the local subnet for reachable hosts and their open services, then \
-     summarize what you found.\n\n\
-     Work efficiently — batch your tool calls instead of looping one host at a \
-     time. `port_scan` accepts a whole `subnet` (CIDR, e.g. \"10.10.0.0/24\") or \
-     a `hosts` list in a single call, and `service_banner` accepts a `targets` \
-     list of {host, port} objects in a single call. Use those batch forms so the \
-     scan takes a few calls, not dozens.\n\n\
-     When you have the results, you MUST save the summary as a shareable report \
-     by calling the `document_write` tool (NOT `write_file`) — create a document \
-     titled something like \"Network Discovery Report\" whose body is the \
-     findings summary in Markdown. This easy-mode flow has no separate report \
-     step, so creating that document is your responsibility and is required: the \
-     app surfaces it to the user for viewing and sharing. After the \
-     `document_write` call succeeds, tell the user their report is ready.\n\n\
-     At the very top of the document content, before the markdown body, include a \
-     YAML frontmatter block fenced with lines of three dashes (---). Put optional \
-     metadata there so the app can render a richer report card: \
-     scope (the subnet or target you scanned, e.g. \"10.10.0.0/24\"), \
-     source (this device's hostname), hosts (integer count that responded), \
-     services (integer count enumerated), severity (a map with integer counts for \
-     any of critical/high/medium/low/info), and findings (a short list, ideally 8 \
-     or fewer, of items each with severity, title, and a one-to-two sentence body). \
-     Use those exact lowercase severity words. Every field is optional; include \
-     what you know. After the closing --- line, write the normal Markdown summary \
-     (GFM tables are great for host/service breakdowns)."
+    "Scan my local network: find the devices, their open services, and any risks, \
+     then save the results as a shareable report using `document_write`."
         .to_string()
 }
 
@@ -128,15 +109,21 @@ mod tests {
     }
 
     #[test]
-    fn scan_prompt_requests_frontmatter() {
+    fn scan_prompt_stays_short() {
+        // The scan strategy + report/frontmatter mechanics now live in the agent
+        // system prompt (RED_TEAM_SYSTEM_PROMPT, "Self-serve report format"), not
+        // in this user message. Guard against it re-bloating into operator
+        // instructions: it should read like a short user ask.
         let p = easy_mode_scan_prompt();
         assert!(
-            p.contains("frontmatter"),
-            "prompt should instruct the agent to emit frontmatter: {p}"
+            p.len() < 300,
+            "scan prompt should be a short user ask, not operator instructions ({} chars): {p}",
+            p.len()
         );
+        // These details belong in the system prompt now, not the user message.
         assert!(
-            p.contains("scope"),
-            "prompt should mention the scope field: {p}"
+            !p.contains("frontmatter"),
+            "frontmatter schema should live in the system prompt, not the user message: {p}"
         );
     }
 }
