@@ -415,22 +415,26 @@ pub fn SuggestedActions(props: SuggestedActionsProps) -> Element {
     let conversation_list = props.conversation_list;
     let easy_mode = props.easy_mode;
 
+    // In easy mode the `.easy-home` hero (scan card + resume + recent list, in
+    // easy_mode.rs) IS the empty-state UI and is rendered on top of this
+    // always-mounted ChatPanel. Rendering this centered `.chat-empty` greeting
+    // too made the italic "…your network." text overlap the hero/cards. So
+    // render nothing here in easy mode — easy-home owns the empty state.
+    if easy_mode {
+        return rsx! {};
+    }
+
     rsx! {
         div { class: "chat-empty",
-            if easy_mode {
-                // Lay-friendly greeting; the scan card is the primary action.
-                p { class: "chat-greeting", "Hi! Tap Scan My Network above, or ask me anything about your network." }
-            } else if let Some(agent) = selected_agent.read().as_ref() {
+            if let Some(agent) = selected_agent.read().as_ref() {
                 if let Some(greeting) = &agent.greeting {
                     p { class: "chat-greeting", "{greeting}" }
                 } else {
                     p { class: "chat-greeting", "Start a conversation with {agent.name}" }
                 }
             }
-            // Easy Mode shows no quick-action chips — the prominent "Scan My
-            // Network" card is the only call to action; the chat is free-form.
             div { class: "chat-suggested-actions",
-                for (label, prompt) in if easy_mode { [].as_slice() } else { SUGGESTED_ACTIONS }.iter() {
+                for (label, prompt) in SUGGESTED_ACTIONS.iter() {
                     {
                         let prompt_text = prompt.to_string();
                         let on_send = props.on_send;
