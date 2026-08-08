@@ -34,6 +34,37 @@ fn build_tool_configs(names: &[String]) -> serde_json::Value {
 /// `tool_names` are the registered tool names to auto-approve. Callers pass
 /// this explicitly (the Dioxus app sources it from its global session; the
 /// crux shell passes the tools it knows about) so this builder stays pure.
+/// Build the agent system message: the static red-team persona plus a dynamic
+/// preamble listing the tools THIS connector actually advertises. The persona
+/// documents tools like `nmap` / `execute_command` for the full desktop
+/// toolset, but a given connector (notably iOS — no fork/exec, no sandbox) only
+/// exposes a subset. Without being told, the agent reaches for tools it "knows"
+/// but that aren't advertised here, and those calls just fail (the observed
+/// "tried nmap / execute_command on iOS" behavior). Prepend the real list and
+/// tell it not to reach outside that set.
+fn system_message_with_available_tools(tool_names: &[String]) -> String {
+    if tool_names.is_empty() {
+        return RED_TEAM_SYSTEM_PROMPT.to_string();
+    }
+    let mut names: Vec<&str> = tool_names.iter().map(String::as_str).collect();
+    names.sort_unstable();
+    format!(
+        "# Tools available on THIS connector\n\n\
+         This connector advertises exactly these tools; they are the ONLY \
+         connector tools you can call here:\n\n{}\n\n\
+         Do NOT call any connector tool not in this list. In particular, if a \
+         tool the persona describes below (e.g. `nmap`, `execute_command`, or \
+         other sandbox/binary tools) is absent above, this platform cannot run \
+         it — reach for a listed alternative (e.g. `port_scan`, `service_banner`, \
+         `http_request`, `network_discover`) instead of calling the unavailable \
+         one. System tools (document_*, *_guide, validate_*) are always \
+         available in addition to the above.\n\n\
+         ---\n\n{}",
+        names.join(", "),
+        RED_TEAM_SYSTEM_PROMPT
+    )
+}
+
 pub fn default_pentest_agent_input(
     tenant_id: &str,
     connector_name: &str,
@@ -63,7 +94,7 @@ pub fn default_pentest_agent_input(
     CreateAgentInput {
         name: connector_name.to_string(),
         description: Some("Red team operational agent for penetration testing".to_string()),
-        system_message: Some(RED_TEAM_SYSTEM_PROMPT.to_string()),
+        system_message: Some(system_message_with_available_tools(tool_names)),
         agent_greeting: Some("Ready for red team operations. What's the target?".to_string()),
         context: Some(serde_json::json!({
             "created_by": connector_name,
@@ -628,6 +659,33 @@ mod tests {
             tool_configs.contains_key("foo"),
             "tool_configs should contain the passed tool name 'foo'"
         );
+    }
+
+    #[test]
+    fn system_message_lists_available_tools_and_gates_unavailable_ones() {
+        // The connector's advertised tools get prepended so the agent doesn't
+        // reach for tools this platform can't run (e.g. nmap on iOS).
+        let msg = system_message_with_available_tools(&[
+            "port_scan".into(),
+            "http_request".into(),
+            "network_discover".into(),
+        ]);
+        assert!(
+            msg.contains("Tools available on THIS connector"),
+            "should carry the availability preamble"
+        );
+        assert!(msg.contains("http_request"), "should list the advertised tools");
+        assert!(
+            msg.contains("port_scan"),
+            "should list the advertised tools"
+        );
+        // Still carries the full persona after the preamble.
+        assert!(
+            msg.to_lowercase().contains("red team"),
+            "should still include the red-team persona"
+        );
+        // Empty list -> bare persona (no preamble), so nothing breaks pre-registration.
+        assert_eq!(system_message_with_available_tools(&[]), RED_TEAM_SYSTEM_PROMPT);
     }
 
     #[test]
