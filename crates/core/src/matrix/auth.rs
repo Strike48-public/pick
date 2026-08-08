@@ -305,8 +305,15 @@ where
     }
 }
 
-/// Custom URL scheme (no path) for the native OAuth callback, used as the
-/// `ASWebAuthenticationSession` callback scheme on iOS.
+/// Custom URL scheme (no path) for the native OAuth callback: the scheme we
+/// request in the `redirect=` param and present as the
+/// `ASWebAuthenticationSession` callback scheme on iOS. Kept as the LEGACY
+/// `com.strike48.pentest` because that is the redirect URI the backend currently
+/// allow-lists. The app ALSO registers the new `com.strike48.pick` scheme as an
+/// OS handler (AndroidManifest intent-filter + iOS CFBundleURLSchemes) and the
+/// callback parser is scheme-agnostic, so once the backend allow-lists
+/// `com.strike48.pick://oauth/callback` this constant flips to it and the legacy
+/// registrations can be dropped.
 #[cfg(feature = "browser-auth")]
 const NATIVE_OAUTH_SCHEME: &str = "com.strike48.pentest";
 

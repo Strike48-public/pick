@@ -1,4 +1,4 @@
-package com.strike48.pentest_connector
+package com.strike48.pick
 
 import android.app.Notification
 import android.app.NotificationChannel

@@ -17,7 +17,7 @@ use pentest_core::error::{Error, Result};
 use std::time::Duration;
 
 /// Android application home directory inside the app's private storage.
-const APP_HOME: &str = "/data/data/com.strike48.pentest_connector/files";
+const APP_HOME: &str = "/data/data/com.strike48.pick/files";
 
 /// One-time Android environment setup.
 ///

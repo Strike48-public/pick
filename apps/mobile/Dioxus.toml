@@ -4,7 +4,7 @@ default_platform = "android"
 
 [bundle]
 name = "Pick"
-identifier = "com.strike48.pentest_connector"
+identifier = "com.strike48.pick"
 publisher = "Strike48"
 
 # Android SDK versions. nixpkgs androidenv packages platform/build-tools 35 & 36
@@ -33,7 +33,18 @@ CFBundleName = "Pick"
 # session's SafariViewService can't bind the callback, so the auth view fails to
 # present (blank screen, no completion, apparent hang) — matches the working
 # crux shell's Info.plist. dx merges [ios.plist] into the generated Info.plist.
+#
+# BOTH the legacy (com.strike48.pentest) and new (com.strike48.pick) schemes are
+# registered so native sign-in survives the backend's redirect-URI migration.
+# The scheme actually presented follows the redirect the server uses; the Rust
+# callback parser is scheme-agnostic. Drop the legacy entry once the backend
+# only redirects to com.strike48.pick.
 [[ios.plist.CFBundleURLTypes]]
 CFBundleTypeRole = "Editor"
 CFBundleURLName = "com.strike48.pentest.oauth"
 CFBundleURLSchemes = ["com.strike48.pentest"]
+
+[[ios.plist.CFBundleURLTypes]]
+CFBundleTypeRole = "Editor"
+CFBundleURLName = "com.strike48.pick.oauth"
+CFBundleURLSchemes = ["com.strike48.pick"]

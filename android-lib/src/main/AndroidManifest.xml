@@ -22,10 +22,17 @@
     <application>
         <!-- OAuth callback handler for custom URI scheme (native app deep link) -->
         <activity
-            android:name="com.strike48.pentest_connector.OAuthCallbackActivity"
+            android:name="com.strike48.pick.OAuthCallbackActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <!-- Accept BOTH the legacy (com.strike48.pentest) and new
+                 (com.strike48.pick) OAuth callback schemes so the device is
+                 ready before/after the backend migrates its allowed redirect
+                 URI. The Rust callback parser is scheme-agnostic (it reads
+                 access_token/state from the URL regardless of scheme), so
+                 either routes correctly. Drop the legacy scheme once the
+                 backend only ever redirects to com.strike48.pick. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -34,30 +41,34 @@
                     android:scheme="com.strike48.pentest"
                     android:host="oauth"
                     android:path="/callback" />
+                <data
+                    android:scheme="com.strike48.pick"
+                    android:host="oauth"
+                    android:path="/callback" />
             </intent-filter>
         </activity>
 
         <!-- Screen capture consent helper (bd-21) -->
         <activity
-            android:name="com.strike48.pentest_connector.ScreenCaptureConsentActivity"
+            android:name="com.strike48.pick.ScreenCaptureConsentActivity"
             android:exported="false"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <!-- Foreground service for screen capture (bd-21) -->
         <service
-            android:name="com.strike48.pentest_connector.ScreenCaptureService"
+            android:name="com.strike48.pick.ScreenCaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 
         <!-- Foreground service for background operation (bd-19) -->
         <service
-            android:name="com.strike48.pentest_connector.ConnectorService"
+            android:name="com.strike48.pick.ConnectorService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
         <!-- VPN service for packet capture (bd-25) -->
         <service
-            android:name="com.strike48.pentest_connector.PacketCaptureVpnService"
+            android:name="com.strike48.pick.PacketCaptureVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:exported="false">
             <intent-filter>

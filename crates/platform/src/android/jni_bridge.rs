@@ -128,7 +128,7 @@ pub fn find_app_class<'a>(env: &mut JNIEnv<'a>, name: &str) -> Result<jni::objec
 /// Should be called once at app startup from the main thread.
 pub fn request_permissions() {
     let _ = with_activity(|env, activity| {
-        let cls = find_app_class(env, "com/strike48/pentest_connector/PermissionRequester")?;
+        let cls = find_app_class(env, "com/strike48/pick/PermissionRequester")?;
         env.call_static_method(
             &cls,
             "requestAll",
@@ -155,7 +155,7 @@ pub fn request_screen_capture() {
             .and_then(|v| v.l())
             .map_err(|e| Error::ToolExecution(format!("getApplicationContext: {e}")))?;
 
-        let bridge_cls = find_app_class(env, "com/strike48/pentest_connector/ConnectorBridge")?;
+        let bridge_cls = find_app_class(env, "com/strike48/pick/ConnectorBridge")?;
         env.call_static_method(
             &bridge_cls,
             "requestScreenCapture",
@@ -202,7 +202,7 @@ pub fn open_browser(url: &str) -> Result<()> {
             .and_then(|v| v.l())
             .map_err(|e| Error::ToolExecution(format!("getApplicationContext: {e}")))?;
 
-        let bridge_cls = find_app_class(env, "com/strike48/pentest_connector/ConnectorBridge")?;
+        let bridge_cls = find_app_class(env, "com/strike48/pick/ConnectorBridge")?;
 
         let method_str = env
             .new_string("open_browser")
@@ -255,7 +255,7 @@ pub fn share_text(text: &str) -> Result<()> {
             .and_then(|v| v.l())
             .map_err(|e| Error::ToolExecution(format!("getApplicationContext: {e}")))?;
 
-        let bridge_cls = find_app_class(env, "com/strike48/pentest_connector/ConnectorBridge")?;
+        let bridge_cls = find_app_class(env, "com/strike48/pick/ConnectorBridge")?;
 
         let method_str = env
             .new_string("share_text")
@@ -306,7 +306,7 @@ fn invoke_bridge(method: &str, params: &str) -> Result<String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| Error::ToolExecution(format!("getApplicationContext: {e}")))?;
-        let bridge_cls = find_app_class(env, "com/strike48/pentest_connector/ConnectorBridge")?;
+        let bridge_cls = find_app_class(env, "com/strike48/pick/ConnectorBridge")?;
         let method_str = env
             .new_string(&method)
             .map_err(|e| Error::ToolExecution(format!("JNI string: {e}")))?;

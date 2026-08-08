@@ -1,4 +1,4 @@
-package com.strike48.pentest_connector
+package com.strike48.pick
 
 import android.app.Activity
 import android.os.Bundle
@@ -42,7 +42,7 @@ class OAuthCallbackActivity : Activity() {
      * Deliver the OAuth callback URL to the Rust core. Returns true when a
      * login was in flight and a token was delivered. Implemented in
      * `apps/mobile/src/main.rs` as
-     * `Java_com_strike48_pentest_1connector_OAuthCallbackActivity_deliverOAuthToken`.
+     * `Java_com_strike48_pick_OAuthCallbackActivity_deliverOAuthToken`.
      */
     private external fun deliverOAuthToken(url: String): Boolean
 

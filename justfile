@@ -302,7 +302,7 @@ emulator-list:
 # every `dx build` and BEFORE every gradle invocation. The recipe verifies the
 # additions are actually present and aborts loudly if not — silently dropping
 # the kotlin module produces a runtime ClassNotFoundException for
-# `com.strike48.pentest_connector.ConnectorBridge` that's painful to diagnose.
+# `com.strike48.pick.ConnectorBridge` that's painful to diagnose.
 _inject-android-lib proj:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -619,8 +619,8 @@ run-android:
     just build-android
     APK="target/dx/pick/debug/android/app/app/build/outputs/apk/debug/app-debug.apk"
     adb install -r "$APK"
-    adb shell am force-stop com.strike48.pentest_connector
-    adb shell am start -n com.strike48.pentest_connector/dev.dioxus.main.MainActivity
+    adb shell am force-stop com.strike48.pick
+    adb shell am start -n com.strike48.pick/dev.dioxus.main.MainActivity
 
 # Bundle mobile app for Android distribution as an Android App Bundle (.aab).
 #

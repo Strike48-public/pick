@@ -24,7 +24,7 @@ pub async fn start_traffic_capture() -> Result<CaptureHandle> {
 
             let vpn_cls = find_app_class(
                 env,
-                "com/strike48/pentest_connector/PacketCaptureVpnService",
+                "com/strike48/pick/PacketCaptureVpnService",
             )?;
 
             let started = env
@@ -63,7 +63,7 @@ pub async fn get_captured_packets(
         with_activity(move |env, _activity| {
             let vpn_cls = find_app_class(
                 env,
-                "com/strike48/pentest_connector/PacketCaptureVpnService",
+                "com/strike48/pick/PacketCaptureVpnService",
             )?;
 
             let result = env
@@ -100,7 +100,7 @@ pub async fn stop_traffic_capture(_handle: CaptureHandle) -> Result<()> {
 
             let vpn_cls = find_app_class(
                 env,
-                "com/strike48/pentest_connector/PacketCaptureVpnService",
+                "com/strike48/pick/PacketCaptureVpnService",
             )?;
 
             env.call_static_method(

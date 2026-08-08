@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.strike48.pentest_connector.nativelib"
+    namespace = "com.strike48.pick.nativelib"
     compileSdk = 35
     buildToolsVersion = "35.0.1"
 

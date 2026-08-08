@@ -123,15 +123,15 @@ fn MobileApp() -> Element {
 /// (launching the browser backgrounds the app and suspends the callback
 /// server).
 ///
-/// The JNI symbol encodes the Kotlin package: the `_` in `pentest_connector`
-/// mangles to `_1`. Runs on the JVM thread — we only send on a channel, so no
-/// thread affinity is required.
+/// The JNI symbol encodes the Kotlin package (com.strike48.pick ->
+/// `Java_com_strike48_pick_...`). Runs on the JVM thread — we only send on a
+/// channel, so no thread affinity is required.
 ///
 /// # Safety
 /// Standard JNI ABI contract: `env`/`url` are valid handles supplied by the JVM.
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "system" fn Java_com_strike48_pentest_1connector_OAuthCallbackActivity_deliverOAuthToken(
+pub extern "system" fn Java_com_strike48_pick_OAuthCallbackActivity_deliverOAuthToken(
     mut env: jni::JNIEnv,
     _class: jni::objects::JClass,
     url: jni::objects::JString,
