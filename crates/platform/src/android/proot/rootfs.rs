@@ -39,6 +39,78 @@ fn get_setup_lock() -> &'static Mutex<()> {
     ROOTFS_SETUP_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Coarse provisioning state for the on-device tool environment, so the UI can
+/// show a "Setting up tools…" affordance instead of the old silent-fail. Stored
+/// as an atomic so any thread (the connect-time trigger, a tool call) can read
+/// it cheaply. `NotStarted`→`InProgress`→(`Ready`|`Failed`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProvisionState {
+    NotStarted,
+    InProgress,
+    Ready,
+    Failed,
+}
+
+static PROVISION_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+fn set_provision_state(s: ProvisionState) {
+    let v = match s {
+        ProvisionState::NotStarted => 0,
+        ProvisionState::InProgress => 1,
+        ProvisionState::Ready => 2,
+        ProvisionState::Failed => 3,
+    };
+    PROVISION_STATE.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Current provisioning state. Reports `Ready` immediately if the rootfs is
+/// already set up on disk from a previous run (so a relaunch doesn't show
+/// "setting up" for an already-provisioned device).
+pub fn provision_state() -> ProvisionState {
+    match PROVISION_STATE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => ProvisionState::InProgress,
+        2 => ProvisionState::Ready,
+        3 => ProvisionState::Failed,
+        _ => {
+            if is_rootfs_ready() {
+                ProvisionState::Ready
+            } else {
+                ProvisionState::NotStarted
+            }
+        }
+    }
+}
+
+/// Kick off rootfs provisioning in the background if it isn't already ready or
+/// running. Idempotent — safe to call on every connect. Returns immediately;
+/// progress is reflected via [`provision_state`]. The heavy download/extract
+/// runs on a spawned task so the caller (connect flow) never blocks.
+pub fn provision_in_background() {
+    if is_rootfs_ready() {
+        set_provision_state(ProvisionState::Ready);
+        return;
+    }
+    // CAS NotStarted/Failed -> InProgress so only one provisioning task runs.
+    let cur = PROVISION_STATE.load(std::sync::atomic::Ordering::Relaxed);
+    if cur == 1 {
+        return; // already in progress
+    }
+    set_provision_state(ProvisionState::InProgress);
+    tokio::spawn(async move {
+        tracing::info!("provisioning on-device tool environment (background)");
+        match ensure_rootfs().await {
+            Ok(_) => {
+                tracing::info!("on-device tool environment ready");
+                set_provision_state(ProvisionState::Ready);
+            }
+            Err(e) => {
+                tracing::error!("on-device tool environment provisioning failed: {e}");
+                set_provision_state(ProvisionState::Failed);
+            }
+        }
+    });
+}
+
 /// Get the rootfs directory path
 pub(crate) fn get_rootfs_dir() -> Result<PathBuf> {
     Ok(get_files_dir()?.join("blackarch-rootfs"))
@@ -132,6 +204,43 @@ async fn send_progress(tx: &Option<tokio::sync::mpsc::Sender<String>>, msg: &str
     }
 }
 
+/// Download the rootfs with bounded retries. The tarball is ~150-200MB and the
+/// first-run download happens on constrained networks (emulators, mobile data),
+/// where a single `reqwest::get` with no timeout can stall forever or drop
+/// mid-stream, leaving no tarball and no `.setup-complete` — so every later tool
+/// call silently re-fails. Retry a few times with a short backoff, removing any
+/// partial file between attempts, and surface progress.
+async fn download_file_with_retry(
+    url: &str,
+    dest: &PathBuf,
+    progress: &Option<tokio::sync::mpsc::Sender<String>>,
+) -> Result<()> {
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut last_err: Option<Error> = None;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match download_file(url, dest, progress).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                tracing::warn!("rootfs download attempt {attempt}/{MAX_ATTEMPTS} failed: {e}");
+                // Drop the partial file so the next attempt starts clean.
+                tokio::fs::remove_file(dest).await.ok();
+                if attempt < MAX_ATTEMPTS {
+                    send_progress(
+                        progress,
+                        &format!("\r\n  Download failed, retrying ({attempt}/{MAX_ATTEMPTS})...\r\n"),
+                    )
+                    .await;
+                    tokio::time::sleep(std::time::Duration::from_secs(3 * attempt as u64)).await;
+                }
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        Error::ToolExecution("rootfs download failed after retries".to_string())
+    }))
+}
+
 /// Download a file from URL to destination with optional progress
 async fn download_file(
     url: &str,
@@ -140,7 +249,19 @@ async fn download_file(
 ) -> Result<()> {
     tracing::info!("Downloading {} to {}", url, dest.display());
 
-    let response = reqwest::get(url)
+    // A client with a connect timeout + overall read timeout so a dead/blocked
+    // endpoint fails fast into the retry loop instead of hanging indefinitely
+    // (the default `reqwest::get` has no timeout). No total-download deadline —
+    // a slow-but-progressing large download must be allowed to finish.
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .read_timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| Error::ToolExecution(format!("HTTP client build failed: {}", e)))?;
+
+    let response = client
+        .get(url)
+        .send()
         .await
         .map_err(|e| Error::ToolExecution(format!("Download failed: {}", e)))?;
 
@@ -241,7 +362,7 @@ pub async fn ensure_rootfs_with_progress(
             let url = get_rootfs_url();
             tracing::info!("Downloading Arch Linux from {}", url);
             send_progress(&progress, "\r\n  Downloading BlackArch rootfs...\r\n").await;
-            download_file(&url, &tarball, &progress).await?;
+            download_file_with_retry(&url, &tarball, &progress).await?;
             send_progress(&progress, "\r\n  Download complete.\r\n").await;
 
             // Verify SHA256 integrity when a known hash is available.

@@ -880,6 +880,16 @@ impl LiveViewConnector {
             self.config.aggression_level,
         );
 
+        // Kick off on-device tool provisioning in the background (Android
+        // downloads/extracts the BlackArch proot rootfs; no-op on other
+        // platforms). Doing it here — at connect — means external tools are
+        // ready by the time the user runs a scan, instead of triggering a
+        // ~200MB download synchronously inside the first tool call's timeout
+        // (which left Android advertising 114 tools that all failed to run).
+        // Fire-and-forget; progress is observable via
+        // pentest_platform::tools_provisioning_state().
+        pentest_platform::provision_tools();
+
         // Run the connector — this blocks until shutdown or non-recoverable error
         match runner.run().await {
             Ok(()) => {

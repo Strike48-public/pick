@@ -189,6 +189,25 @@ impl CommandExec for AndroidPlatform {
     }
 }
 
+/// Kick off provisioning the on-device BlackArch tool environment in the
+/// background (idempotent). Called at connect time so external tools are ready
+/// by the time the user runs a scan, instead of triggering a ~200MB download
+/// synchronously inside the first tool call's timeout.
+pub fn provision_tools() {
+    proot::provision_in_background();
+}
+
+/// Coarse state of on-device tool provisioning, for the UI "Setting up tools…"
+/// affordance. Maps proot's `ProvisionState` to the shared string form.
+pub fn tools_provisioning_state() -> &'static str {
+    match proot::provision_state() {
+        proot::ProvisionState::NotStarted => "not_started",
+        proot::ProvisionState::InProgress => "in_progress",
+        proot::ProvisionState::Ready => "ready",
+        proot::ProvisionState::Failed => "failed",
+    }
+}
+
 #[async_trait]
 impl WifiAttackOps for AndroidPlatform {
     async fn enable_monitor_mode(
