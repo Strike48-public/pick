@@ -883,7 +883,11 @@ build-ios:
     # PICK_EASY_MODE=false; the in-app Settings toggle still wins at runtime.
     export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
     echo "PICK_EASY_MODE=$PICK_EASY_MODE"
-    {{dx}} build --platform ios --package pick
+    # Pass the keychain entitlement so codesign grants keychain access; without
+    # it SecItemAdd fails with -34018 (errSecMissingEntitlement) and the chat
+    # token never persists (sign-in every launch). --apple-entitlements also
+    # makes dx codesign the app (required for the entitlement to take effect).
+    {{dx}} build --platform ios --package pick --apple-entitlements apps/mobile/ios/Pick.entitlements
     just _inject-ios-icon target/dx/pick/debug/ios/Pick.app
 
 # Compile the strike48 AppIcon into an iOS .app bundle. dx does not manage iOS
