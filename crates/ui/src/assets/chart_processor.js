@@ -79,7 +79,12 @@
         var close = document.createElement('button');
         close.textContent = '✕';
         close.setAttribute('aria-label', 'Close');
-        close.style.cssText = 'position:fixed;top:20px;right:24px;width:40px;height:40px;border-radius:50%;'
+        // The class opts out of mobile.css's global `button { min-height:48px }`,
+        // which otherwise stretches this 44x44 button into an oval. min-height
+        // is also pinned inline as belt-and-suspenders.
+        close.className = 'viz-fullscreen-close';
+        close.style.cssText = 'position:fixed;top:20px;right:24px;width:44px;height:44px;min-height:44px;'
+            + 'padding:0;border-radius:50%;line-height:1;display:flex;align-items:center;justify-content:center;'
             + 'border:none;background:rgba(255,255,255,0.14);color:#e9eeeb;font-size:18px;cursor:pointer;z-index:1;';
         function hide() { modal.style.display = 'none'; content.innerHTML = ''; }
         close.addEventListener('click', hide);
@@ -207,6 +212,12 @@
             mediaEl = node;
             node.style.display = 'block';
             node.style.maxWidth = 'none'; node.style.maxHeight = 'none';
+            // content is a flex container (centers the media at fit). Without
+            // flex-shrink:0 the media is a shrinkable flex item, so the browser
+            // squashes it back to the container width the instant we grow it on
+            // zoom — the "zoom does nothing" bug. Pin it so our explicit
+            // width/height in applySize() are honored.
+            node.style.flexShrink = '0';
             node.style.userSelect = 'none';
             node.style.pointerEvents = 'none';   // surface owns all gestures
             content.appendChild(node);

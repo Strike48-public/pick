@@ -190,7 +190,7 @@ body {
        (46x28 pill), the chat scroll-to-bottom FAB (28x28 circle), and page back
        buttons (.easy-doc-back). Desktop (>768px) never hit this rule, which is
        why it looked right there but broke in the mobile WebView. */
-    button:not(.easy-toggle):not(.chat-scroll-to-bottom):not(.easy-doc-back),
+    button:not(.easy-toggle):not(.chat-scroll-to-bottom):not(.easy-doc-back):not(.viz-fullscreen-close),
     .action-card,
     .tab-item {
         min-height: 48px;
