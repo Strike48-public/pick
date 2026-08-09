@@ -68,9 +68,10 @@
         var surface = document.createElement('div');
         surface.style.cssText = 'position:absolute;inset:0;overflow:hidden;'
             + 'touch-action:none;cursor:grab;';
-        // Covers the surface; the media is sized to fit the viewport at scale 1.
-        // User zoom/pan is a single transform on this element, anchored at 0,0 so
-        // the pinch math below stays simple.
+        // Covers the surface. Panning is a translate on this element; zoom resizes
+        // the media element itself (below) rather than CSS-scaling this layer —
+        // scaling a layer rasterizes the SVG once then blows up the bitmap
+        // (pixelated); resizing the <svg> re-rasterizes the vector crisply.
         var content = document.createElement('div');
         content.style.cssText = 'position:absolute;inset:0;transform-origin:0 0;'
             + 'will-change:transform;';
@@ -90,33 +91,59 @@
         document.body.appendChild(modal);
 
         // --- pinch / pan / wheel zoom ---
+        // scale drives the media element's rendered SIZE (crisp vector re-raster);
+        // tx/ty pan via a translate on `content`. mediaEl is the current <svg>/<img>
+        // and baseW/baseH its scale-1 (fit) pixel size, captured in __show.
         var scale = 1, tx = 0, ty = 0;
+        var mediaEl = null, baseW = 0, baseH = 0;
         var pointers = new Map();           // pointerId -> {x, y}
         var pinchStartDist = 0, pinchStartScale = 1, lastMid = null;
         var MIN = 1, MAX = 10;
-        function apply() {
-            content.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
+        function applyPan() {
+            content.style.transform = 'translate(' + tx + 'px,' + ty + 'px)';
         }
-        function reset() { scale = 1; tx = 0; ty = 0; apply(); }
-        // Zoom by factor `f` about surface-relative point (px,py), keeping that
-        // point fixed on screen. With transform-origin 0,0: world=(p-t)/s, so to
-        // keep p fixed after scaling to s', t' = p - (p - t) * (s'/s).
+        function applySize() {
+            if (!mediaEl) return;
+            // Resize the element so the SVG re-rasterizes at the new size (crisp).
+            // Center it in the surface at fit (scale 1) via auto margins so the
+            // pan math has a stable origin.
+            mediaEl.style.width = (baseW * scale) + 'px';
+            mediaEl.style.height = (baseH * scale) + 'px';
+        }
+        function reset() { scale = 1; tx = 0; ty = 0; applySize(); applyPan(); }
+        // Zoom by factor `f` about surface point (px,py), keeping that point fixed.
+        // The media sits centered at fit; world offset of (px,py) from the media's
+        // top-left scales with `scale`, so we adjust tx/ty to hold it in place.
         function zoomAt(f, px, py) {
             var ns = Math.min(MAX, Math.max(MIN, scale * f));
             f = ns / scale;
-            tx = px - (px - tx) * f;
-            ty = py - (py - ty) * f;
+            // origin of the media (top-left) currently on screen:
+            var vw = surface.clientWidth, vh = surface.clientHeight;
+            var ox = tx + (vw - baseW * scale) / 2;
+            var oy = ty + (vh - baseH * scale) / 2;
+            // keep (px,py) fixed: new origin' = p - (p - origin) * f
+            var nox = px - (px - ox) * f;
+            var noy = py - (py - oy) * f;
             scale = ns;
+            // back out tx/ty from the new origin under the new centered layout
+            tx = nox - (vw - baseW * scale) / 2;
+            ty = noy - (vh - baseH * scale) / 2;
             if (scale <= MIN + 0.001) { tx = 0; ty = 0; }  // snap back to fit
-            apply();
+            applySize(); applyPan();
         }
         function pts() { return Array.from(pointers.values()); }
         function midOf() { var p = pts(); return { x: (p[0].x + p[1].x) / 2, y: (p[0].y + p[1].y) / 2 }; }
         function distOf() { var p = pts(); return Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y); }
+        // Tap-tracking for double-tap: only a genuine single-finger tap that didn't
+        // move counts. A pinch lifts two fingers ~ms apart; without this guard the
+        // second lift reads as a double-tap and resets the zoom (the "snaps back
+        // when I let go" bug).
+        var lastTapTime = 0, downPt = null, moved = false, wasMultiTouch = false;
         surface.addEventListener('pointerdown', function(e) {
             surface.setPointerCapture(e.pointerId);
             pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-            if (pointers.size === 2) { pinchStartDist = distOf(); pinchStartScale = scale; lastMid = midOf(); }
+            if (pointers.size === 1) { downPt = { x: e.clientX, y: e.clientY }; moved = false; }
+            if (pointers.size === 2) { pinchStartDist = distOf(); pinchStartScale = scale; lastMid = midOf(); wasMultiTouch = true; }
             surface.style.cursor = 'grabbing';
         });
         surface.addEventListener('pointermove', function(e) {
@@ -124,18 +151,33 @@
             var prev = pointers.get(e.pointerId);
             pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
             if (pointers.size === 1) {
-                tx += e.clientX - prev.x; ty += e.clientY - prev.y; apply();   // pan
+                if (downPt && Math.hypot(e.clientX - downPt.x, e.clientY - downPt.y) > 8) moved = true;
+                tx += e.clientX - prev.x; ty += e.clientY - prev.y; applyPan();   // pan
             } else if (pointers.size === 2) {
                 var d = distOf(), mid = midOf();
                 if (pinchStartDist > 0) zoomAt((pinchStartScale * (d / pinchStartDist)) / scale, mid.x, mid.y);
-                if (lastMid) { tx += mid.x - lastMid.x; ty += mid.y - lastMid.y; apply(); }  // two-finger pan
+                if (lastMid) { tx += mid.x - lastMid.x; ty += mid.y - lastMid.y; applyPan(); }  // two-finger pan
                 lastMid = mid;
             }
         });
         function up(e) {
+            var wasSingleCleanTap = (pointers.size === 1 && !moved && !wasMultiTouch);
             if (pointers.has(e.pointerId)) pointers.delete(e.pointerId);
             if (pointers.size < 2) { pinchStartDist = 0; lastMid = null; }
-            if (pointers.size === 0) surface.style.cursor = 'grab';
+            if (pointers.size === 0) {
+                surface.style.cursor = 'grab';
+                if (wasSingleCleanTap) {
+                    // genuine tap (not the tail of a pinch/pan): double-tap toggles zoom
+                    var now = Date.now();
+                    if (now - lastTapTime < 300) {
+                        if (scale > MIN + 0.001) reset(); else zoomAt(2.5, e.clientX, e.clientY);
+                        lastTapTime = 0;
+                    } else {
+                        lastTapTime = now;
+                    }
+                }
+                wasMultiTouch = false;
+            }
         }
         surface.addEventListener('pointerup', up);
         surface.addEventListener('pointercancel', up);
@@ -143,39 +185,51 @@
             e.preventDefault();
             zoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX, e.clientY);
         }, { passive: false });
-        // Double-tap / double-click: toggle between fit and 2.5x at the point.
-        var lastTap = 0;
-        surface.addEventListener('pointerup', function(e) {
-            var now = Date.now();
-            if (now - lastTap < 300 && pointers.size === 0) {
-                if (scale > MIN + 0.001) reset(); else zoomAt(2.5, e.clientX, e.clientY);
-            }
-            lastTap = now;
-        });
 
-        // Show a media element (cloned mermaid <svg> or an echarts <img>), sized
-        // to fill the viewport at scale 1. reset() clears any prior zoom/pan.
+        // content centers the media; zoom resizes the media (crisp), pan
+        // translates content. The zoomAt origin math assumes this centering.
+        content.style.display = 'flex';
+        content.style.alignItems = 'center';
+        content.style.justifyContent = 'center';
+
+        // Fit a source of aspect ratio w/h into the surface, preserving ratio.
+        function fitSize(w, h) {
+            var vw = surface.clientWidth, vh = surface.clientHeight, aspect = w / h;
+            if (vw / vh > aspect) return { w: vh * aspect, h: vh };  // height-bound
+            return { w: vw, h: vw / aspect };                        // width-bound
+        }
+
+        // Show a media element (cloned mermaid <svg> or an echarts <img>). The
+        // media is sized to FIT the viewport at scale 1 and re-sized on zoom so
+        // vectors re-rasterize crisply. reset() clears any prior zoom/pan.
         modal.__show = function(node) {
             content.innerHTML = '';
-            reset();
-            if (!node) { modal.style.display = 'block'; return; }
-            if (node.tagName && node.tagName.toLowerCase() === 'svg') {
-                // Mermaid stamps an inline max-width (its intrinsic size); clear it
-                // and let the SVG fill the viewport, letterboxed via its viewBox.
-                node.style.maxWidth = 'none'; node.style.maxHeight = 'none';
-                node.style.width = '100%'; node.style.height = '100%';
-                node.removeAttribute('width'); node.removeAttribute('height');
-                if (!node.getAttribute('preserveAspectRatio')) node.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-            } else {
-                // Raster (echarts snapshot): fill + contain to letterbox.
-                node.style.width = '100%'; node.style.height = '100%';
-                node.style.objectFit = 'contain';
-            }
+            mediaEl = node;
             node.style.display = 'block';
+            node.style.maxWidth = 'none'; node.style.maxHeight = 'none';
             node.style.userSelect = 'none';
-            node.style.pointerEvents = 'none';   // let the surface own all gestures
+            node.style.pointerEvents = 'none';   // surface owns all gestures
             content.appendChild(node);
             modal.style.display = 'block';
+            if (node.tagName && node.tagName.toLowerCase() === 'svg') {
+                node.removeAttribute('width'); node.removeAttribute('height');
+                if (!node.getAttribute('preserveAspectRatio')) node.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+                // Aspect from the viewBox (mermaid always sets one); fall back to 4:3.
+                var vb = (node.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
+                var aw = (vb.length === 4 && vb[2] > 0) ? vb[2] : 4;
+                var ah = (vb.length === 4 && vb[3] > 0) ? vb[3] : 3;
+                var f = fitSize(aw, ah);
+                baseW = f.w; baseH = f.h;
+                reset();
+            } else {
+                // Raster (echarts snapshot): natural size known after load.
+                var setFromNatural = function() {
+                    var f = fitSize(node.naturalWidth || 4, node.naturalHeight || 3);
+                    baseW = f.w; baseH = f.h; reset();
+                };
+                if (node.complete && node.naturalWidth) setFromNatural();
+                else node.addEventListener('load', setFromNatural, { once: true });
+            }
         };
         return modal;
     }
