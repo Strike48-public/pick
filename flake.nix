@@ -140,6 +140,13 @@
                           # rather than the runner's system curl, which fails with
                           # `GLIBC_ABI_DT_X86_64_PLT not found` under nix develop.
           cacert          # CA bundle so the nix curl trusts HTTPS in CI
+          maestro         # mobile UI automation — drives the Android app's
+                          # WebView DOM for store-screenshot capture
+                          # (scripts/capture-store-maestro.sh, .maestro/*.yaml).
+                          # nixpkgs pins an older CLI than get.maestro.mobile.dev;
+                          # it post-dates the androidWebViewHierarchy:devtools
+                          # feature so WebView DOM reads work. Bump via overlay
+                          # if a newer CLI is ever needed.
         ]);
 
         # Native build deps. libclang is for bindgen (rquickjs-sys ships no

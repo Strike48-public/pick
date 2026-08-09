@@ -46,12 +46,15 @@ done
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Resolve maestro (installer puts it in ~/.maestro/bin, not always on PATH).
+# Resolve maestro. Android: run inside `nix develop` (the flake provides
+# maestro + a JDK). iOS: on the macOS host, where nix isn't used — fall back to
+# the get.maestro.mobile.dev installer's ~/.maestro/bin.
 if ! command -v maestro >/dev/null 2>&1; then
   if [[ -x "$HOME/.maestro/bin/maestro" ]]; then
     export PATH="$HOME/.maestro/bin:$PATH"
   else
-    echo "error: maestro not found. Install: curl -Ls https://get.maestro.mobile.dev | bash" >&2
+    echo "error: maestro not found. Either run inside 'nix develop' (Android)," >&2
+    echo "       or install it: curl -Ls https://get.maestro.mobile.dev | bash" >&2
     exit 1
   fi
 fi
