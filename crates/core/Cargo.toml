@@ -43,6 +43,7 @@ regex = { workspace = true }
 syntect = { workspace = true }
 pulldown-cmark = { workspace = true }
 base64 = { workspace = true }
+html-escape = { workspace = true }
 
 # Strike48 Connector SDK
 strike48-connector = { workspace = true }

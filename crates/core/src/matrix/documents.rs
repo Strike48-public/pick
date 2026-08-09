@@ -77,7 +77,10 @@ pub(crate) fn documents_from_data(data: ListDocumentsData) -> Vec<DocumentSummar
         .into_iter()
         .map(|e| DocumentSummary {
             id: e.node.id,
-            title: e.node.title,
+            // Titles arrive HTML-entity-encoded (e.g. "Recon &amp; Risk"), but the
+            // Reports list renders them as plain Dioxus text, so `&amp;` showed
+            // literally. Decode with html-escape (handles named + numeric refs).
+            title: html_escape::decode_html_entities(&e.node.title).into_owned(),
             doc_type: e.node.doc_type,
             conversation_id: e.node.conversation.map(|c| c.id).unwrap_or_default(),
             timestamp: e.node.timestamp.unwrap_or_default(),
@@ -287,6 +290,20 @@ mod tests {
         assert_eq!(out[0].timestamp, "2026-07-20T21:27:58Z");
         assert_eq!(out[1].conversation_id, ""); // null conversation -> empty
         assert_eq!(out[1].timestamp, ""); // missing timestamp -> empty
+    }
+
+    #[test]
+    fn documents_from_data_decodes_html_entities_in_title() {
+        let raw = serde_json::json!({
+            "listDocuments": { "edges": [
+                { "node": { "id": "r1",
+                            "title": "Recon &amp; Risk &lt;Assessment&gt; &quot;2026&quot;",
+                            "type": "markdown", "conversation": { "id": "c1" } } }
+            ]}
+        });
+        let data: ListDocumentsData = serde_json::from_value(raw).unwrap();
+        let out = documents_from_data(data);
+        assert_eq!(out[0].title, "Recon & Risk <Assessment> \"2026\"");
     }
 
     fn doc(id: &str, ts: &str) -> DocumentSummary {

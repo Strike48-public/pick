@@ -41,6 +41,9 @@ tokio-tungstenite = "0.26"
 # Concurrent collections
 dashmap = "6"
 
+# HTML entity decoding (server-encoded document titles)
+html-escape = "0.2"
+
 # Regex
 regex = "1"
 
