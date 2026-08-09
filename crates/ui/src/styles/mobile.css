@@ -1284,6 +1284,10 @@ body {
     background: var(--em-surface);
     border: 1px solid var(--em-border);
     border-radius: var(--em-radius-card);
+    /* Grid items default to min-width:auto, so a nowrap title (below) would grow
+       the card past its 1fr track and run off-screen instead of ellipsizing.
+       Pin to 0 so the card honors the track width and the title truncates. */
+    min-width: 0;
 }
 .easy-card-eye {
     font-family: var(--font-mono);
@@ -1301,6 +1305,8 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    min-width: 0;
+    max-width: 100%;
 }
 .easy-home-card-sub {
     font-size: 12px;
