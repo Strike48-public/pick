@@ -78,6 +78,22 @@ fn main() {
 
     #[cfg(target_os = "ios")]
     {
+        // Route `tracing` into Apple's unified log (OSLog) so the app's logs are
+        // visible via `xcrun simctl spawn booted log stream --predicate
+        // 'subsystem == "com.strike48.pick"'`. Without this, iOS had NO logging
+        // init at all and every tracing event was silently dropped (Android has
+        // android_logger). Default to debug; overridable via RUST_LOG. `try_init`
+        // so a double-launch can't panic.
+        {
+            use tracing_subscriber::prelude::*;
+            let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"));
+            let _ = tracing_subscriber::registry()
+                .with(filter)
+                .with(tracing_oslog::OsLogger::new("com.strike48.pick", "default"))
+                .try_init();
+        }
+
         // Register the iOS native OIDC session (ASWebAuthenticationSession).
         // The loopback-callback flow can't work on iOS — launching a browser
         // backgrounds the app and suspends the callback server — so iOS uses
