@@ -49,71 +49,161 @@
         document.head.appendChild(es);
     }
 
-    // Lazily-built shared fullscreen overlay for expanding a diagram. Clicking a
-    // rendered mermaid diagram clones its SVG into this overlay at full size;
-    // clicking the backdrop / Esc / the close button dismisses it.
+    // Lazily-built shared fullscreen overlay for expanding a diagram/chart into a
+    // full-bleed, pinch-to-zoom viewer. Tapping a rendered mermaid diagram or
+    // echarts chart shows it here filling the ENTIRE viewport (no padding —
+    // padding shrank the "expanded" diagram below its inline size). Pinch (touch)
+    // or wheel (desktop) zooms, one-finger drag pans, double-tap toggles zoom,
+    // Esc / the ✕ button closes.
     function ensureVizModal() {
         var modal = document.getElementById('viz-fullscreen-modal');
         if (modal) return modal;
         modal = document.createElement('div');
         modal.id = 'viz-fullscreen-modal';
         modal.style.cssText = 'display:none;position:fixed;inset:0;z-index:99999;'
-            + 'background:rgba(0,0,0,0.85);align-items:center;justify-content:center;padding:32px;box-sizing:border-box;';
-        var inner = document.createElement('div');
-        inner.className = 'viz-fullscreen-inner';
-        // Fill the padded viewport (the modal supplies 32px padding) and center
-        // the diagram, so a small diagram scales UP to the available space
-        // rather than shrink-wrapping the container to its intrinsic size.
-        inner.style.cssText = 'width:100%;height:100%;overflow:auto;background:#1b211e;'
-            + 'border-radius:10px;padding:20px;box-sizing:border-box;'
-            + 'display:flex;align-items:center;justify-content:center;';
+            + 'background:#0b0f0d;overflow:hidden;';
+        // The pan/zoom surface fills the viewport. touch-action:none hands us the
+        // raw touch stream so the browser's own pinch-zoom / scroll doesn't steal
+        // the gesture — required for our pinch-zoom to work in WKWebView.
+        var surface = document.createElement('div');
+        surface.style.cssText = 'position:absolute;inset:0;overflow:hidden;'
+            + 'touch-action:none;cursor:grab;';
+        // Covers the surface; the media is sized to fit the viewport at scale 1.
+        // User zoom/pan is a single transform on this element, anchored at 0,0 so
+        // the pinch math below stays simple.
+        var content = document.createElement('div');
+        content.style.cssText = 'position:absolute;inset:0;transform-origin:0 0;'
+            + 'will-change:transform;';
+        surface.appendChild(content);
         var close = document.createElement('button');
         close.textContent = '✕';
         close.setAttribute('aria-label', 'Close');
         close.style.cssText = 'position:fixed;top:20px;right:24px;width:40px;height:40px;border-radius:50%;'
-            + 'border:none;background:rgba(255,255,255,0.12);color:#e9eeeb;font-size:18px;cursor:pointer;';
-        function hide() { modal.style.display = 'none'; inner.innerHTML = ''; }
-        modal.addEventListener('click', function(e) { if (e.target === modal) hide(); });
+            + 'border:none;background:rgba(255,255,255,0.14);color:#e9eeeb;font-size:18px;cursor:pointer;z-index:1;';
+        function hide() { modal.style.display = 'none'; content.innerHTML = ''; }
         close.addEventListener('click', hide);
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape' && modal.style.display !== 'none') hide();
         });
-        modal.appendChild(inner);
+        modal.appendChild(surface);
         modal.appendChild(close);
         document.body.appendChild(modal);
-        modal.__show = function(svgMarkup) {
-            inner.innerHTML = svgMarkup;
-            var s = inner.querySelector('svg');
-            if (s) {
-                // Mermaid stamps an inline `max-width:NNNpx` on the <svg> (its
-                // intrinsic size), which caps `width:100%` at the small original
-                // size. Clear it and let the SVG scale to the full container
-                // while preserving aspect ratio via the viewBox.
-                s.style.maxWidth = 'none';
-                s.style.maxHeight = 'none';
-                s.style.width = '100%';
-                s.style.height = '100%';
-                s.removeAttribute('width');
-                s.removeAttribute('height');
-                // With a viewBox (mermaid always sets one) this scales the SVG
-                // to fill the container, letterboxing to preserve aspect ratio.
-                if (!s.getAttribute('preserveAspectRatio')) {
-                    s.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-                }
+
+        // --- pinch / pan / wheel zoom ---
+        var scale = 1, tx = 0, ty = 0;
+        var pointers = new Map();           // pointerId -> {x, y}
+        var pinchStartDist = 0, pinchStartScale = 1, lastMid = null;
+        var MIN = 1, MAX = 10;
+        function apply() {
+            content.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
+        }
+        function reset() { scale = 1; tx = 0; ty = 0; apply(); }
+        // Zoom by factor `f` about surface-relative point (px,py), keeping that
+        // point fixed on screen. With transform-origin 0,0: world=(p-t)/s, so to
+        // keep p fixed after scaling to s', t' = p - (p - t) * (s'/s).
+        function zoomAt(f, px, py) {
+            var ns = Math.min(MAX, Math.max(MIN, scale * f));
+            f = ns / scale;
+            tx = px - (px - tx) * f;
+            ty = py - (py - ty) * f;
+            scale = ns;
+            if (scale <= MIN + 0.001) { tx = 0; ty = 0; }  // snap back to fit
+            apply();
+        }
+        function pts() { return Array.from(pointers.values()); }
+        function midOf() { var p = pts(); return { x: (p[0].x + p[1].x) / 2, y: (p[0].y + p[1].y) / 2 }; }
+        function distOf() { var p = pts(); return Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y); }
+        surface.addEventListener('pointerdown', function(e) {
+            surface.setPointerCapture(e.pointerId);
+            pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (pointers.size === 2) { pinchStartDist = distOf(); pinchStartScale = scale; lastMid = midOf(); }
+            surface.style.cursor = 'grabbing';
+        });
+        surface.addEventListener('pointermove', function(e) {
+            if (!pointers.has(e.pointerId)) return;
+            var prev = pointers.get(e.pointerId);
+            pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (pointers.size === 1) {
+                tx += e.clientX - prev.x; ty += e.clientY - prev.y; apply();   // pan
+            } else if (pointers.size === 2) {
+                var d = distOf(), mid = midOf();
+                if (pinchStartDist > 0) zoomAt((pinchStartScale * (d / pinchStartDist)) / scale, mid.x, mid.y);
+                if (lastMid) { tx += mid.x - lastMid.x; ty += mid.y - lastMid.y; apply(); }  // two-finger pan
+                lastMid = mid;
             }
-            modal.style.display = 'flex';
+        });
+        function up(e) {
+            if (pointers.has(e.pointerId)) pointers.delete(e.pointerId);
+            if (pointers.size < 2) { pinchStartDist = 0; lastMid = null; }
+            if (pointers.size === 0) surface.style.cursor = 'grab';
+        }
+        surface.addEventListener('pointerup', up);
+        surface.addEventListener('pointercancel', up);
+        surface.addEventListener('wheel', function(e) {
+            e.preventDefault();
+            zoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX, e.clientY);
+        }, { passive: false });
+        // Double-tap / double-click: toggle between fit and 2.5x at the point.
+        var lastTap = 0;
+        surface.addEventListener('pointerup', function(e) {
+            var now = Date.now();
+            if (now - lastTap < 300 && pointers.size === 0) {
+                if (scale > MIN + 0.001) reset(); else zoomAt(2.5, e.clientX, e.clientY);
+            }
+            lastTap = now;
+        });
+
+        // Show a media element (cloned mermaid <svg> or an echarts <img>), sized
+        // to fill the viewport at scale 1. reset() clears any prior zoom/pan.
+        modal.__show = function(node) {
+            content.innerHTML = '';
+            reset();
+            if (!node) { modal.style.display = 'block'; return; }
+            if (node.tagName && node.tagName.toLowerCase() === 'svg') {
+                // Mermaid stamps an inline max-width (its intrinsic size); clear it
+                // and let the SVG fill the viewport, letterboxed via its viewBox.
+                node.style.maxWidth = 'none'; node.style.maxHeight = 'none';
+                node.style.width = '100%'; node.style.height = '100%';
+                node.removeAttribute('width'); node.removeAttribute('height');
+                if (!node.getAttribute('preserveAspectRatio')) node.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+            } else {
+                // Raster (echarts snapshot): fill + contain to letterbox.
+                node.style.width = '100%'; node.style.height = '100%';
+                node.style.objectFit = 'contain';
+            }
+            node.style.display = 'block';
+            node.style.userSelect = 'none';
+            node.style.pointerEvents = 'none';   // let the surface own all gestures
+            content.appendChild(node);
+            modal.style.display = 'block';
         };
         return modal;
     }
 
-    // Make a rendered mermaid container click-to-expand into the fullscreen modal.
+    // Make a rendered mermaid container tap-to-expand into the fullscreen viewer.
     function makeExpandable(div) {
         div.style.cursor = 'zoom-in';
-        div.title = 'Click to expand';
+        div.title = 'Tap to expand';
         div.addEventListener('click', function() {
             var svg = div.querySelector('svg');
             if (!svg) return;
-            ensureVizModal().__show(svg.outerHTML);
+            ensureVizModal().__show(svg.cloneNode(true));
+        });
+    }
+
+    // Make a rendered echarts container tap-to-expand. ECharts draws to <canvas>,
+    // so we snapshot it to a high-DPI image and show that in the same zoom viewer.
+    function makeChartExpandable(div, chart) {
+        div.style.cursor = 'zoom-in';
+        div.title = 'Tap to expand';
+        div.addEventListener('click', function() {
+            var url;
+            try { url = chart.getDataURL({ pixelRatio: 3, backgroundColor: '#1b211e' }); }
+            catch (e) { var c = div.querySelector('canvas'); url = c && c.toDataURL(); }
+            if (!url) return;
+            var img = new Image();
+            img.src = url;
+            ensureVizModal().__show(img);
         });
     }
 
@@ -212,6 +302,7 @@
                         ro.observe(div);
                         var panel = document.querySelector('.chat-panel');
                         if (panel) { var po = new ResizeObserver(function() { chart.resize(); }); po.observe(panel); }
+                        makeChartExpandable(div, chart);
                     }, 10);
                 } catch(e) {
                     div.style.height = 'auto';
