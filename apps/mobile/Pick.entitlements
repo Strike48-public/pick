@@ -3,20 +3,29 @@
 <plist version="1.0">
 <dict>
     <!--
-      Keychain access group for the Matrix chat token (crates/platform/src/ios/
-      keychain.rs). Without a keychain-access-groups entitlement, SecItemAdd
-      fails with errSecMissingEntitlement (-34018) on the ad-hoc-signed
-      Simulator build, so the token never persists and the app re-prompts
-      sign-in every launch (build-ios re-signs the .app with this file).
+      Entitlements re-signed onto the ad-hoc Simulator build (see build-ios's
+      _sign-ios-entitlements) so the Matrix chat token persists in the Keychain
+      (crates/platform/src/ios/keychain.rs). Without these, SecItemAdd fails
+      with errSecMissingEntitlement (-34018) and the app re-prompts sign-in
+      every launch.
 
-      No $(AppIdentifierPrefix) team prefix: the app is ad-hoc signed (`-s -`)
-      with no provisioning profile / team id, so a bare group name (the bundle
-      id) is the form the Simulator accepts. A real signed device/App Store
-      build gets the team-prefixed group from its provisioning profile instead.
+      The crux is `application-identifier`: ad-hoc signing omits it, and the
+      Keychain subsystem needs it to attribute a default access group to the
+      process. `keychain-access-groups` must share its prefix (Apple TN2415:
+      "all prefixes must match"). On the Simulator there is no provisioning
+      profile to validate the prefix, so a hardcoded placeholder team id works;
+      it just must stay STABLE across builds or previously-stored items orphan.
+      (A real device/App Store build needs a genuine team id from its profile.)
     -->
+    <key>application-identifier</key>
+    <string>S7R1K3P1CK.com.strike48.pick</string>
     <key>keychain-access-groups</key>
     <array>
-        <string>com.strike48.pick</string>
+        <string>S7R1K3P1CK.com.strike48.pick</string>
     </array>
+    <!-- Debug-attach + matches Xcode's simulator debug entitlements. Must be the
+         `com.apple.security.`-prefixed key; bare `get-task-allow` crashes launch. -->
+    <key>com.apple.security.get-task-allow</key>
+    <true/>
 </dict>
 </plist>
