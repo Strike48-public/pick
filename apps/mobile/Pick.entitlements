@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Keychain access group for the Matrix chat token (crates/platform/src/ios/
+      keychain.rs). Without a keychain-access-groups entitlement, SecItemAdd
+      fails with errSecMissingEntitlement (-34018) on the ad-hoc-signed
+      Simulator build, so the token never persists and the app re-prompts
+      sign-in every launch (build-ios re-signs the .app with this file).
+
+      No $(AppIdentifierPrefix) team prefix: the app is ad-hoc signed (`-s -`)
+      with no provisioning profile / team id, so a bare group name (the bundle
+      id) is the form the Simulator accepts. A real signed device/App Store
+      build gets the team-prefixed group from its provisioning profile instead.
+    -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>com.strike48.pick</string>
+    </array>
+</dict>
+</plist>

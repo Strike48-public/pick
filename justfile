@@ -883,12 +883,27 @@ build-ios:
     # PICK_EASY_MODE=false; the in-app Settings toggle still wins at runtime.
     export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
     echo "PICK_EASY_MODE=$PICK_EASY_MODE"
-    # Pass the keychain entitlement so codesign grants keychain access; without
-    # it SecItemAdd fails with -34018 (errSecMissingEntitlement) and the chat
-    # token never persists (sign-in every launch). --apple-entitlements also
-    # makes dx codesign the app (required for the entitlement to take effect).
-    {{dx}} build --platform ios --package pick --apple-entitlements apps/mobile/ios/Pick.entitlements
+    {{dx}} build --platform ios --package pick
     just _inject-ios-icon target/dx/pick/debug/ios/Pick.app
+    # Re-sign the app bundle with the keychain entitlement. Without a
+    # keychain-access-groups entitlement, SecItemAdd fails with -34018
+    # (errSecMissingEntitlement) and the chat token never persists, so the app
+    # re-prompts sign-in every launch. We do NOT use `dx --apple-entitlements`
+    # (it forces a real "Apple Development" identity we don't have on the sim
+    # box); instead ad-hoc re-sign (`-s -`), which the Simulator accepts.
+    just _sign-ios-entitlements target/dx/pick/debug/ios/Pick.app
+
+# Ad-hoc re-sign an iOS .app bundle with the keychain entitlement so keychain
+# access works on the Simulator (see build-ios). macOS-only (codesign).
+_sign-ios-entitlements app:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    codesign --force --sign - \
+        --entitlements apps/mobile/Pick.entitlements \
+        --timestamp=none \
+        "{{app}}"
+    echo "re-signed {{app}} with keychain entitlement:"
+    codesign -d --entitlements - "{{app}}" 2>&1 | grep -iE "keychain|access-group" || true
 
 # Compile the strike48 AppIcon into an iOS .app bundle. dx does not manage iOS
 # icons at all (no xcassets handling), so — like _inject-android-lib — we patch
