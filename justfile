@@ -883,6 +883,25 @@ build-ios:
     # PICK_EASY_MODE=false; the in-app Settings toggle still wins at runtime.
     export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
     echo "PICK_EASY_MODE=$PICK_EASY_MODE"
+
+    # Bake the PLG target host + dev TLS bypass the same way build-android does.
+    # Mobile has no runtime env; the host reaches the binary via
+    # option_env!("STRIKE48_HOST"), so without baking these a debug sim build
+    # can't reach a *.test server (private CA) and OAuth never advances past
+    # "Complete your sign-in in the browser". Export before the build to set
+    # them; absent, the app boots to the connect form. NEVER bake
+    # MATRIX_TLS_INSECURE into a release/store build (real hosts have valid certs).
+    if [ -n "${STRIKE48_HOST:-}" ]; then
+        export STRIKE48_HOST
+        echo "STRIKE48_HOST=$STRIKE48_HOST (baked)"
+    else
+        echo "STRIKE48_HOST not set — app will show the connect form (set it to bake a default)"
+    fi
+    if [ -n "${MATRIX_TLS_INSECURE:-}" ]; then
+        export MATRIX_TLS_INSECURE
+        echo "MATRIX_TLS_INSECURE=$MATRIX_TLS_INSECURE (baked — dev only)"
+    fi
+
     {{dx}} build --platform ios --package pick
     just _inject-ios-icon target/dx/pick/debug/ios/Pick.app
     # Re-sign the app bundle with the keychain entitlement. Without a
