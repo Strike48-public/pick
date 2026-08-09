@@ -1,0 +1,72 @@
+# Store-listing screenshot capture for Pick — DOM-driven via Maestro.
+#
+# Pick's UI is a Dioxus WebView. Maestro reads its DOM directly: plain-text
+# selectors resolve against the rendered DOM, and `androidWebViewHierarchy:
+# devtools` (Android-only) lets Maestro use Chrome DevTools over the debuggable
+# WebView socket for id/CSS selectors too. Debug/dev builds enable
+# WebContentsDebugging; a release build without it falls back to native-only.
+#
+# Run via the wrapper (handles output collection):
+#   scripts/capture-store-maestro.sh android          # inside `nix develop`
+#   scripts/capture-store-maestro.sh ios               # on the macOS host
+#
+# PRECONDITION: SIGNED IN / connected, and ideally with at least one completed
+# scan so the Reports drawer + a report document exist. Sign in, run one
+# "Scan My Network", let it finish, then capture.
+#
+# Captures the listing story: Home -> Scan running -> live results/chat ->
+# Reports list -> an opened report -> Settings. Each screenshot is the goal;
+# nav taps are best-effort (guarded so a missing element doesn't abort the run).
+appId: com.strike48.pick
+androidWebViewHierarchy: devtools
+---
+- launchApp
+- assertVisible: "Scan My Network"
+- takeScreenshot: 01-home
+
+# Kick off a scan and capture the live agent working.
+- tapOn: "Scan My Network"
+- waitForAnimationToEnd:
+    timeout: 10000
+- takeScreenshot: 02-scan-running
+
+# Let the scan progress and capture streamed results/findings in chat.
+- waitForAnimationToEnd:
+    timeout: 25000
+- takeScreenshot: 03-live-results
+
+# Open the navigation drawer.
+- tapOn: "Menu"
+- waitForAnimationToEnd:
+    timeout: 3000
+- takeScreenshot: 04-menu
+
+# Reports list (the drawer shows "Reports N").
+- tapOn:
+    text: "Reports.*"
+- waitForAnimationToEnd:
+    timeout: 3000
+- takeScreenshot: 05-reports
+
+# Open a report DOCUMENT (tap a report title in the list) to show the rendered
+# report — findings, severity, tables/diagram.
+- tapOn:
+    text: ".*Assessment.*|.*Scan Report.*"
+    index: 0
+- waitForAnimationToEnd:
+    timeout: 4000
+- takeScreenshot: 06-report
+
+# Settings (brand/theme, sandbox toggle, telemetry). The report + report-list
+# views use a back chevron (not the Menu button), and back-count is fragile, so
+# re-foreground the app to a known root, then open the drawer -> Settings.
+- launchApp
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn: "Menu"
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn: "Settings"
+- waitForAnimationToEnd:
+    timeout: 3000
+- takeScreenshot: 07-settings
