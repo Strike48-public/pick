@@ -340,6 +340,30 @@ plg-down *ARGS:
     STRIKE48_API_URL="${STRIKE48_API_URL:-stub}" \
     MATRIX_API_URL="${MATRIX_API_URL:-stub}" \
         docker compose "${env_args[@]}" -f "{{plg_compose}}" down --remove-orphans {{ARGS}}
+    # Reap containers holding this stack's explicit `container_name` that the
+    # compose `down` above did NOT match. `container_name` lives in a GLOBAL
+    # docker namespace, but `down` selects by compose PROJECT label — so a
+    # container created BEFORE this file gained `name: pick-plg` carries project
+    # label "pick" and is invisible to `down`, while still OWNING the name
+    # "pick-plg-dvwa". The next `plg-up` then dies with "Conflict. The container
+    # name is already in use", and `plg-down` cannot clear it: attach/detach
+    # dead-ends until the operator deletes the container by hand. The project
+    # rename is still correct (it stops cross-reaping with the dvwa demo) — it
+    # just needs this migration path for stacks brought up before it landed.
+    # Same recovery applies to any container left behind by a `down` that
+    # aborted mid-teardown.
+    #
+    # Named ONE BY ONE, never by prefix or glob: a `pick-*` filter would also
+    # match the demo stack's pick-demo-dvwa / pick-demo-connector and reap the
+    # very stack the project rename exists to protect. `--filter name=` is a
+    # regex, so anchor it — unanchored, "pick-plg-dvwa" is a substring match
+    # that would also catch e.g. a pick-plg-dvwa-2.
+    for stray in pick-plg-dvwa pick-plg-connector; do
+        if [[ -n "$(docker ps -aq --filter "name=^${stray}\$")" ]]; then
+            echo "removing stray container ${stray} (holds the name but is not owned by the pick-plg compose project)"
+            docker rm -f "${stray}" >/dev/null
+        fi
+    done
 
 # ============ Web (Liveview) ============
 
