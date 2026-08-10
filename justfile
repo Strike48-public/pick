@@ -200,9 +200,12 @@ dvwa-down *ARGS:
 # ============ StrikeHub (PLG) demo (matrix#3519) ============
 
 # Compose file + its env for the Pick + DVWA StrikeHub (PLG) demo. Sibling of the
-# dvwa-* recipes: bound to a personal tenant via an OTT (STRIKE48_TOKEN), not a
-# fixed tenant UUID. Override PLG_ENV to point at a different env file (the
-# init-dev plg:pick tasks generate .env.plg).
+# dvwa-* recipes: bound to a personal tenant via an OTT carried in
+# STRIKE48_REGISTRATION_TOKEN, not a fixed tenant UUID. Do NOT "simplify" that to
+# STRIKE48_TOKEN: that variable means an already-minted JWT, and an OTT placed
+# there skips the exchange entirely (see plg-check, which asserts both).
+# Override PLG_ENV to point at a different env file (the init-dev plg:pick tasks
+# generate .env.plg).
 plg_compose := "docker-compose.plg.yml"
 plg_env := env_var_or_default("PLG_ENV", ".env.plg")
 
@@ -214,13 +217,25 @@ plg-check:
     #!/usr/bin/env bash
     set -euo pipefail
     # Stub env so the mandatory ${VAR:?} interpolations resolve for a pure config
-    # render. Note: STRIKE48_TOKEN (the OTT) is mandatory here — the PLG binding —
-    # whereas STRIKE48_TENANT is intentionally NOT set (dropped from this stack).
-    RENDERED=$(STRIKE48_HOST=grpc://stub:80 STRIKE48_TOKEN=ott_stub MATRIX_API_URL=https://stub \
-        docker compose -f "{{plg_compose}}" config) \
+    # render. Note: STRIKE48_REGISTRATION_TOKEN (the OTT) is mandatory here — the
+    # PLG binding — whereas STRIKE48_TENANT is intentionally NOT set (dropped from
+    # this stack).
+    # Assign on its own line, NOT as a `VAR=$(...) python3` prefix: in the prefix
+    # form a failing command substitution does not trip `set -e`, so a compose model
+    # that no longer renders (e.g. a renamed mandatory var) would reach python as an
+    # empty string and crash with a TypeError instead of reporting the real problem.
+    RENDERED=$(STRIKE48_HOST=grpc://stub:80 STRIKE48_REGISTRATION_TOKEN=ott_stub \
+        STRIKE48_API_URL=https://stub MATRIX_API_URL=https://stub \
+        docker compose -f "{{plg_compose}}" config)
+    export RENDERED
     python3 -c '
     import os, sys, yaml
     d = yaml.safe_load(os.environ["RENDERED"])
+    # Guard explicitly: an empty/undefined render must be a clear failure, never an
+    # attribute error on None.
+    if not isinstance(d, dict):
+        print("plg-check FAILED:\n  - compose config produced no usable model (check the mandatory ${VAR:?} names)")
+        sys.exit(1)
     s, n = d["services"], d["networks"]
     # `docker compose config` renders service networks as a dict (name -> opts|None),
     # not a list — normalize to the set of network names before asserting.
@@ -232,16 +247,44 @@ plg-check:
     if "backend-net" in dvwa_nets: errs.append("dvwa attached to backend-net (must not)")
     # PLG-specific: STRIKE48_TENANT must NOT be baked into the pick env (the OTT is
     # the binding); a stray STRIKE48_TENANT would signal a bad clone from the dvwa file.
+    #
+    # These assertions check the names/values the SDK ACTUALLY reads, which is the
+    # whole point: an earlier revision asserted only that STRIKE48_TOKEN was
+    # *present*, and passed while the stack could not register at all (the SDK never
+    # reads STRIKE48_TOKEN for the OTT). Assert the real contract, incl. values.
     pick_env = s["pick"]["environment"]
     if isinstance(pick_env, list):
-        pick_keys = {e.split("=", 1)[0] for e in pick_env}
-    else:
-        pick_keys = set(pick_env)
+        pick_env = dict(e.split("=", 1) if "=" in e else (e, "") for e in pick_env)
+    pick_keys = set(pick_env)
     if "STRIKE48_TENANT" in pick_keys: errs.append("pick env sets STRIKE48_TENANT (PLG binds via OTT, must not)")
-    if "STRIKE48_TOKEN" not in pick_keys: errs.append("pick env missing STRIKE48_TOKEN (the OTT is the PLG binding)")
+    if "STRIKE48_REGISTRATION_TOKEN" not in pick_keys:
+        errs.append("pick env missing STRIKE48_REGISTRATION_TOKEN (the ONLY var the SDK gates the OTT exchange on)")
+    if "STRIKE48_TOKEN" in pick_keys:
+        errs.append("pick env sets STRIKE48_TOKEN (that path expects an already-minted JWT; putting the OTT there skips the exchange)")
+    if "STRIKE48_API_URL" not in pick_keys:
+        errs.append("pick env missing STRIKE48_API_URL (the register-with-ott origin + same-origin allowlist)")
+    # StrikeHub mints OTTs with connector_type "pentest-connector" (matrix_easy
+    # Devices @connector_type); CONNECTOR_NAME becomes connector_type() on the wire,
+    # so any other value is rejected 401 :ott_type_mismatch.
+    if pick_env.get("CONNECTOR_NAME") != "pentest-connector":
+        errs.append("CONNECTOR_NAME is %r, must be 'pentest-connector' to match the minted OTT type" % pick_env.get("CONNECTOR_NAME"))
+    # This stack must be its OWN compose project. Without the top-level name key,
+    # compose derives the project from the containing DIRECTORY, which this file
+    # SHARES with docker-compose.dvwa.yml: both become project "pick" and share
+    # derived networks/volumes, so a "down --remove-orphans" in either stack reaps
+    # the containers of the other one. Assert the VALUE, not merely that some name
+    # exists: the derived default is itself a plausible-looking name that would
+    # sail through a bare presence check.
+    #
+    # No apostrophes or backticks anywhere in this python block: it is delimited by
+    # bash single quotes (an apostrophe closes it early) and just evaluates
+    # backticks itself as command substitution. Either mistake surfaces as a bash
+    # syntax error on an unrelated line, not as a plg-check failure.
+    if d.get("name") != "pick-plg":
+        errs.append("compose project is %r, must be pick-plg (restore the top-level name key) or this stack shares networks/volumes with the dvwa demo and down --remove-orphans cross-reaps" % d.get("name"))
     if errs:
         print("plg-check FAILED:"); [print("  -", e) for e in errs]; sys.exit(1)
-    print("plg-check OK: config valid + DVWA isolated + PLG bound via OTT (no STRIKE48_TENANT)")
+    print("plg-check OK: config valid + DVWA isolated + PLG bound via OTT (STRIKE48_REGISTRATION_TOKEN, no STRIKE48_TENANT) + own compose project")
     '
 
 # Bring up the Pick + DVWA StrikeHub (PLG) stack (pick scans dvwa; registers via OTT)
@@ -249,7 +292,7 @@ plg-up *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
     if [[ ! -f "{{plg_env}}" ]]; then
-        echo "error: {{plg_env}} not found — copy .env.plg.example to {{plg_env}} and set STRIKE48_TOKEN (the StrikeHub-minted OTT)" >&2
+        echo "error: {{plg_env}} not found — copy .env.plg.example to {{plg_env}} and set STRIKE48_REGISTRATION_TOKEN (the StrikeHub-minted OTT)" >&2
         exit 1
     fi
     docker compose --env-file "{{plg_env}}" -f "{{plg_compose}}" up --build -d {{ARGS}}
@@ -286,12 +329,15 @@ plg-down *ARGS:
     # The `:-` only substitutes when a var is unset, so a real value already in the
     # shell env is preserved; --env-file is still passed when present. (Shell env
     # takes precedence over --env-file in compose, but for `down` neither matters.)
-    # NOTE: default STRIKE48_TOKEN (not STRIKE48_TENANT) — this stack's mandatory
-    # interpolation is the OTT, so teardown must stub THAT to parse the model.
+    # NOTE: default STRIKE48_REGISTRATION_TOKEN (not STRIKE48_TENANT) — this stack's
+    # mandatory interpolation is the OTT, so teardown must stub THAT to parse the
+    # model. Every ${VAR:?} in the compose file needs a stub here; missing one makes
+    # `down` abort and leaves DVWA running.
     env_args=()
     [[ -f "{{plg_env}}" ]] && env_args=(--env-file "{{plg_env}}")
     STRIKE48_HOST="${STRIKE48_HOST:-stub}" \
-    STRIKE48_TOKEN="${STRIKE48_TOKEN:-stub}" \
+    STRIKE48_REGISTRATION_TOKEN="${STRIKE48_REGISTRATION_TOKEN:-stub}" \
+    STRIKE48_API_URL="${STRIKE48_API_URL:-stub}" \
     MATRIX_API_URL="${MATRIX_API_URL:-stub}" \
         docker compose "${env_args[@]}" -f "{{plg_compose}}" down --remove-orphans {{ARGS}}
 
