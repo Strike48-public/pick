@@ -632,7 +632,7 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                 div { class: "easy-home",
                     div { class: "easy-home-hero",
                         span { class: "easy-hero-badge", dangerous_inner_html: STRIKE48_S_BADGE_SVG }
-                        h1 { class: "easy-hero-title", "What's on your network?" }
+                        h1 { class: "easy-hero-title", "Is my network safe?" }
                         p { class: "easy-hero-sub",
                             "One click enumerates every live host, its open services, and the risk they carry."
                         }
