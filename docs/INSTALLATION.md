@@ -25,7 +25,7 @@ cd pick
 
 # Configure your Strike48 backend
 cp .env.example .env
-$EDITOR .env   # set STRIKE48_HOST, STRIKE48_TENANT, MATRIX_API_URL, MATRIX_TENANT_ID
+$EDITOR .env   # set STRIKE48_HOST, STRIKE48_TENANT, STRIKE48_API_URL
 
 # Build and run the headless agent (first build takes 5-10 minutes)
 cargo build --package pentest-headless
@@ -97,8 +97,7 @@ nano .env  # Edit with your Strike48 backend details
 Required configuration:
 - `STRIKE48_HOST` - Strike48 server endpoint
 - `STRIKE48_TENANT` - Tenant identifier
-- `MATRIX_API_URL` - Matrix API endpoint
-- `MATRIX_TENANT_ID` - Matrix tenant identifier
+- `STRIKE48_API_URL` - Strike48 HTTP API endpoint (used for OTT registration)
 
 See [Environment Configuration](#environment-configuration) for details.
 
@@ -185,10 +184,7 @@ Edit `.env` and set these values:
 # Strike48 Backend
 STRIKE48_HOST=wss://your-server.example.com
 STRIKE48_TENANT=your-tenant-id
-
-# Matrix API
-MATRIX_API_URL=https://your-server.example.com
-MATRIX_TENANT_ID=your-tenant-id
+STRIKE48_API_URL=https://your-server.example.com
 ```
 
 ### Optional Variables

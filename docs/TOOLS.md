@@ -2,7 +2,7 @@
 
 Complete reference of all penetration testing tools available in Pick.
 
-**Total tools:** 94 (24 native + 70 external integrations)
+**Total tools:** 100+ (native + external integrations)
 
 ---
 

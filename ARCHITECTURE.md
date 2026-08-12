@@ -84,7 +84,7 @@ pick/
 - Tool execution UI: Input forms, output display, evidence viewer
 
 #### `crates/tools`
-- Tool implementations: 90+ pentest tools
+- Tool implementations: 100+ pentest tools
 - External tool wrappers: BlackArch integrations (nmap, masscan, etc.)
 - Evidence producers: Convert tool output to evidence nodes
 - Three-agent pipeline: Red Team, Validator, Report agents

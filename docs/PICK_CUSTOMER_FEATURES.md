@@ -2,14 +2,14 @@
 
 ## Overview
 
-Pick is an open-source penetration testing platform that combines 94 integrated security tools with adaptive multi-agent reasoning. When automated attacks encounter obstacles, Pick figures out alternative approaches, validates findings through independent verification, and adjusts its strategy based on what it discovers.
+Pick is an open-source penetration testing platform that combines 100+ integrated security tools with adaptive multi-agent reasoning. When automated attacks encounter obstacles, Pick figures out alternative approaches, validates findings through independent verification, and adjusts its strategy based on what it discovers.
 
 Built for red teamers, penetration testers, and security learners, Pick handles the technical orchestration of complex attack chains while you focus on strategic decisions. Use Pick standalone for solo assessments, or integrate with StrikeKit for enterprise red team operations with team collaboration and engagement management.
 
 **Key Capabilities:**
 - Adaptive execution that adjusts strategy when obstacles are encountered
 - Multi-agent validation architecture to verify findings before reporting
-- 94 integrated tools with access to 3,000+ BlackArch tools for learning
+- 100+ integrated tools with access to 3,000+ BlackArch tools for learning
 - Multi-platform deployment (desktop, headless, web, mobile, Kubernetes)
 - Standalone operation or enterprise integration via StrikeKit
 
@@ -41,7 +41,7 @@ Pick doesn't blindly follow scripts—it figures out what the target actually ne
 
 ### Unified Tool Orchestration
 
-Pick integrates 94 security tools and has access to learn from 3,000+ BlackArch tools. Rather than requiring manual tool chaining and output parsing, Pick understands tool capabilities, knows which tools work well together, and orchestrates complex multi-tool attack chains automatically.
+Pick integrates 100+ security tools and has access to learn from 3,000+ BlackArch tools. Rather than requiring manual tool chaining and output parsing, Pick understands tool capabilities, knows which tools work well together, and orchestrates complex multi-tool attack chains automatically.
 
 **From reconnaissance to exploitation to post-exploitation**, Pick handles the technical execution while you provide strategic guidance and oversight.
 
@@ -130,7 +130,7 @@ When integrated with StrikeKit, Pick enables enterprise red team operations:
 
 ### Beyond These Use Cases
 
-With access to 94 integrated tools and the ability to learn from 3,000+ BlackArch tools, Pick supports extensive security testing scenarios:
+With access to 100+ integrated tools and the ability to learn from 3,000+ BlackArch tools, Pick supports extensive security testing scenarios:
 
 **Network Security:**
 - Internal network penetration testing
@@ -168,7 +168,7 @@ With access to 94 integrated tools and the ability to learn from 3,000+ BlackArc
 
 ## Platform Capabilities
 
-### Integrated Security Tools (94)
+### Integrated Security Tools (100+)
 
 Pick provides unified orchestration across industry-standard penetration testing tools:
 
@@ -225,7 +225,7 @@ Deploy Pick wherever your security testing needs to happen:
 - Multi-user support via LiveView architecture
 
 **Mobile Applications**
-- Native Android app
+- Native Android app, with experimental iOS support
 - On-device tool execution for physical security assessments
 - Perfect for WiFi surveys and network reconnaissance in the field
 
@@ -333,7 +333,7 @@ Pick operates standalone for solo penetration testers and learners. When you nee
 │                        Pick                             │
 │         (Adaptive Pentesting Execution)                 │
 │                                                          │
-│  • Multi-Agent Validation  • 94 Integrated Tools        │
+│  • Multi-Agent Validation  • 100+ Integrated Tools      │
 │  • Adaptive Reasoning      • 3,000+ BlackArch Learning  │
 │  • Tool Orchestration      • Multi-Platform Deployment  │
 └─────────────────────────────────────────────────────────┘
