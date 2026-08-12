@@ -71,13 +71,12 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev protobuf-compiler libpcap-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # --no-fail-fast: without it cargo STOPS at the first failing test target and
-      # never builds the remaining crates, so a single red target silently hides
-      # every later crate's tests instead of reporting them. That is not a
-      # hypothetical: `pentest-core`'s tool_integration target currently fails, and
-      # it sorts before `pentest-ui`, so pentest-ui's tests were never compiled OR
-      # run in this job. The job still fails on any failure (cargo's exit code is
-      # unchanged) — it just reports ALL of them rather than the first.
+      # --no-fail-fast: cargo compiles every test target, then stops RUNNING at
+      # the first target with a failing test. Without this flag a single red
+      # target hides every later crate's test *results* (they're compiled but not
+      # run/reported), so you learn about failures one CI round at a time. With it,
+      # the job reports ALL failures in one run; exit code is unchanged, so any
+      # failure still fails the job.
       - run: cargo test --workspace --locked --no-fail-fast --features pentest-platform/desktop-pcap
 
   check-macos:

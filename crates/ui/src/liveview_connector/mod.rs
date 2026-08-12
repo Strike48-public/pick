@@ -766,17 +766,18 @@ impl LiveViewConnector {
                 // initialize_auth will fall through to the credentials just saved
                 // by register_with_ott, which carry the same identity.
                 //
-                // SAFETY: single-threaded with respect to THIS variable.
-                // STRIKE48_REGISTRATION_TOKEN is read only here and by the SDK's
-                // load_ott, which runs later on this same task (inside the runner we
-                // have not built yet) — so no concurrent read of it is possible.
-                //
-                // Note the weaker-than-obvious claim: other spawned tasks DO read
-                // the environment concurrently (connector_app.rs:485 polls
-                // read_credentials_tenant_id, which reads HOME), so a blanket "no
-                // env readers exist yet" would be false. Under edition 2021 this is
-                // moot — remove_var is safe — but the distinction is what an
-                // edition-2024 migration would have to rely on.
+                // SAFETY: no concurrent env access can interleave with this call.
+                // set_var/remove_var mutate the shared `environ` array and race a
+                // concurrent getenv on ANY variable — that is UB in every edition
+                // (it is precisely why edition 2024 made these fns `unsafe`), so it
+                // is NOT made safe by the fact that other readers touch a different
+                // variable. What makes it safe here is the executor model: this runs
+                // on Dioxus's single-threaded cooperative executor (the desktop
+                // `spawn`), where the synchronous getenv/setenv can never interleave,
+                // and the headless (`#[tokio::main]`) path spawns no concurrent env
+                // reader during resolve_ott_tenant. This only becomes a real race if
+                // these tasks are moved onto a multi-threaded executor alongside a
+                // concurrent env reader.
                 unsafe { std::env::remove_var("STRIKE48_REGISTRATION_TOKEN") };
 
                 if credentials.tenant_id.trim().is_empty() {
