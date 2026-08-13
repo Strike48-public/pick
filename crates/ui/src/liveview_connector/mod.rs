@@ -736,22 +736,37 @@ impl LiveViewConnector {
         // (pick#162) once at startup. A missing file yields an empty store; a
         // malformed file is logged and treated as empty rather than blocking
         // connector startup (the operator can fix the file and reconnect).
-        let loaded_identities = match pentest_core::identity::load_default_identities() {
-            Ok(loaded) => {
-                if !loaded.store.is_empty() {
-                    tracing::info!(
-                        "Loaded {} operator identit{} for differential-authz testing",
-                        loaded.store.len(),
-                        if loaded.store.len() == 1 { "y" } else { "ies" }
-                    );
+        //
+        // Resolve the path explicitly (rather than via `load_default_identities`)
+        // so the chosen file is logged at startup. The precedence is
+        // env `PICK_IDENTITIES_FILE` > a cwd `identities.json` > the settings
+        // dir; preferring cwd is a launch-from-unexpected-directory foot-gun, so
+        // making the resolved path auditable is deliberate (#317 finding #8).
+        let identities_path = pentest_core::identity::identities_file_path();
+        tracing::info!(
+            "Resolved test-identities file path: {}",
+            identities_path.display()
+        );
+        let loaded_identities =
+            match pentest_core::identity::load_identities_from_file(&identities_path) {
+                Ok(loaded) => {
+                    if !loaded.store.is_empty() {
+                        tracing::info!(
+                            "Loaded {} operator identit{} for differential-authz testing",
+                            loaded.store.len(),
+                            if loaded.store.len() == 1 { "y" } else { "ies" }
+                        );
+                    }
+                    loaded
                 }
-                loaded
-            }
-            Err(e) => {
-                tracing::warn!("Ignoring identities file: {e}");
-                pentest_core::identity::LoadedIdentities::default()
-            }
-        };
+                Err(e) => {
+                    tracing::warn!(
+                        "Ignoring identities file {}: {e}",
+                        identities_path.display()
+                    );
+                    pentest_core::identity::LoadedIdentities::default()
+                }
+            };
 
         // Advertise the identity *references* (label/role/tenant only, no
         // secrets) to the Red Team orchestrator via InstanceMetadata, the same
