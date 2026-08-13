@@ -176,17 +176,27 @@ const ALLOWED_URL_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
 /// Protocol-relative URLs (`"//host/…"`) are rejected: they resolve to a remote
 /// origin, so they are treated as unsafe rather than as a scheme-less relative
 /// path (#365 review — avoids silent remote fetches/exfiltration beacons).
+/// Backslashes are folded to `/` first, so browser-equivalent shapes like
+/// `"/\host"` and `"\\host"` are rejected too (#367 review).
 fn is_safe_url(url: &str) -> bool {
     let trimmed = url.trim_start_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
-    if trimmed.starts_with("//") {
+    // Browsers fold '\' to '/' when resolving http(s) URLs (WHATWG URL spec), so
+    // "/\evil.com" and "\\evil.com" both resolve to a remote origin even though
+    // neither literally starts with "//". Normalize backslashes to slashes before
+    // the protocol-relative and scheme checks so neither shape slips through as a
+    // scheme-less "relative" path (#367 review). A backslash is not legal in a URL
+    // scheme, so this can only split a would-be scheme earlier — never forge an
+    // allowed one.
+    let normalized = trimmed.replace('\\', "/");
+    if normalized.starts_with("//") {
         return false;
     }
     // The scheme is the text before the first ':' — but only when that ':'
     // appears before any '/', '?', or '#', which would instead mark a
     // relative/path reference (e.g. "/a?b#c" has no scheme).
-    match trimmed.find([':', '/', '?', '#']) {
-        Some(idx) if trimmed.as_bytes()[idx] == b':' => {
-            let scheme = &trimmed[..idx];
+    match normalized.find([':', '/', '?', '#']) {
+        Some(idx) if normalized.as_bytes()[idx] == b':' => {
+            let scheme = &normalized[..idx];
             ALLOWED_URL_SCHEMES
                 .iter()
                 .any(|s| scheme.eq_ignore_ascii_case(s))
@@ -208,6 +218,14 @@ fn is_safe_url(url: &str) -> bool {
 /// so the sanitization cannot drift between the two. Renderers that also build
 /// their own trusted HTML (e.g. syntect code highlighting) inject it separately
 /// and must not pass it through this function.
+///
+/// # Parser-option coupling (#367 review)
+///
+/// This filter only inspects `Tag::Link` and `Tag::Image`; it assumes the only
+/// attribute sinks pulldown-cmark can emit are link/image destinations. Callers
+/// enable a conservative option set today. Turning on options that emit new
+/// attributes — `ENABLE_HEADING_ATTRIBUTES` (id/class on headings) or math —
+/// would add sinks this function does not yet cover and requires re-reviewing it.
 pub fn sanitize_markdown_event(
     event: pulldown_cmark::Event<'_>,
 ) -> Option<pulldown_cmark::Event<'_>> {
@@ -355,6 +373,12 @@ mod tests {
         // as a scheme-less relative path (#365 review).
         assert!(!is_safe_url("//evil.com/log?c=secret"));
         assert!(!is_safe_url("\t//evil.com/pixel.png")); // still rejected after trim
+
+        // Backslash variants: browsers fold '\' to '/', so these resolve to a
+        // remote origin too and must not pass as relative paths (#367 review).
+        assert!(!is_safe_url("/\\evil.com/log?c=1")); // "/\evil.com" => "//evil.com"
+        assert!(!is_safe_url("\\\\evil.com/log")); // "\\evil.com" => "//evil.com"
+        assert!(!is_safe_url("\t/\\evil.com/pixel.png")); // control + backslash combo
     }
 
     #[test]
@@ -433,6 +457,17 @@ mod tests {
     }
 
     #[test]
+    fn neutralizes_backslash_protocol_relative() {
+        // Browsers fold '\' to '/', so "/\host" resolves to a remote origin. Must
+        // be neutralized end-to-end, not just in is_safe_url (#367 review).
+        let out = render_markdown_raw("[x](/\\evil.com/log?c=1)");
+        assert!(
+            !out.contains("evil.com"),
+            "backslash protocol-relative link leaked: {out}"
+        );
+    }
+
+    #[test]
     fn neutralizes_javascript_via_autolink_and_reference() {
         // Autolink `<scheme:...>`: the URI becomes both href and visible text.
         // Only the href is a sink — the text is inert — so assert on the href.
@@ -479,6 +514,26 @@ mod tests {
         assert!(
             out.contains("language-rust"),
             "fenced-code highlighting lost: {out}"
+        );
+    }
+
+    #[test]
+    fn neutralizes_entity_and_percent_encoded_schemes() {
+        // The security-reviewer flagged encoded schemes (#367 review). Proven
+        // empirically against pulldown-cmark 0.12.2: HTML entities in a
+        // destination ARE decoded before the filter runs, so `&#106;avascript:`
+        // becomes `javascript:` and is rejected by default-deny. Percent-encoding
+        // is NOT decoded, so `%6Aavascript` stays an unknown scheme and is also
+        // rejected. Both collapse to an inert empty href.
+        let entity = render_markdown_raw("[x](&#106;avascript:alert(1))");
+        assert!(
+            !entity.contains("avascript") && !entity.contains("alert"),
+            "entity-encoded scheme leaked: {entity}"
+        );
+        let pct = render_markdown_raw("[x](%6Aavascript:alert(1))");
+        assert!(
+            !pct.contains("avascript") && !pct.contains("alert"),
+            "percent-encoded scheme leaked: {pct}"
         );
     }
 }
