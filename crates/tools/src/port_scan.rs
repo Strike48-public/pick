@@ -6,10 +6,33 @@ use pentest_core::tools::{
     execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
 };
 use pentest_core::validation::{validate_port_spec, validate_target};
-use pentest_platform::{get_platform, NetworkOps, ScanConfig};
+use pentest_platform::{get_platform, HostReachability, NetworkOps, ScanConfig};
 use serde_json::{json, Value};
 
 use crate::util::{param_str, param_u64};
+
+/// Operator/agent-facing gloss for a host-level reachability verdict (#337).
+///
+/// The `no_response` note is deliberately non-committal: an all-timeout scan
+/// cannot distinguish a down host from a live one behind a default-drop
+/// firewall, so it must not read as "host is down".
+fn host_state_note(reachability: HostReachability) -> &'static str {
+    match reachability {
+        HostReachability::Reachable => {
+            "Host responded to at least one probe (open or refused), so it is up."
+        }
+        HostReachability::Unreachable => {
+            "No probe reached the host (network/host unreachable, or blocked by the \
+             sandbox/capabilities). This is a scan failure, not a finding about the host."
+        }
+        HostReachability::NoResponse => {
+            "Every probe timed out with no response. Two causes are indistinguishable \
+             from a TCP-connect scan: an offline host, or a live host silently dropping \
+             all packets (default-drop firewall). Do NOT record this host as offline on \
+             this evidence alone; if liveness matters, confirm with a separate probe."
+        }
+    }
+}
 
 /// Port scanning tool
 pub struct PortScanTool;
@@ -117,8 +140,43 @@ impl PentestTool for PortScanTool {
                 "errors": result.errors,
                 "total_scanned": result.ports.len(),
                 "duration_ms": result.duration_ms,
+                // Host-level reachability (#337): "reachable" (got a response),
+                // "unreachable" (errno no-route), or "no_response" (every probe
+                // timed out -> down OR silently firewalled). See host_state_note.
+                "reachability": result.reachability,
+                "host_state_note": host_state_note(result.reachability),
             }))
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_response_note_never_asserts_host_is_down() {
+        // #337 honesty guard: the all-timeout verdict must NOT tell the operator
+        // the host is down (a live firewalled host is indistinguishable). It must
+        // name both possibilities and point at a separate liveness check.
+        let note = host_state_note(HostReachability::NoResponse);
+        // Must not hand the caller a ready-made "host is down"/"offline" verdict.
+        assert!(!note.to_lowercase().contains("host is down"));
+        assert!(!note.to_lowercase().contains("host is offline"));
+        // Must name the firewall alternative and flag the ambiguity + a caveat.
+        assert!(note.contains("firewall"));
+        assert!(note.contains("indistinguishable"));
+        assert!(note.contains("Do NOT record"));
+    }
+
+    #[test]
+    fn reachable_and_unreachable_notes_are_distinct_and_correct() {
+        let reachable = host_state_note(HostReachability::Reachable);
+        let unreachable = host_state_note(HostReachability::Unreachable);
+        assert!(reachable.contains("up"));
+        assert!(unreachable.contains("scan failure"));
+        assert_ne!(reachable, unreachable);
+        assert_ne!(reachable, host_state_note(HostReachability::NoResponse));
     }
 }
