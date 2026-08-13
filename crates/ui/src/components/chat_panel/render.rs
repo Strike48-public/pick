@@ -3,7 +3,7 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use dioxus::prelude::*;
 use pentest_core::matrix::{ChatMessage, MessagePart, ToolCallInfo, ToolCallStatus};
-use pentest_core::rendering::sanitize_markdown_event;
+use pentest_core::rendering::MarkdownSanitizer;
 use pentest_tools::webwright::{
     live_peek, live_subscribe, signature_for_call, task_for_request, WebwrightProgress,
 };
@@ -229,8 +229,11 @@ pub fn render_markdown(input: &str) -> String {
     // Security (#365): route events through the shared sanitizer so untrusted
     // chat/agent content (which reflects tool and target output) cannot inject
     // HTML or unsafe link/image schemes into `dangerous_inner_html`. Same choke
-    // point as the core file renderer, so the two cannot drift apart.
-    let parser = Parser::new_ext(input, options).filter_map(sanitize_markdown_event);
+    // point as the core file renderer, so the two cannot drift apart. The
+    // sanitizer is stateful (it unwraps rejected links/images), so it is threaded
+    // through filter_map by a mutable closure.
+    let mut sanitizer = MarkdownSanitizer::new();
+    let parser = Parser::new_ext(input, options).filter_map(move |e| sanitizer.process(e));
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
     html_output

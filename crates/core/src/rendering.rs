@@ -205,77 +205,100 @@ fn is_safe_url(url: &str) -> bool {
     }
 }
 
-/// Make a single markdown event safe to feed to `dangerous_inner_html`.
+/// Stateful sanitizer that makes a markdown event stream safe to feed to
+/// `dangerous_inner_html`.
 ///
-/// Returns `None` for raw/inline HTML events (dropped so untrusted markdown
-/// cannot inject `<script>`, event-handler attributes, `<iframe>`, …). Link and
-/// image destinations are scheme-allowlisted via [`is_safe_url`]; a rejected
-/// destination becomes an inert empty string. Every other event passes through
-/// unchanged.
+/// Feed every parser event through [`process`](MarkdownSanitizer::process) in
+/// order. It:
+/// - drops raw/inline HTML events, so untrusted markdown cannot inject
+///   `<script>`, event-handler attributes, `<iframe>`, …;
+/// - scheme-allowlists link/image destinations via [`is_safe_url`], and when a
+///   destination is rejected it *unwraps* the element — the `<a>`/`<img>` is
+///   dropped and its child text is kept. This avoids the inert `href=""`/`src=""`
+///   an emptied destination would produce, which re-navigates or re-fetches the
+///   current document, and gives no misleading "this is a link" affordance
+///   (#367 review). Unwrapping is why this is stateful: the opening tag's verdict
+///   must be remembered so the matching close tag is dropped too.
 ///
 /// This is the shared choke point for all markdown rendering in the app (#365):
 /// [`render_markdown_raw`] and the chat panel's renderer both route through it,
 /// so the sanitization cannot drift between the two. Renderers that also build
 /// their own trusted HTML (e.g. syntect code highlighting) inject it separately
-/// and must not pass it through this function.
+/// and must not pass it through this sanitizer.
 ///
 /// # Parser-option coupling (#367 review)
 ///
-/// This filter only inspects `Tag::Link` and `Tag::Image`; it assumes the only
+/// This sanitizer only inspects `Tag::Link` and `Tag::Image`; it assumes the only
 /// attribute sinks pulldown-cmark can emit are link/image destinations. Callers
 /// enable a conservative option set today. Turning on options that emit new
 /// attributes — `ENABLE_HEADING_ATTRIBUTES` (id/class on headings) or math —
-/// would add sinks this function does not yet cover and requires re-reviewing it.
-pub fn sanitize_markdown_event(
-    event: pulldown_cmark::Event<'_>,
-) -> Option<pulldown_cmark::Event<'_>> {
-    use pulldown_cmark::{CowStr, Event, Tag};
-    match event {
-        Event::Html(_) | Event::InlineHtml(_) => None,
-        Event::Start(Tag::Link {
-            link_type,
-            dest_url,
-            title,
-            id,
-        }) => {
-            let dest_url = if is_safe_url(&dest_url) {
-                dest_url
-            } else {
-                CowStr::Borrowed("")
-            };
-            Some(Event::Start(Tag::Link {
-                link_type,
-                dest_url,
-                title,
-                id,
-            }))
+/// would add sinks this sanitizer does not yet cover and requires re-reviewing it.
+#[derive(Default)]
+pub struct MarkdownSanitizer {
+    /// One entry per currently-open link/image scope: `true` if that scope was
+    /// dropped (unsafe destination) and its closing tag must be dropped too.
+    dropped_scopes: Vec<bool>,
+}
+
+impl MarkdownSanitizer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sanitize one event. Returns `None` to drop it. Must be called on the full
+    /// event stream in order so link/image open/close tags stay balanced.
+    pub fn process<'a>(
+        &mut self,
+        event: pulldown_cmark::Event<'a>,
+    ) -> Option<pulldown_cmark::Event<'a>> {
+        use pulldown_cmark::{Event, Tag, TagEnd};
+
+        // Classify while only *borrowing* the event, so we can still move it
+        // afterwards. `is_safe_url` decides whether an opening link/image is kept.
+        enum Action {
+            Drop,
+            OpenScope(bool),
+            CloseScope,
+            Pass,
         }
-        Event::Start(Tag::Image {
-            link_type,
-            dest_url,
-            title,
-            id,
-        }) => {
-            let dest_url = if is_safe_url(&dest_url) {
-                dest_url
-            } else {
-                CowStr::Borrowed("")
-            };
-            Some(Event::Start(Tag::Image {
-                link_type,
-                dest_url,
-                title,
-                id,
-            }))
+        let action = match &event {
+            Event::Html(_) | Event::InlineHtml(_) => Action::Drop,
+            Event::Start(Tag::Link { dest_url, .. })
+            | Event::Start(Tag::Image { dest_url, .. }) => {
+                Action::OpenScope(!is_safe_url(dest_url))
+            }
+            Event::End(TagEnd::Link) | Event::End(TagEnd::Image) => Action::CloseScope,
+            _ => Action::Pass,
+        };
+
+        match action {
+            Action::Drop => None,
+            Action::OpenScope(dropped) => {
+                self.dropped_scopes.push(dropped);
+                // Dropped: unwrap the element, keep its children (emitted next).
+                if dropped {
+                    None
+                } else {
+                    Some(event)
+                }
+            }
+            Action::CloseScope => {
+                let dropped = self.dropped_scopes.pop().unwrap_or(false);
+                if dropped {
+                    None
+                } else {
+                    Some(event)
+                }
+            }
+            Action::Pass => Some(event),
         }
-        other => Some(other),
     }
 }
 
 /// Render markdown to raw HTML (no wrapper div).
 ///
 /// Fenced code blocks are syntax-highlighted via syntect. Untrusted HTML and
-/// unsafe link/image schemes are stripped via [`sanitize_markdown_event`].
+/// unsafe link/image schemes are stripped via [`MarkdownSanitizer`].
 pub fn render_markdown_raw(content: &str) -> String {
     use pulldown_cmark::{CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
 
@@ -289,6 +312,7 @@ pub fn render_markdown_raw(content: &str) -> String {
     let mut code_buf = String::new();
 
     let mut events: Vec<Event> = Vec::new();
+    let mut sanitizer = MarkdownSanitizer::new();
 
     for event in parser {
         match event {
@@ -316,10 +340,11 @@ pub fn render_markdown_raw(content: &str) -> String {
             Event::Text(ref text) if in_code_block => {
                 code_buf.push_str(text);
             }
-            // Security (#365): every other event goes through the shared filter,
-            // which drops raw/inline HTML and scheme-allowlists link/image URLs.
+            // Security (#365): every other event goes through the shared
+            // sanitizer, which drops raw/inline HTML and scheme-allowlists
+            // link/image URLs (unwrapping rejected ones).
             other => {
-                if let Some(safe) = sanitize_markdown_event(other) {
+                if let Some(safe) = sanitizer.process(other) {
                     events.push(safe);
                 }
             }
@@ -465,6 +490,35 @@ mod tests {
             !out.contains("evil.com"),
             "backslash protocol-relative link leaked: {out}"
         );
+    }
+
+    #[test]
+    fn unwraps_rejected_link_and_image_keeping_text() {
+        // A rejected link is unwrapped: no <a> element and no inert href="", but
+        // the visible label text is preserved (#367 review).
+        let link = render_markdown_raw("see [click me](javascript:alert(1)) now");
+        assert!(
+            !link.contains("<a "),
+            "rejected link kept an anchor: {link}"
+        );
+        assert!(
+            !link.contains("href=\"\""),
+            "rejected link left an inert empty href: {link}"
+        );
+        assert!(link.contains("click me"), "link label text lost: {link}");
+
+        // A rejected image is unwrapped: no <img> and no inert src="", with the
+        // alt text surfaced as plain text instead.
+        let img = render_markdown_raw("![the alt text](javascript:alert(1))");
+        assert!(
+            !img.contains("<img"),
+            "rejected image kept an img element: {img}"
+        );
+        assert!(
+            !img.contains("src=\"\""),
+            "rejected image left an inert empty src: {img}"
+        );
+        assert!(img.contains("the alt text"), "image alt text lost: {img}");
     }
 
     #[test]
