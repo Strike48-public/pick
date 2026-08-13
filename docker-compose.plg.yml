@@ -1,0 +1,191 @@
+# StrikeHub (PLG) live demo: Pick connector + DVWA target (matrix#3519).
+#
+# Sibling of docker-compose.dvwa.yml (matrix#3207). Same two-container topology
+# and isolation invariant, but bound to a StrikeHub **personal** tenant via a
+# One-Time Token (OTT) instead of a fixed tenant UUID.
+#
+#   - dvwa: a deliberately vulnerable web app (the scan target)
+#   - pick: the headless pentest-agent connector that scans dvwa and registers
+#           with a Strike48 backend (StrikeHub) as the "Pick" connector
+#
+# WHY THIS FILE EXISTS (vs. reusing docker-compose.dvwa.yml):
+#   PLG/StrikeHub does not have a fixed tenant UUID — the personal tenant is
+#   minted dynamically at login (slug `personal-<hash>`), so STRIKE48_TENANT is
+#   unknowable ahead of time. The dvwa compose makes STRIKE48_TENANT a MANDATORY
+#   interpolation and never passes STRIKE48_TOKEN, so it cannot carry the OTT.
+#   Here we invert that: STRIKE48_REGISTRATION_TOKEN (the StrikeHub-minted OTT)
+#   is mandatory and IS the tenant binding — `register-with-ott` bakes the OTT's
+#   tenant_id into the connector's Keycloak JWT, so STRIKE48_TENANT is irrelevant
+#   and dropped. The OTT is pre-approval: Pick appears online automatically in
+#   StrikeHub -> Devices (no manual approve step, unlike the dvwa demo).
+#
+#   NOTE the variable name: the SDK gates its OTT-exchange branch on
+#   STRIKE48_REGISTRATION_TOKEN. STRIKE48_TOKEN is a different input (a
+#   ready-minted JWT) and will NOT trigger the exchange. See the env block below.
+#
+# Network topology (isolation is the point — identical to the dvwa demo):
+#   - scan-net:    isolated bridge shared by pick + dvwa. Pick reaches DVWA by
+#                  service DNS (http://dvwa). DVWA is published NOWHERE else, so
+#                  scan traffic stays contained on this bridge.
+#   - backend-net: pick's egress to the Strike48 backend (StrikeHub) to register.
+#                  DVWA is NOT on this network.
+#
+# Pick is an OUTBOUND-only client — it exposes no inbound port. It connects out
+# to STRIKE48_HOST (gRPC) and STRIKE48_API_URL (HTTP, for OTT registration).
+#
+# Configure via a .env file next to this compose file (see .env.plg.example);
+# `just plg-up` sources it. Mint STRIKE48_REGISTRATION_TOKEN in StrikeHub ->
+# Devices; it has a 15-min TTL, so attach promptly. The init-dev `plg:pick:*`
+# tasks generate it.
+
+# Distinct compose project, NOT cosmetic. Compose derives the project name from
+# the containing DIRECTORY, so this file and docker-compose.dvwa.yml would both
+# be project "pick" and would therefore share derived networks
+# (pick_scan-net / pick_backend-net) and volumes. Both `just plg-down` and `just
+# dvwa-down` run `down --remove-orphans`, which acts on everything carrying the
+# project label — so tearing down one stack would reap the other's containers as
+# orphans. The distinct container_names and *-creds volume names are not enough
+# on their own; the PROJECT has to differ. (Only this new file is renamed: the
+# demo stack has already shipped as project "pick", and renaming it would orphan
+# its existing pick_pick-demo-creds volume.)
+name: pick-plg
+
+services:
+  dvwa:
+    # The classic, anonymously-pullable DVWA image. (digininja's ghcr.io/digininja/dvwa
+    # named in matrix#3207 is not anonymously pullable — pull is "denied".) amd64-only,
+    # so it runs under emulation on arm64 hosts — fine for a demo target.
+    image: docker.io/vulnerables/web-dvwa:latest
+    container_name: pick-plg-dvwa
+    restart: unless-stopped
+    networks:
+      - scan-net
+    # No `ports:` — DVWA is reachable only by pick on scan-net, never the host.
+    # Probe with PHP (guaranteed in the php-apache base image) rather than curl,
+    # which the digininja/dvwa image does not ship — a curl probe would return
+    # 127 forever, keep DVWA `unhealthy`, and block pick's `depends_on` start.
+    healthcheck:
+      test: ["CMD-SHELL", "php -r 'exit(@file_get_contents(\"http://localhost/login.php\")===false?1:0);'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  pick:
+    build:
+      context: .
+      # Kali-based image (same one prod/k8s ships) — it bundles the actual pentest
+      # toolchain (nmap, nikto, nuclei, ffuf, sqlmap, whatweb, …). The slim
+      # `Dockerfile` builds only the pentest-agent binary with NO tools, so scans
+      # fail "tool not found" (only the built-in Rust port_scan works there). This
+      # runtime runs as ROOT, so raw-socket caps are effective without setcap, and
+      # HOME is /root (see the creds volume mount below).
+      dockerfile: Dockerfile.scratch
+    image: ghcr.io/strike48-public/pick:demo
+    container_name: pick-plg-connector
+    restart: unless-stopped
+    depends_on:
+      dvwa:
+        condition: service_healthy
+    networks:
+      - scan-net      # reach DVWA at http://dvwa
+      - backend-net   # egress to the Strike48 backend
+    # Reach the Strike48 backend hostnames on the DOCKER HOST. On a local/newdev
+    # cluster the backend is exposed on the host (lima/k3s forwards :80/:443/:50061;
+    # *.strike48.test → 127.0.0.1 in the host's /etc/hosts). A container can't use
+    # the host's loopback, so map the backend hostnames to host-gateway (the host
+    # as seen from the container). Without this Pick resolves the names to the
+    # CONTAINER's 127.0.0.1 and gets "connection refused". Four hosts are needed
+    # across the connect + OTT→JWT flow: the connector gRPC endpoint, the Studio
+    # HTTP API, Keycloak (auth), AND the StrikeHub host (plg.strike48.test) that
+    # serves register-with-ott and the connector WSS socket. Override via the env
+    # vars if your backend is reachable at a routable address instead.
+    extra_hosts:
+      - "connectors-studio.strike48.test:host-gateway"
+      - "studio.strike48.test:host-gateway"
+      - "auth.strike48.test:host-gateway"
+      - "plg.strike48.test:host-gateway"
+    # Raw sockets for nmap/masscan/etc. The Kali runtime (Dockerfile.scratch) runs
+    # as ROOT, so these caps are effective on exec directly — no setcap needed
+    # (that dance was only for the slim image's non-root uid 999). Keep cap_add so
+    # the caps are in the container bounding set. NET_RAW+NET_ADMIN mirror the
+    # chart's "pentest" profile (chart/pick-connector/templates/_helpers.tpl).
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    # Reaching a private-IP / self-signed backend on newdev requires relaxing
+    # the connector's SSRF guard and cert checks — see .env.plg.example for why.
+    environment:
+      STRIKE48_HOST: "${STRIKE48_HOST:?set STRIKE48_HOST in .env (e.g. grpc://connectors-studio.strike48.test:80)}"
+      # The OTT minted in StrikeHub -> Devices. This IS the tenant binding:
+      # register-with-ott bakes the OTT's tenant_id into the connector JWT, so no
+      # STRIKE48_TENANT is needed (or read) on this stack. Mandatory — fail loud
+      # if unset rather than silently registering unbound.
+      #
+      # MUST be STRIKE48_REGISTRATION_TOKEN, not STRIKE48_TOKEN: the SDK's OTT
+      # branch is gated on `has_ott()`, which reads ONLY
+      # STRIKE48_REGISTRATION_TOKEN (strike48-connector ott_provider.rs load_ott).
+      # STRIKE48_TOKEN takes a DIFFERENT path — pentest_core::config assigns it to
+      # `config.auth_token`, i.e. an already-minted JWT. Putting the OTT there
+      # skips the exchange entirely and sends the raw OTT as a bearer token, which
+      # studio rejects with {:jwt_invalid, :jwt_decode_failed}.
+      STRIKE48_REGISTRATION_TOKEN: "${STRIKE48_REGISTRATION_TOKEN:?set STRIKE48_REGISTRATION_TOKEN to the StrikeHub-minted OTT (ott_...); mint it in StrikeHub -> Devices (15-min TTL)}"
+      # Origin that serves register-with-ott. The SDK reads STRIKE48_API_URL for
+      # this (ott_provider.rs), and ALSO re-reads it to enforce a same-origin
+      # allowlist on the server-supplied register URL — unset means that check is
+      # skipped with a warning, so set it explicitly.
+      STRIKE48_API_URL: "${STRIKE48_API_URL:?set STRIKE48_API_URL in .env (e.g. https://plg.strike48.test) — the origin serving register-with-ott}"
+      # Separate concern, deliberately kept: this is the Matrix CHAT api base
+      # (derive_matrix_api_url in pick's liveview_connector), not the OTT origin.
+      # Same value here, but they are read by different code paths.
+      MATRIX_API_URL: "${MATRIX_API_URL:?set MATRIX_API_URL in .env (e.g. https://plg.strike48.test)}"
+      # CONNECTOR_NAME becomes config.connector_name, which PickConnector returns
+      # as its connector_type() — and that is what register-with-ott validates the
+      # OTT against. StrikeHub mints OTTs with connector_type "pentest-connector"
+      # (matrix_easy Devices @connector_type), so anything else is rejected 401
+      # :ott_type_mismatch. Left at the SDK default deliberately; do not rename to
+      # a stack-specific label. Per-instance identity is STRIKE48_INSTANCE_ID.
+      CONNECTOR_NAME: "${CONNECTOR_NAME:-pentest-connector}"
+      STRIKE48_INSTANCE_ID: "${STRIKE48_INSTANCE_ID:-pick-plg-01}"
+      # NO STRIKE48_TENANT — intentionally omitted. The OTT carries the personal
+      # tenant binding; register-with-ott accepts no tenant_id param, so any value
+      # here would be ignored. Omitting it also documents the PLG contract.
+      #
+      # Security-relaxation flags are secure-by-default HERE and switched on only
+      # by .env.plg (which sets them true for the newdev demo). Keeping the
+      # compose default secure means a bare `docker compose up` with an unrelated
+      # env fails LOUDLY against a self-signed/private backend rather than
+      # silently running cert-insecure.
+      #
+      # SSRF guard relaxation for newdev's private-IP / ClusterIP backend (169.254
+      # cloud-metadata stays blocked regardless). Required for the demo → set in .env.plg.
+      PENTEST_ALLOW_PRIVATE_IPS: "${PENTEST_ALLOW_PRIVATE_IPS:-false}"
+      # Self-signed *.strike48.test certs → set true in .env.plg.
+      MATRIX_TLS_INSECURE: "${MATRIX_TLS_INSECURE:-false}"
+      STRIKE48_ACCEPT_INVALID_CERTS: "${STRIKE48_ACCEPT_INVALID_CERTS:-false}"
+      RUST_LOG: "${RUST_LOG:-info,strike48_connector=info}"
+      # Disable the proot/BlackArch sandbox: this slim demo image doesn't ship the
+      # sandbox rootfs (or `zstd` to extract it), so sandboxed external tools (e.g.
+      # webwright, nmap) fail-closed with "Rootfs extraction incomplete". Tools run
+      # directly in the container instead — fine for the demo, whose isolation is
+      # the container + the internal scan-net, not the in-container sandbox. (The
+      # full sandbox lives in the prod Kali image built from Dockerfile.scratch.)
+      DISABLE_SANDBOX: "${DISABLE_SANDBOX:-true}"
+    volumes:
+      # Persist ~/.strike48 credentials so the OTT-minted JWT survives restarts
+      # and the approval sticks. The Kali runtime (Dockerfile.scratch) runs as
+      # root with HOME=/root, so mount there. (The slim Dockerfile used
+      # /data/connector — keep this in sync with whichever image `build.dockerfile`
+      # selects above.) Distinct from the dvwa demo's volume so the two stacks
+      # never share credentials.
+      - pick-plg-creds:/root
+
+networks:
+  scan-net:
+    driver: bridge
+    internal: true   # no external egress from the scan bridge — DVWA stays contained
+  backend-net:
+    driver: bridge
+
+volumes:
+  pick-plg-creds:

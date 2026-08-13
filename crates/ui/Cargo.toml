@@ -94,4 +94,12 @@ tempfile = { workspace = true }
 # here (not gated behind `liveview`) so the render tests run in the required CI
 # job, which does NOT enable the `liveview` feature.
 dioxus-ssr = { workspace = true }
+# Stub register-with-ott server for the OTT tenant-resolution tests (matrix#3519).
+# Declared here for the same reason as dioxus-ssr above: in [dependencies] axum is
+# `optional` behind `liveview`, so the tests would only compile when some sibling
+# crate happens to unify that feature in. serde_json is currently unconditional in
+# [dependencies], but is repeated here so the test module owns its own deps and a
+# later `optional = true` there cannot silently break these tests.
+axum = { workspace = true }
+serde_json = { workspace = true }
 

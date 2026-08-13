@@ -674,12 +674,197 @@ impl LiveViewConnector {
         }
     }
 
-    /// Connect to Strike48 and run the connector using the SDK's `ConnectorRunner`.
+    /// Resolve the tenant a One-Time Token binds this connector to, performing the
+    /// OTT exchange up-front so the tenant is known before registration.
     ///
-    /// The runner handles: connection, reconnection with exponential backoff,
-    /// registration (built from `PickConnector`'s `BaseConnector` impl),
-    /// keepalive heartbeats, OTT exchange (CredentialsIssued), session tokens,
-    /// and message dispatch to `execute_with_context` / `handle_ws_*`.
+    /// Returns `None` whenever there is nothing to adopt — no OTT in the
+    /// environment, a cert-manager/direct-config deployment, or an exchange that
+    /// yielded no usable tenant. Callers keep their existing `tenant_id` then, so
+    /// the non-PLG paths (explicit `STRIKE48_TENANT`, k8s SA, post-approval) behave
+    /// exactly as before.
+    ///
+    /// DELIBERATELY SCOPED TO THE `STRIKE48_REGISTRATION_TOKEN` ENV CARRIER.
+    /// Exchanging here consumes the OTT (single-use), so the runner's own
+    /// `initialize_auth` must not then exchange it a second time — it would get a
+    /// 401 and abort a connector that is otherwise fine. The only way to suppress
+    /// that second attempt is to unset the variable the SDK gates `has_ott()` on,
+    /// which is possible for the env carrier and NOT for the file carriers
+    /// (`STRIKE48_REGISTRATION_TOKEN_FILE`, `/var/run/secrets/matrix/...`, i.e. the
+    /// chart/k8s flow). So a file-carried OTT is left entirely to the SDK: it hits
+    /// the same upstream tenant bug, but those deployments pass an explicit tenant,
+    /// and intervening without being able to neutralize the carrier would turn a
+    /// working flow into a hard failure.
+    async fn resolve_ott_tenant(connector_type: &str, instance_id: &str) -> Option<String> {
+        use strike48_connector::OttProvider;
+
+        // Read the OTT from the one carrier we can neutralize (see above). Absent
+        // means "not the PLG flow" — nothing to do.
+        let ott = match std::env::var("STRIKE48_REGISTRATION_TOKEN") {
+            Ok(ott) => ott,
+            // Distinguish the two VarError cases: absent is the ordinary
+            // not-PLG case and stays silent, but non-UTF8 is a real
+            // misconfiguration that would otherwise look identical.
+            Err(std::env::VarError::NotPresent) => return None,
+            Err(e) => {
+                tracing::warn!("STRIKE48_REGISTRATION_TOKEN is set but unreadable ({e})");
+                return None;
+            }
+        };
+        let trimmed = ott.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        // Normalize the carrier in place if it was padded. The SDK does NOT trim
+        // this variable — load_ott passes it to parse_ott raw (ott_provider.rs:253),
+        // unlike the FILE carrier, which is trimmed (:281). So a hand-edited
+        // `.env.plg` with a stray space sends the padded token, 401s, and lands in
+        // the saved-credentials fallback below looking like a routine spent-token
+        // restart. Writing the trimmed value back means our exchange and the SDK's
+        // (should it run) both see the same token.
+        //
+        // SAFETY: as with the remove_var calls below — this variable has no
+        // concurrent reader.
+        if trimmed.len() != ott.len() {
+            tracing::warn!(
+                "STRIKE48_REGISTRATION_TOKEN had surrounding whitespace; using the \
+                 trimmed value (the SDK would otherwise send it padded and get a 401)"
+            );
+            unsafe { std::env::set_var("STRIKE48_REGISTRATION_TOKEN", trimmed) };
+        }
+
+        let mut provider = OttProvider::new(
+            Some(connector_type.to_string()),
+            Some(instance_id.to_string()),
+        );
+
+        // Priority 1 in the SDK is direct config (cert-manager). Defer to it and do
+        // not consume the OTT, so that path is unchanged.
+        if provider.has_direct_config() {
+            // Both a direct config AND an OTT were supplied, which is
+            // contradictory: the OTT will be ignored entirely. Say which one wins,
+            // because the operator may not know a direct config is even present —
+            // load_direct_config auto-discovers /var/run/secrets/matrix/*.pem with
+            // no env var set (ott_provider.rs:148-165), so an OTT handed to a pod
+            // that already has a mounted cert silently does nothing.
+            tracing::warn!(
+                "both a direct (cert-manager) config and STRIKE48_REGISTRATION_TOKEN \
+                 are present; the direct config wins and the OTT will be ignored"
+            );
+            return None;
+        }
+
+        // A fresh OTT must still WIN over saved credentials, mirroring the SDK's own
+        // precedence: re-attaching with a newly minted token is how an operator
+        // rebinds this connector to a different tenant. Preferring the saved file
+        // would silently keep the OLD tenant.
+        match provider
+            .register_with_ott(connector_type, Some(instance_id))
+            .await
+        {
+            Ok(credentials) => {
+                // Consumed — stop the runner from spending it again. Its
+                // initialize_auth will fall through to the credentials just saved
+                // by register_with_ott, which carry the same identity.
+                //
+                // SAFETY: no concurrent env access can interleave with this call.
+                // set_var/remove_var mutate the shared `environ` array and race a
+                // concurrent getenv on ANY variable — that is UB in every edition
+                // (it is precisely why edition 2024 made these fns `unsafe`), so it
+                // is NOT made safe by the fact that other readers touch a different
+                // variable. What makes it safe here is the executor model: this runs
+                // on Dioxus's single-threaded cooperative executor (the desktop
+                // `spawn`), where the synchronous getenv/setenv can never interleave,
+                // and the headless (`#[tokio::main]`) path spawns no concurrent env
+                // reader during resolve_ott_tenant. This only becomes a real race if
+                // these tasks are moved onto a multi-threaded executor alongside a
+                // concurrent env reader.
+                unsafe { std::env::remove_var("STRIKE48_REGISTRATION_TOKEN") };
+
+                if credentials.tenant_id.trim().is_empty() {
+                    // Unrecoverable, and loud on purpose. The exchange SUCCEEDED,
+                    // so the OTT is spent and cannot be retried, and there is no
+                    // tenant to adopt — the runner will register with the
+                    // configured tenant, which on PLG is the "default" literal, and
+                    // studio rejects that as :tenant_mismatch. A warn! here would
+                    // bury the cause of a connector that never comes up.
+                    tracing::error!(
+                        "OTT exchange succeeded but returned no tenant_id (client_id={}); \
+                         the token is now spent and registration will use the configured \
+                         tenant, which studio rejects as :tenant_mismatch. Mint a new OTT \
+                         and check the register-with-ott response.",
+                        credentials.client_id,
+                    );
+                    return None;
+                }
+                tracing::info!(
+                    "OTT exchange succeeded: client_id={} tenant_id={}",
+                    credentials.client_id,
+                    credentials.tenant_id,
+                );
+                Some(credentials.tenant_id)
+            }
+            Err(e) => {
+                // The OTT is single-use with a short TTL, so the overwhelmingly
+                // common failure is a RESTART: the token in the environment was
+                // already spent by the previous run. The SDK treats that as fatal
+                // (its OTT branch runs before saved credentials and propagates the
+                // error), which bricks a `restart: unless-stopped` container until a
+                // human mints a new token. Saved credentials from the earlier
+                // exchange are still valid, so fall back to them and let the run
+                // continue.
+                match provider.load_saved_credentials(connector_type, Some(instance_id)) {
+                    Some(credentials) => {
+                        // Neutralize the token so the runner reaches the same saved
+                        // credentials instead of re-failing on it. This is
+                        // deliberately NOT conditional on the error variant, even
+                        // though the SDK distinguishes them (ConnectionError for
+                        // transport, InvalidConfig for a 401 — ott_provider.rs:358
+                        // and :369). Keeping the carrier on a transport failure
+                        // would hand it back to the runner, whose
+                        // `register_with_ott(...).await?` (connector.rs:2116)
+                        // propagates and returns BEFORE load_saved_credentials
+                        // (:2139) — i.e. exactly the restart-brick this function
+                        // exists to prevent, just triggered by a blip instead of a
+                        // spent token. Nothing is lost: remove_var edits only this
+                        // PROCESS's environment, and compose re-supplies the value
+                        // from .env.plg on the next start, so a genuinely unspent
+                        // token is still there to retry with.
+                        //
+                        // SAFETY: as above — this variable has no concurrent reader.
+                        unsafe { std::env::remove_var("STRIKE48_REGISTRATION_TOKEN") };
+                        // warn!, not info!: this run is NOT bound by the token the
+                        // operator supplied. A 401 cannot distinguish "already
+                        // spent" (routine restart) from "wrong or expired token",
+                        // and a transport failure means it was never even sent — so
+                        // if the intent was to REBIND to a new tenant, this run
+                        // silently did not do that. Name the adopted tenant so that
+                        // is checkable from the log alone.
+                        tracing::warn!(
+                            "OTT exchange failed ({e}); continuing on SAVED credentials \
+                             for client_id={} tenant_id={}. This run is bound to the \
+                             SAVED tenant, not to the supplied token: if you meant to \
+                             rebind, mint a fresh OTT and confirm the tenant in \
+                             StrikeHub -> Devices.",
+                            credentials.client_id,
+                            credentials.tenant_id,
+                        );
+                        (!credentials.tenant_id.trim().is_empty()).then_some(credentials.tenant_id)
+                    }
+                    None => {
+                        // No prior credentials: this is a genuinely bad or expired
+                        // first-attach token. Leave the variable in place so the SDK
+                        // performs its own exchange and surfaces the error through
+                        // its normal reporting path.
+                        tracing::warn!(
+                            "OTT exchange failed and no saved credentials are available: {e}"
+                        );
+                        None
+                    }
+                }
+            }
+        }
+    }
+
     pub async fn connect_and_run(&mut self) -> Result<(), String> {
         use strike48_connector::ConnectorRunner;
 
@@ -711,6 +896,41 @@ impl LiveViewConnector {
 
         // Build the SDK config from our pentest_core config
         let mut sdk_config = self.config.to_sdk_config();
+
+        // PLG/StrikeHub (matrix#3519): adopt the tenant the OTT is bound to.
+        //
+        // The SDK runner does the OTT exchange itself (initialize_auth Priority 2)
+        // but writes back ONLY auth_token — it never copies the returned
+        // `Credentials.tenant_id` into its config. Registration therefore still
+        // sends `config.tenant_id`, which on PLG is the "default" literal, because
+        // no STRIKE48_TENANT is knowable ahead of time (the personal tenant is
+        // minted at login). Studio compares the JWT's tenant against that
+        // self-declared value and rejects the mismatch with
+        // {:auth_invalid, :tenant_mismatch}, so the connector never registers even
+        // though the exchange succeeded and issued correct credentials.
+        //
+        // Resolving it here — before the runner is constructed — is what makes the
+        // tenant reach `build_register_request`. See `resolve_ott_tenant` for the
+        // second defect this also closes (restart with a spent OTT).
+        if let Some(tenant_id) =
+            Self::resolve_ott_tenant(&self.config.connector_name, &self.config.instance_id).await
+        {
+            if tenant_id != sdk_config.tenant_id {
+                tracing::info!(
+                    "[Connector] adopting OTT-bound tenant: {} -> {}",
+                    sdk_config.tenant_id,
+                    tenant_id,
+                );
+            }
+            sdk_config.tenant_id = tenant_id.clone();
+            // Keep our own config in step, not just the SDK's copy. `self.config`
+            // is what the "[Connector] starting:" banner reports and — more than
+            // cosmetically — what `session::set_tenant_id` publishes for the Matrix
+            // chat session (see `send_event`). Leaving it as the "default" literal
+            // would make the banner misreport the tenant an operator is trying to
+            // confirm, and point the chat session at the wrong one.
+            self.config.tenant_id = tenant_id;
+        }
 
         // Report local host interfaces for infrastructure self-exclusion. The
         // orchestrator reads `host_interfaces` from the registration's
@@ -945,5 +1165,488 @@ async fn probe_host_reachable(host: &str) -> Result<(), String> {
             target,
             CONNECT_TIMEOUT.as_secs()
         )),
+    }
+}
+
+#[cfg(test)]
+mod ott_tenant_tests {
+    use super::*;
+
+    /// `resolve_ott_tenant` reads and MUTATES process-global environment, and
+    /// steers `OttProvider` by overriding `HOME` (the SDK hardcodes
+    /// `$HOME/.strike48/credentials` with no injection point). Tests in one
+    /// binary share that process, so they must not overlap.
+    ///
+    /// This is `tokio::sync::Mutex`, not `std::sync::Mutex`: the guard is held
+    /// across the `.await` on `resolve_ott_tenant` (that await is exactly the
+    /// window the env must stay stable through), which `clippy::await_holding_lock`
+    /// correctly rejects for a blocking guard. The async mutex also has no
+    /// poisoning to work around.
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    async fn env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().await
+    }
+
+    /// Saves every variable this code path touches and restores it on Drop, so a
+    /// failing assertion cannot leak state into the next test.
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        const VARS: [&'static str; 8] = [
+            "STRIKE48_REGISTRATION_TOKEN",
+            "STRIKE48_REGISTRATION_TOKEN_FILE",
+            "STRIKE48_API_URL",
+            "STRIKE48_CLIENT_ID",
+            "STRIKE48_AUTH_URL",
+            // Overriding HOME is NOT sufficient to contain the SDK's on-disk
+            // writes: it reads STRIKE48_KEYS_DIR FIRST and only falls back to
+            // `$HOME/.strike48/keys` (ott_provider.rs:99). A developer with that
+            // var exported would have these tests generate and leave behind a real
+            // EC keypair in their actual keys directory.
+            "STRIKE48_KEYS_DIR",
+            // Third leg of the direct-config (cert-manager) triple alongside
+            // CLIENT_ID/AUTH_URL (ott_provider.rs:149). Clearing CLIENT_ID alone
+            // already forces has_direct_config() to None, but this test module
+            // deliberately EXERCISES that branch, so the var it keys on has to be
+            // controllable rather than inherited from the shell.
+            "STRIKE48_PRIVATE_KEY_PATH",
+            "HOME",
+        ];
+
+        fn new() -> Self {
+            let saved = Self::VARS
+                .iter()
+                .map(|k| (*k, std::env::var(k).ok()))
+                .collect();
+            // Start from a known-clean slate: a stray OTT or direct-config var in
+            // the developer's shell would otherwise change which branch runs.
+            for k in Self::VARS {
+                unsafe { std::env::remove_var(k) };
+            }
+            Self { saved }
+        }
+
+        fn set(&self, key: &str, value: &str) {
+            // SAFETY: all env access in these tests is serialized by ENV_LOCK,
+            // and the values are restored by Drop.
+            unsafe { std::env::set_var(key, value) };
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(v) => unsafe { std::env::set_var(key, v) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
+            }
+        }
+    }
+
+    const CONNECTOR_TYPE: &str = "pentest-connector";
+    const INSTANCE_ID: &str = "pick-plg-test";
+    const TENANT: &str = "019fd8c8-1fe0-723f-af59-d6da14eb15fe";
+
+    /// Plant a saved-credentials file where `OttProvider` will look for it, i.e.
+    /// `$HOME/.strike48/credentials/<connector_type>_<instance_id>.json`. Field
+    /// names are the SDK's SERDE-RENAMED wire names (`keycloak_url`, not
+    /// `auth_url`) — using the Rust field names would silently fail to parse and
+    /// make the fallback look broken.
+    fn plant_credentials(home: &std::path::Path, tenant_id: &str) {
+        let dir = home.join(".strike48/credentials");
+        std::fs::create_dir_all(&dir).expect("create credentials dir");
+        let body = format!(
+            r#"{{"client_id":"matrix:connector:local:{tenant_id}:{CONNECTOR_TYPE}:{INSTANCE_ID}",
+                 "keycloak_url":"https://auth.invalid/realms/plg",
+                 "tenant_id":"{tenant_id}"}}"#
+        );
+        std::fs::write(
+            dir.join(format!("{CONNECTOR_TYPE}_{INSTANCE_ID}.json")),
+            body,
+        )
+        .expect("write credentials");
+    }
+
+    /// An origin that is guaranteed to fail the OTT exchange fast, without
+    /// reaching the network: port 0 is not connectable.
+    const UNREACHABLE_API: &str = "http://127.0.0.1:0";
+
+    /// Bug 3b regression guard: a SPENT OTT plus valid saved credentials must
+    /// recover, not hard-fail.
+    ///
+    /// The SDK tries the OTT before saved credentials and propagates the error,
+    /// so with `restart: unless-stopped` and a spent token left in `.env.plg`,
+    /// every restart bricked the connector. Two assertions matter equally: the
+    /// saved tenant is adopted, AND the spent carrier is REMOVED — without the
+    /// removal the SDK runner would re-spend the same dead token and abort a
+    /// connector that is otherwise fine.
+    #[tokio::test]
+    async fn spent_ott_falls_back_to_saved_credentials_and_clears_the_carrier() {
+        let _lock = env_lock().await;
+        let guard = EnvGuard::new();
+        let home = tempfile::tempdir().expect("tempdir");
+        plant_credentials(home.path(), TENANT);
+
+        guard.set("HOME", home.path().to_str().expect("utf8 tempdir"));
+        guard.set("STRIKE48_API_URL", UNREACHABLE_API);
+        guard.set("STRIKE48_REGISTRATION_TOKEN", "ott_alreadyspent");
+
+        let resolved = LiveViewConnector::resolve_ott_tenant(CONNECTOR_TYPE, INSTANCE_ID).await;
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some(TENANT),
+            "a spent OTT with saved credentials on disk must adopt the saved tenant"
+        );
+        assert!(
+            std::env::var("STRIKE48_REGISTRATION_TOKEN").is_err(),
+            "the spent carrier must be removed so the SDK runner does not re-spend it"
+        );
+    }
+
+    /// The other half of the same branch: exchange fails and there are NO saved
+    /// credentials (a genuinely bad first-attach token). Then the variable must
+    /// be LEFT IN PLACE, so the SDK performs its own exchange and reports the
+    /// error through its normal path. Clearing it here would swallow the failure.
+    #[tokio::test]
+    async fn failed_exchange_without_saved_credentials_preserves_the_carrier() {
+        let _lock = env_lock().await;
+        let guard = EnvGuard::new();
+        // Empty HOME: no credentials file to fall back to.
+        let home = tempfile::tempdir().expect("tempdir");
+
+        guard.set("HOME", home.path().to_str().expect("utf8 tempdir"));
+        guard.set("STRIKE48_API_URL", UNREACHABLE_API);
+        guard.set("STRIKE48_REGISTRATION_TOKEN", "ott_bogus");
+
+        let resolved = LiveViewConnector::resolve_ott_tenant(CONNECTOR_TYPE, INSTANCE_ID).await;
+
+        assert_eq!(
+            resolved, None,
+            "with no saved credentials there is no tenant to adopt"
+        );
+        assert_eq!(
+            std::env::var("STRIKE48_REGISTRATION_TOKEN").as_deref(),
+            Ok("ott_bogus"),
+            "the carrier must survive so the SDK surfaces the real error itself"
+        );
+    }
+
+    /// Non-PLG deployments (explicit `STRIKE48_TENANT`, k8s SA, post-approval)
+    /// must be untouched: no OTT means return `None` immediately, before any
+    /// provider is constructed or any credentials file is consulted. Saved
+    /// credentials are planted here deliberately — returning `Some` would prove
+    /// the function had adopted a tenant on a path that never asked for one.
+    #[tokio::test]
+    async fn no_ott_returns_none_without_consulting_credentials() {
+        let _lock = env_lock().await;
+        let guard = EnvGuard::new();
+        let home = tempfile::tempdir().expect("tempdir");
+        plant_credentials(home.path(), TENANT);
+
+        guard.set("HOME", home.path().to_str().expect("utf8 tempdir"));
+
+        let resolved = LiveViewConnector::resolve_ott_tenant(CONNECTOR_TYPE, INSTANCE_ID).await;
+
+        assert_eq!(
+            resolved, None,
+            "absent an OTT this must be a no-op, even with credentials on disk"
+        );
+    }
+
+    /// An empty or whitespace-only carrier is treated as absent. `env::var`
+    /// returns `Ok("")` for `FOO=`, so a bare `.ok()?` would fall through and
+    /// attempt an exchange with an empty token.
+    #[tokio::test]
+    async fn blank_ott_is_treated_as_absent() {
+        let _lock = env_lock().await;
+        let guard = EnvGuard::new();
+        let home = tempfile::tempdir().expect("tempdir");
+        plant_credentials(home.path(), TENANT);
+
+        guard.set("HOME", home.path().to_str().expect("utf8 tempdir"));
+        guard.set("STRIKE48_REGISTRATION_TOKEN", "   ");
+
+        let resolved = LiveViewConnector::resolve_ott_tenant(CONNECTOR_TYPE, INSTANCE_ID).await;
+
+        assert_eq!(
+            resolved, None,
+            "a blank carrier must not trigger an exchange"
+        );
+    }
+
+    /// A FRESH OTT must WIN over saved credentials — the precedence that makes
+    /// re-attaching with a newly minted token rebind this connector to a new
+    /// tenant. Checking saved credentials first would silently keep the OLD
+    /// tenant, and no other test in this module catches that: every other case
+    /// drives the exchange to failure, where both orderings agree.
+    ///
+    /// Needs a real HTTP round trip (the SDK's `register_with_ott` has no seam),
+    /// so serve one canned `register-with-ott` response from a local socket.
+    #[tokio::test]
+    async fn fresh_ott_wins_over_saved_credentials() {
+        const NEW_TENANT: &str = "019fd999-aaaa-7000-bbbb-ccccddddeeee";
+
+        // Bind first so the port is known before the env is set.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stub");
+        let port = listener.local_addr().expect("addr").port();
+
+        let app = axum::Router::new().route(
+            "/api/connectors/register-with-ott",
+            axum::routing::post(move || async move {
+                axum::Json(serde_json::json!({
+                    "client_id": format!("matrix:connector:local:{NEW_TENANT}:{CONNECTOR_TYPE}:{INSTANCE_ID}"),
+                    "keycloak_url": "https://auth.invalid/realms/plg",
+                    "tenant_id": NEW_TENANT,
+                }))
+            }),
+        );
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        // The carrier must be sampled INSIDE the lock+guard scope: EnvGuard's Drop
+        // restores the original value, so reading it after the block would observe
+        // the restored state and assert nothing about what the function did.
+        let (resolved, carrier_after) = {
+            let _lock = env_lock().await;
+            let guard = EnvGuard::new();
+            let home = tempfile::tempdir().expect("tempdir");
+            // Saved credentials for a DIFFERENT (old) tenant are present.
+            plant_credentials(home.path(), TENANT);
+
+            guard.set("HOME", home.path().to_str().expect("utf8 tempdir"));
+            guard.set("STRIKE48_API_URL", &format!("http://127.0.0.1:{port}"));
+            guard.set("STRIKE48_REGISTRATION_TOKEN", "ott_freshlyminted");
+
+            let resolved = LiveViewConnector::resolve_ott_tenant(CONNECTOR_TYPE, INSTANCE_ID).await;
+            (resolved, std::env::var("STRIKE48_REGISTRATION_TOKEN"))
+        };
+        server.abort();
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some(NEW_TENANT),
+            "a fresh OTT must rebind to the exchanged tenant, not the saved one"
+        );
+        assert_ne!(
+            resolved.as_deref(),
+            Some(TENANT),
+            "adopting the saved tenant means the OTT was not exchanged first"
+        );
+        // The SUCCESS path's carrier removal, which is the whole reason this
+        // function is scoped to the env carrier: the exchange consumed the
+        // single-use OTT, so if it were left set the SDK runner would spend it a
+        // second time, get a 401, and abort a connector that had just registered
+        // fine. Without this assertion, deleting that `remove_var` leaves every
+        // other test in this module green.
+        assert!(
+            carrier_after.is_err(),
+            "a CONSUMED OTT must be removed from the environment so the SDK runner \
+             does not re-spend it (got {carrier_after:?})"
+        );
+    }
+
+    /// Saved credentials that parse but carry an EMPTY tenant must not be
+    /// adopted — `""` would overwrite a good configured tenant with nothing and
+    /// then fail registration as `:tenant_mismatch`, the exact bug this closes.
+    #[tokio::test]
+    async fn saved_credentials_with_empty_tenant_are_not_adopted() {
+        let _lock = env_lock().await;
+        let guard = EnvGuard::new();
+        let home = tempfile::tempdir().expect("tempdir");
+        plant_credentials(home.path(), "");
+
+        guard.set("HOME", home.path().to_str().expect("utf8 tempdir"));
+        guard.set("STRIKE48_API_URL", UNREACHABLE_API);
+        guard.set("STRIKE48_REGISTRATION_TOKEN", "ott_alreadyspent");
+
+        let resolved = LiveViewConnector::resolve_ott_tenant(CONNECTOR_TYPE, INSTANCE_ID).await;
+
+        assert_eq!(
+            resolved, None,
+            "an empty saved tenant must be rejected, not adopted"
+        );
+    }
+
+    /// The cert-manager / direct-config path (SDK Priority 1) must be left
+    /// completely alone: return `None` WITHOUT consuming the OTT, so the SDK
+    /// handles that deployment exactly as it did before this change.
+    ///
+    /// A hand-edited `.env.plg` can leave whitespace around the token. The SDK
+    /// does not trim THIS carrier (`ott_provider.rs:253` passes it to `parse_ott`
+    /// raw, unlike the file carrier at `:281`), so a padded value would be sent
+    /// padded and 401 — surfacing as a routine-looking spent-token fallback. The
+    /// carrier must therefore be normalized in place.
+    ///
+    /// Asserted on the SUCCESS path so the exchange actually happens: the stub
+    /// echoes back what it received, proving the padding is gone before the
+    /// request, not merely tidied afterwards.
+    #[tokio::test]
+    async fn padded_ott_is_trimmed_before_the_exchange() {
+        const PADDED_TENANT: &str = "019fd777-bbbb-7000-cccc-ddddeeeeffff";
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stub");
+        let port = listener.local_addr().expect("addr").port();
+
+        // Capture the token the SDK actually transmitted.
+        let seen: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+        let seen_for_route = seen.clone();
+        let app = axum::Router::new().route(
+            "/api/connectors/register-with-ott",
+            axum::routing::post(
+                move |axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    *seen_for_route.write().await = body
+                        .get("token")
+                        .and_then(|t| t.as_str())
+                        .map(str::to_string);
+                    axum::Json(serde_json::json!({
+                        "client_id": format!("matrix:connector:local:{CONNECTOR_TYPE}:{INSTANCE_ID}"),
+                        "keycloak_url": "https://auth.invalid/realms/plg",
+                        "tenant_id": PADDED_TENANT,
+                    }))
+                },
+            ),
+        );
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let resolved = {
+            let _lock = env_lock().await;
+            let guard = EnvGuard::new();
+            let home = tempfile::tempdir().expect("tempdir");
+
+            guard.set("HOME", home.path().to_str().expect("utf8 tempdir"));
+            guard.set("STRIKE48_API_URL", &format!("http://127.0.0.1:{port}"));
+            guard.set("STRIKE48_REGISTRATION_TOKEN", "  ott_padded\n");
+
+            LiveViewConnector::resolve_ott_tenant(CONNECTOR_TYPE, INSTANCE_ID).await
+        };
+        server.abort();
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some(PADDED_TENANT),
+            "a padded but otherwise valid OTT must still complete the exchange"
+        );
+        assert_eq!(
+            seen.read().await.as_deref(),
+            Some("ott_padded"),
+            "the token must reach the server TRIMMED; sending it padded is what \
+             studio rejects with a 401"
+        );
+    }
+
+    /// Saved credentials are planted deliberately, even though this path must
+    /// never read them, because they are what makes the test DISCRIMINATE. With
+    /// no credentials on disk, deleting the `has_direct_config()` guard still
+    /// yields `None` with the carrier intact (the exchange fails against an
+    /// unreachable origin and the no-credentials arm preserves the carrier on
+    /// purpose) — so the test would pass against the broken code. With them
+    /// planted, dropping the guard makes the fallback adopt `TENANT` and clear
+    /// the carrier, and both assertions below fail.
+    ///
+    /// The SDK requires all three of `STRIKE48_PRIVATE_KEY_PATH` +
+    /// `STRIKE48_CLIENT_ID` + `STRIKE48_AUTH_URL`, AND the key file to exist on
+    /// disk (`ott_provider.rs:148-165`) — a nonexistent path yields `None` and
+    /// would silently turn this into a duplicate of the bad-token test.
+    #[tokio::test]
+    async fn direct_config_defers_to_the_sdk_without_consuming_the_ott() {
+        let _lock = env_lock().await;
+        let guard = EnvGuard::new();
+        let home = tempfile::tempdir().expect("tempdir");
+        plant_credentials(home.path(), TENANT);
+
+        // Contents are irrelevant — load_direct_config only checks existence.
+        let key_path = home.path().join("connector-key.pem");
+        std::fs::write(&key_path, b"not-a-real-key").expect("write key");
+
+        guard.set("HOME", home.path().to_str().expect("utf8 tempdir"));
+        guard.set(
+            "STRIKE48_PRIVATE_KEY_PATH",
+            key_path.to_str().expect("utf8 key path"),
+        );
+        guard.set("STRIKE48_CLIENT_ID", "matrix:connector:cert-manager");
+        guard.set("STRIKE48_AUTH_URL", "https://auth.invalid/realms/non-prod");
+        guard.set("STRIKE48_API_URL", UNREACHABLE_API);
+        guard.set("STRIKE48_REGISTRATION_TOKEN", "ott_should_not_be_spent");
+
+        let resolved = LiveViewConnector::resolve_ott_tenant(CONNECTOR_TYPE, INSTANCE_ID).await;
+
+        assert_eq!(
+            resolved, None,
+            "a direct-config deployment must adopt nothing here, not even the \
+             saved tenant on disk"
+        );
+        assert_eq!(
+            std::env::var("STRIKE48_REGISTRATION_TOKEN").as_deref(),
+            Ok("ott_should_not_be_spent"),
+            "the direct-config path must NOT consume the OTT — the SDK owns it"
+        );
+    }
+
+    /// An exchange that SUCCEEDS but returns a blank `tenant_id`. Distinct from
+    /// `saved_credentials_with_empty_tenant_are_not_adopted`: that one blanks the
+    /// SAVED file and exits via the `Err` arm, whereas this exits via the `Ok`
+    /// arm, so neither test covers the other's line.
+    ///
+    /// This state is unrecoverable by design and the assertions pin both halves:
+    /// nothing is adopted, and the carrier is gone (the OTT really was spent, so
+    /// leaving it set would make the SDK re-spend a dead token). The code logs at
+    /// `error!` here because registration will now proceed with the configured
+    /// tenant and be rejected `:tenant_mismatch`.
+    #[tokio::test]
+    async fn exchange_returning_blank_tenant_adopts_nothing_and_clears_the_carrier() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stub");
+        let port = listener.local_addr().expect("addr").port();
+
+        let app = axum::Router::new().route(
+            "/api/connectors/register-with-ott",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "client_id": format!("matrix:connector:local:{CONNECTOR_TYPE}:{INSTANCE_ID}"),
+                    "keycloak_url": "https://auth.invalid/realms/plg",
+                    "tenant_id": "",
+                }))
+            }),
+        );
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let (resolved, carrier_after) = {
+            let _lock = env_lock().await;
+            let guard = EnvGuard::new();
+            let home = tempfile::tempdir().expect("tempdir");
+
+            guard.set("HOME", home.path().to_str().expect("utf8 tempdir"));
+            guard.set("STRIKE48_API_URL", &format!("http://127.0.0.1:{port}"));
+            guard.set("STRIKE48_REGISTRATION_TOKEN", "ott_freshlyminted");
+
+            let resolved = LiveViewConnector::resolve_ott_tenant(CONNECTOR_TYPE, INSTANCE_ID).await;
+            (resolved, std::env::var("STRIKE48_REGISTRATION_TOKEN"))
+        };
+        server.abort();
+
+        assert_eq!(
+            resolved, None,
+            "a blank exchanged tenant must not be adopted"
+        );
+        assert!(
+            carrier_after.is_err(),
+            "the OTT was spent by the successful exchange, so it must be removed \
+             even though there is no tenant to adopt (got {carrier_after:?})"
+        );
     }
 }

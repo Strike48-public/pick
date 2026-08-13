@@ -83,7 +83,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-linux
-      - run: cargo test --workspace --locked --features pentest-platform/desktop-pcap
+      # --no-fail-fast: cargo compiles every test target, then stops RUNNING at
+      # the first target with a failing test. Without this flag a single red
+      # target hides every later crate's test *results* (they're compiled but not
+      # run/reported), so you learn about failures one CI round at a time. With it,
+      # the job reports ALL failures in one run; exit code is unchanged, so any
+      # failure still fails the job.
+      - run: cargo test --workspace --locked --no-fail-fast --features pentest-platform/desktop-pcap
 
   check-macos:
     name: Check (macOS)
