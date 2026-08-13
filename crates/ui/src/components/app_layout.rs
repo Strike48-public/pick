@@ -8,6 +8,19 @@ use super::pane_boundary::PaneBoundary;
 use super::sidebar::{NavPage, Sidebar};
 use super::status_bar::StatusBar;
 
+/// Shared "conversations changed" trigger, distributed via Dioxus context.
+///
+/// The chat panel bumps this whenever it creates a conversation or an agent
+/// reply lands (which moves a conversation's `updated_at`). The sidebar's
+/// recent-conversations effect subscribes to it so the list re-fetches instead
+/// of staying frozen at its initial post-connect load. The wrapped value is an
+/// opaque monotonically-increasing counter — only its *change* matters.
+///
+/// `Signal` is `Copy`, so this newtype is `Copy` too and can be moved into the
+/// spawned tasks that perform the bump.
+#[derive(Clone, Copy)]
+pub struct ConversationRefresh(pub Signal<u64>);
+
 /// Shared layout wrapper used by all three apps.
 ///
 /// The desktop-header serves as the universal page header on both desktop and
@@ -36,6 +49,11 @@ pub fn AppLayout(
     // header actions. ChatPanel writes Some(ChatHeaderCtx) when mounted in
     // full-page mode; we render those actions in the desktop header bar.
     let chat_header_ctx: Signal<Option<ChatHeaderCtx>> = use_context_provider(|| Signal::new(None));
+
+    // Provide the shared conversation-refresh trigger. ChatPanel (a descendant
+    // via `children`) bumps it; Sidebar (a direct child) reads it to re-fetch
+    // its recent-conversations list. See [`ConversationRefresh`].
+    use_context_provider(|| ConversationRefresh(Signal::new(0u64)));
 
     let on_close = move |_: ()| {
         sidebar_open.set(false);
