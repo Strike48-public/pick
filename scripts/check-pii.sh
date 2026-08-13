@@ -60,23 +60,29 @@ load_names() {
     [[ ${#NAMES[@]} -gt 0 ]]
 }
 
-# Build a single case-insensitive regex: \b(name1|name2|...)\b
-# Word boundaries prevent false positives on substrings.
-build_pattern() {
-    local pattern="" sep=""
+# Build grep arguments for FIXED-STRING, whole-word, case-insensitive matching.
+# Names are operator-supplied (via $PII_NAMES / $PII_NAMES_FILE / .pii-names.local),
+# so they must never be treated as a regex. With `grep -F` each name matches
+# literally: a name containing an ERE metacharacter (an unbalanced '(', a '.',
+# etc.) can neither corrupt the alternation - which would make grep error out
+# and silently pass while scanning nothing - nor introduce a false positive.
+# `-w` supplies the word boundaries the previous \b(...)\b pattern provided.
+# Populates the global GREP_PATTERNS array.
+build_grep_patterns() {
+    GREP_PATTERNS=()
+    local name
     for name in "${NAMES[@]}"; do
-        pattern+="${sep}${name}"
-        sep="|"
+        GREP_PATTERNS+=(-e "$name")
     done
-    printf '\\b(%s)\\b' "$pattern"
 }
 
 # Scan stdin or arguments, print matches with file:line prefix, return status.
 scan() {
     local source_label="$1"
     local input="$2"
-    # -E extended regex, -i case-insensitive, -n line numbers, -H label prefix
-    if echo "$input" | grep -EHin --label="$source_label" --color=never -- "$PATTERN"; then
+    # -F fixed strings (names are literals, never regex), -i case-insensitive,
+    # -w whole-word, -n line numbers, -H/--label label prefix.
+    if echo "$input" | grep -FiwHn --label="$source_label" --color=never "${GREP_PATTERNS[@]}"; then
         return 1
     fi
     return 0
@@ -90,7 +96,7 @@ main() {
         exit 2
     fi
 
-    PATTERN="$(build_pattern)"
+    build_grep_patterns
 
     local found=0
 
@@ -114,7 +120,7 @@ main() {
                 echo "Warning: $file is not a regular file, skipping" >&2
                 continue
             fi
-            if grep -EHin --color=never -- "$PATTERN" "$file"; then
+            if grep -FiwHn --color=never "${GREP_PATTERNS[@]}" -- "$file"; then
                 found=1
             fi
         done
