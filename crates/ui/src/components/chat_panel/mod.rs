@@ -21,6 +21,7 @@ use pentest_core::terminal::TerminalLine;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::app_layout::ConversationRefresh;
 use super::button::{Button, ButtonSize, ButtonVariant};
 use agent_selector::ChatHeader;
 pub use agent_selector::{ChatHeaderActions, ChatHeaderCtx};
@@ -28,7 +29,7 @@ use constants::*;
 use history::HistoryDropdown;
 use input::ChatInput;
 use messages::MessageList;
-use polling::{poll_and_update, ChatNoticeKind};
+use polling::{notify_conversations_changed, poll_and_update, ChatNoticeKind};
 pub use render::format_relative_time;
 use render::{CHART_PROCESSOR_JS, UTILS_JS};
 
@@ -187,6 +188,11 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // Context signal for sharing chat header actions with AppLayout (full-page mode).
     // AppLayout provides this via use_context_provider; ChatPanel writes when full_page.
     let mut chat_header_ctx: Signal<Option<ChatHeaderCtx>> = use_context();
+
+    // Shared sidebar-refresh trigger (provided by AppLayout). We bump it when a
+    // conversation is created or a turn completes so the sidebar's recent-
+    // conversations list re-fetches instead of staying frozen at its initial load.
+    let refresh_convos = use_context::<ConversationRefresh>().0;
 
     // Reset closing when panel becomes visible again
     if props.visible && closing() {
@@ -558,6 +564,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                         agent_status_text,
                                         error_msg,
                                         chat_notice,
+                                        refresh_convos,
                                     )
                                     .await;
                                 }
@@ -628,6 +635,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             agent_conversations
                                 .write()
                                 .insert(agent.id.clone(), id.clone());
+                            // New conversation exists — refresh the sidebar list.
+                            notify_conversations_changed(refresh_convos);
                             id
                         }
                         Err(e) => {
@@ -671,6 +680,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             agent_status_text,
                             error_msg,
                             chat_notice,
+                            refresh_convos,
                         )
                         .await;
                     }
@@ -729,6 +739,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                     agent_status_text,
                                     error_msg,
                                     chat_notice,
+                                    refresh_convos,
                                 )
                                 .await;
                             }
@@ -912,6 +923,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         agent_conversations
                             .write()
                             .insert(validator_agent.id.clone(), id.clone());
+                        // New conversation exists — refresh the sidebar list.
+                        notify_conversations_changed(refresh_convos);
                         id
                     }
                     Err(e) => {
@@ -952,6 +965,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             agent_status_text,
                             error_msg,
                             chat_notice,
+                            refresh_convos,
                         )
                         .await;
 
@@ -1056,6 +1070,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         agent_conversations
                             .write()
                             .insert(report_agent.id.clone(), id.clone());
+                        // New conversation exists — refresh the sidebar list.
+                        notify_conversations_changed(refresh_convos);
                         id
                     }
                     Err(e) => {
@@ -1089,6 +1105,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             agent_status_text,
                             error_msg,
                             chat_notice,
+                            refresh_convos,
                         )
                         .await;
                     }
@@ -1131,6 +1148,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 agent_status_text,
                                 error_msg,
                                 chat_notice,
+                                refresh_convos,
                             )
                             .await;
                         }

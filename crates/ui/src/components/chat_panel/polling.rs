@@ -77,7 +77,20 @@ fn strip_port_suffix(rest: &str, port_suffix: &str) -> Option<String> {
     Some(format!("{}{}", stripped_host, path_part))
 }
 
+/// Bump the shared conversation-refresh trigger so the sidebar re-fetches its
+/// recent-conversations list. `Signal` is `Copy`, so callers pass it by value
+/// (including from inside spawned tasks). Only the *change* matters, so we
+/// wrap on overflow rather than saturate.
+pub(super) fn notify_conversations_changed(mut trigger: Signal<u64>) {
+    trigger.with_mut(|n| *n = n.wrapping_add(1));
+}
+
 /// Poll a conversation until the agent finishes, updating signals along the way.
+///
+/// `conversations_refresh` is the shared sidebar-refresh trigger; it is bumped
+/// once whenever a turn reaches a terminal state (reply landed or errored),
+/// since that moves the conversation's `updated_at`. Centralising the bump here
+/// covers every caller instead of every poll call-site having to remember.
 #[allow(clippy::too_many_arguments)]
 pub async fn poll_and_update(
     client: Arc<MatrixChatClient>,
@@ -88,6 +101,7 @@ pub async fn poll_and_update(
     mut agent_status_text: Signal<String>,
     mut error_msg: Signal<Option<String>>,
     mut chat_notice: Signal<Option<ChatNotice>>,
+    conversations_refresh: Signal<u64>,
 ) {
     /// Check if the UI is currently showing this conversation.
     fn is_active(active: &Signal<Option<String>>, conv_id: &str) -> bool {
@@ -177,16 +191,19 @@ pub async fn poll_and_update(
                         chat_notice.set(Some(notice));
                         agent_thinking.set(false);
                         agent_status_text.set(String::new());
+                        notify_conversations_changed(conversations_refresh);
                         return;
                     }
 
                     if done && has_agent_msg {
                         agent_thinking.set(false);
                         agent_status_text.set(String::new());
+                        notify_conversations_changed(conversations_refresh);
                         return;
                     }
                 } else if saw_error || (done && has_agent_msg) {
                     // Conversation finished (success or error) while user was viewing another one.
+                    notify_conversations_changed(conversations_refresh);
                     return;
                 }
             }
