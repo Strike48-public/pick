@@ -15,15 +15,27 @@
 [advisories]
 ignore = [
     # quick-xml <0.41.0 — memory-exhaustion / quadratic-runtime DoS in NsReader.
-    # Pulled transitively (and only in XML parse paths we do not drive with
-    # untrusted network input) via:
-    #   - screenshots 0.8.10 -> wayland-scanner/xcb/display-info (quick-xml 0.28/0.30)
-    #   - syntect 5.3.0 -> plist (quick-xml 0.38)
-    #   - winit 0.30 -> wayland-scanner 0.31 (quick-xml 0.39)
-    # All four callers pin quick-xml to caret ranges (^0.28, ^0.30, ^0.38,
-    # ^0.39) that cannot resolve to the patched >=0.41.0. Remove these once
-    # screenshots, syntect, and winit/wayland-scanner ship releases that bump
-    # quick-xml past 0.41.0.
+    # Pulled transitively, and only in XML parse paths we do not drive with
+    # untrusted network input.
+    #
+    # Only ONE path genuinely forces these ignores to stay:
+    #   - screenshots 0.8.10 -> libwayshot 0.2.0 -> wayland-client 0.30.2
+    #       -> wayland-scanner 0.30.1 -> quick-xml 0.28.2
+    #     wayland-client 0.30.2 requires wayland-scanner ^0.30, so it cannot
+    #     reach wayland-scanner 0.31.11 (which moved to quick-xml ^0.41). The
+    #     whole stack is pinned by screenshots 0.8.10.
+    #
+    # The other paths the old comment named are ALREADY reachable today — the
+    # quick-xml fix landed in the intermediate crates, not the leaf ones — and
+    # can be cleared by an ordinary lock update without waiting on anyone:
+    #   - syntect 5.3.0 -> plist -> quick-xml: plist 1.10.0 moves to
+    #     quick-xml ^0.41 and satisfies syntect's `plist ^1.3` requirement.
+    #   - wayland-scanner 0.31.11 -> quick-xml ^0.41.
+    #   - xcb 1.7.1 -> quick-xml ^0.41 (build dep).
+    #
+    # Keep both ignores until the screenshots path above is unblocked (a
+    # screenshots release on a newer libwayshot/wayland stack); one live path
+    # still resolves quick-xml <0.41 regardless of the reachable paths.
     "RUSTSEC-2026-0194", # quadratic runtime checking start tags for duplicate attrs
     "RUSTSEC-2026-0195", # unbounded namespace-declaration allocation
 ]
