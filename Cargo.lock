@@ -4245,7 +4245,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "system-configuration 0.7.0",
  "tokio",
  "tower-layer",
@@ -4266,7 +4266,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -7277,7 +7277,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.1",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -7314,7 +7314,7 @@ dependencies = [
  "cfg_aliases 0.2.1",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -8236,7 +8236,7 @@ version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
- "errno 0.2.8",
+ "errno 0.3.14",
  "libc",
 ]
 
@@ -8536,9 +8536,9 @@ checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
 
 [[package]]
 name = "strike48-connector"
-version = "0.4.4"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6985bfe24cee8b27332ebdbb168ab5cad8e9d5aba58979c4255973a2872cb56e"
+checksum = "4242cc77f1846f17e7241502467f8059373d9a903519c4004e78a7e4e1a217dd"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -8562,6 +8562,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rustls",
+ "rustls-pemfile",
  "schemars",
  "serde",
  "serde_json",
@@ -8580,13 +8581,14 @@ dependencies = [
  "tracing-subscriber",
  "urlencoding",
  "uuid",
+ "webpki-roots",
 ]
 
 [[package]]
 name = "strike48-proto"
-version = "0.4.4"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2978e038071d4845124b00ee58d969f35f9ac80c610dfd3b32a3d9b68c806e5e"
+checksum = "b9a8eed32e8da90438bb15d13cce0d14157067eaf2f4485a45e492e3fdc8aa4e"
 dependencies = [
  "prost",
  "prost-types",
