@@ -20,7 +20,7 @@ Complete documentation for Pick, the multiplatform penetration testing connector
 ## Core Documentation
 
 - **[Architecture](../ARCHITECTURE.md)** - System design and implementation details
-- **[Tool Catalog](TOOLS.md)** - Complete list of 90+ integrated tools
+- **[Tool Catalog](TOOLS.md)** - Complete list of 100+ integrated tools
 - **[Glossary](GLOSSARY.md)** - Terminology reference
 - **[Security Policy](../SECURITY.md)** - Vulnerability reporting and security best practices
 - **[System Architecture](SYSTEM_ARCHITECTURE.md)** - Detailed ecosystem architecture
@@ -42,10 +42,10 @@ Complete documentation for Pick, the multiplatform penetration testing connector
 ### Installation
 
 ```bash
-# Automated install
-./install.sh
+# Check prerequisites (see docs/INSTALLATION.md for the full guide)
+./check-deps.sh
 
-# Manual build
+# Build
 cargo build --package pentest-headless
 
 # Run
@@ -58,8 +58,7 @@ Edit `.env`:
 ```bash
 STRIKE48_HOST=wss://your-server.example.com
 STRIKE48_TENANT=your-tenant-id
-MATRIX_API_URL=https://your-server.example.com
-MATRIX_TENANT_ID=your-tenant-id
+STRIKE48_API_URL=https://your-server.example.com
 ```
 
 ### Common Commands

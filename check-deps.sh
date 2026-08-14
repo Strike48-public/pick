@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pick Dependency Checker - Validates prerequisites before building
-# Run this before building if you didn't use install.sh
+# Run this before building to validate your toolchain and system libraries
 
 set -euo pipefail
 
@@ -87,12 +87,12 @@ check_rust() {
         RUST_MAJOR=$(echo "$RUST_VERSION" | cut -d'.' -f1)
         RUST_MINOR=$(echo "$RUST_VERSION" | cut -d'.' -f2)
 
-        if [[ $RUST_MAJOR -gt 1 ]] || [[ $RUST_MAJOR -eq 1 && $RUST_MINOR -ge 70 ]]; then
+        if [[ $RUST_MAJOR -gt 1 ]] || [[ $RUST_MAJOR -eq 1 && $RUST_MINOR -ge 92 ]]; then
             print_ok
             echo "    Version: $RUST_VERSION"
         else
             print_missing
-            echo "    Found: $RUST_VERSION (need 1.70+)"
+            echo "    Found: $RUST_VERSION (need 1.92+)"
             MISSING_COUNT=$((MISSING_COUNT + 1))
             MISSING_DEPS+=("rust")
         fi
@@ -271,8 +271,8 @@ generate_fix_commands() {
     fi
 
     echo ""
-    echo "Or run the automated installer:"
-    echo "    ./install.sh"
+    echo "Then build Pick:"
+    echo "    cargo build --package pentest-headless"
     echo ""
 
     return 1

@@ -52,7 +52,7 @@ See [`docs/UI_FEATURES.md`](docs/UI_FEATURES.md) for complete customization guid
 
 ### Penetration Testing Tools
 
-Pick integrates **90+ penetration testing tools** across multiple categories:
+Pick integrates **100+ penetration testing tools** across multiple categories:
 
 **Native Tools (24):**
 - Network scanning (port_scan, arp_table, ssdp_discover, network_discover)
@@ -107,7 +107,7 @@ pick/
 
 ### Prerequisites
 
-- Rust 1.70+ (with `cargo`)
+- Rust 1.92+ (with `cargo`)
 - For desktop: Native development tools for your OS
 - For mobile: `cargo-mobile2` and platform SDKs
 

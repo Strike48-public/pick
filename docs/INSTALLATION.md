@@ -12,35 +12,31 @@ Complete installation guide for the Pick penetration testing connector.
 
 ## Quick Install
 
-The automated installation script handles prerequisites, dependencies, and configuration:
+Get Pick running in a few minutes. This fast path assumes Rust 1.92+ is already
+installed — see [Manual Installation](#manual-installation) below if it isn't, or
+for platform-specific build dependencies.
 
 ```bash
 git clone https://github.com/Strike48-public/pick.git
 cd pick
-./install.sh
+
+# Check prerequisites and get fix commands for anything missing
+./check-deps.sh
+
+# Configure your Strike48 backend
+cp .env.example .env
+$EDITOR .env   # set STRIKE48_HOST, STRIKE48_TENANT, STRIKE48_API_URL
+
+# Build and run the headless agent (first build takes 5-10 minutes)
+cargo build --package pentest-headless
+./run-pentest.sh headless dev
 ```
 
-### What the Script Does
+For the GUI desktop app instead of the headless agent:
 
-1. Detects your operating system and distribution
-2. Installs Rust and Cargo (if not present)
-3. Installs platform-specific build dependencies
-4. Optionally installs desktop app dependencies
-5. Optionally installs WiFi scanning tools
-6. Creates `.env` configuration file from template
-7. Optionally builds and tests the project
-
-### Interactive Prompts
-
-The script will ask:
-- Install desktop app dependencies? (WebKit, GTK)
-- Install WiFi scanning tools? (wireless-tools, aircrack-ng)
-- Overwrite existing .env file?
-- Open .env in editor?
-- Build Pick now?
-- Run tests?
-
-All prompts default to "No" if you press Enter.
+```bash
+sudo cargo run --package pentest-desktop   # sudo needed for WiFi scanning
+```
 
 ## Manual Installation
 
@@ -53,7 +49,7 @@ Before installing, you can check if you have all required dependencies:
 ```
 
 This script will:
-- Check for Rust and Cargo (version 1.70+)
+- Check for Rust and Cargo (version 1.92+)
 - Verify build tools (gcc/clang, pkg-config)
 - Check for OpenSSL development headers
 - Report optional dependencies (desktop, WiFi tools)
@@ -76,7 +72,7 @@ source $HOME/.cargo/env
 
 **Verify:**
 ```bash
-rustc --version  # Should show 1.70 or higher
+rustc --version  # Should show 1.92 or higher
 cargo --version
 ```
 
@@ -101,8 +97,7 @@ nano .env  # Edit with your Strike48 backend details
 Required configuration:
 - `STRIKE48_HOST` - Strike48 server endpoint
 - `STRIKE48_TENANT` - Tenant identifier
-- `MATRIX_API_URL` - Matrix API endpoint
-- `MATRIX_TENANT_ID` - Matrix tenant identifier
+- `STRIKE48_API_URL` - Strike48 HTTP API endpoint (used for OTT registration)
 
 See [Environment Configuration](#environment-configuration) for details.
 
@@ -189,10 +184,7 @@ Edit `.env` and set these values:
 # Strike48 Backend
 STRIKE48_HOST=wss://your-server.example.com
 STRIKE48_TENANT=your-tenant-id
-
-# Matrix API
-MATRIX_API_URL=https://your-server.example.com
-MATRIX_TENANT_ID=your-tenant-id
+STRIKE48_API_URL=https://your-server.example.com
 ```
 
 ### Optional Variables
