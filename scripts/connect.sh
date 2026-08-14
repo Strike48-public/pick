@@ -47,7 +47,7 @@ log() { printf '\033[0;36m[connect]\033[0m %s\n' "$*"; }
 warn() { printf '\033[0;33m[connect] WARN:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[0;31m[connect] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # ---- parse args ----
 STUDIO_URL=""
@@ -60,8 +60,8 @@ LAUNCH=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)     usage 0 ;;
-        --ott)         OTT="${2:-}"; shift 2 ;;
-        --instance)    INSTANCE_OVERRIDE="${2:-}"; shift 2 ;;
+        --ott)         [[ -n "${2:-}" ]] || die "--ott requires a token (see --help)"; OTT="$2"; shift 2 ;;
+        --instance)    [[ -n "${2:-}" ]] || die "--instance requires an ID (see --help)"; INSTANCE_OVERRIDE="$2"; shift 2 ;;
         --reset-cred)  RESET_CRED=true; shift ;;
         --launch)      LAUNCH=true; shift ;;
         --*)           die "unknown option: $1 (see --help)" ;;
@@ -81,8 +81,9 @@ done
 scheme="${STUDIO_URL%%://*}"
 rest="$STUDIO_URL"
 [[ "$STUDIO_URL" == *"://"* ]] && rest="${STUDIO_URL#*://}" || scheme=""
-hostport="${rest%%/*}"            # strip any /path, ?query, #frag
-hostport="${hostport%%\?*}"
+hostport="${rest%%/*}"            # strip /path
+hostport="${hostport%%\?*}"       # strip ?query
+hostport="${hostport%%\#*}"       # strip #fragment
 [[ -n "$hostport" ]] || die "could not parse a host from: $STUDIO_URL"
 
 case "$(printf '%s' "$scheme" | tr '[:upper:]' '[:lower:]')" in
