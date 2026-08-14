@@ -42,16 +42,18 @@
     // is XSS on hover. Drop every `formatter` regardless of type — a string, or an
     // array of strings (valid multi-series syntax) — since untrusted content has no
     // business supplying one; charts still render with the default, escaped tooltip
-    // content. Also force any renderMode to the non-HTML 'richText' engine
-    // (#367 review, finding #2). Note: the confirmed HTML sink is the tooltip
-    // formatter; ECharts 5.6.0 has no `type:'html'` graphic element (verified
-    // against the bundle: every "html" literal is the tooltip renderMode).
+    // content. Also drop `extraCssText`: ECharts injects it as raw inline CSS on the
+    // tooltip DOM, so `background-image:url(...)` beacons on hover (#371 review).
+    // And force any renderMode to the non-HTML 'richText' engine (#367 review,
+    // finding #2). Note: the confirmed HTML sink is the tooltip formatter; ECharts
+    // 5.6.0 has no `type:'html'` graphic element (verified against the bundle:
+    // every "html" literal is the tooltip renderMode).
     function stripHtmlSinks(node) {
         if (Array.isArray(node)) {
             for (var i = 0; i < node.length; i++) stripHtmlSinks(node[i]);
         } else if (node && typeof node === 'object') {
             Object.keys(node).forEach(function(key) {
-                if (key === 'formatter') {
+                if (key === 'formatter' || key === 'extraCssText') {
                     delete node[key];
                 } else if (key === 'renderMode') {
                     node[key] = 'richText';
@@ -60,6 +62,16 @@
                 }
             });
         }
+    }
+
+    // Node/test bootstrap: expose the sanitizer to the regression test and skip
+    // the browser wiring below. In the browser there is no CommonJS `module`
+    // (Pick injects this file as a raw <script> via include_str!, no bundler), so
+    // this is a no-op and rendering proceeds normally. Keeps stripHtmlSinks under
+    // test so a future edit that reopens the XSS fails CI (#371 review).
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = { stripHtmlSinks: stripHtmlSinks };
+        return;
     }
 
     // Load Mermaid
