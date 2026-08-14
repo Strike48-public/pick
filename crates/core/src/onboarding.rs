@@ -28,11 +28,15 @@ use crate::config::ConnectorConfig;
 const CONNECTOR_TYPE: &str = "pentest-connector";
 
 /// How the connector will authenticate to the Studio after onboarding.
+///
+/// The OTT is carried by the `PreApproved` variant so the illegal pairing
+/// (pre-approved with no token, or pending-approval with one) cannot be
+/// constructed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegistrationMode {
     /// A pre-approved OTT was minted; the connector self-registers with no
-    /// manual step. Carries the OTT JSON for `STRIKE48_REGISTRATION_TOKEN`.
-    PreApproved,
+    /// manual step. Holds the OTT JSON for `STRIKE48_REGISTRATION_TOKEN`.
+    PreApproved { ott: String },
     /// The Studio has no pre-approve endpoint; the connector registers in
     /// pending state and an operator must approve it in Studio once.
     PendingApproval,
@@ -45,9 +49,8 @@ pub struct StudioConnection {
     pub api_url: String,
     /// Persisted connector config (host, tenant, instance id, TLS).
     pub config: ConnectorConfig,
-    /// OTT JSON for `STRIKE48_REGISTRATION_TOKEN`, when [`RegistrationMode::PreApproved`].
-    pub ott: Option<String>,
-    /// Whether registration is auto-approved or awaits Studio approval.
+    /// Whether registration is auto-approved (carrying the OTT) or awaits
+    /// Studio approval.
     pub mode: RegistrationMode,
 }
 
@@ -59,7 +62,12 @@ pub struct StudioConnection {
 /// slash and rejects userinfo (`user:pass@host`) to avoid confusion attacks.
 /// Returns `None` for anything without a host or over 2048 chars. Derived from
 /// StrikeHub's validator.
-pub fn validate_studio_url(raw: &str) -> Option<String> {
+///
+/// The only non-test caller is `connect_to_studio` (gated on `browser-auth`);
+/// `allow(dead_code)` covers the build where only the tests exercise it, as with
+/// the sibling pure helpers below.
+#[cfg_attr(not(feature = "browser-auth"), allow(dead_code))]
+pub(crate) fn validate_studio_url(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -118,7 +126,12 @@ fn derive_ws_host(api_url: &str) -> (String, bool) {
 
 #[cfg(feature = "browser-auth")]
 fn http_client() -> anyhow::Result<reqwest::Client> {
+    // Honor both carriers, matching the canonical client (`matrix/client.rs`)
+    // and the browser-login step (`matrix/auth.rs` reads `MATRIX_INSECURE`); a
+    // single-var check here would fail TLS on a self-signed Studio that login
+    // just succeeded against.
     let insecure = std::env::var("MATRIX_TLS_INSECURE")
+        .or_else(|_| std::env::var("MATRIX_INSECURE"))
         .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
         .unwrap_or(false);
     // Propagate builder failure rather than silently falling back to a default
@@ -136,14 +149,25 @@ fn http_client() -> anyhow::Result<reqwest::Client> {
 async fn fetch_tenant_id(api_url: &str, jwt: &str) -> anyhow::Result<String> {
     let url = format!("{}/api/v1alpha/graphql", api_url.trim_end_matches('/'));
     let query = serde_json::json!({ "query": "query { userDetails { details } }" });
-    let body = http_client()?
+    let resp = http_client()?
         .post(&url)
         .header("Authorization", format!("Bearer {jwt}"))
         .json(&query)
         .send()
-        .await?
-        .text()
         .await?;
+
+    // Check status before parsing: a 401 (expired browser token), 403, or 5xx
+    // returns a body with no `userDetails`, which would otherwise collapse to a
+    // misleading "could not resolve tenant id" — pointing at tenant data when
+    // the real cause is auth/availability. Mirrors `create_pre_approved_token`.
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let snippet: String = body.chars().take(300).collect();
+        anyhow::bail!("tenant lookup failed: {status} — {snippet}");
+    }
+
+    let body = resp.text().await?;
     parse_tenant_id(&body)
         .ok_or_else(|| anyhow::anyhow!("could not resolve tenant id from userDetails response"))
 }
@@ -253,16 +277,15 @@ pub async fn connect_to_studio(raw_url: &str) -> anyhow::Result<StudioConnection
     let tenant_id = fetch_tenant_id(&api_url, &jwt).await?;
     tracing::info!("onboarding: resolved tenant {tenant_id}");
 
-    let (ott, mode) = match create_pre_approved_token(&api_url, &jwt, CONNECTOR_TYPE).await? {
-        Some(token) => (Some(token), RegistrationMode::PreApproved),
-        None => (None, RegistrationMode::PendingApproval),
+    let mode = match create_pre_approved_token(&api_url, &jwt, CONNECTOR_TYPE).await? {
+        Some(ott) => RegistrationMode::PreApproved { ott },
+        None => RegistrationMode::PendingApproval,
     };
 
     let config = persist_config(&api_url, tenant_id)?;
     Ok(StudioConnection {
         api_url,
         config,
-        ott,
         mode,
     })
 }
@@ -300,6 +323,9 @@ mod tests {
     #[test]
     fn validate_studio_url_rejects_userinfo_and_empty() {
         assert_eq!(validate_studio_url(""), None);
+        // A scheme with no authority is not a usable base.
+        assert_eq!(validate_studio_url("https://"), None);
+        assert_eq!(validate_studio_url("   "), None);
         assert_eq!(
             validate_studio_url("https://user:pass@evil.example.com"),
             None
@@ -319,6 +345,12 @@ mod tests {
         assert_eq!(
             derive_ws_host("http://localhost:4000"),
             ("ws://localhost:4000".to_string(), false)
+        );
+        // Scheme-less input is a defensive fallback (validate_studio_url always
+        // supplies a scheme upstream): default to the secure wss host.
+        assert_eq!(
+            derive_ws_host("foo.example.com"),
+            ("wss://foo.example.com".to_string(), true)
         );
     }
 
@@ -386,5 +418,109 @@ mod tests {
 
         assert!(build_ott_json(&serde_json::json!({ "token": "" }), "https://x").is_err());
         assert!(build_ott_json(&serde_json::json!({ "other": "x" }), "https://x").is_err());
+    }
+}
+
+/// Exercises `create_pre_approved_token`'s status handling against a real HTTP
+/// round trip — the 404/403 -> `Ok(None)` branch is the pivot that decides
+/// `PreApproved` vs `PendingApproval`, and there is no seam to unit-test it
+/// without a socket. `browser-auth` is unified on in the Linux `--workspace`
+/// lane, so these run there (same gating as `matrix/auth.rs`'s tests).
+#[cfg(all(test, feature = "browser-auth"))]
+mod http_tests {
+    use super::{create_pre_approved_token, fetch_tenant_id};
+
+    const PRE_APPROVE: &str = "/api/connectors/pre-approve";
+    const GRAPHQL: &str = "/api/v1alpha/graphql";
+
+    /// Serve one canned `(status, body)` response for `POST <path>` from a local
+    /// socket and return its base URL. The task is aborted when the returned
+    /// handle is dropped at end of test.
+    async fn stub(
+        path: &'static str,
+        status: u16,
+        body: serde_json::Value,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stub");
+        let port = listener.local_addr().expect("addr").port();
+        let code = axum::http::StatusCode::from_u16(status).expect("valid status");
+        let app = axum::Router::new().route(
+            path,
+            axum::routing::post(move || {
+                let body = body.clone();
+                async move { (code, axum::Json(body)) }
+            }),
+        );
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://127.0.0.1:{port}"), handle)
+    }
+
+    #[tokio::test]
+    async fn pre_approve_ok_with_token_yields_ott_embedding_base() {
+        let (base, _srv) = stub(PRE_APPROVE, 200, serde_json::json!({ "token": "ott_live" })).await;
+        let out = create_pre_approved_token(&base, "jwt", "pentest-connector")
+            .await
+            .expect("200 must not error");
+        let json: serde_json::Value = serde_json::from_str(&out.expect("Some(ott)")).unwrap();
+        assert_eq!(json["token"], "ott_live");
+        // The OTT must embed the real base, or register-with-ott refuses it.
+        assert_eq!(json["matrix_url"], base);
+    }
+
+    #[tokio::test]
+    async fn pre_approve_not_found_degrades_to_none() {
+        let (base, _srv) = stub(PRE_APPROVE, 404, serde_json::json!({ "error": "no route" })).await;
+        let out = create_pre_approved_token(&base, "jwt", "pentest-connector")
+            .await
+            .expect("404 must degrade, not error");
+        assert!(out.is_none(), "404 -> post-approval fallback");
+    }
+
+    #[tokio::test]
+    async fn pre_approve_forbidden_degrades_to_none() {
+        let (base, _srv) = stub(PRE_APPROVE, 403, serde_json::json!({ "error": "disabled" })).await;
+        let out = create_pre_approved_token(&base, "jwt", "pentest-connector")
+            .await
+            .expect("403 must degrade, not error");
+        assert!(out.is_none(), "403 -> post-approval fallback");
+    }
+
+    #[tokio::test]
+    async fn pre_approve_empty_token_is_error() {
+        let (base, _srv) = stub(PRE_APPROVE, 200, serde_json::json!({ "token": "" })).await;
+        let out = create_pre_approved_token(&base, "jwt", "pentest-connector").await;
+        assert!(
+            out.is_err(),
+            "200 with an empty token is a server contract violation"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_approve_server_error_is_error() {
+        let (base, _srv) = stub(PRE_APPROVE, 500, serde_json::json!({ "error": "boom" })).await;
+        let out = create_pre_approved_token(&base, "jwt", "pentest-connector").await;
+        let err = out.expect_err("5xx must surface, not degrade").to_string();
+        assert!(err.contains("500"), "error must name the status: {err}");
+    }
+
+    /// Guards the fix for the misleading-error bug: an auth failure on the tenant
+    /// lookup must surface the HTTP status, not collapse to "could not resolve
+    /// tenant id" (which points at tenant data when the cause is auth). Reverting
+    /// the status check in `fetch_tenant_id` turns this red.
+    #[tokio::test]
+    async fn tenant_lookup_auth_failure_surfaces_status() {
+        let (base, _srv) = stub(GRAPHQL, 401, serde_json::json!({ "error": "expired" })).await;
+        let err = fetch_tenant_id(&base, "stale-jwt")
+            .await
+            .expect_err("401 must surface as an auth error")
+            .to_string();
+        assert!(
+            err.contains("401") && !err.contains("could not resolve tenant id"),
+            "auth failure must name the status, not blame tenant data: {err}"
+        );
     }
 }

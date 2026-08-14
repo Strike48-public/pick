@@ -43,7 +43,6 @@ pub mod prelude {
     pub use crate::export::{
         EvidenceFile, Finding, SessionExport, SessionMetadata, Severity, ToolExecution,
     };
-    pub use crate::onboarding::{connect_to_studio, RegistrationMode, StudioConnection};
     pub use crate::orchestrator::{
         build_pending_evidence_manifest, build_report_agent_seed_message,
         build_validator_seed_message, gate_for_report, parse_validator_verdicts, EngagementInfo,

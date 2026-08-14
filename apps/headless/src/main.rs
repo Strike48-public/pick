@@ -51,21 +51,30 @@ async fn main() -> anyhow::Result<()> {
                 // (edition 2021 also does not require `unsafe` for set_var.)
                 std::env::set_var("STRIKE48_HOST", &conn.config.host);
                 std::env::set_var("STRIKE48_API_URL", &conn.api_url);
+                // The in-app LLM chat and connector read the MATRIX_* aliases
+                // exclusively (llm_proxy.rs, liveview_connector/mod.rs,
+                // connector_app.rs); without MATRIX_API_URL a first-run operator
+                // registers fine but chat is silently dead.
+                std::env::set_var("MATRIX_API_URL", &conn.api_url);
                 std::env::set_var("STRIKE48_TENANT", &conn.config.tenant_id);
+                // MATRIX_TENANT_ID leads TENANT_ENV_VARS (config.rs): without it,
+                // a stale value already in the environment out-ranks the tenant we
+                // just resolved — the credential-replay class this feature fixes.
+                std::env::set_var("MATRIX_TENANT_ID", &conn.config.tenant_id);
                 std::env::set_var("STRIKE48_INSTANCE_ID", &conn.config.instance_id);
                 std::env::set_var(
                     "STRIKE48_TLS",
                     if conn.config.use_tls { "true" } else { "false" },
                 );
-                if let Some(ott) = &conn.ott {
-                    std::env::set_var("STRIKE48_REGISTRATION_TOKEN", ott);
-                }
-                match conn.mode {
-                    pentest_core::onboarding::RegistrationMode::PreApproved => tracing::info!(
-                        "connect: onboarded to {} (pre-approved) as {}",
-                        conn.api_url,
-                        conn.config.instance_id
-                    ),
+                match &conn.mode {
+                    pentest_core::onboarding::RegistrationMode::PreApproved { ott } => {
+                        std::env::set_var("STRIKE48_REGISTRATION_TOKEN", ott);
+                        tracing::info!(
+                            "connect: onboarded to {} (pre-approved) as {}",
+                            conn.api_url,
+                            conn.config.instance_id
+                        );
+                    }
                     pentest_core::onboarding::RegistrationMode::PendingApproval => tracing::info!(
                         "connect: onboarded to {} — approve connector '{}' in Studio to finish",
                         conn.api_url,
