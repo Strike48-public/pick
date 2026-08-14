@@ -32,7 +32,54 @@ async fn main() -> anyhow::Result<()> {
 
     let is_strikehub = std::env::var("STRIKEHUB_SOCKET").is_ok();
 
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
+
+    // `pentest-agent connect <studio-url>` — one-command onboarding: browser
+    // sign-in, tenant discovery, and self-registration against any Prospector
+    // Studio. The discovered settings are pushed into the environment (and
+    // persisted) so the standard startup path below connects with them.
+    if args.get(1).map(String::as_str) == Some("connect") {
+        let Some(url) = args.get(2).cloned() else {
+            eprintln!("Usage: pentest-agent connect <studio-url>");
+            std::process::exit(1);
+        };
+        match pentest_core::onboarding::connect_to_studio(&url).await {
+            Ok(conn) => {
+                // Edition 2021: set_var is safe here. Runs at startup before any
+                // task reads the environment.
+                std::env::set_var("STRIKE48_HOST", &conn.config.host);
+                std::env::set_var("STRIKE48_API_URL", &conn.api_url);
+                std::env::set_var("STRIKE48_TENANT", &conn.config.tenant_id);
+                std::env::set_var("STRIKE48_INSTANCE_ID", &conn.config.instance_id);
+                std::env::set_var(
+                    "STRIKE48_TLS",
+                    if conn.config.use_tls { "true" } else { "false" },
+                );
+                if let Some(ott) = &conn.ott {
+                    std::env::set_var("STRIKE48_REGISTRATION_TOKEN", ott);
+                }
+                match conn.mode {
+                    pentest_core::onboarding::RegistrationMode::PreApproved => tracing::info!(
+                        "connect: onboarded to {} (pre-approved) as {}",
+                        conn.api_url,
+                        conn.config.instance_id
+                    ),
+                    pentest_core::onboarding::RegistrationMode::PendingApproval => tracing::info!(
+                        "connect: onboarded to {} — approve connector '{}' in Studio to finish",
+                        conn.api_url,
+                        conn.config.instance_id
+                    ),
+                }
+                // Fall through to the normal startup path using the env just set.
+                args.truncate(1);
+            }
+            Err(e) => {
+                eprintln!("connect failed: {e:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let config = match load_connector_config(&args) {
         ConfigLoadResult::Ok(c) => c,
         ConfigLoadResult::Help => {
