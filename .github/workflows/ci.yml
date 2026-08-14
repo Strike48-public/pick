@@ -79,6 +79,19 @@ jobs:
       # failure still fails the job.
       - run: cargo test --workspace --locked --no-fail-fast --features pentest-platform/desktop-pcap
 
+  chart-xss-guard:
+    name: Chart XSS Guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # Behavioral regression guard for the chart_processor.js ECharts option
+      # sanitizer (#371). No JS toolchain otherwise exists here; this is a
+      # dependency-free `node` self-test, so it needs no install step.
+      - run: node crates/ui/src/assets/chart_processor.test.js
+
   check-macos:
     name: Check (macOS)
     runs-on: macos-latest
