@@ -67,15 +67,22 @@ impl ProbeCommand {
 
         // Exact-substring scrub of the known secret first; then the regex pass
         // catches anything else (user-supplied creds in the same command line).
-        let pre_scrubbed = if secret.is_empty() {
-            command.clone()
-        } else {
-            command.replace(secret, REDACTION)
-        };
+        let effective_command = redact(&redact_known_secret(&command, secret));
+
+        // Canary: the by-value scrub silently no-ops if the secret does not
+        // appear verbatim in `command` (e.g. the caller escaped an embedded `"`
+        // while quoting the arg), leaving only the best-effort regex pass to
+        // catch it. Trip loudly in debug/test builds so a future divergence
+        // surfaces here instead of leaking to a report (#317 review, LOW).
+        debug_assert!(
+            secret.is_empty() || !effective_command.contains(secret),
+            "known-secret value scrub degraded to pattern-only: the injected \
+             secret survived verbatim into effective_command"
+        );
 
         Self {
             command,
-            effective_command: redact(&pre_scrubbed),
+            effective_command,
             description: None,
         }
     }
@@ -205,6 +212,24 @@ fn redact_regexes() -> &'static RedactRegexes {
 }
 
 const REDACTION: &str = "<REDACTED>";
+
+/// Scrub a *known* secret value from `text` by exact substring, replacing it
+/// with the same [`REDACTION`] marker [`redact`] uses. An empty `secret` is a
+/// no-op.
+///
+/// This is the by-value counterpart to [`redact`]'s pattern matching: use it
+/// wherever the exact injected credential is known — differential-authz
+/// identity runs (#317) — so an odd-shaped header value that no regex catches
+/// (`X-Api-Id: ab12cd`) is still removed before the text crosses a boundary.
+/// Unlike a command line, raw process output (`stdout`/`stderr`) is unescaped,
+/// so an exact match here is complete, not best-effort.
+pub fn redact_known_secret(text: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        text.to_string()
+    } else {
+        text.replace(secret, REDACTION)
+    }
+}
 
 /// Scrub likely secrets from an exact command so it is safe to publish.
 ///
@@ -472,6 +497,26 @@ mod tests {
         // blank the whole command (empty substring replace) — it just pattern-redacts.
         let pc = ProbeCommand::from_exact_redacting_secret("curl https://x.test", "");
         assert_eq!(pc.effective_command, "curl https://x.test");
+    }
+
+    #[test]
+    fn redact_known_secret_scrubs_exact_value_and_no_ops_on_empty() {
+        // The shared by-value scrub (used for both effective_command and, at the
+        // tool layer, stdout/stderr). Removes the exact value regardless of shape;
+        // an empty secret is a no-op (never a corrupting empty-substring replace).
+        let secret = "X-Api-Id: ab12cd";
+        let scrubbed = redact_known_secret(&format!("reflected: {secret} end"), secret);
+        assert!(
+            !scrubbed.contains("ab12cd"),
+            "value not scrubbed: {scrubbed}"
+        );
+        assert!(scrubbed.contains(REDACTION));
+
+        assert_eq!(
+            redact_known_secret("nothing to hide", ""),
+            "nothing to hide",
+            "empty secret must be a no-op"
+        );
     }
 
     #[test]

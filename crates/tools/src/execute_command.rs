@@ -2,12 +2,12 @@
 
 use async_trait::async_trait;
 use pentest_core::error::Result;
-use pentest_core::provenance::{truncate_excerpt, ProbeCommand, Provenance};
+use pentest_core::provenance::{redact_known_secret, truncate_excerpt, ProbeCommand, Provenance};
 use pentest_core::tools::{
     execute_timed_with_provenance, ParamType, PentestTool, Platform, ToolContext, ToolOutcome,
     ToolParam, ToolResult, ToolSchema,
 };
-use pentest_platform::{get_platform, CommandExec};
+use pentest_platform::{get_platform, CommandExec, CommandResult};
 use serde_json::{json, Value};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -155,46 +155,86 @@ impl PentestTool for ExecuteCommandTool {
             };
 
             let full_command = format_full_command(command, &args);
-            let excerpt_source = if result.stdout.is_empty() {
-                result.stderr.as_str()
-            } else {
-                result.stdout.as_str()
-            };
-
-            // When an identity was injected, scrub its exact secret from the
-            // effective (published) command by value and attribute the probe to
-            // the identity label so a reviewer can tell which principal produced
-            // the response (#317 review #3/#6). A non-empty secret is the auth
-            // header; an anonymous identity injects nothing but still attributes.
-            let probe_command = match &applied_identity {
-                Some(AppliedIdentity { label, secret }) => {
-                    ProbeCommand::from_exact_redacting_secret(full_command, secret)
-                        .with_description(format!("authenticated as test identity: {label}"))
-                }
-                None => ProbeCommand::from_exact(full_command),
-            };
-
-            let provenance = Provenance::new(
-                "shell",
-                shell_version(),
-                probe_command,
-                truncate_excerpt(excerpt_source),
-            );
-
-            let data = json!({
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "exit_code": result.exit_code,
-                "timed_out": result.timed_out,
-                "duration_ms": result.duration_ms,
-            });
-
-            Ok((data, provenance))
+            Ok(build_run_output(full_command, result, &applied_identity))
         })
         .await?;
 
         Ok(classify_command_outcome(run))
     }
+}
+
+/// Build the `(data, provenance)` pair for a completed `execute_command` run.
+///
+/// Extracted from the run closure so the identity-secret scrub is testable
+/// without a live subprocess. When an identity was injected (`applied` is
+/// `Some` with a non-empty secret), the exact credential is scrubbed BY VALUE
+/// from every agent-facing surface before it crosses the boundary:
+/// * the published command (`effective_command`), and
+/// * the captured output (`stdout`/`stderr`), which feeds both `data` and the
+///   provenance excerpt — a target that reflects the injected header (verbose
+///   echo, error page, `curl -v` on stderr) would otherwise put the raw
+///   credential straight in front of the agent.
+///
+/// This closes the gap that the read-side sanitizer (`sanitize_agent_result`)
+/// and `redact` cannot: they are regex-only and miss odd header shapes
+/// (`X-Api-Id: ab12cd`). Because the injected secret is *known* here, scrubbing
+/// by value removes it regardless of shape — security-by-construction over a
+/// best-effort scrubber (#317 review, agent-output boundary). Anonymous
+/// identities (empty secret) and non-identity runs pass output through
+/// unchanged. The residual log/process-table surface is tracked in pick#335.
+fn build_run_output(
+    full_command: String,
+    result: CommandResult,
+    applied: &Option<AppliedIdentity>,
+) -> (Value, Provenance) {
+    let injected_secret = applied
+        .as_ref()
+        .map(|a| a.secret.as_str())
+        .filter(|s| !s.is_empty());
+
+    // Value-scrub the known secret out of the captured output. `redact_known_secret`
+    // is a no-op when there is no secret, so non-identity runs are untouched.
+    let (stdout, stderr) = match injected_secret {
+        Some(secret) => (
+            redact_known_secret(&result.stdout, secret),
+            redact_known_secret(&result.stderr, secret),
+        ),
+        None => (result.stdout, result.stderr),
+    };
+
+    let excerpt_source = if stdout.is_empty() {
+        stderr.as_str()
+    } else {
+        stdout.as_str()
+    };
+
+    // Scrub the injected secret from the published command by value and
+    // attribute the probe to the identity label so a reviewer can tell which
+    // principal produced the response (#317 review #3/#6).
+    let probe_command = match applied {
+        Some(AppliedIdentity { label, secret }) => {
+            ProbeCommand::from_exact_redacting_secret(full_command, secret)
+                .with_description(format!("authenticated as test identity: {label}"))
+        }
+        None => ProbeCommand::from_exact(full_command),
+    };
+
+    let provenance = Provenance::new(
+        "shell",
+        shell_version(),
+        probe_command,
+        truncate_excerpt(excerpt_source),
+    );
+
+    let data = json!({
+        "stdout": stdout,
+        "stderr": stderr,
+        "exit_code": result.exit_code,
+        "timed_out": result.timed_out,
+        "duration_ms": result.duration_ms,
+    });
+
+    (data, provenance)
 }
 
 /// Reclassify a completed `execute_command` run's outcome from its process
@@ -769,6 +809,109 @@ mod tests {
         assert!(pc.effective_command.contains("<REDACTED>"));
         // Exact form retained (but never serialized).
         assert!(pc.command.contains("ab12cd"));
+    }
+
+    #[test]
+    fn run_output_scrubs_reflected_identity_secret_from_output() {
+        // #317 agent-output boundary (ngdevo 2026-08-14 MEDIUM): a target that
+        // reflects the injected auth header — verbose echo, error page, `curl -v`
+        // on stderr — lands the raw credential in stdout/stderr → `data` → the
+        // agent. The read-side sanitizer is regex-only, so an exotic shape slips
+        // through. Because the injected secret is KNOWN, the tool scrubs it by
+        // value before building `data`. Use `X-Api-Id: ab12cd` — a shape no
+        // redact() regex catches — so a green result proves the value-scrub, not
+        // an incidental pattern hit, is doing the work.
+        let secret = "X-Api-Id: ab12cd";
+        let applied = Some(AppliedIdentity {
+            label: "user_a".to_string(),
+            secret: secret.to_string(),
+        });
+        let result = CommandResult {
+            stdout: format!("target reflected header: {secret}\n"),
+            stderr: format!("verbose: > {secret}\n"),
+            exit_code: 0,
+            timed_out: false,
+            duration_ms: 1,
+        };
+        let full = format_full_command(
+            "curl",
+            &[
+                "-H".to_string(),
+                secret.to_string(),
+                "https://x.test".to_string(),
+            ],
+        );
+
+        // Precondition (Lens 1): pattern redaction alone misses this shape, so
+        // without the value-scrub the secret WOULD reach the agent.
+        assert!(
+            pentest_core::provenance::redact(&result.stdout).contains("ab12cd"),
+            "precondition: this shape is not caught by pattern redaction"
+        );
+
+        let (data, prov) = build_run_output(full, result, &applied);
+
+        let stdout = data.get("stdout").and_then(Value::as_str).unwrap();
+        let stderr = data.get("stderr").and_then(Value::as_str).unwrap();
+        assert!(
+            !stdout.contains("ab12cd"),
+            "reflected secret leaked into data.stdout: {stdout}"
+        );
+        assert!(
+            !stderr.contains("ab12cd"),
+            "reflected secret leaked into data.stderr: {stderr}"
+        );
+        assert!(
+            !prov.raw_response_excerpt.contains("ab12cd"),
+            "reflected secret leaked into provenance excerpt: {}",
+            prov.raw_response_excerpt
+        );
+        // The label still rides on the wire so the principal is attributable.
+        assert!(prov.probe_commands[0]
+            .description
+            .as_deref()
+            .is_some_and(|d| d.contains("user_a")));
+    }
+
+    #[test]
+    fn run_output_leaves_non_identity_output_untouched() {
+        // No identity applied → output passes through verbatim. Guards against
+        // the scrub over-reaching on ordinary runs (it must not blank output).
+        let result = CommandResult {
+            stdout: "clean tool output\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+            duration_ms: 1,
+        };
+        let (data, _) = build_run_output("echo hi".to_string(), result, &None);
+        assert_eq!(
+            data.get("stdout").and_then(Value::as_str),
+            Some("clean tool output\n")
+        );
+    }
+
+    #[test]
+    fn run_output_anonymous_identity_does_not_scrub_output() {
+        // An anonymous identity carries an empty secret: nothing to scrub, and a
+        // naive `replace("", …)` would corrupt every character boundary. Output
+        // must pass through unchanged.
+        let applied = Some(AppliedIdentity {
+            label: "unauth".to_string(),
+            secret: String::new(),
+        });
+        let result = CommandResult {
+            stdout: "unauthenticated response body\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+            duration_ms: 1,
+        };
+        let (data, _) = build_run_output("curl https://x.test".to_string(), result, &applied);
+        assert_eq!(
+            data.get("stdout").and_then(Value::as_str),
+            Some("unauthenticated response body\n")
+        );
     }
 
     #[tokio::test]
