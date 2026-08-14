@@ -45,8 +45,10 @@ async fn main() -> anyhow::Result<()> {
         };
         match pentest_core::onboarding::connect_to_studio(&url).await {
             Ok(conn) => {
-                // Edition 2021: set_var is safe here. Runs at startup before any
-                // task reads the environment.
+                // SAFETY: mutating the environment is sound here because we are
+                // still in single-threaded startup — no tokio tasks have been
+                // spawned yet, so nothing reads the environment concurrently.
+                // (edition 2021 also does not require `unsafe` for set_var.)
                 std::env::set_var("STRIKE48_HOST", &conn.config.host);
                 std::env::set_var("STRIKE48_API_URL", &conn.api_url);
                 std::env::set_var("STRIKE48_TENANT", &conn.config.tenant_id);

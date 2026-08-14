@@ -18,6 +18,9 @@
 //! The browser step requires the `browser-auth` feature and a local browser;
 //! remote/headless hosts use the post-approval flow or `scripts/connect.sh`.
 
+#[cfg(feature = "browser-auth")]
+use anyhow::Context;
+
 use crate::config::ConnectorConfig;
 
 /// SDK connector type for Pick (matches the credential-file / gateway naming).
@@ -50,23 +53,35 @@ pub struct StudioConnection {
 
 /// Validate and normalize a user-typed Studio URL into an HTTP(S) API base.
 ///
-/// Defaults a bare host to `https://`, trims a trailing slash, and rejects
-/// userinfo (`user:pass@host`) to avoid confusion attacks. Returns `None` for
-/// anything that is not a plausible `http(s)://host` URL. Ported from StrikeHub.
+/// The scheme is detected case-insensitively: a bare host and any non-`http`
+/// scheme (`https`, `wss`, `grpcs`, uppercase, ...) normalize to `https://`;
+/// only an explicit `http` scheme stays plaintext (local dev). Trims a trailing
+/// slash and rejects userinfo (`user:pass@host`) to avoid confusion attacks.
+/// Returns `None` for anything without a host or over 2048 chars. Derived from
+/// StrikeHub's validator.
 pub fn validate_studio_url(raw: &str) -> Option<String> {
-    let mut u = raw.trim().to_string();
-    if u.is_empty() {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
         return None;
     }
-    if !u.starts_with("http://") && !u.starts_with("https://") {
-        u = format!("https://{u}");
-    }
-    let u = u.trim_end_matches('/').to_string();
-    let host_part = u
-        .strip_prefix("https://")
-        .or_else(|| u.strip_prefix("http://"))
-        .unwrap_or("");
-    let authority = host_part.split('/').next().unwrap_or("");
+
+    // Split an existing scheme case-insensitively. The API base must be
+    // http(s); coerce ws/wss/grpc-style (and unknown) schemes to https so a
+    // pasted connector URL doesn't become `https://wss://host`.
+    let (scheme, rest) = match trimmed.find("://") {
+        Some(i) => {
+            let scheme = if trimmed[..i].eq_ignore_ascii_case("http") {
+                "http"
+            } else {
+                "https"
+            };
+            (scheme, &trimmed[i + 3..])
+        }
+        None => ("https", trimmed),
+    };
+
+    let rest = rest.trim_end_matches('/');
+    let authority = rest.split('/').next().unwrap_or("");
     if authority.is_empty() {
         return None;
     }
@@ -74,10 +89,12 @@ pub fn validate_studio_url(raw: &str) -> Option<String> {
     if authority.contains('@') || authority.to_lowercase().contains("%40") {
         return None;
     }
-    if u.len() > 2048 {
+
+    let normalized = format!("{scheme}://{rest}");
+    if normalized.len() > 2048 {
         return None;
     }
-    Some(u)
+    Some(normalized)
 }
 
 /// Derive the WebSocket host and TLS flag from a validated HTTP API base.
@@ -100,15 +117,17 @@ fn derive_ws_host(api_url: &str) -> (String, bool) {
 }
 
 #[cfg(feature = "browser-auth")]
-fn http_client() -> reqwest::Client {
+fn http_client() -> anyhow::Result<reqwest::Client> {
     let insecure = std::env::var("MATRIX_TLS_INSECURE")
         .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
         .unwrap_or(false);
+    // Propagate builder failure rather than silently falling back to a default
+    // client that would drop the TLS-insecure setting and the 15s timeout.
     reqwest::Client::builder()
         .danger_accept_invalid_certs(insecure)
         .timeout(std::time::Duration::from_secs(15))
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .context("failed to build HTTP client for onboarding")
 }
 
 /// Resolve the tenant UUID for the authenticated session via the Studio's
@@ -117,7 +136,7 @@ fn http_client() -> reqwest::Client {
 async fn fetch_tenant_id(api_url: &str, jwt: &str) -> anyhow::Result<String> {
     let url = format!("{}/api/v1alpha/graphql", api_url.trim_end_matches('/'));
     let query = serde_json::json!({ "query": "query { userDetails { details } }" });
-    let body = http_client()
+    let body = http_client()?
         .post(&url)
         .header("Authorization", format!("Bearer {jwt}"))
         .json(&query)
@@ -140,7 +159,11 @@ fn parse_tenant_id(raw: &str) -> Option<String> {
     } else {
         details.clone()
     };
-    details.pointer("/domain/id")?.as_str().map(String::from)
+    details
+        .pointer("/domain/id")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from)
 }
 
 /// Mint a pre-approved OTT via the Studio's `/api/connectors/pre-approve`
@@ -157,7 +180,7 @@ async fn create_pre_approved_token(
     let base = api_url.trim_end_matches('/');
     let url = format!("{base}/api/connectors/pre-approve");
     let payload = serde_json::json!({ "connector_type": connector_type, "ttl_minutes": 5 });
-    let resp = http_client()
+    let resp = http_client()?
         .post(&url)
         .header("Authorization", format!("Bearer {jwt}"))
         .json(&payload)
@@ -178,14 +201,21 @@ async fn create_pre_approved_token(
     }
 
     let body: serde_json::Value = resp.json().await?;
-    let token = body
+    Ok(Some(build_ott_json(&body, base)?))
+}
+
+/// Build the OTT JSON the SDK expects (`{"token","matrix_url"}`) from a
+/// pre-approve response, embedding the real API base (a mismatched origin is
+/// refused by the register-with-ott path). Errors if the response carries no
+/// non-empty `token`. Pure, so it is unit-tested on every CI lane.
+#[cfg_attr(not(feature = "browser-auth"), allow(dead_code))]
+fn build_ott_json(response: &serde_json::Value, api_base: &str) -> anyhow::Result<String> {
+    let token = response
         .get("token")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow::anyhow!("no token in pre-approve response"))?;
-    Ok(Some(
-        serde_json::json!({ "token": token, "matrix_url": base }).to_string(),
-    ))
+    Ok(serde_json::json!({ "token": token, "matrix_url": api_base }).to_string())
 }
 
 /// Build and persist the connector config for a resolved Studio + tenant.
@@ -303,5 +333,58 @@ mod tests {
 
         assert_eq!(parse_tenant_id(r#"{"data":{"userDetails":null}}"#), None);
         assert_eq!(parse_tenant_id("not json"), None);
+        // Empty, non-string, and missing ids resolve to None (never Some("")).
+        assert_eq!(
+            parse_tenant_id(r#"{"data":{"userDetails":{"details":{"domain":{"id":""}}}}}"#),
+            None
+        );
+        assert_eq!(
+            parse_tenant_id(r#"{"data":{"userDetails":{"details":{"domain":{"id":123}}}}}"#),
+            None
+        );
+        assert_eq!(
+            parse_tenant_id(r#"{"data":{"userDetails":{"details":{"domain":{}}}}}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn validate_studio_url_normalizes_scheme_and_rejects_overlong() {
+        // Scheme detected case-insensitively; the value carries a lowercase scheme
+        // (host case preserved).
+        assert_eq!(
+            validate_studio_url("HTTPS://Studio.example.com"),
+            Some("https://Studio.example.com".to_string())
+        );
+        // Non-http(s) schemes coerce to https (the API base) — not double-prefixed.
+        assert_eq!(
+            validate_studio_url("wss://studio.example.com"),
+            Some("https://studio.example.com".to_string())
+        );
+        // Explicit http stays plaintext (local dev), case-insensitively.
+        assert_eq!(
+            validate_studio_url("HTTP://localhost:4000"),
+            Some("http://localhost:4000".to_string())
+        );
+        // Over-length is rejected.
+        assert_eq!(
+            validate_studio_url(&format!("https://{}", "a".repeat(2100))),
+            None
+        );
+    }
+
+    #[test]
+    fn build_ott_json_requires_nonempty_token() {
+        let ok = build_ott_json(
+            &serde_json::json!({ "token": "ott_abc" }),
+            "https://studio.example.com",
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&ok).unwrap();
+        assert_eq!(parsed["token"], "ott_abc");
+        assert_eq!(parsed["matrix_url"], "https://studio.example.com");
+
+        assert!(build_ott_json(&serde_json::json!({ "token": "" }), "https://x").is_err());
+        assert!(build_ott_json(&serde_json::json!({ "other": "x" }), "https://x").is_err());
     }
 }
