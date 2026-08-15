@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::provenance::{redact_known_secret, truncate_excerpt, ProbeCommand, Provenance};
+use pentest_core::specialist_spawner::IdentityRole;
 use pentest_core::tools::{
     execute_timed_with_provenance, ParamType, PentestTool, Platform, ToolContext, ToolOutcome,
     ToolParam, ToolResult, ToolSchema,
@@ -110,21 +111,37 @@ impl PentestTool for ExecuteCommandTool {
         // attribute the response to the identity — a differential-authz finding
         // is only meaningful with the principal attached (#317 review #3/#6).
         let mut applied_identity: Option<AppliedIdentity> = None;
-        if let Some(label) = params.get("identity_ref").and_then(|v| v.as_str()) {
-            match build_identity_injection(&command, label, ctx) {
-                // Prepend so tool-specific positional args (e.g. a target URL)
-                // stay last, matching how these binaries expect flags.
-                Ok(injection) => {
-                    applied_identity = Some(AppliedIdentity {
-                        label: label.to_string(),
-                        secret: injection.injected_secret,
-                    });
+        // Distinguish "no identity requested" (absent / null - run as-is) from a
+        // string label (resolve + inject) from any other JSON shape. An LLM
+        // tool-call can violate the schema; a non-string identity_ref must fail
+        // loud rather than be silently dropped and run unauthenticated while the
+        // outcome is still attributed as a differential-authz probe (#317
+        // review #2).
+        match params.get("identity_ref") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(label)) => {
+                match build_identity_injection(&command, label, ctx) {
+                    // Prepend so tool-specific positional args (e.g. a target
+                    // URL) stay last, matching how these binaries expect flags.
+                    Ok(injection) => {
+                        applied_identity = Some(AppliedIdentity {
+                            label: label.clone(),
+                            secret: injection.injected_secret,
+                        });
 
-                    let mut injected = injection.args;
-                    injected.extend(std::mem::take(&mut args));
-                    args = injected;
+                        let mut injected = injection.args;
+                        injected.extend(std::mem::take(&mut args));
+                        args = injected;
+                    }
+                    Err(e) => return Ok(ToolResult::error(e.to_string())),
                 }
-                Err(e) => return Ok(ToolResult::error(e.to_string())),
+            }
+            Some(other) => {
+                return Ok(ToolResult::error(format!(
+                    "identity_ref must be a string label or omitted; got {} - \
+                     refusing to run with the identity silently dropped",
+                    json_type_name(other)
+                )));
             }
         }
 
@@ -383,19 +400,33 @@ fn build_identity_injection(
     label: &str,
     ctx: &ToolContext,
 ) -> Result<IdentityInjection> {
-    let material = ctx.resolve_identity(label).ok_or_else(|| {
+    let identity = ctx.resolve_identity(label).ok_or_else(|| {
         pentest_core::error::Error::InvalidParams(format!(
             "identity_ref '{label}' is not a provisioned test identity; \
              cannot authenticate as it (refusing to run unauthenticated)"
         ))
     })?;
+    let material = identity.material();
 
-    // Anonymous identity: no material to inject. Running as-is IS this identity.
+    // Empty material is only legitimate for an anonymous identity - running
+    // with no auth *is* that identity, so inject nothing. For any other role,
+    // empty material means the identity was mis-provisioned; running it would
+    // report an unauthenticated request under a privileged label (a false
+    // authz finding), so fail loud. This is defense-in-depth behind the loader
+    // guard (`load_identities_from_file`), covering direct store population
+    // paths that bypass the file loader (#317 review #1).
     if material.is_empty() {
-        return Ok(IdentityInjection {
-            args: Vec::new(),
-            injected_secret: String::new(),
-        });
+        if identity.role() == IdentityRole::Anonymous {
+            return Ok(IdentityInjection {
+                args: Vec::new(),
+                injected_secret: String::new(),
+            });
+        }
+        return Err(pentest_core::error::Error::InvalidParams(format!(
+            "identity_ref '{label}' (role {:?}) carries no session material; \
+             refusing to run it unauthenticated under a non-anonymous label",
+            identity.role()
+        )));
     }
 
     let binary = binary_basename(command);
@@ -414,6 +445,19 @@ fn build_identity_injection(
         // the published command by value rather than hoping a regex matches.
         injected_secret: header.to_string(),
     })
+}
+
+/// Human-readable JSON type name for a rejected `identity_ref` shape, so the
+/// fail-loud message tells the caller *what* it sent (#317 review #2).
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 /// Detect the login shell version once per process. Falls back to
@@ -634,6 +678,7 @@ mod tests {
     // so one flag handles both auth and cookie forms per binary.
 
     use pentest_core::identity::{IdentityStore, SessionMaterial};
+    use pentest_core::specialist_spawner::IdentityRole;
 
     #[test]
     fn header_flags_curl_uses_separate_dash_h() {
@@ -688,8 +733,13 @@ mod tests {
     }
 
     fn ctx_with(label: &str, material: &str) -> ToolContext {
+        ctx_with_role(label, IdentityRole::User, material)
+    }
+
+    fn ctx_with_role(label: &str, role: IdentityRole, material: &str) -> ToolContext {
         ToolContext::default().with_identities(IdentityStore::from_pairs([(
             label,
+            role,
             SessionMaterial::new(material),
         )]))
     }
@@ -731,13 +781,29 @@ mod tests {
 
     #[test]
     fn build_injection_empty_material_injects_nothing() {
-        // An anonymous identity carries no material: inject nothing and succeed
+        // An ANONYMOUS identity carries no material: inject nothing and succeed
         // (running with no auth IS that identity), never fail.
-        let ctx = ctx_with("anon", "");
+        let ctx = ctx_with_role("anon", IdentityRole::Anonymous, "");
         let injection =
             build_identity_injection("curl", "anon", &ctx).expect("anonymous injects nothing");
         assert!(injection.args.is_empty());
         assert!(injection.injected_secret.is_empty());
+    }
+
+    #[test]
+    fn build_injection_nonanon_empty_material_fails_loud() {
+        // #317 review #1 defense-in-depth: a non-anonymous identity that reached
+        // the store with empty material (e.g. a direct-population path that
+        // bypasses the file loader guard) must FAIL, not silently inject nothing
+        // and run unauthenticated under a privileged label.
+        let ctx = ctx_with_role("admin", IdentityRole::Privileged, "");
+        let err = build_identity_injection("curl", "admin", &ctx)
+            .expect_err("privileged identity with empty material must fail loud")
+            .to_string();
+        assert!(
+            err.contains("admin") && err.contains("no session material"),
+            "message must name the label and the cause: {err}"
+        );
     }
 
     #[test]
@@ -933,6 +999,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_non_string_identity_ref_fails_without_running() {
+        // #317 review #2: a non-string identity_ref (the LLM can violate the
+        // schema) must fail loud, NOT be silently dropped via `.as_str() ->
+        // None` and then run unauthenticated while still reported as a probe.
+        pentest_platform::set_use_sandbox(false);
+        let tool = ExecuteCommandTool;
+        let ctx = ctx_with("user_a", "Cookie: sid=abc");
+        let params = json!({
+            "command": "curl",
+            "args": ["https://x.test"],
+            "identity_ref": 123,
+        });
+        let result = tool.execute(params, &ctx).await.expect("execute ok");
+        assert_eq!(result.outcome, ToolOutcome::Failed);
+        assert!(!result.success);
+        let err = result.error.unwrap_or_default();
+        assert!(
+            err.contains("identity_ref must be a string") && err.contains("number"),
+            "message must reject the shape and name it: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_null_identity_ref_runs_as_is() {
+        // An explicit JSON null means "no identity" - same as omitted. It must
+        // NOT be treated as a malformed ref (that would block legitimate
+        // no-identity runs).
+        pentest_platform::set_use_sandbox(false);
+        let tool = ExecuteCommandTool;
+        let ctx = ToolContext::default();
+        let params = json!({
+            "command": "curl",
+            "args": ["--max-time", "1", "http://127.0.0.1:1/x"],
+            "identity_ref": Value::Null,
+        });
+        // Runs (and fails on connection), but is NOT rejected as a malformed
+        // identity_ref - the error, if any, is not the schema-rejection message.
+        let result = tool.execute(params, &ctx).await.expect("execute ok");
+        assert!(
+            !result
+                .error
+                .unwrap_or_default()
+                .contains("identity_ref must be a string"),
+            "null identity_ref must be treated as no-identity, not malformed"
+        );
+    }
+
+    #[tokio::test]
     async fn execute_with_identity_attributes_provenance_and_scrubs_secret() {
         // #317 review #6 (attribution) + #3 (value-scrub), end-to-end through
         // execute/1. curl against an unroutable host still RUNS (produces
@@ -943,6 +1057,7 @@ mod tests {
         let tool = ExecuteCommandTool;
         let ctx = ToolContext::default().with_identities(IdentityStore::from_pairs([(
             "user_a",
+            IdentityRole::User,
             SessionMaterial::new("X-Api-Id: ab12cd"),
         )]));
         let params = json!({
@@ -976,6 +1091,7 @@ mod tests {
         let tool = ExecuteCommandTool;
         let ctx = ToolContext::default().with_identities(IdentityStore::from_pairs([(
             "user_a",
+            IdentityRole::User,
             SessionMaterial::new("Cookie: sid=abc"),
         )]));
         let params = json!({

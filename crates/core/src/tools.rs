@@ -788,7 +788,7 @@ impl ToolContext {
     /// Returns `None` when the label is unknown - the caller must fail loudly
     /// rather than silently replay unauthenticated, which would misreport an
     /// authorization result.
-    pub fn resolve_identity(&self, label: &str) -> Option<&crate::identity::SessionMaterial> {
+    pub fn resolve_identity(&self, label: &str) -> Option<&crate::identity::StoredIdentity> {
         self.identities.resolve(label)
     }
 

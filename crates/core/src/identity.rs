@@ -121,7 +121,36 @@ impl std::fmt::Display for SessionMaterial {
     }
 }
 
-/// Connector-local map from identity `label` to its [`SessionMaterial`].
+/// A provisioned identity as held connector-side: its declared
+/// [`IdentityRole`] plus the [`SessionMaterial`] that authenticates it.
+///
+/// The role travels *with* the secret so the injection path can tell an
+/// anonymous identity (empty material *by design*) apart from a mis-provisioned
+/// privileged one (empty material *by mistake*). The latter must fail loud
+/// rather than run unauthenticated under a privileged label, which would
+/// misreport a differential-authz result (#317 review #1).
+#[derive(Clone, Debug)]
+pub struct StoredIdentity {
+    role: IdentityRole,
+    material: SessionMaterial,
+}
+
+impl StoredIdentity {
+    /// The identity's declared privilege role.
+    pub fn role(&self) -> IdentityRole {
+        self.role
+    }
+
+    /// The authenticating session material. Anonymous identities carry empty
+    /// material by design; every other role is guaranteed non-empty by the
+    /// loader and store constructors.
+    pub fn material(&self) -> &SessionMaterial {
+        &self.material
+    }
+}
+
+/// Connector-local map from identity `label` to its [`StoredIdentity`]
+/// (role + secret).
 ///
 /// Held on [`ToolContext`](crate::tools::ToolContext) so any tool can resolve a
 /// `label` referenced by the LLM to the real auth material and inject it at
@@ -129,7 +158,7 @@ impl std::fmt::Display for SessionMaterial {
 /// the connector.
 #[derive(Clone, Default)]
 pub struct IdentityStore {
-    by_label: HashMap<String, SessionMaterial>,
+    by_label: HashMap<String, StoredIdentity>,
 }
 
 impl IdentityStore {
@@ -138,32 +167,39 @@ impl IdentityStore {
         Self::default()
     }
 
-    /// Build a store from `(label, material)` pairs. Later entries win on a
-    /// duplicate label.
-    pub fn from_pairs<I, L>(pairs: I) -> Self
+    /// Build a store from `(label, role, material)` triples. Later entries win
+    /// on a duplicate label.
+    pub fn from_pairs<I, L>(entries: I) -> Self
     where
-        I: IntoIterator<Item = (L, SessionMaterial)>,
+        I: IntoIterator<Item = (L, IdentityRole, SessionMaterial)>,
         L: Into<String>,
     {
-        let by_label = pairs
+        let by_label = entries
             .into_iter()
-            .map(|(label, material)| (label.into(), material))
+            .map(|(label, role, material)| (label.into(), StoredIdentity { role, material }))
             .collect();
         Self { by_label }
     }
 
-    /// Insert or replace the material for `label`.
-    pub fn insert(&mut self, label: impl Into<String>, material: SessionMaterial) {
-        self.by_label.insert(label.into(), material);
+    /// Insert or replace the entry for `label`.
+    pub fn insert(
+        &mut self,
+        label: impl Into<String>,
+        role: IdentityRole,
+        material: SessionMaterial,
+    ) {
+        self.by_label
+            .insert(label.into(), StoredIdentity { role, material });
     }
 
-    /// Resolve a label referenced by the LLM to its session material.
+    /// Resolve a label referenced by the LLM to its stored identity (role +
+    /// material).
     ///
     /// Returns `None` when the label is unknown (typo, or an identity that was
     /// never provisioned) - callers must treat a miss as "cannot authenticate
     /// as this identity" and fail loudly rather than silently running
     /// unauthenticated, which would misreport an authz result.
-    pub fn resolve(&self, label: &str) -> Option<&SessionMaterial> {
+    pub fn resolve(&self, label: &str) -> Option<&StoredIdentity> {
         self.by_label.get(label)
     }
 
@@ -250,6 +286,23 @@ pub fn load_identities_from_file(path: &Path) -> Result<LoadedIdentities> {
     let mut references = Vec::with_capacity(entries.len());
     let mut store = IdentityStore::new();
     for entry in entries {
+        // A non-anonymous identity with no session material would run
+        // unauthenticated yet be attributed to its privileged label downstream
+        // - a false "endpoint reachable as <role>" finding, the worst
+        // differential-authz failure mode. Refuse it at the source (#317
+        // review #1): an anonymous identity carries no credential by design;
+        // any other role must supply one.
+        if entry.role != IdentityRole::Anonymous && entry.session.is_empty() {
+            return Err(Error::Config(format!(
+                "identities file {}: identity {:?} declares role {:?} but carries no \
+                 session material; a non-anonymous identity must supply a credential \
+                 (refusing to load it, which would misreport authz coverage)",
+                path.display(),
+                entry.label,
+                entry.role
+            )));
+        }
+
         // Every provisioned label gets a store slot - anonymous identities with
         // an empty `session` get an empty [`SessionMaterial`]. This keeps a
         // resolvable-but-empty identity distinct from an unknown label: the
@@ -257,7 +310,11 @@ pub fn load_identities_from_file(path: &Path) -> Result<LoadedIdentities> {
         // latter still misses and fails loud. Skipping empty entries here made
         // the LLM-instructed `identity_ref: "unauth"` unreachable (it resolved
         // to `None` and errored "not a provisioned test identity").
-        store.insert(entry.label.clone(), SessionMaterial::new(entry.session));
+        store.insert(
+            entry.label.clone(),
+            entry.role,
+            SessionMaterial::new(entry.session),
+        );
         references.push(TestIdentity {
             label: entry.label,
             role: entry.role,
@@ -346,12 +403,20 @@ mod tests {
     #[test]
     fn store_resolves_known_label() {
         let store = IdentityStore::from_pairs([
-            ("user_a", SessionMaterial::new("Cookie: sid=aaa")),
-            ("admin", SessionMaterial::new("Authorization: Bearer zzz")),
+            (
+                "user_a",
+                IdentityRole::User,
+                SessionMaterial::new("Cookie: sid=aaa"),
+            ),
+            (
+                "admin",
+                IdentityRole::Privileged,
+                SessionMaterial::new("Authorization: Bearer zzz"),
+            ),
         ]);
         assert_eq!(store.len(), 2);
         assert_eq!(
-            store.resolve("admin").map(SessionMaterial::expose),
+            store.resolve("admin").map(|s| s.material().expose()),
             Some("Authorization: Bearer zzz")
         );
     }
@@ -360,18 +425,22 @@ mod tests {
     fn store_miss_returns_none_not_empty() {
         // A miss must be distinguishable from "resolved to empty" so callers can
         // fail loudly instead of silently replaying unauthenticated.
-        let store = IdentityStore::from_pairs([("user_a", SessionMaterial::new("Cookie: sid=a"))]);
+        let store = IdentityStore::from_pairs([(
+            "user_a",
+            IdentityRole::User,
+            SessionMaterial::new("Cookie: sid=a"),
+        )]);
         assert!(store.resolve("nonexistent").is_none());
     }
 
     #[test]
     fn insert_replaces_existing_label() {
         let mut store = IdentityStore::new();
-        store.insert("user_a", SessionMaterial::new("old"));
-        store.insert("user_a", SessionMaterial::new("new"));
+        store.insert("user_a", IdentityRole::User, SessionMaterial::new("old"));
+        store.insert("user_a", IdentityRole::User, SessionMaterial::new("new"));
         assert_eq!(store.len(), 1);
         assert_eq!(
-            store.resolve("user_a").map(SessionMaterial::expose),
+            store.resolve("user_a").map(|s| s.material().expose()),
             Some("new")
         );
     }
@@ -379,8 +448,16 @@ mod tests {
     #[test]
     fn store_debug_never_leaks_material_but_shows_labels() {
         let store = IdentityStore::from_pairs([
-            ("user_a", SessionMaterial::new("secret-aaa")),
-            ("admin", SessionMaterial::new("secret-zzz")),
+            (
+                "user_a",
+                IdentityRole::User,
+                SessionMaterial::new("secret-aaa"),
+            ),
+            (
+                "admin",
+                IdentityRole::Privileged,
+                SessionMaterial::new("secret-zzz"),
+            ),
         ]);
         let debug = format!("{store:?}");
         assert!(
@@ -433,14 +510,17 @@ mod tests {
         // Every label gets a store slot; anonymous resolves to empty material.
         assert_eq!(loaded.store.len(), 3);
         assert_eq!(
-            loaded.store.resolve("user_a").map(SessionMaterial::expose),
+            loaded
+                .store
+                .resolve("user_a")
+                .map(|s| s.material().expose()),
             Some("Cookie: sid=aaa")
         );
         assert_eq!(
             loaded
                 .store
                 .resolve("unauth")
-                .map(SessionMaterial::is_empty),
+                .map(|s| s.material().is_empty()),
             Some(true),
             "anonymous identity resolves to empty material, not a miss"
         );
@@ -456,12 +536,13 @@ mod tests {
         let path = write_temp("anon", r#"[{"label":"unauth","role":"anonymous"}]"#);
         let loaded = load_identities_from_file(&path).expect("loads");
         assert_eq!(loaded.references.len(), 1);
-        let material = loaded
+        let resolved = loaded
             .store
             .resolve("unauth")
             .expect("anonymous identity is provisioned in the store");
+        assert_eq!(resolved.role(), IdentityRole::Anonymous);
         assert!(
-            material.is_empty(),
+            resolved.material().is_empty(),
             "anonymous identity carries no session material"
         );
         // An unprovisioned label still misses - fail-loud path is intact.
@@ -525,6 +606,40 @@ mod tests {
             err.to_string().contains("malformed identities file"),
             "unexpected error: {err}"
         );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn privileged_identity_without_session_fails_loudly() {
+        // #317 review #1 (CRITICAL): a non-anonymous identity with no session
+        // material would run unauthenticated yet be reported under its
+        // privileged label - a false "reachable as admin" finding. The loader
+        // must refuse it rather than store a resolvable-but-empty privileged
+        // identity.
+        let path = write_temp(
+            "priv-no-session",
+            r#"[{"label":"admin","role":"privileged"}]"#,
+        );
+        let err = load_identities_from_file(&path)
+            .expect_err("privileged identity with no session must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must supply a credential") && msg.contains("admin"),
+            "unexpected error: {msg}"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn user_identity_with_empty_session_string_fails_loudly() {
+        // The empty-string form is the same defect as an omitted session.
+        let path = write_temp(
+            "user-empty-session",
+            r#"[{"label":"u","role":"user","session":""}]"#,
+        );
+        let err = load_identities_from_file(&path)
+            .expect_err("user identity with empty session must error");
+        assert!(err.to_string().contains("must supply a credential"));
         std::fs::remove_file(&path).ok();
     }
 

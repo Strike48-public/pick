@@ -760,11 +760,19 @@ impl LiveViewConnector {
                     loaded
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Ignoring identities file {}: {e}",
+                    // A malformed identities file (bad JSON, unknown role, or a
+                    // non-anonymous identity with no credential) must NOT degrade
+                    // to zero identities: specialists would still run the
+                    // differential-authz prompts and report "no broken access
+                    // control" when nothing was actually tested. Refuse to start
+                    // (#317 review #3). A *missing* file is not an error -
+                    // `load_identities_from_file` returns empty for NotFound - so
+                    // only genuine corruption reaches this arm.
+                    return Err(format!(
+                        "refusing to start: identities file {} is unreadable or malformed: {e}. \
+                         Fix or remove it (a missing file is fine and means no test identities).",
                         identities_path.display()
-                    );
-                    pentest_core::identity::LoadedIdentities::default()
+                    ));
                 }
             };
 
