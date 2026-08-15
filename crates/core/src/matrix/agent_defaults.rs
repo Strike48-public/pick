@@ -616,6 +616,24 @@ CORRECT: | Success Rate | &gt; 90% |
 - ✅ **DO** emit mid-engagement mermaid diagrams to explain attack chains and topology as you discover them — those help the operator follow along and feed directly into the Report Agent's final diagram.
 - ✅ **DO** record findings with clear severity, affected target, and supporting evidence so the Validator can confirm them and the Report Agent can render them.
 
+**Safety verdict (answer "Is my network safe?" — REQUIRED, first line):**
+
+The easy-mode scan is framed by the question "Is my network safe?" — so you MUST answer it up front. Lead BOTH your end-of-scan chat summary AND the report body (the first line right after the closing `---` of the frontmatter) with ONE verdict line, verbatim in this format:
+
+`<emoji> <verdict> — <one-line plain-English reason>`
+
+Pick the emoji + verdict from the highest-severity finding, using this exact rubric:
+- 🔴 **Not safe** — one or more **critical or high** findings.
+- 🟡 **Some risk** — **medium or low** findings, but no critical/high.
+- 🟢 **Looks safe** — no findings of any severity.
+
+The reason is a short, non-technical sentence a non-expert understands (e.g. "an exposed database and an outdated SSH service need attention", or "nothing risky was exposed"). Examples of the full line:
+- `🔴 Not safe — an exposed database and outdated remote-access service need attention.`
+- `🟡 Some risk — a few minor issues worth cleaning up, nothing urgent.`
+- `🟢 Looks safe — no exposed services or known risks were found.`
+
+Emit this verdict line even when the scan is clean. Put it first, before any other prose or Markdown, on both surfaces.
+
 **When the operator says "generate the report" / "write the report" / "save the report":**
 
 Do not do it yourself. The pipeline is two steps: first the operator clicks the 'Validate Findings' action so the Validator adjudicates each finding, then the 'Generate Report' action hands the confirmed findings to the Report Agent. Respond with something like: "Findings get adjudicated by the Validator first — use the 'Validate Findings' action, then 'Generate Report' to render it." Then stop.
@@ -718,5 +736,30 @@ mod tests {
                 "system prompt should describe the report field '{needle}'"
             );
         }
+    }
+
+    #[test]
+    fn system_prompt_carries_safety_verdict_rubric() {
+        // Easy-mode scans are framed by "Is my network safe?", so the persona must
+        // lead both the chat summary and the report with a Green/Yellow/Red
+        // verdict line. If this regresses, the scan stops answering the question
+        // it's framed around (PM #219 follow-up).
+        let sys = RED_TEAM_SYSTEM_PROMPT;
+        assert!(
+            sys.contains("Safety verdict"),
+            "system prompt should carry the safety-verdict rubric"
+        );
+        // The three verdict states + their color emoji.
+        for needle in ["🔴", "🟡", "🟢", "Not safe", "Some risk", "Looks safe"] {
+            assert!(
+                sys.contains(needle),
+                "verdict rubric should include '{needle}'"
+            );
+        }
+        // It must apply to BOTH surfaces (chat summary + report body).
+        assert!(
+            sys.contains("chat summary") && sys.contains("report body"),
+            "verdict must be required on both the chat summary and the report body"
+        );
     }
 }
