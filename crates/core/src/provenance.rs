@@ -18,7 +18,18 @@ const TRUNCATION_MARKER: &str = "\n…[truncated]";
 /// A single probe step with both an exact and a report-safe command form.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProbeCommand {
-    /// Exact command as executed. May contain secrets; internal use only.
+    /// Exact command as executed. May contain secrets (e.g. an injected
+    /// `Authorization: Bearer <token>` from a differential-authz identity run,
+    /// or `curl -u user:pass`), so it is **never serialized** — `skip_serializing`
+    /// keeps it off every wire/agent/report boundary by construction, not by
+    /// best-effort scrubbing. `effective_command` is the redacted form that does
+    /// cross the boundary. `default` lets a value deserialized from the wire
+    /// (where the field is now absent) round-trip to an empty string rather than
+    /// failing. Back-compat: evidence files persisted *before* this field became
+    /// `skip_serializing` still carry a `command` key and deserialize cleanly
+    /// (serde reads it, and only downstream `effective_command` is consumed), so
+    /// no schema-version bump or migration is required. See pick#162 / #317 review.
+    #[serde(skip_serializing, default)]
     pub command: String,
 
     /// Redacted form safe to publish in reports.
@@ -35,6 +46,40 @@ impl ProbeCommand {
     pub fn from_exact(command: impl Into<String>) -> Self {
         let command = command.into();
         let effective_command = redact(&command);
+        Self {
+            command,
+            effective_command,
+            description: None,
+        }
+    }
+
+    /// Build a `ProbeCommand` when a specific secret value is *known* to be
+    /// present in the command (e.g. an injected differential-authz identity
+    /// header). The known secret is scrubbed by exact substring BEFORE the
+    /// pattern-based [`redact`] runs, so `effective_command` is safe regardless
+    /// of the secret's shape — closing the gap where a short, non-hex, oddly
+    /// named header value (`-H "X-Api-Id: ab12cd"`) would slip past every regex
+    /// and land verbatim in a customer-facing report (#317 review, Lens 10b:
+    /// security-by-construction over best-effort scrubbing). `command` (the
+    /// exact form) is retained in the struct but is never serialized.
+    pub fn from_exact_redacting_secret(command: impl Into<String>, secret: &str) -> Self {
+        let command = command.into();
+
+        // Exact-substring scrub of the known secret first; then the regex pass
+        // catches anything else (user-supplied creds in the same command line).
+        let effective_command = redact(&redact_known_secret(&command, secret));
+
+        // Canary: the by-value scrub silently no-ops if the secret does not
+        // appear verbatim in `command` (e.g. the caller escaped an embedded `"`
+        // while quoting the arg), leaving only the best-effort regex pass to
+        // catch it. Trip loudly in debug/test builds so a future divergence
+        // surfaces here instead of leaking to a report (#317 review, LOW).
+        debug_assert!(
+            secret.is_empty() || !effective_command.contains(secret),
+            "known-secret value scrub degraded to pattern-only: the injected \
+             secret survived verbatim into effective_command"
+        );
+
         Self {
             command,
             effective_command,
@@ -167,6 +212,24 @@ fn redact_regexes() -> &'static RedactRegexes {
 }
 
 const REDACTION: &str = "<REDACTED>";
+
+/// Scrub a *known* secret value from `text` by exact substring, replacing it
+/// with the same [`REDACTION`] marker [`redact`] uses. An empty `secret` is a
+/// no-op.
+///
+/// This is the by-value counterpart to [`redact`]'s pattern matching: use it
+/// wherever the exact injected credential is known — differential-authz
+/// identity runs (#317) — so an odd-shaped header value that no regex catches
+/// (`X-Api-Id: ab12cd`) is still removed before the text crosses a boundary.
+/// Unlike a command line, raw process output (`stdout`/`stderr`) is unescaped,
+/// so an exact match here is complete, not best-effort.
+pub fn redact_known_secret(text: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        text.to_string()
+    } else {
+        text.replace(secret, REDACTION)
+    }
+}
 
 /// Scrub likely secrets from an exact command so it is safe to publish.
 ///
@@ -350,6 +413,130 @@ mod tests {
         let p = ProbeCommand::from_exact("curl -u admin:hunter2 https://x.example.com");
         assert_eq!(p.command, "curl -u admin:hunter2 https://x.example.com");
         assert!(!p.effective_command.contains("hunter2"));
+    }
+
+    #[test]
+    fn probe_command_raw_command_never_serializes() {
+        // #317 review CRITICAL: the raw `command` can carry an injected
+        // credential (e.g. `-H "Authorization: Bearer <token>"` from a
+        // differential-authz identity run). It must never cross the wire; only
+        // the redacted `effective_command` may. Guards the leak by construction
+        // — removing `#[serde(skip_serializing)]` on `command` turns this red.
+        let secret = "Bearer sk-super-secret-token-abcdef1234567890";
+        let raw = format!(r#"curl -H "Authorization: {secret}" https://target.example"#);
+        let p = ProbeCommand::from_exact(&raw);
+
+        // In memory the exact command is retained for local traceability.
+        assert!(p.command.contains(secret), "in-memory command retained");
+
+        // On the wire it must be gone: no `command` key, and the secret must not
+        // appear anywhere in the serialized form (effective_command is redacted).
+        let wire = serde_json::to_value(&p).expect("serialize");
+        assert!(
+            wire.get("command").is_none(),
+            "raw command must not serialize: {wire}"
+        );
+        let wire_str = serde_json::to_string(&p).expect("serialize");
+        assert!(
+            !wire_str.contains("sk-super-secret-token-abcdef1234567890"),
+            "secret leaked onto the wire: {wire_str}"
+        );
+    }
+
+    #[test]
+    fn probe_command_deserializes_legacy_wire_with_command_present() {
+        // #317 H2 back-compat: `command` gained `#[serde(skip_serializing,
+        // default)]`, so evidence files persisted BEFORE this change still carry
+        // a `command` key. They must deserialize cleanly (serde consumes the key
+        // via the field, applying `default` only when absent) — never error on a
+        // replayed old-format file. The redacted `effective_command` is what
+        // downstream reads, and it survives regardless.
+        let legacy = r#"{
+            "command": "curl -H \"Authorization: Bearer old-secret\" https://x.example",
+            "effective_command": "curl -H \"Authorization: <REDACTED>\" https://x.example"
+        }"#;
+        let back: ProbeCommand = serde_json::from_str(legacy).expect("legacy wire deserializes");
+        assert_eq!(
+            back.effective_command,
+            r#"curl -H "Authorization: <REDACTED>" https://x.example"#
+        );
+        // A new-format file (no `command` key) also deserializes, defaulting to "".
+        let current = r#"{"effective_command":"nmap -sV 10.0.0.1"}"#;
+        let back2: ProbeCommand = serde_json::from_str(current).expect("current wire deserializes");
+        assert_eq!(back2.command, "");
+        assert_eq!(back2.effective_command, "nmap -sV 10.0.0.1");
+    }
+
+    #[test]
+    fn from_exact_redacting_secret_scrubs_arbitrary_shape_by_value() {
+        // #317 review #3: a known secret is scrubbed by exact substring BEFORE
+        // pattern redaction, so it never lands in effective_command even when its
+        // shape defeats every regex (short, non-hex, non-keyword header value).
+        let secret = "X-Api-Id: ab12cd";
+        let cmd = format!(r#"curl -H "{secret}" https://x.test"#);
+
+        // Precondition: pattern redaction alone does not catch this shape.
+        assert!(redact(&cmd).contains("ab12cd"));
+
+        let pc = ProbeCommand::from_exact_redacting_secret(cmd, secret);
+        assert!(
+            !pc.effective_command.contains("ab12cd"),
+            "known secret leaked: {}",
+            pc.effective_command
+        );
+        assert!(pc.effective_command.contains(REDACTION));
+        assert!(
+            pc.command.contains("ab12cd"),
+            "exact form retained in-memory"
+        );
+    }
+
+    #[test]
+    fn from_exact_redacting_empty_secret_falls_back_to_pattern_only() {
+        // An anonymous identity injects no secret; the empty-secret path must not
+        // blank the whole command (empty substring replace) — it just pattern-redacts.
+        let pc = ProbeCommand::from_exact_redacting_secret("curl https://x.test", "");
+        assert_eq!(pc.effective_command, "curl https://x.test");
+    }
+
+    #[test]
+    fn redact_known_secret_scrubs_exact_value_and_no_ops_on_empty() {
+        // The shared by-value scrub (used for both effective_command and, at the
+        // tool layer, stdout/stderr). Removes the exact value regardless of shape;
+        // an empty secret is a no-op (never a corrupting empty-substring replace).
+        let secret = "X-Api-Id: ab12cd";
+        let scrubbed = redact_known_secret(&format!("reflected: {secret} end"), secret);
+        assert!(
+            !scrubbed.contains("ab12cd"),
+            "value not scrubbed: {scrubbed}"
+        );
+        assert!(scrubbed.contains(REDACTION));
+
+        assert_eq!(
+            redact_known_secret("nothing to hide", ""),
+            "nothing to hide",
+            "empty secret must be a no-op"
+        );
+    }
+
+    #[test]
+    fn identity_attribution_description_survives_the_wire() {
+        // #317 review #6: the identity label reaches serialized provenance via the
+        // description, so a reviewer can attribute the response to a principal even
+        // though the raw command (which carried the injected header) is not serialized.
+        let pc = ProbeCommand::from_exact_redacting_secret(
+            r#"curl -H "Cookie: sid=secret" https://x.test"#,
+            "Cookie: sid=secret",
+        )
+        .with_description("authenticated as test identity: user_a");
+        let p = Provenance::new("shell", "test", pc, "");
+
+        let wire = serde_json::to_string(&p).expect("serialize");
+        assert!(wire.contains("authenticated as test identity: user_a"));
+        assert!(
+            !wire.contains("sid=secret"),
+            "secret leaked on the wire: {wire}"
+        );
     }
 
     #[test]

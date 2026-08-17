@@ -10,6 +10,7 @@ pub mod error;
 pub mod evidence;
 pub mod export;
 pub mod file_browser;
+pub mod identity;
 pub mod jwt_validator;
 pub mod logging;
 pub mod matrix;
@@ -43,6 +44,7 @@ pub mod prelude {
     pub use crate::export::{
         EvidenceFile, Finding, SessionExport, SessionMetadata, Severity, ToolExecution,
     };
+    pub use crate::identity::{IdentityStore, SessionMaterial};
     pub use crate::orchestrator::{
         build_pending_evidence_manifest, build_report_agent_seed_message,
         build_validator_seed_message, gate_for_report, parse_validator_verdicts, EngagementInfo,
@@ -56,7 +58,8 @@ pub mod prelude {
     };
     pub use crate::settings::{load_settings, save_settings};
     pub use crate::specialist_spawner::{
-        AttackSurface, SpawnDecision, SpecialistContext, SpecialistSpawner, SpecialistType,
+        AttackSurface, IdentityRole, SpawnDecision, SpecialistContext, SpecialistSpawner,
+        SpecialistType, TestIdentity,
     };
     pub use crate::state::ConnectorStatus;
     pub use crate::terminal::{LogLevel, TerminalLine};

@@ -832,7 +832,27 @@ mod tests {
         let end = msg.rfind("\n```").unwrap();
         let json = &msg[start..end];
         let back: ValidatedFindingsManifest = serde_json::from_str(json).unwrap();
-        assert_eq!(back, manifest);
+        // The raw `provenance.command` is intentionally not serialized (#317
+        // review) — it can carry an injected credential — so a full struct
+        // equality would trip on the field coming back empty. Assert the
+        // wire-facing contract the Report Agent actually relies on instead: the
+        // manifest deserializes and every finding survives with its redacted
+        // provenance intact.
+        assert_eq!(back.findings.len(), manifest.findings.len());
+        for (b, m) in back.findings.iter().zip(manifest.findings.iter()) {
+            assert_eq!(b.id, m.id);
+            assert_eq!(b.current_severity, m.current_severity);
+            assert_eq!(b.validation_status, m.validation_status);
+            assert_eq!(
+                b.provenance
+                    .as_ref()
+                    .map(|p| p.probe_commands[0].effective_command.as_str()),
+                m.provenance
+                    .as_ref()
+                    .map(|p| p.probe_commands[0].effective_command.as_str()),
+                "redacted effective_command must survive the round-trip"
+            );
+        }
     }
 
     // --- Validator seed + verdict parsing (pick#174 seams 2 & 3) ---

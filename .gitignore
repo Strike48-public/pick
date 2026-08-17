@@ -50,6 +50,20 @@ logs/
 # flags. Never commit — gitleaks scans full history (see CLAUDE.md).
 .env.plg
 
+# Operator test-identities for differential-authz testing (pick#162).
+# Holds real target credentials (cookies/JWT/headers) - never commit.
+# ROLLOUT WARNING: injected credentials are passed to tools via argv
+# (e.g. `curl -H "Authorization: Bearer <token>"`), so they are readable from
+# `ps` / `/proc/<pid>/cmdline` by any local user for the child's lifetime. Do
+# NOT provision real credentials on a shared or multi-tenant connector host
+# until pick#335 moves the header off argv (`curl -H @file`).
+# The loader (identities_file_path) prefers a cwd `identities.json` when present,
+# so a file copied from the template next to it here is both loaded AND ignored.
+# The committed template `identities.example.json` is deliberately re-included.
+identities.json
+identities.*.json
+!identities.example.json
+
 # AI tooling local overlays — private, operator-specific, never committed.
 # See CLAUDE.md "Local Overrides" section.
 CLAUDE.local.md

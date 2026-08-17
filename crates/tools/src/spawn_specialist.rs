@@ -10,7 +10,7 @@ use pentest_core::error::{Error, Result};
 use pentest_core::matrix::MatrixChatClient;
 use pentest_core::specialist_spawner::{
     AttackSurface, CloudIndicators, DatabaseIndicators, SpawnDecision, SpecialistContext,
-    SpecialistSpawner, SpecialistType,
+    SpecialistSpawner, SpecialistType, TestIdentity,
 };
 use pentest_core::tools::{execute_timed, PentestTool, Platform, ToolContext, ToolResult};
 use serde::{Deserialize, Serialize};
@@ -57,6 +57,14 @@ pub struct SpawnSpecialistInput {
     /// Red Team agent can omit it for non-database specialist spawns.
     #[serde(default)]
     pub database_indicators: DatabaseIndicators,
+
+    /// Operator-provided identities for differential authorization testing
+    /// (pick#162). Supply two or more (e.g. unauth + user + admin, or
+    /// tenant-A + tenant-B) so the WebApp/API specialist can replay requests
+    /// across the matrix and detect broken access control. Defaulted so the
+    /// Red Team agent can omit it for non-authz specialist spawns.
+    #[serde(default)]
+    pub identities: Vec<TestIdentity>,
 
     /// Justification for spawning (required when overriding policy).
     #[serde(default)]
@@ -186,6 +194,7 @@ async fn spawn_specialist_impl(
             cloud_indicators: input.cloud_indicators,
             database_indicators: input.database_indicators,
         },
+        identities: input.identities,
     };
 
     // Evaluate spawn policy
@@ -314,6 +323,7 @@ mod tests {
             entry_points: vec![],
             cloud_indicators: Default::default(),
             database_indicators: Default::default(),
+            identities: vec![],
             justification: None,
         }
     }

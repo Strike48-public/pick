@@ -52,6 +52,10 @@ pub(crate) struct PickConnector {
     pub runner: Arc<RwLock<Option<Arc<strike48_connector::ConnectorRunner>>>>,
     /// Matrix API URL derived from config for tool context
     pub matrix_api_url: String,
+    /// Operator-provided test identities (pick#162), loaded once from the
+    /// gitignored identities file at construction and cloned into each tool
+    /// context. Empty when no identities file is present.
+    pub identities: Arc<pentest_core::identity::IdentityStore>,
 }
 
 impl PickConnector {
@@ -290,6 +294,10 @@ impl BaseConnector for PickConnector {
                 // Set aggression level and agent name
                 ctx = ctx.with_aggression_level(*self.aggression_level.read().await);
                 ctx = ctx.with_agent_name(self.connector_name.clone());
+
+                // Provide operator identities for differential-authz tools
+                // (pick#162). Loaded once at construction; cloned per call.
+                ctx = ctx.with_identities((*self.identities).clone());
 
                 // Create Matrix client if API URL is available
                 let api_url = self.derive_matrix_api_url();
@@ -655,6 +663,7 @@ mod tests {
             ipc_addr: Arc::new(RwLock::new(None)),
             runner: Arc::new(RwLock::new(None)),
             matrix_api_url: String::new(),
+            identities: Arc::new(pentest_core::identity::IdentityStore::new()),
         }
     }
 
@@ -737,6 +746,58 @@ mod tests {
             result["_sanitization"]["injection_suspected"],
             json!(true),
             "production path must flag the injection: {result}"
+        );
+    }
+
+    /// Production-path regression guard for the #317 review HIGH-2 (reflected
+    /// credential): on a differential-authz identity run the connector splices
+    /// the operator's secret (`Authorization: Bearer <token>`) into argv, so a
+    /// target that reflects the request header (verbose/echo/error page, `curl
+    /// -v` on stderr) lands that secret in `data.stdout`/`stderr`. That field is
+    /// returned to the agent by `execute_with_context`, which would carry the
+    /// customer credential across the exact Matrix/LLM boundary the
+    /// differential-authz feature exists to protect.
+    ///
+    /// This is the read-side counterpart to the emit-side custody
+    /// (`SessionMaterial` non-Serialize; `ProbeCommand.command` skip-serialize):
+    /// the #320/#331 `sanitize_agent_result` choke point on the production
+    /// connector recursively scrubs secret shapes out of `data` before the result
+    /// reaches the agent. We simulate the reflection deterministically by echoing
+    /// a credential-shaped line (no network / no target dependency); the secret
+    /// must not survive to the agent-facing stdout. Reverting the
+    /// `sanitize_agent_result` call in `execute_with_context` turns this red.
+    #[tokio::test]
+    async fn execute_with_context_scrubs_reflected_credential_from_stdout() {
+        // Direct host execution — the sandbox rootfs isn't present on CI.
+        pentest_platform::set_use_sandbox(false);
+
+        let connector = test_connector();
+        let secret = "sk-super-secret-token-abcdef1234567890";
+        // Stand in for a target reflecting the injected auth header back in its
+        // response body — the exact shape `redact` targets.
+        let reflected = format!("Authorization: Bearer {secret}");
+        let request = json!({
+            "tool": "execute_command",
+            "parameters": { "command": "echo", "args": [reflected] }
+        });
+        let ctx: HashMap<String, String> = HashMap::new();
+
+        let result = connector
+            .execute_with_context(request, None, &ctx)
+            .await
+            .expect("execute_with_context failed");
+
+        let stdout = result["data"]["stdout"].as_str().unwrap_or("");
+        assert!(
+            !stdout.contains(secret),
+            "production path must scrub a reflected credential from stdout; got: {stdout:?}"
+        );
+        // The whole serialized result must be secret-free, not just stdout —
+        // guards against the credential surviving in any sibling field.
+        let whole = result.to_string();
+        assert!(
+            !whole.contains(secret),
+            "reflected credential leaked somewhere in the agent-facing result: {whole}"
         );
     }
 
