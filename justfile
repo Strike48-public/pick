@@ -10,9 +10,22 @@ default:
 
 # ============ Desktop ============
 
+# Sentry telemetry, baked at build time via option_env! (telemetry.rs). The DSN
+# is read from the AMBIENT env (empty default -> telemetry compiled to a no-op,
+# unchanged from before), so it is NOT published in this public repo — export
+# PICK_SENTRY_DSN (e.g. in your shell or .env) to enable dev telemetry. A Sentry
+# DSN is a write-only client ingest key, not a secret, but keeping it out of the
+# committed file avoids quota abuse from the public repo. Dev/branch builds
+# report to the `dev` environment so they never mix with production traffic
+# (release CI overrides STRIKE48_SENTRY_ENV=production). cargo tracks these in
+# its fingerprint (env! deps), so a changed value rebuilds without a build.rs.
+sentry_dsn := env_var_or_default("PICK_SENTRY_DSN", "")
+sentry_env := env_var_or_default("STRIKE48_SENTRY_ENV", "dev")
+
 # Build desktop app
 build-desktop:
-    cargo build --package pentest-desktop
+    PICK_SENTRY_DSN="{{sentry_dsn}}" STRIKE48_SENTRY_ENV="{{sentry_env}}" \
+        cargo build --package pentest-desktop
 
 # Build desktop app (release)
 build-desktop-release:
@@ -369,7 +382,8 @@ plg-down *ARGS:
 
 # Build web app
 build-web:
-    cargo build --package pentest-web
+    PICK_SENTRY_DSN="{{sentry_dsn}}" STRIKE48_SENTRY_ENV="{{sentry_env}}" \
+        cargo build --package pentest-web
 
 # Build web app (release)
 build-web-release:
@@ -703,6 +717,18 @@ build-android:
     if [ -n "${MATRIX_TLS_INSECURE:-}" ]; then
         export MATRIX_TLS_INSECURE
         echo "MATRIX_TLS_INSECURE=$MATRIX_TLS_INSECURE (baked — dev only)"
+    fi
+
+    # Bake Sentry telemetry (option_env! in telemetry.rs). DSN comes from the
+    # AMBIENT env (empty -> no-op, so nothing is published in this public repo);
+    # export PICK_SENTRY_DSN to enable. Dev/branch builds report to the `dev`
+    # environment by default so they never mix with production (release CI sets
+    # STRIKE48_SENTRY_ENV=production). A DSN is a write-only ingest key, not a
+    # secret, but kept out of the committed file to avoid public quota abuse.
+    if [ -n "${PICK_SENTRY_DSN:-}" ]; then
+        export PICK_SENTRY_DSN
+        export STRIKE48_SENTRY_ENV="${STRIKE48_SENTRY_ENV:-dev}"
+        echo "PICK_SENTRY_DSN baked (env=$STRIKE48_SENTRY_ENV)"
     fi
 
     # Drop dev debuginfo — large disk the APK doesn't need. Overridable; output
@@ -1068,6 +1094,12 @@ build-ios:
     if [ -n "${MATRIX_TLS_INSECURE:-}" ]; then
         export MATRIX_TLS_INSECURE
         echo "MATRIX_TLS_INSECURE=$MATRIX_TLS_INSECURE (baked — dev only)"
+    fi
+    # Bake Sentry from the ambient env (see build-android for the rationale).
+    if [ -n "${PICK_SENTRY_DSN:-}" ]; then
+        export PICK_SENTRY_DSN
+        export STRIKE48_SENTRY_ENV="${STRIKE48_SENTRY_ENV:-dev}"
+        echo "PICK_SENTRY_DSN baked (env=$STRIKE48_SENTRY_ENV)"
     fi
 
     {{dx}} build --platform ios --package pick
