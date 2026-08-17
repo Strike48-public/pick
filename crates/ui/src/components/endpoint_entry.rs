@@ -13,27 +13,35 @@ use pentest_core::config::ConnectorConfig;
 /// Props for [`EndpointEntry`].
 #[derive(Props, Clone, PartialEq)]
 pub struct EndpointEntryProps {
-    /// The URL being edited. Hoisted into the parent [`EasyModeShell`] so it
-    /// survives this component remounting — which happens when the parent's
-    /// props churn (e.g. auth_token/tenant_id clearing on logout) forces
-    /// EasyModeShell to re-render and rebuild the overlay subtree. If the state
-    /// lived here in a local `use_signal`, that remount would blank the field
-    /// mid-typing; keeping it in the stable parent makes it durable.
-    pub url: Signal<String>,
+    /// The current host, used to seed the field (via `initial_value`).
+    #[props(default)]
+    pub current_host: String,
     pub on_save: EventHandler<String>,
     pub on_cancel: EventHandler<()>,
 }
 
-/// Modal URL entry for changing the Strike48 endpoint. Validates via
-/// `normalize_host`: a valid URL enables Save and shows a "Will connect to: …"
-/// preview; an empty or malformed URL shows an inline error and disables Save.
+/// Modal URL entry for changing the Strike48 endpoint.
+///
+/// The field is UNCONTROLLED and its value is read once, on submit, from the
+/// form event (`FormData::get_first`). This is the idiomatic Dioxus pattern for
+/// a simple form and it avoids two traps we previously hit with a value-bound
+/// signal:
+///   1. `<input value=…>` is `volatile` in dioxus-html — every re-render (the
+///      always-mounted ChatPanel re-renders on a 5s poll) re-writes it to the
+///      DOM, blanking mid-typing.
+///   2. Gating Save on a signal let a stray empty `oninput` (fired when the
+///      field remounts on logout prop churn) wipe the value and silently
+///      disable Save.
+/// Reading the DOM's own value on submit sidesteps both: nothing is bound, and
+/// Save's value is whatever is actually in the field. A small local signal backs
+/// only the live "Will connect to: …" / error preview, which gates nothing.
 #[component]
 pub fn EndpointEntry(props: EndpointEntryProps) -> Element {
-    let mut url = props.url;
+    // Preview-only state. Seeded from current_host so the hint shows before the
+    // user types; updated on input. Never used for the saved value.
+    let mut preview = use_signal(|| props.current_host.clone());
 
-    // Validation + preview, recomputed on every keystroke.
-    let value = url.read().clone();
-    let trimmed = value.trim().to_string();
+    let trimmed = preview.read().trim().to_string();
     let (hint, error): (Option<String>, Option<String>) = if trimmed.is_empty() {
         (None, None)
     } else {
@@ -46,56 +54,57 @@ pub fn EndpointEntry(props: EndpointEntryProps) -> Element {
             Err(e) => (None, Some(e)),
         }
     };
-    let can_save = !trimmed.is_empty() && error.is_none();
 
     rsx! {
         div { class: "easy-doc-screen easy-overlay",
             div { class: "easy-signin",
                 p { class: "easy-signin-title", "Change Strike48 server" }
                 p { class: "easy-signin-sub", "Enter the URL of the Strike48 server to connect to." }
-                div { class: "input-group",
-                    input {
-                        r#type: "text",
-                        placeholder: "wss://strike48.example.com:443",
-                        // UNCONTROLLED input: `initial_value` (not `value`) seeds the
-                        // field with the current host once, via the DOM node's
-                        // `defaultValue`. We deliberately avoid the `value` attribute
-                        // because dioxus-html marks it `volatile` (elements.rs), so the
-                        // diff engine (`diff/node.rs`: `if volatile || attribute_changed`)
-                        // RE-WRITES it to the DOM on EVERY re-render regardless of change.
-                        // The always-mounted ChatPanel re-renders on its 5s poll loop, so
-                        // a controlled `value` would re-apply the signal's value to the
-                        // webview <input> mid-typing and blank whatever the user just
-                        // typed (the clobber). `initial_value` is non-volatile and only
-                        // updates the field while its dirty-value flag is false (before
-                        // the user types), so re-renders can't clear it. The hoisted
-                        // `url` signal still tracks every keystroke via `oninput`, which
-                        // drives the normalize_host hint/error and Save-gating below.
-                        initial_value: "{url}",
-                        oninput: move |e| url.set(e.value()),
-                    }
-                    if let Some(hint) = hint {
-                        span { class: "form-hint", "{hint}" }
-                    }
-                    if let Some(err) = error {
-                        span { class: "error-banner", "{err}" }
-                    }
-                }
-                button {
-                    class: "action-card",
-                    disabled: !can_save,
-                    onclick: move |_| {
-                        let v = url.read().trim().to_string();
-                        if !v.is_empty() {
+                form {
+                    // Read the field once, on submit, from the form event. Enter or
+                    // the Save button both fire this.
+                    onsubmit: move |e: FormEvent| {
+                        e.prevent_default();
+                        let raw = match e.get_first("server_url") {
+                            Some(FormValue::Text(s)) => s,
+                            _ => String::new(),
+                        };
+                        let v = raw.trim().to_string();
+                        // Only save a valid URL; a bad/empty one leaves the inline
+                        // error visible (the preview updates on input below).
+                        if !v.is_empty() && ConnectorConfig::normalize_host(&v).is_ok() {
                             props.on_save.call(v);
                         }
                     },
-                    span { class: "action-card-label", "Save" }
-                }
-                button {
-                    class: "easy-signin-secondary",
-                    onclick: move |_| props.on_cancel.call(()),
-                    "Cancel"
+                    div { class: "input-group",
+                        input {
+                            name: "server_url",
+                            r#type: "text",
+                            placeholder: "wss://strike48.example.com:443",
+                            // UNCONTROLLED: `initial_value` (defaultValue) seeds the
+                            // field once at mount and is NOT volatile, so re-renders
+                            // can't clobber it. No `value:` binding.
+                            initial_value: "{props.current_host}",
+                            oninput: move |e| preview.set(e.value()),
+                        }
+                        if let Some(hint) = hint {
+                            span { class: "form-hint", "{hint}" }
+                        }
+                        if let Some(err) = error {
+                            span { class: "error-banner", "{err}" }
+                        }
+                    }
+                    button {
+                        r#type: "submit",
+                        class: "action-card",
+                        span { class: "action-card-label", "Save" }
+                    }
+                    button {
+                        r#type: "button",
+                        class: "easy-signin-secondary",
+                        onclick: move |_| props.on_cancel.call(()),
+                        "Cancel"
+                    }
                 }
             }
         }
