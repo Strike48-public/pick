@@ -282,12 +282,19 @@ pub fn ConversationDocs(props: ConversationDocsProps) -> Element {
             let api_url = api_url.clone();
             let auth_token = auth_token.clone();
 
-            // No conversation yet, or not connected. Do NOT clear `docs` here —
-            // a transient `None` (e.g. mid chat-state update) would blank the
-            // panel and it would repopulate on the next poll, causing a flicker.
-            // Keep the last-known list; it's replaced only when a real query for
-            // an actual conversation resolves, or when the conversation changes.
+            // cid is None: either a transient blip mid chat-state update, OR a
+            // real move to a fresh conversation ("New chat", which sets
+            // conversation_id to None). Distinguish by whether we were polling a
+            // real conversation: if so, this is a genuine switch — clear the
+            // previous chat's docs (else they linger into the new chat, showing a
+            // stale "documents from this chat" strip) and stop the old poll loop.
+            // If we were NOT polling anything, keep the last-known list so a
+            // transient None doesn't blank the panel and flicker.
             let Some(cid) = cid else {
+                if polling_cid.peek().is_some() {
+                    docs.set(Vec::new());
+                    polling_cid.set(None);
+                }
                 return;
             };
             if auth_token.is_empty() || api_url.is_empty() {
