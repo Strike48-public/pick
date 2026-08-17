@@ -37,8 +37,26 @@ pub fn param_u64(params: &Value, key: &str, default: u64) -> u64 {
 }
 
 /// Extract a `bool` parameter with a default value.
+/// Accepts a real JSON boolean, an integer/float (`0` is false, non-zero true),
+/// or a string (`"true"`/`"1"`/`"yes"` and `"false"`/`"0"`/`"no"`, case- and
+/// whitespace-insensitive). LLM tool callers frequently emit `"true"` or `1`
+/// for a flag; a raw `as_bool()` here silently dropped those to the default,
+/// so a passive scan could run active or an append could overwrite. An
+/// unrecognized value falls back to `default`.
 pub fn param_bool(params: &Value, key: &str, default: bool) -> bool {
-    params.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
+    params
+        .get(key)
+        .and_then(|v| {
+            v.as_bool()
+                .or_else(|| v.as_u64().map(|n| n != 0))
+                .or_else(|| v.as_f64().map(|f| f != 0.0))
+                .or_else(|| match v.as_str()?.trim().to_ascii_lowercase().as_str() {
+                    "true" | "1" | "yes" => Some(true),
+                    "false" | "0" | "no" => Some(false),
+                    _ => None,
+                })
+        })
+        .unwrap_or(default)
 }
 
 /// Convert dBm signal strength to signal quality percentage (0-100)
@@ -97,4 +115,49 @@ pub fn quality_to_bars(quality: u8) -> &'static str {
 /// Unicode bar visualization string
 pub fn dbm_to_bars(dbm: i32) -> &'static str {
     quality_to_bars(dbm_to_quality(dbm))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn param_bool_accepts_real_json_bool() {
+        assert!(param_bool(&json!({"passive": true}), "passive", false));
+        assert!(!param_bool(&json!({"passive": false}), "passive", true));
+    }
+
+    #[test]
+    fn param_bool_coerces_numeric_booleans() {
+        // LLM callers emit `1`/`0` (and occasionally `1.0`) for flags.
+        assert!(param_bool(&json!({"recursive": 1}), "recursive", false));
+        assert!(!param_bool(&json!({"recursive": 0}), "recursive", true));
+        assert!(param_bool(&json!({"recursive": 1.0}), "recursive", false));
+        assert!(!param_bool(&json!({"recursive": 0.0}), "recursive", true));
+    }
+
+    #[test]
+    fn param_bool_coerces_string_booleans() {
+        // Case- and whitespace-insensitive; covers the common textual shapes.
+        assert!(param_bool(&json!({"append": "true"}), "append", false));
+        assert!(param_bool(&json!({"append": " TRUE "}), "append", false));
+        assert!(param_bool(&json!({"append": "1"}), "append", false));
+        assert!(param_bool(&json!({"append": "yes"}), "append", false));
+        assert!(!param_bool(&json!({"append": "false"}), "append", true));
+        assert!(!param_bool(&json!({"append": "0"}), "append", true));
+        assert!(!param_bool(&json!({"append": "no"}), "append", true));
+    }
+
+    #[test]
+    fn param_bool_falls_back_to_default_on_unparseable_or_missing() {
+        // Missing key -> default.
+        assert!(param_bool(&json!({}), "append", true));
+        assert!(!param_bool(&json!({}), "append", false));
+        // Unrecognized string -> default, not a silent `false`.
+        assert!(param_bool(&json!({"append": "maybe"}), "append", true));
+        assert!(!param_bool(&json!({"append": "maybe"}), "append", false));
+        // Wrong-type value (array) -> default.
+        assert!(param_bool(&json!({"append": [1, 2]}), "append", true));
+    }
 }
