@@ -774,7 +774,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!(
+                                tracing::error!(
                                     "ChatPanel: failed to create pentest-connector agent: {}",
                                     e
                                 );
@@ -783,6 +783,16 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 props
                                     .on_chat_event
                                     .call(crate::auth_flow::AuthEvent::ChatReady);
+                                // No agent could be created and none was found, so
+                                // `selected_agent` stays None. Surface WHY instead of
+                                // silently dropping the user on the misleading "Select
+                                // an agent to begin" empty state (which implies an
+                                // action that doesn't exist — the connector owns its
+                                // one agent). This is the state a registration/setup
+                                // failure lands in.
+                                error_msg.set(Some(format!(
+                                    "Couldn't set up the assistant: {e}. This usually means the connector didn't finish registering — try again, or check the server connection."
+                                )));
                             }
                         }
                     }

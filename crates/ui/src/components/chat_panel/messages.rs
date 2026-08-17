@@ -139,8 +139,14 @@ pub fn MessageList(props: MessageListProps) -> Element {
                             }
                         }
                     } else {
+                        // No agent selected and we're not mid/awaiting sign-in. The
+                        // user never picks an agent (the connector owns its one
+                        // agent), so "Select an agent" is nonsense — this state means
+                        // agent setup hasn't completed. An error_msg is surfaced
+                        // separately (chat-error) when creation actually failed; this
+                        // is the neutral in-between copy.
                         div { class: "chat-empty",
-                            p { "Select an agent to begin" }
+                            p { "Setting up your assistant…" }
                         }
                     }
                 }
