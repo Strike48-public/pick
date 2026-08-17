@@ -52,7 +52,7 @@ impl PentestTool for NmapTool {
                 "Target IP, hostname, or range. Supported range forms: CIDR ('192.168.1.0/24'), \
                  or IPv4 dash ranges — last-octet ('10.0.0.1-50') or full-IP ('10.0.0.1-10.0.5.20'). \
                  Prefer CIDR or a simple IP1-IP2 dash range; nmap's multi-octet form ('10.0.0-1.1-254') \
-                 is not scope-checked and may be rejected.",
+                 is not scope-checked and is rejected.",
             ))
             .param(ToolParam::optional(
                 "scan_type",
