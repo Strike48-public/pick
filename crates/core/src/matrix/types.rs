@@ -289,6 +289,9 @@ pub struct UpdateAgentInput {
     /// changes (e.g. a new report format) on the next launch — without this the
     /// system message is frozen at agent-creation time and edits never apply.
     pub system_message: Option<String>,
+    /// Re-enable the agent. Set when updating an agent that may have been found
+    /// disabled (see `find_own_agent`) so it becomes visible/usable again.
+    pub is_enabled: Option<bool>,
 }
 
 impl UpdateAgentInput {
@@ -300,6 +303,9 @@ impl UpdateAgentInput {
         }
         if let Some(ref sm) = self.system_message {
             input.insert("systemMessage".into(), serde_json::json!(sm));
+        }
+        if let Some(enabled) = self.is_enabled {
+            input.insert("isEnabled".into(), serde_json::json!(enabled));
         }
         serde_json::json!({ "input": input })
     }
@@ -315,6 +321,12 @@ impl UpdateAgentInput {
 pub trait ChatClient: Send + Sync {
     async fn list_agents(&self) -> crate::error::Result<Vec<AgentInfo>>;
     async fn find_agent_by_name(&self, name: &str) -> crate::error::Result<Option<AgentInfo>>;
+    /// Find an agent by EXACT name regardless of enabled state. Unlike
+    /// [`list_agents`]/[`find_agent_by_name`] (which only see enabled agents), this
+    /// includes disabled ones so the connector's create-vs-update decision can
+    /// find and re-enable its own previously-created (now disabled) agent instead
+    /// of trying to create a duplicate.
+    async fn find_own_agent(&self, name: &str) -> crate::error::Result<Option<AgentInfo>>;
     async fn create_agent(&self, input: CreateAgentInput) -> crate::error::Result<AgentInfo>;
     async fn update_agent(&self, input: UpdateAgentInput) -> crate::error::Result<AgentInfo>;
     async fn create_conversation(&self, title: Option<&str>) -> crate::error::Result<String>;

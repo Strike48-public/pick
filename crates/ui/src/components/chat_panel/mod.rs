@@ -634,7 +634,15 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         log_url
                     )));
                     let connector_name = crate::session::get_connector_name();
-                    let auto = list.iter().find(|a| a.name == connector_name).cloned();
+                    // Prefer the enabled-list hit, but fall back to a name lookup
+                    // that includes DISABLED agents: our agent may exist but be
+                    // disabled (hidden from list_agents), in which case we must
+                    // update+re-enable it rather than createAgent (which the server
+                    // rejects with "a persona with that name already exists").
+                    let auto = match list.iter().find(|a| a.name == connector_name).cloned() {
+                        Some(a) => Some(a),
+                        None => client.find_own_agent(&connector_name).await.unwrap_or(None),
+                    };
 
                     // Ensure the Validator Agent sibling exists. It rides on
                     // the same connector but with a separate system prompt
@@ -718,6 +726,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             id: agent.id.clone(),
                             tools: fresh_input.tools,
                             system_message: fresh_input.system_message.clone(),
+                            // Re-enable in case find_own_agent matched a disabled one.
+                            is_enabled: Some(true),
                         };
                         match client.update_agent(update_input).await {
                             Ok(updated) => {

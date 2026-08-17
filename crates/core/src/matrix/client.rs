@@ -150,7 +150,37 @@ impl MatrixChatClient {
                 crate::error::Error::Matrix(format!("Response contained invalid UTF-8: {}", e))
             })?
         };
-        let gql: GqlResponse<T> = serde_json::from_str(&body_text).map_err(|e| {
+        // Check GraphQL `errors` BEFORE decoding `data` into `T`. On an error
+        // response the server sends `{"data":{"createAgent":null},"errors":[...]}`;
+        // decoding that into a struct with a non-optional field fails with a
+        // useless "invalid type: null, expected struct ..." and buries the real
+        // message. Parse errors from a loose Value first so the actual server
+        // message (e.g. "A persona with that name already exists") surfaces.
+        let raw: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
+            crate::error::Error::Matrix(format!(
+                "GraphQL decode error: {} — body: {}",
+                e,
+                truncate_body(&body_text)
+            ))
+        })?;
+        if let Some(errors) = raw.get("errors").filter(|e| !e.is_null()) {
+            let msgs: Vec<String> = errors
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                        .map(|s| s.to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !msgs.is_empty() {
+                return Err(crate::error::Error::Matrix(format!(
+                    "GraphQL errors: {}",
+                    msgs.join(", ")
+                )));
+            }
+        }
+        let gql: GqlResponse<T> = serde_json::from_value(raw).map_err(|e| {
             crate::error::Error::Matrix(format!(
                 "GraphQL decode error: {} — body: {}",
                 e,
@@ -436,6 +466,23 @@ const LIST_AGENTS_QUERY: &str = r#"
     }
 "#;
 
+// Look up agents by name WITHOUT the isEnabled filter. Used only for the
+// connector's own create-vs-update decision: a previously-created agent that is
+// currently disabled is hidden by the enabled-only LIST_AGENTS_QUERY, so the
+// caller would wrongly try to createAgent and the server rejects it with
+// "a persona with that name already exists". This finds it (any state) so the
+// caller updates + re-enables instead. Not used for user-facing agent lists.
+const FIND_AGENTS_BY_NAME_QUERY: &str = r#"
+    query FindAgentsByName($name: String!) {
+        agents(filter: { name: $name }) {
+            id
+            name
+            description
+            agentGreeting
+        }
+    }
+"#;
+
 const CREATE_AGENT_QUERY: &str = r#"
     mutation CreateAgent($input: AgentInput!) {
         createAgent(input: $input) {
@@ -596,6 +643,26 @@ impl ChatClient for MatrixChatClient {
         Ok(agents
             .into_iter()
             .find(|a| a.name.to_lowercase().contains(&lower)))
+    }
+
+    async fn find_own_agent(&self, name: &str) -> crate::error::Result<Option<AgentInfo>> {
+        if self.auth_token.is_none() {
+            return Ok(None);
+        }
+        let data: AgentsData = self
+            .execute_gql(
+                FIND_AGENTS_BY_NAME_QUERY,
+                serde_json::json!({ "name": name }),
+            )
+            .await?;
+        // The server `name` filter may be substring/fuzzy, so pick the exact
+        // (case-insensitive) match to avoid grabbing the Validator/Report sibling
+        // (e.g. "pentest-connector" vs "pentest-connector-validator").
+        Ok(data
+            .agents
+            .into_iter()
+            .map(AgentInfo::from)
+            .find(|a| a.name.eq_ignore_ascii_case(name)))
     }
 
     async fn create_agent(&self, input: CreateAgentInput) -> crate::error::Result<AgentInfo> {
