@@ -13,6 +13,7 @@ pub mod file_browser;
 pub mod jwt_validator;
 pub mod logging;
 pub mod matrix;
+pub mod onboarding;
 pub mod orchestrator;
 pub mod paths;
 pub mod provenance;
