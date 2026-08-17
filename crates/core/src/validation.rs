@@ -287,13 +287,88 @@ pub fn validate_cidr(cidr: &str) -> Result<String> {
     Ok(cidr.to_string())
 }
 
-/// Validates target specification (IP, hostname, or CIDR)
+/// Validates an IPv4 dash range.
+///
+/// Accepts exactly the two forms the scan tools advertise and that the Matrix
+/// scope gate (`Matrix.Net.ScopeGate`) can scope-check, so a range Pick accepts
+/// is always one Matrix can enforce against out-of-scope (issue #3019):
+///
+/// - Last-octet: `10.0.0.1-50` — same first three octets, last octet is the
+///   upper bound (`0-255`), and the upper octet must be `>=` the base's.
+/// - Full-IP:    `10.0.0.1-10.0.5.20` — both sides valid IPv4, upper `>=` lower
+///   as a 32-bit integer (no same-/24 restriction).
+///
+/// Rejected (fails closed, matching the scope gate):
+/// - Multi-octet cross-product (`10.0.0-1.1-254`) — the left side is not a valid
+///   IPv4, so nmap's expansion is not scope-checkable and is not accepted here.
+/// - Reversed bounds (`10.0.0.50-1`, `10.0.0.5-10.0.0.1`).
+/// - Out-of-range octet, or any malformed token.
+///
+/// # Examples
+///
+/// ```
+/// use pentest_core::validation::validate_ipv4_range;
+///
+/// assert!(validate_ipv4_range("10.0.0.1-50").is_ok());
+/// assert!(validate_ipv4_range("10.0.0.1-10.0.5.20").is_ok());
+/// assert!(validate_ipv4_range("10.0.0.50-1").is_err());
+/// assert!(validate_ipv4_range("10.0.0-1.1-254").is_err());
+/// ```
+pub fn validate_ipv4_range(range: &str) -> Result<String> {
+    let range = range.trim();
+
+    let err = || Error::InvalidParams(format!("Invalid IPv4 range: {}", range));
+
+    // Only the first dash separates the bounds. A left side like "10.0.0" (from
+    // a multi-octet form) is not a valid IPv4 and is rejected below.
+    let (left, right) = range.split_once('-').ok_or_else(err)?;
+
+    let lower = validate_ipv4(left.trim()).map_err(|_| err())?;
+    let lower_int = u32::from(lower);
+
+    let right = right.trim();
+
+    // Bare last-octet upper bound (e.g. "50" in "10.0.0.1-50"): reuse the base's
+    // first three octets. A multi-octet token like "1.1-254" is not `\d{1,3}`,
+    // so it falls to the full-IP branch and is rejected there.
+    let upper_int = if right.chars().all(|c| c.is_ascii_digit()) && !right.is_empty() {
+        let last = right.parse::<u16>().map_err(|_| err())?;
+        if last > 255 {
+            return Err(err());
+        }
+
+        let [a, b, c, _] = lower.octets();
+        u32::from(Ipv4Addr::new(a, b, c, last as u8))
+    } else {
+        u32::from(validate_ipv4(right).map_err(|_| err())?)
+    };
+
+    if lower_int > upper_int {
+        return Err(err());
+    }
+
+    Ok(range.to_string())
+}
+
+/// True when a target is an IPv4 dash-range candidate: it contains a dash and is
+/// made up only of digits, dots, and dashes. This excludes hostnames that
+/// contain dashes (they carry letters) and IPv6 (colons), mirroring the Matrix
+/// scope gate's `range_literal?/1` so both sides classify targets identically.
+fn is_ipv4_range_literal(target: &str) -> bool {
+    target.contains('-')
+        && target
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == '-')
+}
+
+/// Validates target specification (IP, hostname, CIDR, or IPv4 dash range)
 ///
 /// Accepts:
 /// - IPv4: "192.168.1.1"
 /// - IPv6: "2001:db8::1"
 /// - Hostname: "example.com"
 /// - CIDR: "192.168.1.0/24"
+/// - IPv4 dash range: "10.0.0.1-50" or "10.0.0.1-10.0.5.20"
 ///
 /// # Examples
 ///
@@ -303,6 +378,7 @@ pub fn validate_cidr(cidr: &str) -> Result<String> {
 /// assert!(validate_target("192.168.1.1").is_ok());
 /// assert!(validate_target("example.com").is_ok());
 /// assert!(validate_target("192.168.1.0/24").is_ok());
+/// assert!(validate_target("10.0.0.1-50").is_ok());
 /// assert!(validate_target("; rm -rf /").is_err());
 /// ```
 pub fn validate_target(target: &str) -> Result<String> {
@@ -320,6 +396,13 @@ pub fn validate_target(target: &str) -> Result<String> {
     // Try IP address next
     if validate_ip(target).is_ok() {
         return Ok(target.to_string());
+    }
+
+    // An IPv4 dash range must be validated as a range, not fall through to the
+    // hostname branch — otherwise "10.0.0.1-50" passes as a pseudo-hostname with
+    // no bounds check and no agreement with Matrix scope enforcement (#3019).
+    if is_ipv4_range_literal(target) {
+        return validate_ipv4_range(target);
     }
 
     // Finally try hostname
@@ -425,8 +508,48 @@ mod tests {
         assert!(validate_target("::1").is_ok());
         assert!(validate_target("2001:db8::/32").is_ok());
 
+        // IPv4 dash ranges are accepted via the range validator, not as
+        // pseudo-hostnames (#3019).
+        assert!(validate_target("10.0.0.1-50").is_ok());
+        assert!(validate_target("10.0.0.1-10.0.5.20").is_ok());
+        // A reversed / multi-octet range must be rejected, not slip through as a
+        // hostname the way it did before the range branch existed.
+        assert!(validate_target("10.0.0.50-1").is_err());
+        assert!(validate_target("10.0.0-1.1-254").is_err());
+        // Hostnames that merely contain a dash are still hostnames, not ranges.
+        assert!(validate_target("my-host.example.com").is_ok());
+
         assert!(validate_target("").is_err());
         assert!(validate_target("-invalid.com").is_err());
+    }
+
+    #[test]
+    fn test_validate_ipv4_range() {
+        // Last-octet form.
+        assert!(validate_ipv4_range("10.0.0.1-50").is_ok());
+        assert!(validate_ipv4_range("192.168.1.1-255").is_ok());
+        // Single-host range (lower == upper) is allowed.
+        assert!(validate_ipv4_range("10.0.0.5-5").is_ok());
+
+        // Full-IP form, including cross-/24 (no same-subnet restriction).
+        assert!(validate_ipv4_range("10.0.0.1-10.0.5.20").is_ok());
+        assert!(validate_ipv4_range("10.0.0.1-10.0.0.1").is_ok());
+
+        // Reversed bounds are rejected (fail closed).
+        assert!(validate_ipv4_range("10.0.0.50-1").is_err());
+        assert!(validate_ipv4_range("10.0.0.5-10.0.0.1").is_err());
+
+        // Multi-octet cross-product: the left side is not a valid IPv4.
+        assert!(validate_ipv4_range("10.0.0-1.1-254").is_err());
+
+        // Out-of-range last octet.
+        assert!(validate_ipv4_range("10.0.0.1-300").is_err());
+
+        // Malformed / non-range garbage.
+        assert!(validate_ipv4_range("10.0.0.1-").is_err());
+        assert!(validate_ipv4_range("-10.0.0.1").is_err());
+        assert!(validate_ipv4_range("not-a-range").is_err());
+        assert!(validate_ipv4_range("999.0.0.1-2").is_err());
     }
 
     #[test]

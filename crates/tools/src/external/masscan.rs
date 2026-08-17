@@ -45,8 +45,8 @@ impl PentestTool for MasscanTool {
                 "target",
                 ParamType::String,
                 "Target IP, CIDR, or IPv4 dash range. Prefer CIDR ('10.0.0.0/8') or a simple \
-                 IP1-IP2 range ('10.0.0.1-10.0.5.20'); multi-octet ranges are not scope-checked \
-                 and may be rejected.",
+                 IP1-IP2 range ('10.0.0.1-10.0.5.20'); last-octet ranges ('10.0.0.1-50') are also \
+                 supported. Multi-octet ranges ('10.0.0-1.1-254') are not scope-checked and are rejected.",
             ))
             .param(ToolParam::optional(
                 "ports",
