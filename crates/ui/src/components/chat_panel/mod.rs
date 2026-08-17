@@ -708,11 +708,16 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             "ChatPanel: auto-selected agent: {}, updating tool configs",
                             agent.name
                         );
-                        // Update the existing agent's tool configs with current tools
+                        // Sync the existing agent's tools AND system message with the
+                        // current build. The system message carries the persona (report
+                        // format, safety-verdict rubric, etc.); without pushing it here
+                        // an agent created on an older build stays frozen on the old
+                        // prompt forever (create sets it; update must too).
                         let fresh_input = default_pentest_agent_input(&tenant_id, &connector_name);
                         let update_input = UpdateAgentInput {
                             id: agent.id.clone(),
                             tools: fresh_input.tools,
+                            system_message: fresh_input.system_message.clone(),
                         };
                         match client.update_agent(update_input).await {
                             Ok(updated) => {

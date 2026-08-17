@@ -285,6 +285,10 @@ impl CreateAgentInput {
 pub struct UpdateAgentInput {
     pub id: String,
     pub tools: Option<serde_json::Value>,
+    /// Persona/system prompt. Set so an already-created agent picks up prompt
+    /// changes (e.g. a new report format) on the next launch — without this the
+    /// system message is frozen at agent-creation time and edits never apply.
+    pub system_message: Option<String>,
 }
 
 impl UpdateAgentInput {
@@ -293,6 +297,9 @@ impl UpdateAgentInput {
         input.insert("id".into(), serde_json::json!(self.id));
         if let Some(ref t) = self.tools {
             input.insert("tools".into(), serde_json::json!(t.to_string()));
+        }
+        if let Some(ref sm) = self.system_message {
+            input.insert("systemMessage".into(), serde_json::json!(sm));
         }
         serde_json::json!({ "input": input })
     }
