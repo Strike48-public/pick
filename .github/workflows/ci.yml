@@ -285,13 +285,22 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'android-lib/**/*.gradle*') }}
           restore-keys: |
             gradle-${{ runner.os }}-
-      # Install the Dioxus CLI (`dx`) at the flake-pinned version and expose it to
-      # `just` via DX_PATH (the justfile defaults DX_PATH to ~/.dx/bin/dx). Cached
-      # by the cargo cache above once built.
+      # Cache the compiled `dx` BINARY so we don't recompile dioxus-cli (a
+      # multi-minute build) every run. `cargo install` drops it in ~/.cargo/bin,
+      # which the cargo-registry cache above does NOT cover — cache it separately,
+      # keyed on the pinned version so a bump busts it.
+      - uses: actions/cache@v4
+        id: dx-cache
+        with:
+          path: ~/.cargo/bin/dx
+          key: dx-${{ runner.os }}-0.7.9
+      # Install the Dioxus CLI (`dx`) at the flake-pinned version only on a cache
+      # miss, then expose it to `just` via DX_PATH.
       - name: Install dioxus-cli (dx)
-        run: |
-          cargo install dioxus-cli --version 0.7.9 --locked
-          echo "DX_PATH=$(command -v dx)" >> "$GITHUB_ENV"
+        if: steps.dx-cache.outputs.cache-hit != 'true'
+        run: cargo install dioxus-cli --version 0.7.9 --locked
+      - name: Expose dx on PATH
+        run: echo "DX_PATH=$HOME/.cargo/bin/dx" >> "$GITHUB_ENV"
       # Fetch the Termux proot runtime (proot + libtalloc + busybox +
       # libandroid-shmem) into android-jniLibs/ BEFORE building. android-jniLibs/
       # is gitignored (fetched artifacts, not source), and _inject-android-lib
