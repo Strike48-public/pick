@@ -229,11 +229,24 @@ impl BaseConnector for PentestConnector {
 
             let start = std::time::Instant::now();
 
-            // Execute the tool with workspace context
-            let ctx = match workspace_path {
+            // Execute the tool with workspace context. Copy any distributed-
+            // trace headers the backend forwarded (request.metadata.sentry_trace
+            // / .baggage) into the tool context so the tool span can join the
+            // backend's conversation trace (see telemetry::start_tool_span).
+            let mut ctx = match workspace_path {
                 Some(path) => ToolContext::default().with_workspace(path),
                 None => ToolContext::default(),
             };
+            if let Some(meta) = request.get("metadata").and_then(|m| m.as_object()) {
+                for key in [
+                    crate::telemetry::SENTRY_TRACE_HEADER,
+                    crate::telemetry::BAGGAGE_HEADER,
+                ] {
+                    if let Some(val) = meta.get(key).and_then(|v| v.as_str()) {
+                        ctx.metadata.insert(key.to_string(), val.to_string());
+                    }
+                }
+            }
             let registry = tools.read().await;
 
             match registry.execute(tool_name, params, &ctx).await {

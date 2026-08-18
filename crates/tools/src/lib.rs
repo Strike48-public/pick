@@ -13,6 +13,7 @@ pub mod device_info;
 pub mod evidence_producer; // NEW: Convert tool results to evidence nodes
 pub mod execute_command;
 pub mod external; // NEW: External tool integrations (BlackArch)
+pub mod http_request; // Native HTTP request tool (all platforms incl. iOS)
 pub mod inject_test_evidence; // NEW: Test tool for three-agent pipeline
 pub mod installers; // NEW: Bespoke tool installers for the tool catalog
 pub mod lateral_movement;
@@ -74,6 +75,7 @@ pub use external::{
 // module itself stays compiled so its own `#[cfg(test)]` unit test builds under
 // `cargo test`; the tool is just not surfaced to callers of the registry in
 // release builds.
+pub use http_request::HttpRequestTool;
 #[cfg(feature = "inject-test-evidence")]
 pub use inject_test_evidence::InjectTestEvidenceTool;
 pub use lateral_movement::LateralMovementTool;
@@ -120,6 +122,7 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(CveLookupTool);
     registry.register(DefaultCredsTool);
     registry.register(WebVulnScanTool);
+    registry.register(HttpRequestTool); // Native HTTP request (all platforms incl. iOS)
     registry.register(SmbEnumTool);
     registry.register(Enum4linuxTool); // External: SMB/Windows enumeration
 

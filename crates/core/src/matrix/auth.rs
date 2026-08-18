@@ -45,11 +45,7 @@ pub async fn fetch_matrix_token_from(matrix_url: &str) -> crate::error::Result<S
     let client = reqwest::Client::builder()
         .cookie_store(true)
         .redirect(reqwest::redirect::Policy::none())
-        .danger_accept_invalid_certs(
-            std::env::var("MATRIX_INSECURE")
-                .map(|v| v == "1" || v == "true")
-                .unwrap_or(false),
-        )
+        .danger_accept_invalid_certs(super::insecure_tls())
         .build()
         .map_err(|e| crate::error::Error::Matrix(e.to_string()))?;
 
@@ -211,19 +207,43 @@ type BrowserOpenerFn = Option<Box<dyn Fn(&str) -> Result<(), String> + Send + Sy
 #[cfg(feature = "browser-auth")]
 static BROWSER_OPENER: std::sync::Mutex<BrowserOpenerFn> = std::sync::Mutex::new(None);
 
-/// Callback to set the OAuth callback port on the native side (Android).
-/// On Android, the OAuthCallbackActivity needs to know which port the local
-/// Axum server is listening on so it can forward the token from the custom
-/// URI scheme intent.
+/// Oneshot sender for the Android native-OAuth login currently in flight, if
+/// any. `OAuthCallbackActivity` completes it via [`deliver_native_oauth_callback`]
+/// (JNI) rather than the loopback server, which can't survive the app being
+/// backgrounded while the system browser is open.
 #[cfg(feature = "browser-auth")]
-type OAuthPortSetterFn = Option<Box<dyn Fn(u16) + Send + Sync>>;
+static NATIVE_OAUTH_TX: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>> =
+    std::sync::Mutex::new(None);
 
+/// The `state` value expected for the in-flight native-OAuth login. Set before
+/// the browser opens; checked in `deliver_native_oauth_callback` so a forged
+/// custom-scheme callback (any zero-permission app can `startActivity` one)
+/// cannot inject a token for a login this process never initiated.
 #[cfg(feature = "browser-auth")]
-static OAUTH_PORT_SETTER: std::sync::Mutex<OAuthPortSetterFn> = std::sync::Mutex::new(None);
+static NATIVE_OAUTH_STATE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// Custom URI scheme for native app OAuth callbacks (Android).
+/// Extract the `state` parameter from a callback URL (query or fragment),
+/// mirroring `token_from_callback_url`.
 #[cfg(feature = "browser-auth")]
-const NATIVE_OAUTH_REDIRECT: &str = "com.strike48.pentest://oauth/callback";
+fn state_from_callback_url(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if let Some((_, v)) = parsed.query_pairs().find(|(k, _)| k == "state") {
+        if !v.is_empty() {
+            return Some(v.into_owned());
+        }
+    }
+    if let Some(frag) = parsed.fragment() {
+        for (k, v) in reqwest::Url::parse(&format!("{NATIVE_OAUTH_SCHEME}://x/?{frag}"))
+            .ok()?
+            .query_pairs()
+        {
+            if k == "state" && !v.is_empty() {
+                return Some(v.into_owned());
+            }
+        }
+    }
+    None
+}
 
 /// Return the cached browser-obtained token, if any.
 #[cfg(feature = "browser-auth")]
@@ -251,26 +271,353 @@ where
     }
 }
 
-/// Register a callback to set the OAuth callback port on the native side.
+/// Native web-auth-session hook (iOS `ASWebAuthenticationSession`).
 ///
-/// On Android, this should call `ConnectorBridge.setOAuthCallbackPort(port)` via JNI
-/// so that `OAuthCallbackActivity` knows where to forward the token.
+/// Given the login URL and the callback URL scheme (e.g. `com.strike48.pentest`),
+/// present the platform's in-app auth browser and return the full callback URL
+/// (`com.strike48.pentest://oauth/callback?...`) it redirects to. Blocking; the
+/// caller runs it on a blocking thread. When registered, iOS uses this instead
+/// of the loopback callback server (which can't work: launching a browser
+/// backgrounds the app and suspends the server).
 #[cfg(feature = "browser-auth")]
-pub fn set_oauth_port_setter<F>(setter: F)
+type WebAuthSessionFn = Option<Box<dyn Fn(&str, &str) -> Result<String, String> + Send + Sync>>;
+
+#[cfg(feature = "browser-auth")]
+static WEB_AUTH_SESSION: std::sync::Mutex<WebAuthSessionFn> = std::sync::Mutex::new(None);
+
+/// Register a native web-auth-session provider (iOS `ASWebAuthenticationSession`).
+#[cfg(feature = "browser-auth")]
+pub fn set_web_auth_session<F>(session: F)
 where
-    F: Fn(u16) + Send + Sync + 'static,
+    F: Fn(&str, &str) -> Result<String, String> + Send + Sync + 'static,
 {
-    if let Ok(mut s) = OAUTH_PORT_SETTER.lock() {
-        *s = Some(Box::new(setter));
+    if let Ok(mut lock) = WEB_AUTH_SESSION.lock() {
+        *lock = Some(Box::new(session));
     }
 }
 
-/// Tell the native side (Android) which port the callback server is on.
+/// Custom URL scheme (no path) for the native OAuth callback: the scheme we
+/// request in the `redirect=` param and present as the
+/// `ASWebAuthenticationSession` callback scheme on iOS. Kept as the LEGACY
+/// `com.strike48.pentest` because that is the redirect URI the backend currently
+/// allow-lists. The app ALSO registers the new `com.strike48.pick` scheme as an
+/// OS handler (AndroidManifest intent-filter + iOS CFBundleURLSchemes) and the
+/// callback parser is scheme-agnostic, so once the backend allow-lists
+/// `com.strike48.pick://oauth/callback` this constant flips to it and the legacy
+/// registrations can be dropped.
 #[cfg(feature = "browser-auth")]
-fn notify_oauth_port(port: u16) {
-    if let Ok(s) = OAUTH_PORT_SETTER.lock() {
-        if let Some(ref setter) = *s {
-            setter(port);
+const NATIVE_OAUTH_SCHEME: &str = "com.strike48.pentest";
+
+/// Deliver an Android native-OAuth callback URL into the in-flight login.
+///
+/// `OAuthCallbackActivity` calls this (via its JNI export in the app's native
+/// lib) with the full custom-scheme callback URL — e.g.
+/// `com.strike48.pentest://oauth/callback?access_token=...` — after the OS
+/// routes the browser redirect back to the app. We parse the token and complete
+/// the oneshot that [`fetch_matrix_token_browser`] is awaiting. This replaces
+/// the loopback HTTP hand-off, which fails on Android because launching the
+/// browser backgrounds the app and the OS suspends the callback server.
+///
+/// Returns `true` only when a login was in flight, the callback's `state`
+/// matched the value generated for that login, and a token was delivered.
+///
+/// A forged custom-scheme callback (any zero-permission app can `startActivity`
+/// one) is rejected: with no waiting sender, or a `state` that does not match
+/// [`NATIVE_OAUTH_STATE`], the token is neither cached nor delivered. A login
+/// that timed out therefore requires a fresh, state-matched sign-in rather than
+/// silently adopting a late (or attacker-supplied) token.
+#[cfg(feature = "browser-auth")]
+pub fn deliver_native_oauth_callback(callback_url: &str) -> bool {
+    // Reject unless a login is actually in flight. A forged callback from any
+    // other app must not be adopted.
+    let sender = match NATIVE_OAUTH_TX.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(_) => {
+            tracing::error!("[BROWSER_AUTH] native OAuth sender lock poisoned");
+            return false;
+        }
+    };
+    let Some(tx) = sender else {
+        tracing::warn!("[BROWSER_AUTH] native OAuth callback with no login in flight; rejected");
+        return false;
+    };
+
+    // Validate the state parameter against the value we generated for this login.
+    // A login is already known to be in flight (the sender existed above), which
+    // is the primary anti-forgery guard here. On top of that:
+    //   * both present AND equal   -> trust.
+    //   * both present but DIFFERENT -> reject (forged/replayed callback).
+    //   * server did not echo state (got=None) -> accept with a warning, matching
+    //     the iOS relaxation: some servers (e.g. plg's /auth/login) don't
+    //     round-trip `state`, and the OS custom-scheme routing + the in-flight
+    //     sender already bind this callback to the login we initiated. Rejecting
+    //     a valid token purely for missing state would break native sign-in.
+    let expected = NATIVE_OAUTH_STATE.lock().ok().and_then(|mut g| g.take());
+    let got = state_from_callback_url(callback_url);
+    match (expected, got) {
+        (Some(exp), Some(g)) if exp != g => {
+            tracing::warn!("[BROWSER_AUTH] native OAuth state mismatch; rejected");
+            return false;
+        }
+        (_, None) => {
+            tracing::warn!(
+                "[BROWSER_AUTH] native OAuth callback omitted state; accepting on \
+                 in-flight-login + custom-scheme binding (server did not echo state)"
+            );
+        }
+        _ => {}
+    }
+
+    let Some(token) = token_from_callback_url(callback_url) else {
+        tracing::warn!("[BROWSER_AUTH] native OAuth callback URL contained no access_token");
+        return false;
+    };
+    // Cache only AFTER state validation succeeds.
+    if let Ok(mut cache) = BROWSER_TOKEN_CACHE.lock() {
+        *cache = Some(token.clone());
+    }
+    tx.send(token).is_ok()
+}
+
+/// If a native web-auth-session is registered (iOS), run the OIDC flow through
+/// it and return the token. Returns `Ok(None)` when no session is registered so
+/// the caller falls through to the loopback-server flow (desktop/Android).
+///
+/// The provider presents `ASWebAuthenticationSession` for
+/// `{base}/auth/login?redirect=com.strike48.pentest://oauth/callback` and
+/// returns the callback URL; we pull `access_token` from its query.
+#[cfg(feature = "browser-auth")]
+async fn try_native_web_auth_session(base: &str) -> crate::error::Result<Option<String>> {
+    let has_session = WEB_AUTH_SESSION
+        .lock()
+        .map(|l| l.is_some())
+        .unwrap_or(false);
+    if !has_session {
+        return Ok(None);
+    }
+
+    // Build the login URL with the native-scheme redirect using the url crate
+    // (reqwest re-exports it) so query encoding is correct, not hand-rolled.
+    let redirect = format!("{NATIVE_OAUTH_SCHEME}://oauth/callback");
+    let state = generate_oauth_state();
+    let mut login_url = reqwest::Url::parse(base)
+        .map_err(|e| crate::error::Error::Matrix(format!("invalid Matrix base URL: {e}")))?;
+    login_url.set_path("/auth/login");
+    login_url
+        .query_pairs_mut()
+        .append_pair("redirect", &redirect)
+        .append_pair("state", &state);
+    let login_url = login_url.to_string();
+    tracing::info!("[BROWSER_AUTH] iOS: presenting web auth session -> {login_url}");
+
+    // The session is blocking (waits for the user + callback), so run it off the
+    // async executor.
+    let scheme = NATIVE_OAUTH_SCHEME.to_string();
+    let callback_url = tokio::task::spawn_blocking(move || {
+        let lock = WEB_AUTH_SESSION
+            .lock()
+            .map_err(|_| "session lock poisoned".to_string())?;
+        let session = lock
+            .as_ref()
+            .ok_or_else(|| "no web auth session".to_string())?;
+        session(&login_url, &scheme)
+    })
+    .await
+    .map_err(|e| crate::error::Error::Matrix(format!("web auth task join error: {e}")))?
+    .map_err(crate::error::Error::Matrix)?;
+
+    tracing::info!("[BROWSER_AUTH] iOS: web auth session returned a callback URL");
+    // Validate the state before trusting the callback. Two cases:
+    //   * state echoed AND matches   -> trust (best case).
+    //   * state echoed but DIFFERENT -> reject: this is a forged/replayed
+    //     callback, exactly the hijack `state` defends against.
+    //   * state ABSENT (server didn't echo it) -> accept with a warning.
+    // The absent-state relaxation is native-only and safe here because
+    // `ASWebAuthenticationSession` hands the callback back IN-PROCESS and the OS
+    // only routes our exact custom scheme (`com.strike48.pentest`) to the session
+    // WE initiated — the OS already binds the response to our request, so the
+    // CSRF nonce is far less load-bearing than in the desktop loopback flow
+    // (where any local process could POST to the callback port). Some servers
+    // (e.g. plg's /auth/login relay) simply don't round-trip `state`; rejecting a
+    // valid in-process token purely for that would break native sign-in.
+    match state_from_callback_url(&callback_url) {
+        Some(got) if got == state => {}
+        Some(_) => {
+            return Err(crate::error::Error::Matrix(
+                "iOS web auth state mismatch".to_string(),
+            ));
+        }
+        None => {
+            tracing::warn!(
+                "[BROWSER_AUTH] iOS: callback omitted state; accepting on in-process \
+                 custom-scheme binding (server did not echo state)"
+            );
+        }
+    }
+    let token = token_from_callback_url(&callback_url).ok_or_else(|| {
+        crate::error::Error::Matrix(
+            "iOS web auth callback URL contained no access_token".to_string(),
+        )
+    })?;
+
+    // Cache like the loopback flow does, so a later chat visit reuses it.
+    if let Ok(mut cache) = BROWSER_TOKEN_CACHE.lock() {
+        *cache = Some(token.clone());
+    }
+    Ok(Some(token))
+}
+
+/// Extract the `access_token` query parameter from a callback URL, using the
+/// url crate's parser (handles percent-decoding). The callback carries the
+/// token in either the query string or the fragment, so try both.
+#[cfg(feature = "browser-auth")]
+fn token_from_callback_url(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if let Some((_, v)) = parsed.query_pairs().find(|(k, _)| k == "access_token") {
+        if !v.is_empty() {
+            return Some(v.into_owned());
+        }
+    }
+    // Fragment form: ...#access_token=...&token_type=...
+    if let Some(frag) = parsed.fragment() {
+        for (k, v) in reqwest::Url::parse(&format!("{NATIVE_OAUTH_SCHEME}://x/?{frag}"))
+            .ok()?
+            .query_pairs()
+        {
+            if k == "access_token" && !v.is_empty() {
+                return Some(v.into_owned());
+            }
+        }
+    }
+    None
+}
+
+/// Android native OAuth: open the system browser and await the token that
+/// `OAuthCallbackActivity` delivers via [`deliver_native_oauth_callback`].
+///
+/// This is the Android analog of [`try_native_web_auth_session`] (iOS). Both
+/// avoid the loopback callback server, which can't work on mobile: launching
+/// the browser backgrounds the app, so the in-process HTTP listener is
+/// suspended and the custom-scheme redirect has nothing to reach. Instead the
+/// OS routes `com.strike48.pentest://oauth/callback?access_token=...` to our
+/// exported Activity, which hands the URL straight into the core over JNI.
+///
+/// Returns `Ok(None)` on non-Android targets so desktop falls through to the
+/// loopback-server flow.
+#[cfg(feature = "browser-auth")]
+async fn try_native_android_oauth(base: &str) -> crate::error::Result<Option<String>> {
+    if !cfg!(target_os = "android") {
+        return Ok(None);
+    }
+
+    // Build `{base}/auth/login?redirect=com.strike48.pentest://oauth/callback`
+    // with the url crate so query encoding is correct (not hand-rolled).
+    let redirect = format!("{NATIVE_OAUTH_SCHEME}://oauth/callback");
+    let state = generate_oauth_state();
+    let mut login_url = reqwest::Url::parse(base)
+        .map_err(|e| crate::error::Error::Matrix(format!("invalid Matrix base URL: {e}")))?;
+    login_url.set_path("/auth/login");
+    login_url
+        .query_pairs_mut()
+        .append_pair("redirect", &redirect)
+        .append_pair("state", &state);
+    let login_url = login_url.to_string();
+
+    // Register the oneshot BEFORE opening the browser so a fast callback can't
+    // race us. Replacing any stale sender abandons a prior abandoned attempt.
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    match NATIVE_OAUTH_TX.lock() {
+        Ok(mut guard) => *guard = Some(tx),
+        Err(_) => {
+            return Err(crate::error::Error::Matrix(
+                "native OAuth sender lock poisoned".to_string(),
+            ))
+        }
+    }
+    if let Ok(mut g) = NATIVE_OAUTH_STATE.lock() {
+        *g = Some(state);
+    }
+
+    tracing::info!("[BROWSER_AUTH] Android: opening browser for native OAuth -> {login_url}");
+    // If the browser never actually opened, fail NOW with a clear message rather
+    // than blocking 5 minutes on a callback that can't arrive. Drop the oneshot
+    // we just registered so a later attempt starts clean.
+    if let Err(e) = open_url_via_opener(&login_url) {
+        let _ = NATIVE_OAUTH_TX.lock().map(|mut g| g.take());
+        let _ = NATIVE_OAUTH_STATE.lock().map(|mut g| g.take());
+        return Err(crate::error::Error::Matrix(format!(
+            "couldn't open a browser to sign in ({e}). Check the server address and that a browser is installed."
+        )));
+    }
+
+    // Wait for the Activity to deliver the token (or time out). A first-time
+    // interactive browser sign-in (Keycloak form + consent, on a cold browser)
+    // can take well over two minutes, so give it a generous 5-minute window;
+    // observed real logins landed at ~2m20s and were lost under the old 120s cap.
+    // A late callback past even this is still recovered from BROWSER_TOKEN_CACHE
+    // (see `deliver_native_oauth_callback`).
+    const OAUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+    let token = match tokio::time::timeout(OAUTH_TIMEOUT, rx).await {
+        Ok(Ok(token)) => token,
+        Ok(Err(_)) => {
+            // Sender dropped without sending (e.g. a later attempt replaced it).
+            let _ = NATIVE_OAUTH_TX.lock().map(|mut g| g.take());
+            return Err(crate::error::Error::Matrix(
+                "native OAuth callback channel closed".to_string(),
+            ));
+        }
+        Err(_) => {
+            let _ = NATIVE_OAUTH_TX.lock().map(|mut g| g.take());
+            return Err(crate::error::Error::Matrix(
+                "native OAuth timed out waiting for callback".to_string(),
+            ));
+        }
+    };
+
+    if token.is_empty() {
+        return Err(crate::error::Error::Matrix(
+            "native OAuth delivered an empty token".to_string(),
+        ));
+    }
+
+    // Cache like the loopback flow does, so a later chat visit reuses it.
+    if let Ok(mut cache) = BROWSER_TOKEN_CACHE.lock() {
+        *cache = Some(token.clone());
+    }
+    Ok(Some(token))
+}
+
+/// Open a URL using the registered platform browser opener, falling back to
+/// `open::that`. Shared by the Android native-OAuth and loopback flows. Returns
+/// `Err` when NO opener could launch the URL, so the caller can fail fast with a
+/// clear message instead of blocking on a callback that will never arrive (the
+/// browser never actually opened). A custom opener that reports success wins; a
+/// custom-opener error falls through to `open::that` before giving up.
+#[cfg(feature = "browser-auth")]
+fn open_url_via_opener(url: &str) -> Result<(), String> {
+    if let Ok(opener_lock) = BROWSER_OPENER.lock() {
+        if let Some(ref opener) = *opener_lock {
+            match opener(url) {
+                Ok(_) => {
+                    tracing::info!("[BROWSER_AUTH] Browser opened via custom opener");
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!("[BROWSER_AUTH] Custom browser opener failed: {e}");
+                }
+            }
+        }
+    }
+    match open::that(url) {
+        Ok(_) => {
+            tracing::info!("[BROWSER_AUTH] Browser opened via open::that()");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!(
+                "[BROWSER_AUTH] Failed to open browser: {e}. Please open this URL manually:\n{url}"
+            );
+            Err(format!("could not open a browser: {e}"))
         }
     }
 }
@@ -349,6 +696,21 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
     }
 
     let base = super::normalize_url(matrix_url).to_string();
+
+    // iOS: use the native ASWebAuthenticationSession when registered. It keeps
+    // the app foregrounded and delivers the custom-scheme callback URL directly,
+    // so we skip the loopback callback server entirely (that server can't work
+    // on iOS — launching a browser suspends the app process).
+    if let Some(token) = try_native_web_auth_session(&base).await? {
+        return Ok(token);
+    }
+
+    // Android: route the custom-scheme redirect to OAuthCallbackActivity, which
+    // delivers the token over JNI. Like iOS, this skips the loopback server (it
+    // can't survive the app being backgrounded while the browser is open).
+    if let Some(token) = try_native_android_oauth(&base).await? {
+        return Ok(token);
+    }
 
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
     let tx = std::sync::Arc::new(tokio::sync::Mutex::new(Some(tx)));
@@ -583,26 +945,17 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
         }
     });
 
-    // On Android, use a custom URI scheme so the OS routes the OAuth redirect
-    // back to OAuthCallbackActivity (intent filter) instead of requiring the
-    // browser to reach localhost.  The Activity forwards the token to the local
-    // Axum server via HTTP, so we still need the server running.
-    let redirect_url = if cfg!(target_os = "android") {
-        notify_oauth_port(local_port);
-        tracing::info!(
-            "[BROWSER_AUTH] Android: using native redirect scheme, port={}",
-            local_port
-        );
-        NATIVE_OAUTH_REDIRECT.to_string()
-    } else {
-        // Carry the CSRF `state` on the loopback redirect so a token the server
-        // hands back directly on `/callback?access_token=…` arrives with it
-        // (issue #375). The custom percent-encoder below encodes `?`/`=`.
-        format!(
-            "http://localhost:{}/callback?state={}",
-            local_port, oauth_state
-        )
-    };
+    // This loopback flow is desktop-only: Android and iOS deliver their token
+    // via the native custom-scheme paths above (deliver_native_oauth_callback)
+    // before reaching here. The browser hits the callback server over localhost.
+    //
+    // Carry the CSRF `state` on the loopback redirect so a token the server
+    // hands back directly on `/callback?access_token=…` arrives with it
+    // (issue #375). The custom percent-encoder below encodes `?`/`=`.
+    let redirect_url = format!(
+        "http://localhost:{}/callback?state={}",
+        local_port, oauth_state
+    );
 
     // Percent-encode the redirect URL for the query parameter.
     // We only need to handle the chars present in our redirect URLs.
@@ -620,41 +973,13 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
     let login_url = format!("{}/auth/login?redirect={}", base, encoded_redirect);
     tracing::info!("[BROWSER_AUTH] Opening browser to: {}", login_url);
 
-    // Try custom browser opener first (for Android Intent support)
-    let custom_opener_result = if let Ok(opener_lock) = BROWSER_OPENER.lock() {
-        if let Some(ref opener) = *opener_lock {
-            tracing::info!("[BROWSER_AUTH] Using custom browser opener");
-            match opener(&login_url) {
-                Ok(_) => {
-                    tracing::info!("[BROWSER_AUTH] Browser opened via custom opener");
-                    Some(Ok(()))
-                }
-                Err(e) => {
-                    tracing::warn!("[BROWSER_AUTH] Custom browser opener failed: {}", e);
-                    Some(Err(e))
-                }
-            }
-        } else {
-            tracing::info!("[BROWSER_AUTH] No custom browser opener registered");
-            None
-        }
-    } else {
-        tracing::warn!("[BROWSER_AUTH] Failed to acquire browser opener lock");
-        None
-    };
-
-    // Fall back to standard open::that() if no custom opener or it failed
-    if custom_opener_result.is_none() {
-        tracing::info!("[BROWSER_AUTH] Falling back to open::that()");
-        if let Err(e) = open::that(&login_url) {
-            tracing::error!(
-                "[BROWSER_AUTH] Failed to open browser: {}. Please open this URL manually:\n{}",
-                e,
-                login_url
-            );
-        } else {
-            tracing::info!("[BROWSER_AUTH] Browser opened via open::that()");
-        }
+    // If no browser could be launched, fail fast (and stop the loopback server)
+    // instead of waiting out the full timeout for a callback that can't come.
+    if let Err(e) = open_url_via_opener(&login_url) {
+        server_handle.abort();
+        return Err(crate::error::Error::Matrix(format!(
+            "couldn't open a browser to sign in ({e}). Check the server address and that a browser is installed."
+        )));
     }
 
     tracing::info!("[BROWSER_AUTH] Waiting for token (120s timeout)...");
@@ -1273,5 +1598,82 @@ mod browser_token_tests {
             err.contains("channel closed"),
             "expected channel-closed error, got: {err}"
         );
+    }
+}
+
+#[cfg(all(test, feature = "browser-auth"))]
+mod native_oauth_tests {
+    use super::{deliver_native_oauth_callback, NATIVE_OAUTH_STATE, NATIVE_OAUTH_TX};
+
+    // These tests share the NATIVE_OAUTH_TX / NATIVE_OAUTH_STATE process-globals,
+    // so they would race under the default multi-threaded runner. Serialize them
+    // with a shared lock (recover from poisoning so one failure does not cascade).
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(test)]
+    fn clear_oauth_state_for_test() {
+        *NATIVE_OAUTH_TX.lock().unwrap() = None;
+        *NATIVE_OAUTH_STATE.lock().unwrap() = None;
+    }
+    #[cfg(test)]
+    fn arm_oauth_for_test(tx: tokio::sync::oneshot::Sender<String>, state: &str) {
+        *NATIVE_OAUTH_TX.lock().unwrap() = Some(tx);
+        *NATIVE_OAUTH_STATE.lock().unwrap() = Some(state.to_string());
+    }
+
+    #[test]
+    fn deliver_rejects_callback_with_no_inflight_login() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // No login armed: even a well-formed token+state callback must be rejected.
+        clear_oauth_state_for_test();
+        let url = "com.strike48.pentest://oauth/callback?access_token=abc&state=deadbeef";
+        assert!(
+            !deliver_native_oauth_callback(url),
+            "no in-flight login must reject"
+        );
+    }
+
+    #[test]
+    fn deliver_rejects_state_mismatch() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Arm a login expecting one state, deliver a different state -> rejected.
+        let (tx, _rx) = tokio::sync::oneshot::channel::<String>();
+        arm_oauth_for_test(tx, "expected-state");
+        let url = "com.strike48.pentest://oauth/callback?access_token=abc&state=attacker";
+        assert!(
+            !deliver_native_oauth_callback(url),
+            "state mismatch must reject"
+        );
+    }
+
+    #[test]
+    fn deliver_accepts_matching_state() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        arm_oauth_for_test(tx, "good-state");
+        let url = "com.strike48.pentest://oauth/callback?access_token=tok123&state=good-state";
+        assert!(
+            deliver_native_oauth_callback(url),
+            "matching state must deliver"
+        );
+        assert_eq!(rx.blocking_recv().unwrap(), "tok123");
+    }
+
+    #[test]
+    fn deliver_accepts_absent_state_with_token() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Server did not echo `state` (e.g. plg's /auth/login relay), but a login
+        // is in flight and the token is present. The in-flight sender + OS
+        // custom-scheme routing bind this callback to our request, so we accept
+        // and deliver rather than rejecting a valid token. (Regression guard for
+        // the native-flow relaxation of Tomek finding #2's strict state check.)
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        arm_oauth_for_test(tx, "expected-state");
+        let url = "com.strike48.pentest://oauth/callback?access_token=tok456";
+        assert!(
+            deliver_native_oauth_callback(url),
+            "absent state + in-flight login + token must deliver"
+        );
+        assert_eq!(rx.blocking_recv().unwrap(), "tok456");
     }
 }

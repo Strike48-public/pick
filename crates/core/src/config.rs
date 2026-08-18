@@ -19,7 +19,6 @@ pub enum ShellMode {
 /// UI theme
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Theme {
-    #[default]
     Strike48,
     Dark,
     Light,
@@ -29,6 +28,9 @@ pub enum Theme {
     Matrix,
     Cyberpunk,
     Nord,
+    #[default]
+    Sage,
+    SageLight,
 }
 
 /// Border radius style
@@ -94,6 +96,26 @@ pub struct ConnectorConfig {
 
 fn default_connector_name() -> String {
     "pentest-connector".to_string()
+}
+
+/// Whether the PLG easy-mode connect should sign in first or connect silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlgConnectStep {
+    /// Connect straight away (expert mode, or easy mode with saved creds).
+    Silent,
+    /// Run OAuth-first, then exchange for an OTT before connecting.
+    SignIn,
+}
+
+/// Decide the easy-mode connect path. Only easy mode with no saved connector
+/// credentials needs the OAuth-first flow; every other case connects silently
+/// (expert mode's own path is unaffected).
+pub fn plg_connect_decision(easy_mode: bool, creds_present: bool) -> PlgConnectStep {
+    if easy_mode && !creds_present {
+        PlgConnectStep::SignIn
+    } else {
+        PlgConnectStep::Silent
+    }
 }
 
 impl Default for ConnectorConfig {
@@ -415,6 +437,95 @@ impl ConnectorConfig {
         None
     }
 
+    /// Build an easy-mode default config from the PLG target supplied at BUILD
+    /// time via `option_env!("STRIKE48_HOST")` (+ optional `STRIKE48_TENANT`),
+    /// falling back to the RUNTIME [`from_env`] for desktop/dev where the process
+    /// environment is real. This is the correct path for the mobile apps, which
+    /// have no runtime environment — a runtime `std::env::var` is always empty
+    /// on-device, so the host must be baked in at build time (same mechanism as
+    /// the Sentry DSN). Nothing is hardcoded in the repo: absent a build-time
+    /// host, this returns `None` and the connect form shows as the escape hatch.
+    pub fn from_baked_or_env() -> Option<Self> {
+        // Build-time host (baked into the binary). Empty/unset -> fall through.
+        let baked_host = option_env!("STRIKE48_HOST")
+            .or(option_env!("STRIKE48_URL"))
+            .or(option_env!("STRIKE48_API_URL"))
+            .map(str::trim)
+            .filter(|h| !h.is_empty());
+
+        let Some(host) = baked_host else {
+            // No build-time host: use the runtime env (desktop/dev/headless).
+            return Self::from_env();
+        };
+
+        let mut config = ConnectorConfig {
+            host: host.to_string(),
+            ..Default::default()
+        };
+        // Build-time tenant (UUID preferred, else slug). Optional.
+        if let Some(tenant) = option_env!("STRIKE48_TENANT")
+            .or(option_env!("MATRIX_TENANT_ID"))
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            config.tenant_id = tenant.to_string();
+        }
+        if let Some(tls) = option_env!("STRIKE48_TLS") {
+            config.use_tls = tls != "false" && tls != "0";
+        }
+        Some(config)
+    }
+
+    /// Build a config from environment variables alone (host + tenant + tls),
+    /// with an empty auth token (post-approval flow). Returns `None` if no host
+    /// env var is set, so callers can distinguish "env configured a PLG target"
+    /// from "nothing configured". Used by easy mode (#283) to default-connect to
+    /// a PLG tenant supplied at build/deploy time without a baked-in host.
+    ///
+    /// Host carriers: `STRIKE48_HOST` / `STRIKE48_URL` / `STRIKE48_API_URL`.
+    /// Tenant resolution mirrors [`load_connector_config`]: prefer a UUID-shaped
+    /// value across [`TENANT_ENV_VARS`], else the first non-empty slug.
+    pub fn from_env() -> Option<Self> {
+        let host = std::env::var("STRIKE48_HOST")
+            .or_else(|_| std::env::var("STRIKE48_URL"))
+            .or_else(|_| std::env::var("STRIKE48_API_URL"))
+            .ok()
+            .map(|h| h.trim().to_string())
+            .filter(|h| !h.is_empty())?;
+
+        let mut config = ConnectorConfig {
+            host,
+            ..Default::default()
+        };
+
+        // Tenant: UUID wins over slug across the supported carriers.
+        let mut slug_fallback: Option<String> = None;
+        for var in Self::TENANT_ENV_VARS {
+            let Ok(v) = std::env::var(var) else { continue };
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if Self::is_uuid_like(trimmed) {
+                config.tenant_id = trimmed.to_string();
+                slug_fallback = None;
+                break;
+            }
+            if slug_fallback.is_none() {
+                slug_fallback = Some(trimmed.to_string());
+            }
+        }
+        if let Some(slug) = slug_fallback {
+            config.tenant_id = slug;
+        }
+
+        if let Ok(tls) = std::env::var("STRIKE48_TLS") {
+            config.use_tls = tls != "false" && tls != "0";
+        }
+
+        Some(config)
+    }
+
     /// Read the tenant UUID the SDK stored during OTT approval, if any.
     ///
     /// Studio addresses App-behavior connectors by tenant UUID
@@ -452,6 +563,36 @@ impl ConnectorConfig {
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
+    }
+
+    /// True when the SDK has already persisted connector credentials for this
+    /// identity (i.e. a prior OTT registration succeeded), so we can connect
+    /// without signing in again.
+    pub fn credentials_present(connector_name: &str, instance_id: &str) -> bool {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        std::path::PathBuf::from(home)
+            .join(".strike48")
+            .join("credentials")
+            .join(format!("{connector_name}_{instance_id}.json"))
+            .exists()
+    }
+
+    /// Delete the SDK's persisted connector credentials for this identity, if
+    /// present. Used by "Log out" so the next launch does a fully fresh OTT
+    /// registration rather than silently reconnecting the old connector.
+    /// Best-effort: a missing file or unset HOME is a no-op.
+    pub fn clear_credentials(connector_name: &str, instance_id: &str) {
+        let Ok(home) = std::env::var("HOME") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(home)
+            .join(".strike48")
+            .join("credentials")
+            .join(format!("{connector_name}_{instance_id}.json"));
+        let _ = std::fs::remove_file(path);
     }
 
     /// Split a Strike48-style URL (accepts anything [`normalize_host`] produces
@@ -616,6 +757,108 @@ pub struct AppSettings {
     /// Selected WiFi adapter for scanning (interface name, e.g., "wlan1")
     /// If None, will use first available adapter
     pub wifi_adapter: Option<String>,
+
+    /// Whether anonymous usage telemetry (Sentry) is enabled. On by default;
+    /// users can opt out. No PII or target/scan data is ever sent.
+    #[serde(default = "default_telemetry_enabled")]
+    pub telemetry_enabled: bool,
+
+    /// The Matrix API URL the cached chat token was minted for, so on startup we
+    /// only restore the token (from the secure store — see `secure_store`) when
+    /// still pointing at the same host. The token itself is NEVER stored here;
+    /// it lives in the OS secure store (iOS Keychain / Android Keystore).
+    #[serde(default)]
+    pub matrix_api_url: String,
+
+    /// User's Easy Mode preference. `None` means "never chosen" — fall through to
+    /// the build-time / per-app default (see [`resolve_easy_mode`]). `Some(b)` is
+    /// an explicit in-app Settings choice that overrides the default.
+    #[serde(default)]
+    pub easy_mode: Option<bool>,
+
+    /// Whether the user dismissed the Windows "install WSL for better scanning"
+    /// banner. The show logic still hides the banner once a sandbox backend is
+    /// available, so this only suppresses the nag while none is.
+    #[serde(default)]
+    pub wsl_banner_dismissed: bool,
+}
+
+/// Cross-target result of the guided WSL install, surfaced to the UI banner.
+///
+/// This is the platform-agnostic mirror of
+/// `pentest_platform::desktop::sandbox::wsl_install::InstallOutcome`. It lives
+/// in `pentest-core` so `pentest-ui` (which is cross-target and must not depend
+/// on the desktop-only `wsl_install` module) can name the states in its
+/// `ConnectorAppConfig` hook signature. The desktop wrapper maps `InstallOutcome`
+/// onto this enum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WslInstallStatus {
+    /// Features + kernel installed successfully; the machine must reboot before
+    /// WSL is usable.
+    RebootRequired,
+    /// The install completed and WSL is ready (no reboot needed).
+    Completed,
+    /// A UAC-elevating relaunch was launched; the elevated helper continues the
+    /// install out-of-process. Nothing more for this process to do.
+    ElevationLaunched,
+    /// The install failed; the string carries a human-readable reason.
+    Failed(String),
+}
+
+/// Resolve the effective Easy Mode flag from all sources, most-specific first:
+///  1. the user's persisted Settings choice (`settings_easy_mode`), if set;
+///  2. the BUILD-TIME `PICK_EASY_MODE` env (baked via `option_env!`, the only
+///     source that reaches mobile) — `true`/`1` or `false`/`0`;
+///  3. the per-app compile-time default (`app_default`, from `ConnectorAppConfig`).
+///
+/// This lets a build ship easy-mode-first (`PICK_EASY_MODE=true`) without code
+/// edits, while the in-app toggle still wins.
+pub fn resolve_easy_mode(settings_easy_mode: Option<bool>, app_default: bool) -> bool {
+    if let Some(choice) = settings_easy_mode {
+        return choice;
+    }
+    if let Some(v) = option_env!("PICK_EASY_MODE") {
+        match v.trim() {
+            "true" | "1" => return true,
+            "false" | "0" => return false,
+            _ => {}
+        }
+    }
+    app_default
+}
+
+/// Resolve the effective shell/scan mode at startup from the persisted mode and
+/// the environment, in this order:
+///  1. First-run bias: if `default_proot` (a mobile/easy-mode-first build) and
+///     the user has never connected (`first_run`) and the persisted mode is the
+///     `Native` default, prefer `Proot`.
+///  2. Backend reality: a sandbox mode (`Proot`) is only viable when a sandbox
+///     backend is available. When `sandbox_available` is false (e.g. macOS
+///     without Docker, Windows without WSL), coerce to `Native` — trying to run
+///     every command in a sandbox that doesn't exist fails the whole scan. The
+///     user can re-enable sandboxing from Settings once a backend appears.
+///
+/// Pure so it can be unit-tested; `connector_app` calls it at startup.
+pub fn resolve_shell_mode(
+    persisted: ShellMode,
+    default_proot: bool,
+    first_run: bool,
+    sandbox_available: bool,
+) -> ShellMode {
+    let mut mode = persisted;
+    if default_proot && mode == ShellMode::Native && first_run {
+        mode = ShellMode::Proot;
+    }
+    if mode == ShellMode::Proot && !sandbox_available {
+        mode = ShellMode::Native;
+    }
+    mode
+}
+
+/// Telemetry is opt-out: enabled by default so PLG usage analytics work, with a
+/// settings toggle to disable it.
+fn default_telemetry_enabled() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -632,6 +875,10 @@ impl Default for AppSettings {
             shell_mode: ShellMode::default(),
             download_state: DownloadState::default(),
             wifi_adapter: None,
+            telemetry_enabled: default_telemetry_enabled(),
+            matrix_api_url: String::new(),
+            easy_mode: None,
+            wsl_banner_dismissed: false,
         }
     }
 }
@@ -849,6 +1096,69 @@ impl AppSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_settings_defaults_wsl_banner_not_dismissed() {
+        let s = AppSettings::default();
+        assert!(!s.wsl_banner_dismissed);
+    }
+
+    #[test]
+    fn shell_mode_coerces_to_native_when_no_backend() {
+        // Persisted Proot but no sandbox backend (macOS w/o Docker, Windows w/o
+        // WSL): must fall back to Native, not try a sandbox that can't run.
+        assert_eq!(
+            resolve_shell_mode(ShellMode::Proot, false, false, false),
+            ShellMode::Native
+        );
+    }
+
+    #[test]
+    fn shell_mode_keeps_proot_when_backend_available() {
+        assert_eq!(
+            resolve_shell_mode(ShellMode::Proot, false, false, true),
+            ShellMode::Proot
+        );
+    }
+
+    #[test]
+    fn shell_mode_first_run_prefers_proot_only_with_backend() {
+        // Easy-mode-first build, never connected, Native persisted:
+        // prefer Proot when a backend exists...
+        assert_eq!(
+            resolve_shell_mode(ShellMode::Native, true, true, true),
+            ShellMode::Proot
+        );
+        // ...but stay Native when no backend (don't bias into an unrunnable mode).
+        assert_eq!(
+            resolve_shell_mode(ShellMode::Native, true, true, false),
+            ShellMode::Native
+        );
+    }
+
+    #[test]
+    fn shell_mode_no_first_run_bias_after_first_connect() {
+        // default_proot but already connected before: don't flip Native->Proot.
+        assert_eq!(
+            resolve_shell_mode(ShellMode::Native, true, false, true),
+            ShellMode::Native
+        );
+    }
+
+    #[test]
+    fn shell_mode_native_stays_native() {
+        assert_eq!(
+            resolve_shell_mode(ShellMode::Native, false, false, true),
+            ShellMode::Native
+        );
+    }
+
+    #[test]
+    fn app_settings_deserializes_without_wsl_banner_field() {
+        // Older settings.json lacks the field; must default, not fail.
+        let s: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(!s.wsl_banner_dismissed);
+    }
 
     /// Serialises every test that mutates a process-global env var — the
     /// tenant vars (`TENANT_ENV_VARS`) AND `HOME` (the credential-file tests set
@@ -1199,6 +1509,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn plg_connect_decision_matrix() {
+        use crate::config::{plg_connect_decision, PlgConnectStep};
+        assert_eq!(plg_connect_decision(true, true), PlgConnectStep::Silent);
+        assert_eq!(plg_connect_decision(true, false), PlgConnectStep::SignIn);
+        // Expert mode is handled by the existing path; decision is Silent.
+        assert_eq!(plg_connect_decision(false, false), PlgConnectStep::Silent);
+        assert_eq!(plg_connect_decision(false, true), PlgConnectStep::Silent);
+    }
+
     // The SSRF-mode selection is a pure function of the env-var value, so it is
     // tested directly — no env manipulation, and (crucially) the assertions run
     // in CI's debug build, unlike anything gated on `debug_assertions`.
@@ -1272,6 +1592,38 @@ mod tests {
             )
             .is_err(),
             "cloud-metadata endpoint must stay blocked in PrivateNetwork mode"
+        );
+    }
+
+    #[test]
+    fn sage_is_default_theme() {
+        assert_eq!(Theme::default(), Theme::Sage);
+    }
+
+    #[test]
+    fn sage_themes_roundtrip_serde() {
+        for t in [Theme::Sage, Theme::SageLight] {
+            let json = serde_json::to_string(&t).unwrap();
+            let back: Theme = serde_json::from_str(&json).unwrap();
+            assert_eq!(t, back);
+        }
+    }
+
+    #[test]
+    fn app_settings_roundtrips_last_config_host() {
+        let s = AppSettings {
+            last_config: Some(ConnectorConfig {
+                host: "wss://user-chosen.example".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.last_config.unwrap().host,
+            "wss://user-chosen.example",
+            "a persisted endpoint must survive restart"
         );
     }
 }

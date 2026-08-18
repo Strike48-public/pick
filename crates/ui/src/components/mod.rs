@@ -13,6 +13,9 @@ mod cyberchef_page;
 #[cfg(test)]
 mod cyberchef_sortable_tests;
 mod dashboard;
+pub mod documents_panel;
+pub mod easy_mode;
+pub mod endpoint_entry;
 pub mod extension;
 pub mod file_browser;
 pub mod help_modal;
@@ -23,6 +26,7 @@ mod licenses_page;
 pub mod loading_spinner;
 mod log_filter_bar;
 mod matrix_rain;
+pub mod offline_screen;
 pub mod pane_boundary;
 // router module requires dioxus-router dependency — kept as scaffolding reference
 // #[cfg(feature = "liveview")]
@@ -42,6 +46,7 @@ pub mod tools_page;
 mod wifi_warning_dialog;
 #[cfg(feature = "liveview")]
 pub mod workspace_app;
+pub mod wsl_install_banner;
 
 pub use agent_page::{AgentDetail, AgentsPage};
 pub use alert_dialog::AlertDialog;
@@ -54,6 +59,9 @@ pub use connecting_screen::*;
 pub use context_menu::{ContextMenu, ContextMenuItem};
 pub use cyberchef_page::CyberChefPage;
 pub use dashboard::*;
+pub use documents_panel::{ConversationDocs, DocumentViewer, DocumentsPanel};
+pub use easy_mode::{easy_mode_scan_prompt, EasyModeShell};
+pub use endpoint_entry::EndpointEntry;
 pub use extension::{
     provide_view_registry, use_view_registry, ExtensionView, ViewCategory, ViewProvider,
     ViewRegistry,
@@ -66,6 +74,7 @@ pub use licenses_page::LicensesPage;
 pub use loading_spinner::{LoadingSpinner, SpinnerSize};
 pub use log_filter_bar::LogFilterBar;
 pub use matrix_rain::{matrix_rain_css, MatrixRainOverlay};
+pub use offline_screen::OfflineScreen;
 pub use pane_boundary::PaneBoundary;
 // #[cfg(feature = "liveview")]
 // pub use router::{Route, WorkspaceRouter};
@@ -84,3 +93,4 @@ pub use tools_page::ToolsPage;
 pub use wifi_warning_dialog::WifiWarningDialog;
 #[cfg(feature = "liveview")]
 pub use workspace_app::WorkspaceApp;
+pub use wsl_install_banner::WslInstallBanner;

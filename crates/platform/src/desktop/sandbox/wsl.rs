@@ -19,6 +19,120 @@ const WSL_SETUP_MARKER: &str = "/root/.pentest-setup-complete";
 const ARCHWSL_ROOTFS_URL: &str =
     "https://github.com/yuk7/ArchWSL-FS/releases/download/25030400/rootfs.tar.gz";
 
+/// Rootfs download URL for the current host architecture. x86_64 uses the
+/// pre-built ArchWSL-FS release (flat, WSL-ready). aarch64 uses the ArchLinuxARM
+/// aarch64 rootfs — the x86_64 ArchWSL image imports on arm64 WSL but every
+/// command then fails `execvpe(/bin/sh): Exec format error`.
+fn wsl_rootfs_url() -> &'static str {
+    if super::arch::is_aarch64() {
+        super::arch::ALARM_AARCH64_ROOTFS
+    } else {
+        ARCHWSL_ROOTFS_URL
+    }
+}
+
+/// Build the setup script executed inside the freshly-imported WSL distro.
+///
+/// On WSL1 (used when the host lacks nested virtualisation) WSL auto-generates
+/// an `/etc/resolv.conf` pointing at an unreachable nameserver (it mirrors
+/// NetBird-polluted Windows DNS), so pacman fails with "Could not resolve host"
+/// for every mirror. But on a locked-down corporate host the WSL-provided DNS
+/// may be the ONLY resolver that works (public resolvers firewalled), so we do
+/// NOT blindly overwrite it: the script first tests whether the existing
+/// resolv.conf can resolve a mirror host, and only takes over DNS (disabling
+/// WSL's regeneration and pinning public resolvers) when that test FAILS. It
+/// also passes pacman `--overwrite '*'` to clear the ArchWSL gcc-libs /
+/// libstdc++ file conflict that would otherwise abort the transaction.
+///
+/// The mirrorlist and keyring are arch-specific (Arch vs ArchLinuxARM); every
+/// other line is identical across arches.
+pub(crate) fn wsl_setup_script() -> String {
+    wsl_setup_script_for(super::arch::is_aarch64())
+}
+
+fn wsl_setup_script_for(aarch64: bool) -> String {
+    format!(
+        r#"#!/bin/bash
+set -e
+
+# DNS: prefer the WSL-provided resolv.conf when it actually works (a corporate
+# host may resolve ONLY via internal DNS, with 8.8.8.8/1.1.1.1 firewalled). Only
+# when the existing resolv.conf cannot resolve our mirror host — the WSL1 /
+# NetBird failure mode, where WSL points at an unreachable nameserver — do we
+# take control: disable WSL's regeneration and pin public resolvers.
+if ! getent hosts {dns_probe_host} >/dev/null 2>&1; then
+    cat > /etc/wsl.conf << 'WSLCONF'
+[network]
+generateResolvConf = false
+WSLCONF
+    rm -f /etc/resolv.conf
+    cat > /etc/resolv.conf << 'RESOLV'
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+RESOLV
+fi
+
+# Configure mirrors — $repo and $arch are pacman variables, not shell
+cat > /etc/pacman.d/mirrorlist << 'MIRRORS'
+{mirrors}MIRRORS
+
+# Fix pacman.conf for WSL
+sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf 2>/dev/null || true
+sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf 2>/dev/null || true
+sed -i 's/^#DisableSandbox/DisableSandbox/' /etc/pacman.conf 2>/dev/null || true
+
+# Add DisableSandbox if not present (pacman 7.0+)
+if ! grep -q 'DisableSandbox' /etc/pacman.conf 2>/dev/null; then
+    sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
+fi
+
+# Set SigLevel to Never (avoids keyring issues)
+sed -i 's/^SigLevel.*/SigLevel = Never/' /etc/pacman.conf 2>/dev/null || true
+
+# Initialize pacman keyring
+pacman-key --init 2>/dev/null || true
+pacman-key --populate {keyring} 2>/dev/null || true
+
+# Add BlackArch repository if not present
+if ! grep -q '\[blackarch\]' /etc/pacman.conf 2>/dev/null; then
+    cat >> /etc/pacman.conf << 'BLACKARCH'
+
+[blackarch]
+Server = https://blackarch.org/blackarch/$repo/os/$arch
+SigLevel = Never
+BLACKARCH
+fi
+
+# Clear any stale pacman lock. pacman never auto-removes /var/lib/pacman/db.lck,
+# so a previous run interrupted mid-transaction (or a hard WSL shutdown) leaves
+# it behind and every later pacman fails "unable to lock database". WSL1 on
+# arm64 is especially prone to this (slow, emulated I/O gets interrupted). Safe
+# to remove here: setup runs single-threaded and no pacman is live yet.
+rm -f /var/lib/pacman/db.lck 2>/dev/null || true
+
+# System update — --overwrite '*' clears the ArchWSL gcc-libs / libstdc++
+# file conflict that would otherwise abort the transaction.
+pacman -Syu --noconfirm --overwrite '*' 2>&1 || true
+
+# Sync package databases
+pacman -Sy --noconfirm --overwrite '*' 2>&1 || true
+
+# Mark setup as complete
+touch /root/.pentest-setup-complete
+echo "WSL distro setup complete"
+"#,
+        mirrors = super::arch::mirrorlist_for(aarch64),
+        keyring = super::arch::keyring_for(aarch64),
+        // Resolve-test host: the arch's own mirror host, so the probe checks the
+        // DNS we actually need to reach (ALARM on aarch64, pkgbuild on x86_64).
+        dns_probe_host = if aarch64 {
+            "mirror.archlinuxarm.org"
+        } else {
+            "geo.mirror.pkgbuild.com"
+        },
+    )
+}
+
 /// WSL2 executor for Windows
 pub struct WslExecutor {
     config: SandboxConfig,
@@ -216,60 +330,8 @@ impl WslExecutor {
         // Write setup script to a temp file on the Windows filesystem.
         // This avoids Windows cmd mangling $ signs in wsl.exe -c "..." args.
         let script_path = self.config.data_dir.join("wsl-setup.sh");
-        let setup_script = r#"#!/bin/bash
-set -e
 
-# Configure DNS (WSL usually handles this, but just in case)
-if [ ! -f /etc/resolv.conf ] || ! grep -q nameserver /etc/resolv.conf 2>/dev/null; then
-    echo 'nameserver 8.8.8.8' > /etc/resolv.conf
-    echo 'nameserver 8.8.4.4' >> /etc/resolv.conf
-fi
-
-# Configure mirrors — $repo and $arch are pacman variables, not shell
-cat > /etc/pacman.d/mirrorlist << 'MIRRORS'
-Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
-Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
-MIRRORS
-
-# Fix pacman.conf for WSL
-sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf 2>/dev/null || true
-sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf 2>/dev/null || true
-sed -i 's/^#DisableSandbox/DisableSandbox/' /etc/pacman.conf 2>/dev/null || true
-
-# Add DisableSandbox if not present (pacman 7.0+)
-if ! grep -q 'DisableSandbox' /etc/pacman.conf 2>/dev/null; then
-    sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
-fi
-
-# Set SigLevel to Never (avoids keyring issues)
-sed -i 's/^SigLevel.*/SigLevel = Never/' /etc/pacman.conf 2>/dev/null || true
-
-# Initialize pacman keyring
-pacman-key --init 2>/dev/null || true
-pacman-key --populate archlinux 2>/dev/null || true
-
-# Add BlackArch repository if not present
-if ! grep -q '\[blackarch\]' /etc/pacman.conf 2>/dev/null; then
-    cat >> /etc/pacman.conf << 'BLACKARCH'
-
-[blackarch]
-Server = https://blackarch.org/blackarch/$repo/os/$arch
-SigLevel = Never
-BLACKARCH
-fi
-
-# System update
-pacman -Syu --noconfirm --overwrite '*' 2>&1 || true
-
-# Sync package databases
-pacman -Sy --noconfirm 2>&1 || true
-
-# Mark setup as complete
-touch /root/.pentest-setup-complete
-echo "WSL distro setup complete"
-"#;
-
-        tokio::fs::write(&script_path, setup_script).await?;
+        tokio::fs::write(&script_path, wsl_setup_script()).await?;
 
         // Convert Windows path to WSL path so wsl.exe can find the script
         let wsl_script_path = Self::windows_to_wsl_path(&script_path.to_string_lossy());
@@ -338,8 +400,8 @@ echo "WSL distro setup complete"
 
         tracing::info!("[ensure_distro] WSL distro not found, downloading and importing...");
 
-        // Use ArchWSL-FS rootfs — pre-built for WSL (v1 & v2), flat rootfs,
-        // no repacking needed. https://github.com/yuk7/ArchWSL-FS
+        // Use arch-appropriate rootfs — x86_64: ArchWSL-FS (pre-built, flat);
+        // aarch64: ArchLinuxARM (WSL import accepts plain .tar.gz).
         let rootfs_path = self.config.data_dir.join("archwsl-rootfs.tar.gz");
 
         // Delete suspiciously small files (likely truncated/corrupted downloads)
@@ -355,10 +417,10 @@ echo "WSL distro setup complete"
             }
         }
         if !rootfs_path.exists() {
-            tracing::info!("[ensure_distro] Downloading ArchWSL rootfs...");
+            tracing::info!("[ensure_distro] Downloading rootfs...");
             let rootfs_manager = super::rootfs::RootfsManager::new(self.config.clone());
             rootfs_manager
-                .download_file(ARCHWSL_ROOTFS_URL, &rootfs_path)
+                .download_file(wsl_rootfs_url(), &rootfs_path)
                 .await?;
             tracing::info!("[ensure_distro] Download complete");
         } else {
@@ -368,7 +430,7 @@ echo "WSL distro setup complete"
             );
         }
 
-        // Import directly into WSL (no repack needed — ArchWSL rootfs is already flat)
+        // Import directly into WSL (no repack needed — both rootfs sources are WSL-ready)
         tracing::info!("[ensure_distro] Starting WSL import...");
         self.import_distro(&rootfs_path).await?;
         tracing::info!("[ensure_distro] WSL import succeeded");
@@ -410,7 +472,7 @@ echo "WSL distro setup complete"
     }
 
     /// Check if the distro setup has been completed (marker file exists).
-    async fn is_setup_complete(&self) -> bool {
+    pub(super) async fn is_setup_complete(&self) -> bool {
         #[cfg(not(target_os = "windows"))]
         {
             false
@@ -449,7 +511,22 @@ echo "WSL distro setup complete"
             args.push(&wsl_cwd);
         }
 
-        args.extend_from_slice(&["--", "/bin/bash", "-c", cmd]);
+        // For pacman commands, clear a stale db.lck in the SAME shell first.
+        // pacman never removes its own lock, so a run interrupted mid-transaction
+        // (or a hard WSL shutdown — common on slow WSL1/arm64) wedges every later
+        // pacman with "unable to lock database". ensure_ready's host-side clear
+        // does not apply to WSL (the distro FS isn't the bwrap rootfs path and
+        // the WSL branch returns before it), so heal it in-guest here. Only for
+        // pacman to avoid prepending to unrelated commands.
+        let pacman_healed;
+        let effective_cmd: &str = if cmd.trim_start().starts_with("pacman") {
+            pacman_healed = format!("rm -f /var/lib/pacman/db.lck 2>/dev/null; {cmd}");
+            &pacman_healed
+        } else {
+            cmd
+        };
+
+        args.extend_from_slice(&["--", "/bin/bash", "-c", effective_cmd]);
 
         let mut command = Command::new("wsl.exe");
         command
@@ -550,6 +627,71 @@ echo "WSL distro setup complete"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_script_dns_fallback_and_overwrite() {
+        // The built setup script must (a) still carry the DNS-override fallback
+        // (disable WSL regeneration + pin a public resolver) for the WSL1/NetBird
+        // failure mode, (b) gate that override behind a resolve-test of the arch's
+        // mirror host so a working corporate DNS is preserved rather than clobbered,
+        // and (c) use --overwrite so the ArchWSL gcc-libs file conflict does not
+        // abort the transaction. Invariants hold on BOTH arches.
+        for aarch64 in [false, true] {
+            let script = super::wsl_setup_script_for(aarch64);
+            // Fallback still present.
+            assert!(
+                script.contains("generateResolvConf = false"),
+                "arch={aarch64}"
+            );
+            assert!(script.contains("nameserver 8.8.8.8"), "arch={aarch64}");
+            assert!(script.contains("--overwrite"), "arch={aarch64}");
+            // Clears a stale pacman lock before its pacman ops (WSL1/arm64 wedge).
+            assert!(
+                script.contains("rm -f /var/lib/pacman/db.lck"),
+                "arch={aarch64}: setup must clear a stale pacman lock"
+            );
+            // The DNS override is now CONDITIONAL: guarded by a getent resolve-test
+            // of the mirror host, so we only take over DNS when the existing
+            // resolver can't reach our mirror (WSL1/NetBird), not unconditionally.
+            let probe_host = if aarch64 {
+                "mirror.archlinuxarm.org"
+            } else {
+                "geo.mirror.pkgbuild.com"
+            };
+            assert!(
+                script.contains(&format!("if ! getent hosts {probe_host}")),
+                "arch={aarch64}: DNS override must be gated on a resolve-test"
+            );
+            // BlackArch repo line is arch-agnostic ($arch resolves in-guest).
+            assert!(script.contains("[blackarch]"), "arch={aarch64}");
+        }
+    }
+
+    #[test]
+    fn x86_64_setup_script_uses_arch_mirrors_and_keyring() {
+        let s = super::wsl_setup_script_for(false);
+        assert!(s.contains("geo.mirror.pkgbuild.com/$repo/os/$arch"));
+        assert!(s.contains("pacman-key --populate archlinux"));
+        assert!(!s.contains("archlinuxarm"));
+    }
+
+    #[test]
+    fn aarch64_setup_script_uses_alarm_mirrors_and_keyring() {
+        let s = super::wsl_setup_script_for(true);
+        assert!(s.contains("mirror.archlinuxarm.org/$arch/$repo"));
+        assert!(s.contains("pacman-key --populate archlinuxarm"));
+        assert!(!s.contains("pkgbuild.com"));
+    }
+
+    #[test]
+    fn wsl_rootfs_url_selects_alarm_only_on_aarch64() {
+        // On the x86_64 build host the URL must be the ArchWSL-FS release.
+        let url = super::wsl_rootfs_url();
+        #[cfg(target_arch = "aarch64")]
+        assert!(url.contains("archlinuxarm.org"));
+        #[cfg(not(target_arch = "aarch64"))]
+        assert!(url.contains("yuk7/ArchWSL-FS"));
+    }
 
     #[test]
     fn test_windows_to_wsl_path_drive_letter() {

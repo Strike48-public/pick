@@ -10,6 +10,25 @@
    0. App Layout Container  (always active)
    ========================================================================== */
 
+/* Lock the document + root wrapper to the viewport so height:100% children
+   (e.g. .easy-mode) resolve against a fixed height instead of growing to
+   content and overflowing off-screen. 100dvh tracks the mobile dynamic
+   viewport (URL/nav bars); vh is the fallback for engines without dvh. */
+html,
+body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+}
+
+.app-container,
+.mobile-app {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
 .app-layout {
     display: flex;
     flex-direction: row;
@@ -165,7 +184,13 @@
 
     /* -- Touch targets --------------------------------------------------- */
 
-    button,
+    /* Exclude fixed-size round/pill buttons: a 48px min-height forces their set
+       width:height ratio, so a circular button (border-radius:50% with equal
+       width/height) renders as a tall oval. This hit the toggle switch
+       (46x28 pill), the chat scroll-to-bottom FAB (28x28 circle), and page back
+       buttons (.easy-doc-back). Desktop (>768px) never hit this rule, which is
+       why it looked right there but broke in the mobile WebView. */
+    button:not(.easy-toggle):not(.chat-scroll-to-bottom):not(.easy-doc-back):not(.viz-fullscreen-close),
     .action-card,
     .tab-item {
         min-height: 48px;
@@ -389,4 +414,982 @@
 
 .dashboard-card {
     border-color: color-mix(in srgb, var(--border) 100%, var(--muted-foreground) 20%);
+}
+
+/* ===========================================================================
+   Easy Mode design tokens
+   ---------------------------------------------------------------------------
+   All Easy Mode colors live here as semantic vars so the palette can be
+   retheme'd in one place (e.g. a lighter/warmer PLG look, or a light theme)
+   without touching component rules. Scoped to the Easy Mode roots — the shell
+   and the full-screen report viewer, which replaces the shell.
+   Brand values default to the Strike48 palette; override this block to reskin.
+   =========================================================================== */
+.easy-mode,
+.easy-doc-viewer,
+.easy-drawer,
+.easy-overlay {
+    /* Body copy is IBM Plex Sans per the Sage type ramp; monospace is reserved
+       for identifiers/labels (tool names, the STRIKE48 tag, report metadata),
+       which set --font-mono explicitly on their own rules. */
+    font-family: var(--font-sans);
+
+    /* -----------------------------------------------------------------------
+       Sage theme (Strike48 Operator "Sage" DS · APPROVED Option 2B).
+       Muted sage-green pastel, Material-3 shapes (pill controls, 16px cards),
+       dark default. Swap this block for the light palette to flip themes.
+       ----------------------------------------------------------------------- */
+
+    /* Brand — sage primary is a light pastel, so text ON it must be dark. */
+    --em-brand: #9cbfae;                     /* primary · sage */
+    --em-brand-strong: #7fa894;              /* deeper sage (hover/gradient end) */
+    --em-brand-gradient: var(--em-brand);    /* Sage badge is a solid fill, not a gradient */
+    --em-brand-glow: rgba(156, 191, 174, 0.35);
+    --em-on-primary: #17201b;                /* dark ink for text/glyphs on sage */
+
+    /* Primary call-to-action (the Scan button) — sage fill, dark label. */
+    --em-scan-bg: var(--em-brand);
+    --em-on-scan: var(--em-on-primary);
+
+    /* Surfaces / foreground (Sage dark) */
+    --em-surface: #242b27;                   /* card / elevated */
+    --em-text: #e9eeeb;                      /* headings / emphasis */
+    --em-on-brand: var(--em-on-primary);     /* text on brand-tinted fills */
+
+    /* Interactive surfaces on the dark shell (frosted-glass feel) */
+    --em-surface-soft: rgba(233, 238, 235, 0.08);   /* subtle fill (refresh) */
+    --em-surface-faint: rgba(233, 238, 235, 0.03);  /* share-sheet wash */
+    --em-border: rgba(233, 238, 235, 0.12);         /* hairline dividers */
+    --em-border-strong: rgba(233, 238, 235, 0.22);  /* ghost-button outline */
+    --em-hairline: rgba(233, 238, 235, 0.08);       /* list row separator */
+    --em-shadow: rgba(0, 0, 0, 0.35);
+
+    /* Status / feedback (Sage) */
+    --em-error: #d99a9a;                     /* error */
+    --em-toast-bg: #2f3a34;                  /* tinted sage-surface toast */
+    --em-toast-fg: #8fc4ab;                  /* ok */
+
+    /* Shape scale (Material 3) */
+    --em-radius-pill: 999px;                 /* buttons / chips */
+    --em-radius-card: 16px;                  /* cards / rows */
+    --em-radius-control: 12px;               /* inputs / notes */
+
+    /* Spacing scale (4px base) — the single source of vertical/horizontal
+       rhythm for the chat, so bubbles, tool tiles and gaps stay uniform. */
+    --em-space-1: 4px;
+    --em-space-2: 8px;
+    --em-space-3: 12px;
+    --em-space-4: 16px;
+    --em-gap-block: var(--em-space-3);       /* between stacked chat blocks */
+    --em-pad-tile: var(--em-space-3);        /* inside tool tiles */
+    --em-pad-list: var(--em-space-4);        /* chat list edge padding */
+
+    /* Social brand colors keep their own identity; text stays white. */
+    --em-social-x: #000000;
+    --em-social-linkedin: #0a66c2;
+    --em-social-facebook: #1877f2;
+    --em-on-social: #ffffff;
+
+    /* -----------------------------------------------------------------------
+       Remap the shared theme tokens the embedded ChatPanel reads, so the chat
+       (suggested chips, Send button, input focus) picks up Sage instead of the
+       app's default blue — without touching ChatPanel's own CSS.
+       ----------------------------------------------------------------------- */
+    --primary: var(--em-brand);
+    --primary-foreground: var(--em-on-primary);
+    --ring: var(--em-brand);
+    --accent: var(--em-brand);
+    --radius: var(--em-radius-pill);
+    /* Sage status colors so chat tool-call badges (success/error/pending) match
+       the Sage palette instead of the default bright green/red/amber. */
+    --success: var(--em-toast-fg);
+    --destructive: var(--em-error);
+    --warning: #d9b07c;
+}
+
+/* Soften the chat's tool-call rows to match the Sage mockup: rounded card,
+   sage-tinted surface header, pill status badge — scoped to Easy Mode so the
+   expert console keeps its denser look. */
+.easy-mode .chat-tool-call {
+    border-radius: var(--em-radius-card);
+    border-color: var(--em-border);
+    background: var(--em-surface);
+}
+.easy-mode .chat-tool-header {
+    background: transparent;
+    padding: 12px 14px;
+}
+.easy-mode .chat-tool-header:hover {
+    background: var(--em-surface-soft);
+}
+.easy-mode .chat-tool-status {
+    border-radius: var(--em-radius-pill);
+    padding: 3px 10px;
+    text-transform: lowercase;
+}
+/* Match the Sage mockup: assistant messages are bare prose (no dark box); only
+   the user's own messages keep a tinted bubble. */
+.easy-mode .chat-bubble-agent {
+    background: transparent;
+    border: none;
+    /* Zero ALL padding (the base .chat-bubble adds 0.5rem top/bottom). Otherwise
+       bubble-to-bubble spacing = list gap + 8px + 8px while within-bubble part
+       spacing = just the gap, making the rhythm uneven. With padding:0 the
+       .chat-messages `gap` is the single, uniform source of block spacing. */
+    padding: 0;
+    max-width: 100%;
+    color: var(--em-text);
+}
+.easy-mode .chat-bubble-user {
+    background: var(--em-brand);
+    color: var(--em-on-primary);
+    border-radius: var(--em-radius-card);
+    padding: var(--em-space-2) var(--em-space-3);
+}
+
+/* -----------------------------------------------------------------------------
+   Uniform chat spacing (Easy Mode). One rhythm from the --em spacing scale:
+   - the message list has consistent edge padding + a single gap between blocks
+   - each agent message stacks its text/tool parts with that same gap
+   - tool tiles and markdown paragraphs drop their ad-hoc margins so nothing
+     double-spaces or crowds
+   ----------------------------------------------------------------------------- */
+.easy-mode .chat-messages {
+    padding: var(--em-pad-list);
+    gap: var(--em-gap-block);
+}
+/* An agent message is a column of parts (text + tool tiles) — space them evenly
+   with the same block gap, no per-part margins. */
+.easy-mode .chat-bubble-agent {
+    display: flex;
+    flex-direction: column;
+    gap: var(--em-gap-block);
+}
+.easy-mode .chat-bubble-agent > * {
+    margin: 0;
+}
+/* Tool tile: uniform internal padding, no outer margin (the parent gap owns
+   spacing). */
+.easy-mode .chat-tool-call {
+    margin: 0;
+}
+.easy-mode .chat-tool-header {
+    padding: var(--em-pad-tile) var(--em-space-4);
+}
+.easy-mode .chat-tool-details {
+    padding: var(--em-pad-tile) var(--em-space-4);
+}
+/* Markdown prose: first/last elements flush so the message gap is the only
+   spacing; interior paragraphs use one consistent gap. */
+.easy-mode .chat-markdown > :first-child { margin-top: 0; }
+.easy-mode .chat-markdown > :last-child { margin-bottom: 0; }
+.easy-mode .chat-markdown p { margin: 0 0 var(--em-space-2); }
+.easy-mode .chat-markdown ul,
+.easy-mode .chat-markdown ol { margin: var(--em-space-2) 0; }
+
+/* Easy Mode: full-height column — scan card on top, chat fills the rest. */
+.easy-mode {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    /* Clip children so a tall chat can't push the brand bar / scan card off the
+       top of the screen — the chat area scrolls internally instead. */
+    overflow: hidden;
+    /* Fixed top breathing room. Measured on-device (iPhone 17 Pro sim,
+       innerH=778 vs a full-bleed ~874): the dx WebView is ALREADY laid out
+       inside the safe area, so we must NOT add our own notch clearance — a
+       previous max(env,59px) floor double-gapped the bar to top=59.
+       We deliberately DON'T use env(safe-area-inset-top) here: it resolves to 0
+       in this WebView and, worse, re-resolves across paints / keyboard show,
+       which made the bar visibly shift down as content loaded. A constant pad
+       is stable and correct for this already-inset WebView. */
+    padding-top: var(--em-space-2);
+    box-sizing: border-box;
+}
+/* Co-brand top bar: Strike48 "S" badge + lowercase "pick" wordmark. */
+.easy-brandbar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 4px 20px 12px;
+}
+.easy-brand-badge {
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+    flex-shrink: 0;
+    /* Sage: solid pastel badge with a dark glyph (not a blue gradient). */
+    background: var(--em-brand);
+    color: var(--em-on-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.easy-brand-badge svg {
+    width: 20px;
+    height: 20px;
+    display: block;
+}
+.easy-brand-word {
+    /* "Pick" in IBM Plex Sans bold — matches how the Sage system sets "Fleet". */
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 20px;
+    letter-spacing: -0.01em;
+    color: var(--em-text);
+}
+.easy-brand-by {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    opacity: 0.5;
+}
+/* Top-bar action icons (new chat / history / docs), pushed to the right. */
+.easy-brand-actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: var(--em-space-1);
+}
+.easy-icon-btn {
+    background: none;
+    border: none;
+    color: var(--em-text);
+    padding: var(--em-space-2);
+    border-radius: var(--em-radius-control);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+.easy-icon-btn:active { background: var(--em-surface-soft); }
+/* Reports-list overlay body (Docs icon). */
+.easy-docs-list-body { flex: 1; min-height: 0; overflow-y: auto; }
+
+.easy-mode-chat {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    overflow: hidden;
+}
+
+/* Easy Mode history dropdown — touch-friendly rows (the console's dense
+   0.35rem/0.72rem rows are far too small for a finger on iOS). Sage surface,
+   comfortable row height, readable type. Scoped to easy mode. */
+.easy-mode .chat-history-dropdown {
+    top: calc(env(safe-area-inset-top, 0px) + 56px);
+    max-height: 60vh;
+    background: var(--em-surface);
+    border-color: var(--em-border);
+    border-radius: var(--em-radius-card);
+    box-shadow: 0 8px 28px var(--em-shadow);
+}
+.easy-mode .chat-history-item {
+    padding: var(--em-space-3) var(--em-space-4);
+    min-height: 52px;
+    border-bottom-color: var(--em-hairline);
+    gap: var(--em-space-3);
+}
+.easy-mode .chat-history-title {
+    font-size: 15px;
+    color: var(--em-text);
+}
+.easy-mode .chat-history-time {
+    font-size: 12px;
+    opacity: 0.6;
+}
+.easy-mode .chat-history-item.active {
+    background: var(--em-surface-soft);
+    border-left: 3px solid var(--em-brand);
+}
+.easy-mode .chat-history-item.active .chat-history-title,
+.easy-mode .chat-history-item:active .chat-history-title { color: var(--em-brand); }
+.easy-mode .chat-history-loading,
+.easy-mode .chat-history-empty {
+    padding: var(--em-space-4);
+    font-size: 14px;
+}
+
+/* Easy Mode chat input row — Sage styleguide: rounded input + pill Send,
+   both the same height and vertically centred. Scoped to easy mode so the
+   expert console keeps its denser square-cornered look. */
+.easy-mode .chat-input-area {
+    align-items: center;
+    gap: var(--em-space-3);
+    padding: var(--em-space-3) var(--em-pad-list);
+}
+.easy-mode .chat-input {
+    /* Same control height as the Send button (both border-box, 44px min-height)
+       so they line up. Overrides the textarea's inline 40px min-height. */
+    box-sizing: border-box;
+    min-height: 44px;
+    background: var(--em-surface);
+    border-color: var(--em-border);
+    color: var(--em-text);
+    border-radius: var(--em-radius-pill);
+    /* Vertical padding centres a single line within the 44px control; grows
+       with content up to the textarea's max-height. */
+    padding: 11px var(--em-space-4);
+    line-height: 1.4;
+}
+.easy-mode .chat-input:focus {
+    border-color: var(--em-brand);
+    box-shadow: 0 0 0 1px var(--em-brand);
+}
+.easy-mode .chat-send-btn {
+    /* Sage pastel pill with dark-ink label — the primary action colour.
+       Height matches the input's 40px min-height so the two align. */
+    box-sizing: border-box;
+    min-height: 44px;
+    background: var(--em-brand);
+    color: var(--em-on-primary);
+    border-radius: var(--em-radius-pill);
+    padding: 0 var(--em-space-4);
+    font-weight: 600;
+}
+
+/* Easy Mode Documents Panel — a fixed-height footer that never grows, so it
+   can't fight the chat for space and push the brand bar/scan card off the top.
+   Only the chat area (.easy-mode-chat, flex:1) is flexible. */
+.easy-docs { flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; }
+.easy-docs-header { display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 15px; opacity: 0.9; }
+.easy-docs-empty, .easy-docs-error { opacity: 0.7; font-size: 14px; padding: 8px 0; }
+.easy-docs-error { color: var(--em-error); }
+.easy-docs-toast { background: var(--em-toast-bg); color: var(--em-toast-fg); padding: 8px 12px; border-radius: var(--em-radius-control); font-size: 13px; }
+.easy-docs-row { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--em-hairline); }
+.easy-docs-row-tappable { cursor: pointer; }
+.easy-docs-row-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.easy-docs-title { font-weight: 500; }
+.easy-docs-meta { display: flex; gap: 8px; font-size: 12px; color: var(--em-text); opacity: 0.6; }
+.easy-docs-scope, .easy-docs-counts { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.easy-docs-chevron { opacity: 0.4; font-size: 20px; padding-right: 2px; }
+.easy-docs-prev-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-top: 4px; }
+
+/* Conversation-scoped documents strip, pinned above the chat input. Fixed
+   height so it can't fight the chat for space; only appears when the active
+   conversation has produced a report. */
+.easy-conv-docs {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--em-space-1);
+    padding: var(--em-space-2) var(--em-pad-list);
+    border-top: 1px solid var(--em-hairline);
+    background: var(--em-surface-faint);
+    max-height: 30vh;
+    overflow-y: auto;
+}
+.easy-conv-docs-header {
+    display: flex; align-items: center; gap: var(--em-space-2);
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
+    opacity: 0.6; color: var(--em-text);
+}
+.easy-conv-docs-icon { font-size: 13px; }
+.easy-conv-docs-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: var(--em-space-2);
+    padding: var(--em-space-3) var(--em-space-1);
+    min-height: 44px;
+    cursor: pointer;
+}
+.easy-conv-docs-row:active { background: var(--em-surface-soft); }
+.easy-conv-docs-main {
+    flex: 1; min-width: 0;
+    display: flex; flex-direction: column; gap: 2px;
+}
+.easy-conv-docs-title {
+    font-size: 15px; color: var(--em-text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.easy-conv-docs-meta {
+    display: flex; gap: 8px;
+    font-size: 12px; color: var(--em-text); opacity: 0.6;
+}
+.easy-conv-docs-scope, .easy-conv-docs-findings {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.easy-conv-docs-findings { font-family: var(--font-mono); flex: 0 0 auto; }
+
+/* Full-screen wrapper for the report viewer — fills the viewport with no extra
+   top padding (the viewer bar owns the safe-area inset). */
+.easy-doc-screen { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+/* Full-viewport overlay layered above the always-mounted easy-mode shell, so
+   the chat (and the live conversation) stays mounted underneath — tapping Back
+   returns to the same conversation instead of a fresh, empty one. */
+.easy-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: var(--background);
+}
+
+.easy-signin {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--em-space-3);
+    padding: var(--em-space-4);
+    text-align: center;
+}
+.easy-signin-title { font-size: 22px; font-weight: 700; color: var(--em-text); margin: 0; }
+/* The change-server modal is a <form> flex-item inside the centered
+   `.easy-signin` column. As a flex item it shrinks to its content, so when the
+   "Will connect to: …" hint (a sibling of the input) appears/disappears the
+   whole form — input, Save, Cancel — resizes. Pin the form (and the input) to a
+   stable width so nothing reflows while editing. */
+.easy-signin form {
+    width: 100%;
+    max-width: 320px;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--em-space-3);
+}
+.easy-signin .input-group { width: 100%; }
+.easy-signin .input-group input { width: 100%; box-sizing: border-box; }
+.easy-signin-sub {
+    font-size: 15px;
+    line-height: 1.5;
+    opacity: 0.7;
+    color: var(--em-text);
+    margin: 0;
+    max-width: 300px;
+}
+/* Error/reason text can be arbitrarily large (e.g. a server that returns a
+   full HTML page as its error body). Bound it to a scrollable box and wrap
+   long unbroken strings, so it can never push the Retry / Change-server
+   buttons off-screen. */
+.easy-signin-error {
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--em-text);
+    opacity: 0.8;
+    margin: 0;
+    max-width: 320px;
+    max-height: 30vh;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    white-space: pre-wrap;
+    text-align: left;
+    padding: 10px 12px;
+    border-radius: var(--em-radius-control);
+    background: var(--em-surface, rgba(255,255,255,0.04));
+    border: 1px solid var(--em-border);
+}
+/* The sign-in overlay's retry button is the only remaining .action-card in the
+   easy-mode surfaces (the Home scan tile is now .easy-hero-scan). Style it here
+   as the sage CTA pill (matching "Scan My Network"), overriding the
+   browser-default button. */
+.easy-signin .action-card {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    max-width: 320px;
+    min-height: 56px;
+    margin-top: var(--em-space-2);
+    padding: 16px 20px;
+    border: none;
+    border-radius: var(--em-radius-pill);
+    background: var(--em-scan-bg);
+    color: var(--em-on-scan);
+    font-family: inherit;
+    cursor: pointer;
+}
+.easy-signin .action-card:active { filter: brightness(0.92); }
+.easy-signin .action-card-label { font-size: 18px; font-weight: 600; }
+.easy-signin-secondary {
+    background: none;
+    border: none;
+    color: var(--em-text);
+    font-size: 15px;
+    padding: 14px 12px;
+    cursor: pointer;
+}
+.easy-signin-secondary:active { opacity: 0.7; }
+
+/* Full-screen in-app report viewer (replaces the Easy Mode screen). */
+.easy-doc-viewer { display: flex; flex-direction: column; flex: 1 1 auto; height: 100%; min-height: 0; position: relative; }
+.easy-doc-viewer-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; border-bottom: 1px solid var(--em-border);
+    /* Fixed top pad — the WebView is already inset (see .easy-mode); no env()
+       so the bar can't shift as the inset re-resolves. */
+    padding-top: 12px;
+    /* Positioning context for the share menu, which anchors to this bar's
+       bottom edge (top:100%) instead of a guessed pixel offset. */
+    position: relative;
+}
+/* Chevron-only back control — larger glyph + a proper touch target. */
+.easy-doc-back {
+    background: none; border: none; color: var(--em-brand);
+    font-size: 28px; line-height: 1;
+    padding: 0 8px; margin-left: -4px;
+    min-width: 40px; height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; cursor: pointer;
+}
+.easy-doc-viewer-title { flex: 1; font-weight: 600; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.easy-doc-viewer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px; }
+
+/* Document-viewer markdown typography. The size-tuning `.markdown-body` rules
+   live in the mobile-only @media block, so on desktop the report had no spacing
+   at all. These base rules apply at every width; on wide screens the reading
+   column is capped and centered so lines aren't uncomfortably long. Scoped to
+   the doc viewer's body so it doesn't touch chat-bubble markdown. */
+.easy-doc-viewer-body > div { max-width: 720px; margin: 0 auto; }
+.easy-doc-viewer-body.markdown-body { line-height: 1.6; }
+.easy-doc-viewer-body h1 { font-size: 1.6rem; margin: 1.2rem 0 0.6rem; line-height: 1.25; }
+.easy-doc-viewer-body h2 { font-size: 1.3rem; margin: 1.4rem 0 0.5rem; line-height: 1.3; border-bottom: 1px solid var(--em-hairline); padding-bottom: 0.3rem; }
+.easy-doc-viewer-body h3 { font-size: 1.1rem; margin: 1.1rem 0 0.4rem; }
+.easy-doc-viewer-body h4 { font-size: 1rem; margin: 0.9rem 0 0.3rem; }
+.easy-doc-viewer-body p { margin: 0.7rem 0; }
+.easy-doc-viewer-body ul,
+.easy-doc-viewer-body ol { margin: 0.6rem 0; padding-left: 1.5rem; }
+.easy-doc-viewer-body li { margin: 0.25rem 0; }
+.easy-doc-viewer-body pre { margin: 0.8rem 0; padding: 12px; background: var(--em-surface); border-radius: var(--em-radius-control); overflow-x: auto; }
+.easy-doc-viewer-body code { font-family: var(--font-mono); font-size: 0.9em; }
+.easy-doc-viewer-body blockquote { margin: 0.8rem 0; padding: 0.4rem 1rem; border-left: 3px solid var(--em-brand); opacity: 0.9; }
+.easy-doc-viewer-body table { margin: 0.8rem 0; border-collapse: collapse; width: 100%; }
+.easy-doc-viewer-body th,
+.easy-doc-viewer-body td { padding: 0.4rem 0.6rem; border: 1px solid var(--em-hairline); text-align: left; }
+.easy-doc-viewer-body hr { border: none; border-top: 1px solid var(--em-hairline); margin: 1.2rem 0; }
+/* Rendered mermaid/echarts blocks (the post-processor replaces the <pre> with
+   this). Give it breathing room + full width within the reading column. */
+.easy-doc-viewer-body .chat-viz-block { margin: 1rem 0; }
+
+/* Top-right share icon in the titlebar (platform-native placement). */
+.easy-doc-share-btn {
+    flex-shrink: 0;
+    background: none; border: none; padding: 6px;
+    color: var(--em-text); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+}
+.easy-doc-share-btn svg { width: 22px; height: 22px; display: block; }
+
+/* Transient toast, floated above the content near the bottom. */
+.easy-doc-toast-float {
+    position: absolute; left: 16px; right: 16px;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    background: var(--em-toast-bg); color: var(--em-toast-fg);
+    padding: 10px 14px; border-radius: var(--em-radius-control);
+    font-size: 13px; text-align: center; z-index: 20;
+}
+
+/* Share menu opened by the titlebar icon: a scrim + a dropdown anchored
+   top-right, containing our actions incl. the native OS-sheet trigger. */
+.easy-doc-share-scrim {
+    position: absolute; inset: 0; z-index: 25;
+}
+.easy-doc-share-menu {
+    /* Anchored to the bar's bottom edge (bar is position:relative) — opens
+       just below the titlebar with no guessed offset. */
+    position: absolute; z-index: 26;
+    top: 100%;
+    right: 12px;
+    min-width: 200px;
+    background: var(--em-surface);
+    border: 1px solid var(--em-border);
+    border-radius: var(--em-radius-card);
+    box-shadow: 0 8px 28px var(--em-shadow);
+    padding: var(--em-space-1);
+    display: flex; flex-direction: column;
+}
+.easy-doc-menu-item {
+    display: flex; align-items: center; gap: var(--em-space-2);
+    width: 100%; text-align: left;
+    background: none; border: none;
+    color: var(--em-text);
+    font-family: var(--font-sans); font-size: 15px;
+    padding: var(--em-space-3);
+    border-radius: var(--em-radius-control);
+    cursor: pointer;
+}
+.easy-doc-menu-item:active { background: var(--em-surface-soft); }
+.easy-doc-menu-icon { display: flex; }
+.easy-doc-menu-icon svg { width: 18px; height: 18px; }
+.easy-doc-menu-sep { height: 1px; background: var(--em-border); margin: var(--em-space-1) 0; }
+
+/* ---------------------------------------------------------------------------
+   Easy Mode navigation drawer (left slide-over) + Settings
+   Mirrors the crux shells' DrawerView: hamburger opens a ~82%-width panel with
+   New chat / Reports / Settings / Recent chats / Log out. Scrim + panel stay
+   mounted so the transform animates both directions.
+   --------------------------------------------------------------------------- */
+.easy-menu-btn { margin-right: var(--em-space-1); }
+
+.easy-drawer-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 45;
+    background: rgba(0, 0, 0, 0.4);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.22s ease;
+}
+.easy-drawer-scrim.is-open { opacity: 1; pointer-events: auto; }
+
+.easy-drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 46;
+    width: 82%;
+    max-width: 340px;
+    background: var(--em-surface);
+    display: flex;
+    flex-direction: column;
+    padding-top: env(safe-area-inset-top, 0px);
+    transform: translateX(-102%);
+    transition: transform 0.22s ease;
+    box-shadow: 2px 0 16px rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+}
+.easy-drawer.is-open { transform: translateX(0); }
+
+.easy-drawer-brand {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 16px 20px 12px;
+}
+.easy-drawer-sep { height: 1px; background: var(--em-hairline); margin: 6px 0; }
+
+.easy-drawer-item {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    /* Inset from the drawer edges so the hover/active fill is a padded pill with
+       breathing room, not an edge-to-edge band butting against the border. */
+    width: auto;
+    margin: 2px 10px;
+    background: none;
+    border: none;
+    color: var(--em-text);
+    font-size: 16px;
+    text-align: left;
+    padding: 14px 12px;
+    border-radius: var(--em-radius-control);
+    cursor: pointer;
+}
+.easy-drawer-item:active { background: var(--em-surface-soft); }
+.easy-drawer-item-icon { display: flex; width: 22px; justify-content: center; }
+.easy-drawer-logout { color: var(--em-error); margin-top: auto; }
+
+.easy-drawer-section-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: rgba(233, 238, 235, 0.5);
+    padding: 0 20px 4px;
+}
+.easy-drawer-recent { flex: 1; min-height: 0; overflow-y: auto; }
+.easy-drawer-recent-empty {
+    font-size: 14px;
+    color: rgba(233, 238, 235, 0.5);
+    padding: 0 20px;
+}
+.easy-drawer-recent-item {
+    display: block;
+    /* Inset like .easy-drawer-item so the hover/active pill has side gutters. */
+    width: auto;
+    margin: 2px 10px;
+    background: none;
+    border: none;
+    color: var(--em-text);
+    font-size: 15px;
+    text-align: left;
+    padding: 10px 12px;
+    border-radius: var(--em-radius-control);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+.easy-drawer-recent-item:active { background: var(--em-surface-soft); }
+
+/* Settings overlay body */
+.easy-settings-body { flex: 1; min-height: 0; overflow-y: auto; padding: 20px; }
+.easy-settings-row { display: flex; align-items: flex-start; gap: 12px; }
+.easy-settings-text { flex: 1; }
+.easy-settings-label { font-size: 16px; color: var(--em-text); }
+.easy-settings-desc {
+    font-size: 13px;
+    color: rgba(233, 238, 235, 0.5);
+    margin-top: 2px;
+}
+.easy-settings-action-btn {
+    padding: 6px 12px;
+    border: none;
+    background: none;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--em-brand);
+    cursor: pointer;
+    border-radius: var(--em-radius-control);
+}
+.easy-settings-action-btn:active { opacity: 0.7; }
+
+/* iOS-style toggle switch */
+/* Switch control — a <button> (not a checkbox; the liveview form-data converter
+   panics on checkbox onchange). `.easy-toggle-on` marks the on-state. */
+.easy-toggle {
+    position: relative;
+    display: inline-block;
+    width: 46px;
+    height: 28px;
+    flex-shrink: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+}
+.easy-toggle-track {
+    position: absolute;
+    inset: 0;
+    background: var(--em-border-strong);
+    border-radius: 999px;
+    transition: background 0.2s ease;
+}
+.easy-toggle-track::before {
+    content: "";
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 22px;
+    height: 22px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.2s ease;
+}
+.easy-toggle.easy-toggle-on .easy-toggle-track { background: var(--em-brand); }
+.easy-toggle.easy-toggle-on .easy-toggle-track::before {
+    transform: translateX(18px);
+    /* On the sage track a white thumb is low-contrast; use the same dark ink
+       we put on the brand fills (Scan button glyph/text) so it reads clearly. */
+    background: var(--em-on-primary);
+}
+/* The global button:hover green fill would fight the switch — keep it flat. */
+.easy-toggle:hover { background: none; color: inherit; }
+
+/* Easy Mode Home — hero + contextual cards (template Home screen). */
+.easy-home {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 24px;
+    width: 100%;
+    max-width: 660px;
+    margin: 0 auto;
+    padding: 48px 20px 24px;
+}
+.easy-home-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+    text-align: center;
+    width: 100%;
+}
+.easy-hero-badge {
+    width: 54px;
+    height: 54px;
+    border-radius: 15px;
+    background: var(--em-brand);
+    color: var(--em-on-primary);
+    display: grid;
+    place-items: center;
+}
+.easy-hero-badge svg {
+    width: 32px;
+    height: 32px;
+}
+.easy-hero-title {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--em-text);
+    margin: 0;
+}
+.easy-hero-sub {
+    font-size: 14px;
+    color: var(--em-text);
+    opacity: 0.7;
+    line-height: 1.5;
+    text-wrap: pretty;
+    margin: 0;
+    max-width: 46ch;
+}
+.easy-hero-scan {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    height: 62px;
+    border: none;
+    border-radius: 999px;
+    background: var(--em-scan-bg);
+    color: var(--em-on-scan);
+    font-size: 17px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter 0.15s;
+}
+.easy-hero-scan:hover {
+    filter: brightness(1.06);
+}
+.easy-hero-scan-icon {
+    display: inline-flex;
+    align-items: center;
+}
+.easy-home-cards {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+    width: 100%;
+}
+/* Two columns once there are two cards (Last scan + resume), collapsing to one
+   on narrow widths so the tiles stay readable. */
+@media (min-width: 520px) {
+    .easy-home-cards:has(.easy-home-card + .easy-home-card) {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+/* Last-scan stat row: big tabular number + unit label, per the template kpi. */
+.easy-home-stat {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin-top: 4px;
+}
+.easy-home-stat-n {
+    font-size: 22px;
+    font-weight: 660;
+    color: var(--em-text);
+    font-variant-numeric: tabular-nums;
+}
+.easy-home-stat-l {
+    font-size: 12.5px;
+    color: var(--em-text);
+    opacity: 0.6;
+}
+.easy-home-stat-sep {
+    color: var(--em-text);
+    opacity: 0.35;
+}
+.easy-home-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+.easy-home-card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 16px 18px;
+    background: var(--em-surface);
+    border: 1px solid var(--em-border);
+    border-radius: var(--em-radius-card);
+    /* Grid items default to min-width:auto, so a nowrap title (below) would grow
+       the card past its 1fr track and run off-screen instead of ellipsizing.
+       Pin to 0 so the card honors the track width and the title truncates. */
+    min-width: 0;
+}
+.easy-card-eye {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--em-text);
+    opacity: 0.5;
+    margin-bottom: 5px;
+}
+.easy-home-card-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--em-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    max-width: 100%;
+}
+.easy-home-card-sub {
+    font-size: 12px;
+    color: var(--em-text);
+    opacity: 0.6;
+    /* Holds the "Nm ago · report attached" text plus a severity pill. Lay it
+       out as a centered row with a gap so the taller pill aligns vertically and
+       doesn't crowd the text (it previously butted right up against it). */
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.easy-home-card-btn {
+    align-self: flex-start;
+    margin-top: 10px;
+    height: 32px;
+    padding: 0 16px;
+    border-radius: var(--em-radius-pill);
+    border: 1px solid var(--em-border-strong);
+    background: transparent;
+    color: var(--em-text);
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.15s;
+}
+.easy-home-card-btn:hover {
+    background: var(--em-surface-soft);
+}
+/* Drawer Reports count tag. */
+.easy-drawer-badge {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--em-on-primary);
+    background: var(--em-brand);
+    border-radius: var(--em-radius-pill);
+    padding: 1px 8px;
+}
+
+/* Report severity badge (parsed from frontmatter). Tinted pill matching the
+   template's b-err / b-warn chips; colors from Sage tokens. */
+.easy-sev-badge {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 9px;
+    border-radius: var(--em-radius-pill);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.easy-sev-badge.sev-err {
+    background: color-mix(in srgb, var(--em-error) 18%, transparent);
+    color: var(--em-error);
+}
+.easy-sev-badge.sev-warn {
+    background: color-mix(in srgb, var(--warning) 18%, transparent);
+    color: var(--warning);
+}
+.easy-sev-badge.sev-muted {
+    background: color-mix(in srgb, var(--em-text) 10%, transparent);
+    color: var(--em-text);
+    opacity: 0.75;
+}
+.easy-sev-badge.sev-ok {
+    background: color-mix(in srgb, var(--em-toast-fg) 16%, transparent);
+    color: var(--em-toast-fg);
 }

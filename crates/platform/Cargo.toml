@@ -8,13 +8,15 @@ license.workspace = true
 
 [features]
 default = ["desktop"]
-desktop = ["sysinfo", "local-ip-address", "dns-lookup", "network-interface", "dep:lazy_static", "dep:uuid", "dep:image", "desktop-mdns", "wifi_scan", "ssdp-client", "dep:reqwest", "dep:portable-pty", "dep:libc", "dep:sha2"]
+desktop = ["sysinfo", "local-ip-address", "dns-lookup", "network-interface", "dep:lazy_static", "dep:uuid", "dep:image", "desktop-mdns", "wifi_scan", "ssdp-client", "dep:reqwest", "dep:portable-pty", "dep:libc", "dep:sha2", "dep:keyring", "dep:arboard"]
 desktop-all = ["desktop", "desktop-screenshots"]
 desktop-screenshots = ["desktop", "screenshots"]
 desktop-mdns = ["desktop", "mdns-sd"]
 desktop-pcap = ["desktop", "pcap"]
 android = ["dep:jni", "dep:ndk-context", "dep:reqwest", "dep:portable-pty", "dep:libc", "dep:tar", "dep:xz2", "dep:sha2"]
-ios = []
+# getifaddrs(3) + sysctl(3) are permitted in the iOS app sandbox with no
+# entitlement, so native interface/device-info enumeration only needs libc.
+ios = ["dep:libc"]
 
 [dependencies]
 # Core
@@ -55,6 +57,17 @@ ssdp-client = { version = "2.1", optional = true }
 # Sandbox dependencies (desktop)
 reqwest = { version = "0.12", features = ["rustls-tls", "rustls-tls-native-roots", "stream"], default-features = false, optional = true }
 
+# OS credential store for the desktop chat-token secure backend. The default
+# `v1` feature selects the native store per platform: Windows Credential
+# Manager, macOS Keychain, and the Linux Secret Service (each internally
+# cfg(target_os)-gated), so a single cross-platform desktop build works.
+keyring = { version = "4", optional = true }
+
+# Native OS clipboard for the desktop "Copy link" action. WebView2 (Windows)
+# does not expose navigator.clipboard from Dioxus's custom-protocol origin, so
+# the JS path silently no-ops there; this gives every desktop a reliable copy.
+arboard = { version = "3", optional = true }
+
 # PTY support (desktop + android)
 portable-pty = { version = "0.9", optional = true }
 
@@ -73,6 +86,26 @@ sha2 = { workspace = true, optional = true }
 # Excluded from Windows builds to avoid requiring the Npcap SDK at compile time.
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 pcap = { version = "2", optional = true }
+
+# iOS: open URLs via UIApplication (objc2 is already in the tree via
+# dioxus-mobile). Used to register a browser opener for the Matrix OAuth flow,
+# since `open::that()` has no backend inside the iOS app sandbox.
+# iOS native bits. Pin to the same objc2 0.6 major that dioxus 0.7's wry/tao
+# stack already uses (objc2-ui-kit 0.3, objc2-foundation 0.3) so there's a
+# single objc2 in the iOS FFI path — mixing 0.5 and 0.6 in one call chain
+# breaks. AuthenticationServices provides ASWebAuthenticationSession, the
+# proper iOS OIDC flow (in-app browser + custom-scheme callback, no localhost).
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSError", "NSDictionary", "NSData"] }
+objc2-ui-kit = { version = "0.3", features = ["UIApplication", "UIResponder", "UIWindow", "UIScene", "UIWindowScene"] }
+objc2-authentication-services = { version = "0.3", features = [
+    "ASWebAuthenticationSession",
+    "ASWebAuthenticationSessionCallback",
+    "ASFoundation",
+] }
+objc2-core-foundation = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

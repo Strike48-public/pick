@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `labeled` lets the Android artifact steps (gated on the `build-apk` label)
+    # run when the label is added to an existing PR, not only on push.
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   contents: read
@@ -24,7 +27,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev protobuf-compiler libpcap-dev
       - uses: dtolnay/rust-toolchain@stable
+      # shared-key ties check/clippy/test to ONE cache: they compile the same
+      # workspace + features, so the first to run populates it and the others
+      # restore instead of building the crate graph from scratch three times.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-linux
       - run: cargo check --workspace --locked --features pentest-platform/desktop-pcap
 
   fmt:
@@ -50,6 +58,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-linux
       - run: cargo clippy --workspace --locked --features pentest-platform/desktop-pcap -- -D warnings
 
   test:
@@ -71,6 +81,8 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev protobuf-compiler libpcap-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-linux
       # --no-fail-fast: cargo compiles every test target, then stops RUNNING at
       # the first target with a failing test. Without this flag a single red
       # target hides every later crate's test *results* (they're compiled but not
@@ -106,7 +118,43 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --package pentest-headless --package pentest-platform --package pentest-core --locked --features pentest-platform/desktop-pcap
-      - run: cargo test --package pentest-platform --package pentest-core --lib --locked --features pentest-platform/desktop-pcap
+      - run: cargo test --package pentest-platform --package pentest-core --lib --locked --features pentest-platform/desktop-pcap,pentest-core/browser-auth
+
+  # Type-check the iOS build of pentest-platform. Its cfg(target_os = "ios")
+  # code (crates/platform/src/ios/*) is compiled by NO other CI job — the
+  # Linux/macOS-host jobs all target the host — so a workspace-wide change can
+  # break the iOS build invisibly (it did: a NetworkInterface field rename
+  # compiled everywhere except ios/system.rs).
+  #
+  # CRITICAL: use the SAME features the mobile app uses for iOS
+  # (`--no-default-features --features ios`). pentest-platform defaults to the
+  # `desktop` feature, which pulls `keyring` -> `apple-native-keyring-store`,
+  # and that crate hard-errors on iOS without its `protected` feature. The app
+  # never hits this because apps/mobile depends on pentest-platform with
+  # default-features = false, features = ["ios"]; the CI check must match.
+  # (Verified on the macOS iOS build host: default features reproduce the
+  # `protected` compile_error!; --no-default-features --features ios builds
+  # clean for aarch64-apple-ios.)
+  #
+  # Scoped to pentest-platform: it holds the ios/ cfg code and is where this
+  # regression class lands. A full mobile-app / .ipa build needs Xcode SDK
+  # provisioning (rquickjs-sys/objc2 build scripts) and is left to the local
+  # `dx build --platform ios` workflow, not this type-check gate.
+  check-ios:
+    name: Check (iOS)
+    runs-on: macos-latest
+    env:
+      DISABLE_SANDBOX: "true"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install protobuf
+        run: brew install protobuf
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+      - name: Check pentest-platform for iOS
+        run: cargo check --package pentest-platform --no-default-features --features ios --locked --target aarch64-apple-ios
 
   gitleaks:
     name: Gitleaks
@@ -179,3 +227,95 @@ jobs:
       - uses: actions/checkout@v5
       - uses: azure/setup-helm@v4
       - run: helm lint chart/pick-connector
+
+  android:
+    name: Android Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # Build through the nix flake so PR CI uses the exact same toolchain,
+      # SDK/NDK, dx, build-tools and aapt2 as local `just build-android`. This
+      # job builds Android green (see history: it passed on many commits); the
+      # only failures were the magic-nix-cache HTTP-418 throttle introduced with
+      # a main merge — so we KEEP nix (a standard-actions rewrite just surfaced
+      # every toolchain bit nix provides for free: libclang, aapt2, dx-version
+      # match, etc.) and DROP only the throttle-prone cache action below.
+      - uses: DeterminateSystems/nix-installer-action@main
+      # NOTE: DeterminateSystems/magic-nix-cache-action was intentionally removed.
+      # It backs the Nix store cache with the GitHub Actions Cache, which THROTTLES
+      # this job's heavy Nix traffic — every post-merge run failed at fetch-proot /
+      # build with "GitHub Actions Cache throttled Magic Nix Cache" (HTTP 418), and
+      # retries kept hitting the exhausted quota. Without it, Nix substitutes
+      # directly from cache.nixos.org (no GH-cache throttle); the cold toolchain
+      # fetch is slower but reliable. The expensive Rust/gradle bits are still
+      # cached via the actions/cache steps below.
+      # Cache cargo downloads + the Android cross-compile target dir. Keyed on
+      # Cargo.lock so the Android job doesn't re-download ~1165 crates; per-job
+      # target key for incremental reuse across runs. `just build-android` runs
+      # cargo via nix but still uses ~/.cargo and
+      # ./target, so a plain actions/cache is the robust choice here (Swatinem's
+      # action expects rustc on PATH, which lives inside `nix develop`).
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-android-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-android-${{ runner.os }}-
+      # Cache Gradle's downloaded dependencies + wrapper across runs.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'android-lib/**/*.gradle*') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+      # Fetch the Termux proot runtime (proot + libtalloc + busybox +
+      # libandroid-shmem) into android-jniLibs/ BEFORE building. android-jniLibs/
+      # is gitignored (fetched artifacts, not source), and _inject-android-lib
+      # copies whatever is there into the APK. Without this the APK builds but
+      # ships no proot binaries, so the interactive shell fails to spawn at
+      # runtime ("proot binary not found"). Mirrors the local dev prerequisite.
+      - name: Fetch Android proot runtime
+        run: nix develop --command just fetch-proot
+      - name: Build debug APK
+        env:
+          STRIKE48_HOST: https://studio.strike48.com
+        run: nix develop --command just build-android
+
+      # Installable artifacts, gated on the `build-apk` PR label so we only pay
+      # the extra build time when someone actually wants a test build. Adds:
+      #   - the debug APK just built (arm64 + x86_64 — installs on devices AND
+      #     the x86_64 emulator)
+      #   - a release AAB (issue #279 deliverable, unsigned — no Play key yet)
+      #   - a universal APK converted from that AAB (debug-signed by bundletool
+      #     so it is installable for testing)
+      - name: Build release AAB + universal APK
+        if: contains(github.event.pull_request.labels.*.name, 'build-apk')
+        env:
+          STRIKE48_HOST: https://studio.strike48.com
+        run: |
+          nix develop --command just bundle-android
+          nix develop --command just bundle-android-universal-apk
+
+      - name: Stage Android artifacts
+        if: contains(github.event.pull_request.labels.*.name, 'build-apk')
+        run: |
+          mkdir -p dist
+          cp target/dx/pick/debug/android/app/app/build/outputs/apk/debug/app-debug.apk \
+             dist/pick-android-debug.apk
+          cp target/dx/pick/release/android/app/app/build/outputs/bundle/release/app-release.aab \
+             dist/pick-android-release-unsigned.aab
+          cp target/dx/pick/release/android/pick-android-universal.apk \
+             dist/pick-android-universal.apk
+
+      - name: Upload Android artifacts
+        if: contains(github.event.pull_request.labels.*.name, 'build-apk')
+        uses: actions/upload-artifact@v4
+        with:
+          name: pick-android-${{ github.event.pull_request.number }}
+          path: dist/pick-android-*
+          if-no-files-found: error

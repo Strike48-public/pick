@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::insecure_tls;
 use super::types::*;
 
 // ---------------------------------------------------------------------------
@@ -18,12 +19,7 @@ pub struct MatrixChatClient {
 impl MatrixChatClient {
     pub fn new(api_url: impl Into<String>) -> Self {
         let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(
-                std::env::var("MATRIX_TLS_INSECURE")
-                    .or_else(|_| std::env::var("MATRIX_INSECURE"))
-                    .map(|v| v == "1" || v == "true")
-                    .unwrap_or(false),
-            )
+            .danger_accept_invalid_certs(insecure_tls())
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
@@ -83,7 +79,7 @@ impl MatrixChatClient {
     ///
     /// Handles the full request lifecycle: send, status check, JSON decode,
     /// GraphQL-level error check, and `data` unwrap.
-    async fn execute_gql<T: serde::de::DeserializeOwned>(
+    pub(crate) async fn execute_gql<T: serde::de::DeserializeOwned>(
         &self,
         query: &str,
         variables: serde_json::Value,
@@ -105,8 +101,12 @@ impl MatrixChatClient {
             .send()
             .await
             .map_err(|e| {
-                tracing::error!("[gql] send failed: {} (url={})", e, gql_url);
-                crate::error::Error::Matrix(e.to_string())
+                // reqwest's top-level Display is just "error sending request for
+                // url ..." — the real cause (TLS/connect/DNS) lives in the
+                // source chain, so surface the whole chain instead of dropping it.
+                let chain = error_chain(&e);
+                tracing::error!("[gql] send failed: {} (url={})", chain, gql_url);
+                crate::error::Error::Matrix(chain)
             })?;
 
         let status = resp.status();
@@ -150,7 +150,37 @@ impl MatrixChatClient {
                 crate::error::Error::Matrix(format!("Response contained invalid UTF-8: {}", e))
             })?
         };
-        let gql: GqlResponse<T> = serde_json::from_str(&body_text).map_err(|e| {
+        // Check GraphQL `errors` BEFORE decoding `data` into `T`. On an error
+        // response the server sends `{"data":{"createAgent":null},"errors":[...]}`;
+        // decoding that into a struct with a non-optional field fails with a
+        // useless "invalid type: null, expected struct ..." and buries the real
+        // message. Parse errors from a loose Value first so the actual server
+        // message (e.g. "A persona with that name already exists") surfaces.
+        let raw: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
+            crate::error::Error::Matrix(format!(
+                "GraphQL decode error: {} — body: {}",
+                e,
+                truncate_body(&body_text)
+            ))
+        })?;
+        if let Some(errors) = raw.get("errors").filter(|e| !e.is_null()) {
+            let msgs: Vec<String> = errors
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                        .map(|s| s.to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !msgs.is_empty() {
+                return Err(crate::error::Error::Matrix(format!(
+                    "GraphQL errors: {}",
+                    msgs.join(", ")
+                )));
+            }
+        }
+        let gql: GqlResponse<T> = serde_json::from_value(raw).map_err(|e| {
             crate::error::Error::Matrix(format!(
                 "GraphQL decode error: {} — body: {}",
                 e,
@@ -203,6 +233,20 @@ fn truncate_body(body: &str) -> String {
         end -= 1;
     }
     format!("{}…({} bytes total)", &body[..end], body.len())
+}
+
+/// Render an error together with its `source()` chain. reqwest's top-level
+/// Display hides the real transport cause (TLS handshake, connection refused,
+/// DNS), which lives in nested sources — walk them so diagnostics are actionable.
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut src = err.source();
+    while let Some(e) = src {
+        out.push_str(" -> ");
+        out.push_str(&e.to_string());
+        src = e.source();
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +352,9 @@ struct MessageNode {
     id: Option<String>,
     profile: Option<ProfileNode>,
     parts: Option<Vec<serde_json::Value>>,
+    /// Free-form message metadata (`json` scalar). Carries `stream_error` /
+    /// `stream_failed_at` when an assistant turn died mid-stream.
+    metadata: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -348,7 +395,7 @@ struct ConversationInfoNode {
 // Parse helpers for rich message parts
 // ---------------------------------------------------------------------------
 
-fn parse_message_parts(parts_json: &[serde_json::Value]) -> (String, Vec<MessagePart>) {
+pub(crate) fn parse_message_parts(parts_json: &[serde_json::Value]) -> (String, Vec<MessagePart>) {
     let mut text_buf = String::new();
     let mut rich_parts = Vec::new();
 
@@ -419,6 +466,23 @@ const LIST_AGENTS_QUERY: &str = r#"
     }
 "#;
 
+// Look up agents by name WITHOUT the isEnabled filter. Used only for the
+// connector's own create-vs-update decision: a previously-created agent that is
+// currently disabled is hidden by the enabled-only LIST_AGENTS_QUERY, so the
+// caller would wrongly try to createAgent and the server rejects it with
+// "a persona with that name already exists". This finds it (any state) so the
+// caller updates + re-enables instead. Not used for user-facing agent lists.
+const FIND_AGENTS_BY_NAME_QUERY: &str = r#"
+    query FindAgentsByName($name: String!) {
+        agents(filter: { name: $name }) {
+            id
+            name
+            description
+            agentGreeting
+        }
+    }
+"#;
+
 const CREATE_AGENT_QUERY: &str = r#"
     mutation CreateAgent($input: AgentInput!) {
         createAgent(input: $input) {
@@ -462,6 +526,7 @@ const GET_CONVERSATION_QUERY: &str = r#"
             agentStatus
             messages {
                 id
+                metadata
                 parts {
                     ... on TextPart { id text }
                     ... on ThinkingPart { id thinking { content } }
@@ -580,6 +645,26 @@ impl ChatClient for MatrixChatClient {
             .find(|a| a.name.to_lowercase().contains(&lower)))
     }
 
+    async fn find_own_agent(&self, name: &str) -> crate::error::Result<Option<AgentInfo>> {
+        if self.auth_token.is_none() {
+            return Ok(None);
+        }
+        let data: AgentsData = self
+            .execute_gql(
+                FIND_AGENTS_BY_NAME_QUERY,
+                serde_json::json!({ "name": name }),
+            )
+            .await?;
+        // The server `name` filter may be substring/fuzzy, so pick the exact
+        // (case-insensitive) match to avoid grabbing the Validator/Report sibling
+        // (e.g. "pentest-connector" vs "pentest-connector-validator").
+        Ok(data
+            .agents
+            .into_iter()
+            .map(AgentInfo::from)
+            .find(|a| a.name.eq_ignore_ascii_case(name)))
+    }
+
     async fn create_agent(&self, input: CreateAgentInput) -> crate::error::Result<AgentInfo> {
         self.require_auth()?;
 
@@ -669,6 +754,12 @@ impl ChatClient for MatrixChatClient {
             .parse::<AgentStatus>()
             .unwrap_or(AgentStatus::Idle);
 
+        // Track the last non-empty `metadata.stream_error` we see. A turn that
+        // died mid-stream stamps this on the in-flight assistant message; it's a
+        // durable terminal signal even when `agentStatus` doesn't reflect the
+        // failure (a hard ConversationServer crash reports IDLE, not ERROR).
+        let mut stream_error: Option<String> = None;
+
         let messages = conv
             .messages
             .unwrap_or_default()
@@ -682,6 +773,16 @@ impl ChatClient for MatrixChatClient {
                     ),
                     None => (String::new(), String::new()),
                 };
+
+                if let Some(err) = m
+                    .metadata
+                    .as_ref()
+                    .and_then(|meta| meta.get("stream_error"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                {
+                    stream_error = Some(err.to_string());
+                }
 
                 let parts_json = m.parts.unwrap_or_default();
                 let (text, parts) = parse_message_parts(&parts_json);
@@ -699,6 +800,7 @@ impl ChatClient for MatrixChatClient {
         Ok(ConversationState {
             messages,
             agent_status,
+            stream_error,
         })
     }
 

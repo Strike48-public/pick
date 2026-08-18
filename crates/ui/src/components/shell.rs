@@ -42,36 +42,59 @@ pub fn InteractiveShell(
 
     use_effect(move || {
         let current_mode = mode.read().clone();
-        let js = SHELL_INIT_JS
-            .replace("__LIVEVIEW_BASE__", LIVEVIEW_BASE)
-            .replace("__SHELL_MODE__", &current_mode);
-        crate::liveview_server::push_terminal_line(TerminalLine::info(format!(
-            "[shell] initializing (mode={})",
-            current_mode
-        )));
-        spawn(async move {
-            // Tear down any existing terminal before (re-)initializing
-            let _ = document::eval(
-                r#"
+
+        // Teardown of any prior terminal, prepended to the init script so both
+        // run in a SINGLE document::eval. This matters on WebView2 (Windows):
+        // there, `document::eval(...).await` runs the JS but its Rust-side
+        // future never resolves. The previous code awaited a separate teardown
+        // eval first, so that await blocked forever and the real init eval was
+        // never dispatched — the shell hung on "Starting shell..." with
+        // shell_init.js never executing. WebKit (macOS/Linux) resolves the
+        // future normally, which is why it only broke on Windows.
+        let teardown = r#"
+            (function () {
                 var c = document.getElementById('shell-container');
                 if (c && c._shellCleanup) { c._shellCleanup(); }
                 var loading = document.getElementById('shell-loading');
                 if (loading) loading.style.display = '';
-            "#,
-            )
-            .await;
+            })();
+        "#;
+        // Authoritative StrikeHub-embedded signal for the JS: StrikeHub spawns
+        // us with STRIKEHUB_SOCKET set (same check as liveview_server.rs and
+        // easy_mode.rs). Passing it in avoids the JS guessing from the webview
+        // origin, which is identical for embedded and standalone builds and so
+        // mis-detected standalone Android as StrikeHub (restty.js 404 -> blank
+        // shell).
+        let is_strikehub = std::env::var("STRIKEHUB_SOCKET").is_ok();
+        let js = format!(
+            "{teardown}\n{init}",
+            init = SHELL_INIT_JS
+                .replace("__LIVEVIEW_BASE__", LIVEVIEW_BASE)
+                .replace("__SHELL_MODE__", &current_mode)
+                .replace("__SHELL_TOKEN__", crate::shell_ws::shell_token())
+                .replace(
+                    "__IS_STRIKEHUB__",
+                    if is_strikehub { "true" } else { "false" }
+                )
+        );
+
+        crate::liveview_server::push_terminal_line(TerminalLine::info(format!(
+            "[shell] initializing (mode={})",
+            current_mode
+        )));
+        tracing::info!("[shell] init effect fired (mode={current_mode})");
+        spawn(async move {
+            // Dispatch the combined teardown+init script. We intentionally do
+            // NOT gate any further logic on this future resolving: on WebView2
+            // it never will (the JS runs regardless — verified — but the future
+            // hangs). Awaiting here simply keeps the `Eval` alive and driven so
+            // the browser executes it; the JS itself drives restty load →
+            // terminal open → PTY connect and reports readiness by clearing the
+            // "Starting shell..." overlay via its own WebSocket status callback.
+            // On WebKit this resolves and logs; on WebView2 it parks harmlessly.
             match document::eval(&js).await {
-                Ok(_) => {
-                    crate::liveview_server::push_terminal_line(TerminalLine::success(
-                        "[shell] terminal connected".to_string(),
-                    ));
-                }
-                Err(e) => {
-                    tracing::warn!("JS eval failed (shell init): {e}");
-                    crate::liveview_server::push_terminal_line(TerminalLine::error(format!(
-                        "[shell] init failed: {e}"
-                    )));
-                }
+                Ok(v) => tracing::info!("[shell] init eval resolved: {v:?}"),
+                Err(e) => tracing::warn!("[shell] init eval error: {e:?}"),
             }
         });
     });

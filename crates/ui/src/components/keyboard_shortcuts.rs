@@ -206,7 +206,10 @@ pub fn KeyboardShortcuts(props: KeyboardShortcutsProps) -> Element {
                         "1" => Some(ShortcutAction::Navigate(NavPage::Dashboard)),
                         "2" => Some(ShortcutAction::Navigate(NavPage::Tools)),
                         "3" => Some(ShortcutAction::Navigate(NavPage::Files)),
-                        "4" => Some(ShortcutAction::Navigate(NavPage::Shell)),
+                        // Shell is unavailable on iOS; ignore its nav shortcut there.
+                        "4" if !cfg!(target_os = "ios") => {
+                            Some(ShortcutAction::Navigate(NavPage::Shell))
+                        }
                         "5" => Some(ShortcutAction::Navigate(NavPage::Logs)),
                         "6" => Some(ShortcutAction::Navigate(NavPage::Settings)),
                         "c" | "C" => Some(ShortcutAction::Navigate(NavPage::Chat)),

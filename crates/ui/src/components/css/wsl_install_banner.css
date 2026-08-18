@@ -1,0 +1,111 @@
+/* Windows "Install WSL for better scanning" banner.
+ *
+ * Rendered at the top of the easy-mode + workspace shells when no sandbox
+ * backend is available on Windows. Styled to match the Sage glass-card look
+ * (falls back to the standard theme tokens outside Sage). */
+
+.wsl-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin: 12px 16px;
+    padding: 14px 16px;
+    border-radius: var(--radius-lg, 10px);
+    background: var(--sage-glass-bg, var(--secondary));
+    border: 1px solid var(--sage-line2, var(--border));
+    box-shadow: var(--sage-glass-sh, none);
+    color: var(--foreground);
+}
+
+.wsl-banner-icon {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: var(--sage-tint, color-mix(in srgb, var(--primary) 12%, transparent));
+    color: var(--sage-pri2, var(--primary));
+}
+
+.wsl-banner-body {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.wsl-banner-title {
+    margin: 0 0 4px 0;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--foreground);
+}
+
+.wsl-banner-text {
+    margin: 0 0 10px 0;
+    font-size: 0.85rem;
+    line-height: 1.45;
+    color: var(--sage-dim, var(--muted-foreground));
+}
+
+.wsl-banner-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.wsl-banner-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+    color: var(--sage-dim, var(--muted-foreground));
+}
+
+.wsl-banner-status.is-error {
+    color: var(--destructive);
+}
+
+.wsl-banner-status.is-reboot {
+    color: var(--warning, var(--foreground));
+    font-weight: 600;
+}
+
+/* Small inline spinner shown during the install. */
+.wsl-banner-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--sage-line2, var(--border));
+    border-top-color: var(--sage-pri2, var(--primary));
+    border-radius: 50%;
+    animation: wsl-banner-spin 0.8s linear infinite;
+}
+
+@keyframes wsl-banner-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* Dismiss "X" — subtle, top-right. */
+.wsl-banner-dismiss {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--sage-dim, var(--muted-foreground));
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s;
+}
+
+.wsl-banner-dismiss:hover {
+    background: var(--sage-tint, var(--secondary));
+    color: var(--foreground);
+}

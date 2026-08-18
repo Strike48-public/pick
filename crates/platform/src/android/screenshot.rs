@@ -27,7 +27,7 @@ fn capture_screenshot_blocking() -> Result<Vec<u8>> {
             .and_then(|v| v.l())
             .map_err(|e| Error::ToolExecution(format!("getApplicationContext: {e}")))?;
 
-        let bridge_cls = find_app_class(env, "com/strike48/pentest_connector/ConnectorBridge")?;
+        let bridge_cls = find_app_class(env, "com/strike48/pick/ConnectorBridge")?;
 
         let method_str = env
             .new_string("capture_screenshot")

@@ -366,6 +366,126 @@ pub fn render_markdown(content: &str) -> String {
     )
 }
 
+/// Split a leading YAML frontmatter block from markdown content.
+///
+/// Returns `(Some(yaml), body)` when `content` begins with a `---` line,
+/// contains a later `---` line on its own, and thus forms a frontmatter block;
+/// the returned `yaml` excludes both fence lines. Returns `(None, content)`
+/// otherwise (no frontmatter, `---` not at the very start, or no closing fence).
+/// The opening fence must be the first line — no leading blank lines — matching
+/// the report frontmatter format.
+pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
+    // Opening fence must be the very first line. Accept LF and CRLF endings so
+    // reports authored on any platform strip cleanly.
+    let rest = match content
+        .strip_prefix("---\n")
+        .or_else(|| content.strip_prefix("---\r\n"))
+    {
+        Some(r) => r,
+        None => return (None, content),
+    };
+    // Find the earliest closing fence across both ending styles (block, body
+    // follows), or a trailing "\n---"/"\r\n---" at end of input (empty body).
+    let close = ["\n---\n", "\r\n---\r\n", "\n---\r\n", "\r\n---\n"]
+        .iter()
+        .filter_map(|fence| rest.find(fence).map(|idx| (idx, fence.len())))
+        .min_by_key(|(idx, _)| *idx);
+    if let Some((idx, fence_len)) = close {
+        let yaml = &rest[..idx];
+        let body = &rest[idx + fence_len..];
+        (Some(yaml.trim_matches(['\n', '\r'])), body)
+    } else if let Some(yaml) = rest
+        .strip_suffix("\n---")
+        .or_else(|| rest.strip_suffix("\r\n---"))
+    {
+        (Some(yaml.trim_matches(['\n', '\r'])), "")
+    } else {
+        (None, content)
+    }
+}
+
+/// Format an ISO 8601 timestamp as a relative time string (e.g. "2m ago").
+///
+/// Shared by the Dioxus chat history and the crux conversation list so both
+/// render the same "now / Ns ago / Nm ago / Nh ago / Nd ago" labels. Returns
+/// an em-dash for an unparseable timestamp.
+pub fn format_relative_time(iso: &str) -> String {
+    let parsed = chrono::DateTime::parse_from_rfc3339(iso)
+        .or_else(|_| chrono::DateTime::parse_from_rfc3339(&format!("{}Z", iso.trim())))
+        .map(|dt| dt.with_timezone(&chrono::Utc));
+
+    let now = chrono::Utc::now();
+    let ts = match parsed {
+        Ok(dt) => dt,
+        Err(_) => return "\u{2014}".to_string(),
+    };
+
+    let diff = (now - ts).num_seconds();
+    if diff <= 0 {
+        return "now".to_string();
+    }
+    let diff = diff as u64;
+    if diff < 60 {
+        return format!("{}s ago", diff);
+    }
+    let mins = diff / 60;
+    if mins < 60 {
+        return format!("{}m ago", mins);
+    }
+    let hours = mins / 60;
+    if hours < 24 {
+        return format!("{}h ago", hours);
+    }
+    let days = hours / 24;
+    format!("{}d ago", days)
+}
+
+#[cfg(test)]
+mod frontmatter_tests {
+    use super::split_frontmatter;
+
+    #[test]
+    fn splits_leading_frontmatter() {
+        let c = "---\nscope: \"x\"\n---\n# Body\ntext";
+        let (fm, body) = split_frontmatter(c);
+        assert_eq!(fm, Some("scope: \"x\""));
+        assert_eq!(body, "# Body\ntext");
+    }
+
+    #[test]
+    fn no_frontmatter_returns_content() {
+        let c = "# Just markdown\ntext";
+        let (fm, body) = split_frontmatter(c);
+        assert_eq!(fm, None);
+        assert_eq!(body, c);
+    }
+
+    #[test]
+    fn hr_not_at_start_is_not_frontmatter() {
+        let c = "intro\n---\nnot fm\n---\n";
+        let (fm, body) = split_frontmatter(c);
+        assert_eq!(fm, None);
+        assert_eq!(body, c);
+    }
+
+    #[test]
+    fn unterminated_block_is_not_frontmatter() {
+        let c = "---\nscope: x\nno closing fence";
+        let (fm, body) = split_frontmatter(c);
+        assert_eq!(fm, None);
+        assert_eq!(body, c);
+    }
+
+    #[test]
+    fn splits_crlf_frontmatter() {
+        // Reports authored with Windows/CRLF line endings must strip too.
+        let c = "---\r\nscope: \"x\"\r\n---\r\n# Body\r\ntext";
+        let (fm, body) = split_frontmatter(c);
+        assert_eq!(fm, Some("scope: \"x\""));
+        assert_eq!(body, "# Body\r\ntext");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -65,7 +65,6 @@ impl PentestTool for ExecuteCommandTool {
             Platform::Desktop,
             Platform::Web,
             Platform::Android,
-            Platform::Ios,
             Platform::Tui,
         ]
     }

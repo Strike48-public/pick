@@ -2,6 +2,7 @@
 //!
 //! Handles downloading, extracting, and managing the BlackArch minimal rootfs.
 
+use super::arch;
 use super::config::{SandboxConfig, SandboxError, SandboxResult};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
@@ -21,6 +22,28 @@ pub(super) const ARCH_BOOTSTRAP_URL_GZ: &str =
 
 /// BlackArch repository strap script
 const BLACKARCH_STRAP_URL: &str = "https://blackarch.org/strap.sh";
+
+/// Base rootfs URL for the current host arch. x86_64 uses the Arch bootstrap
+/// tarball; aarch64 uses the ArchLinuxARM aarch64 rootfs (vanilla Arch has no
+/// ARM port).
+fn bootstrap_url() -> &'static str {
+    if arch::is_aarch64() {
+        arch::ALARM_AARCH64_ROOTFS
+    } else {
+        ARCH_BOOTSTRAP_URL
+    }
+}
+
+/// Name of the wrapper directory the base archive extracts into, if any. The
+/// x86_64 Arch bootstrap archive nests everything under `root.x86_64/`; the
+/// ALARM aarch64 tarball extracts flat, so there is no wrapper to move.
+fn extracted_subdir_for(aarch64: bool) -> Option<&'static str> {
+    if aarch64 {
+        None
+    } else {
+        Some("root.x86_64")
+    }
+}
 
 /// Rootfs manager for BlackArch environment
 pub struct RootfsManager {
@@ -104,6 +127,14 @@ impl RootfsManager {
         // Set file capabilities on pentest tools that need raw sockets
         self.set_tool_capabilities(&rootfs).await?;
 
+        // pacman's provisioning (installing the `filesystem` package via
+        // arch-chroot/bwrap) can reset the rootfs ROOT dir back to its packaged
+        // mode 0555. Restore owner-write before writing the completion marker —
+        // otherwise the marker write itself fails on the read-only root, the
+        // marker never appears, is_ready() stays false, and every launch
+        // re-provisions from scratch (and later bwrap spawns fail EPERM too).
+        Self::make_owner_writable(&rootfs);
+
         // Create version marker to indicate this rootfs has been updated
         let version_marker = rootfs.join(".rootfs_version");
         tokio::fs::write(&version_marker, "1\n").await?;
@@ -113,14 +144,131 @@ impl RootfsManager {
         Ok(rootfs)
     }
 
+    /// Recursively delete `path`, first making the whole tree writable.
+    ///
+    /// The Arch bootstrap archive packs some directories read-only (e.g.
+    /// `etc/ca-certificates/extracted/cadir` is mode 0555). A plain
+    /// `remove_dir_all` cannot delete files inside a read-only dir, and — worse —
+    /// re-extracting the tarball ON TOP of a leftover read-only `cadir` from an
+    /// interrupted run fails with `tar: Cannot create symlink ... Permission
+    /// denied`, permanently wedging every later provision. So before deleting we
+    /// walk the tree and restore write permission on every directory.
+    fn force_remove_dir_all(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::symlink_metadata(path) {
+                // Only chmod real directories (not symlinks) so we can descend.
+                if meta.file_type().is_dir() {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(perms.mode() | 0o700);
+                    let _ = std::fs::set_permissions(path, perms);
+                    if let Ok(entries) = std::fs::read_dir(path) {
+                        for entry in entries.flatten() {
+                            Self::force_remove_dir_all(&entry.path());
+                        }
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(path);
+        // remove_dir_all leaves nothing on success; a file (non-dir) path or a
+        // symlink needs remove_file.
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Recursively add the owner-write bit to every directory under `path`
+    /// (and `path` itself). The Arch/ALARM archives pack some directories
+    /// read-only (0555), including the rootfs root; proot/bwrap need to create
+    /// mount points and pacman needs to write databases inside the tree, so a
+    /// read-only dir makes the sandbox fail at spawn/first-write with
+    /// "Permission denied". Only directories are touched (files keep their
+    /// modes); symlinks are skipped so we don't chase them out of the tree.
+    fn make_owner_writable(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let Ok(meta) = std::fs::symlink_metadata(path) else {
+                return;
+            };
+            if !meta.file_type().is_dir() {
+                return;
+            }
+            let mut perms = meta.permissions();
+            perms.set_mode(perms.mode() | 0o700);
+            let _ = std::fs::set_permissions(path, perms);
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    Self::make_owner_writable(&entry.path());
+                }
+            }
+        }
+    }
+
     /// Download and extract the base Arch rootfs
     async fn download_and_extract_rootfs(&self, rootfs: &Path) -> SandboxResult<()> {
+        tokio::fs::create_dir_all(rootfs).await?;
+
+        // aarch64: ArchLinuxARM ships a flat .tar.gz that untars directly into
+        // the rootfs dir (no `root.<arch>` wrapper like the x86_64 bootstrap).
+        if arch::is_aarch64() {
+            let tarball_path = self.config.data_dir.join("alarm-rootfs.tar.gz");
+            if !tarball_path.exists() {
+                tracing::info!("Downloading ArchLinuxARM aarch64 rootfs...");
+                self.download_file(bootstrap_url(), &tarball_path).await?;
+            }
+            tracing::info!("Extracting ALARM rootfs...");
+            // --delay-directory-restore: see the x86_64 branch below — ALARM
+            // packs the same read-only cadir, so defer dir-perm restore or the
+            // symlinks inside it fail to extract.
+            let status = Command::new("tar")
+                .args([
+                    "--delay-directory-restore",
+                    "-xzf",
+                    &tarball_path.to_string_lossy(),
+                    "-C",
+                    &rootfs.to_string_lossy(),
+                    "--no-same-owner",
+                ])
+                .status()
+                .await
+                .map_err(|e| {
+                    SandboxError::RootfsSetupFailed(format!("Failed to extract ALARM rootfs: {e}"))
+                })?;
+            if !status.success() {
+                tracing::warn!(
+                    "ALARM tar extraction exit code {} (usually harmless symlink perms)",
+                    status.code().unwrap_or(-1)
+                );
+            }
+            tokio::fs::remove_file(&tarball_path).await.ok();
+
+            // Ensure the extracted tree is owner-writable (the archive root is
+            // packed 0555; proot/bwrap and pacman need to write inside it).
+            Self::make_owner_writable(rootfs);
+
+            if !rootfs.join("bin").join("bash").exists()
+                && !rootfs.join("usr").join("bin").join("bash").exists()
+            {
+                return Err(SandboxError::RootfsSetupFailed(
+                    "ALARM rootfs extraction incomplete - bash not found".to_string(),
+                ));
+            }
+            if !rootfs.join("usr").join("bin").join("pacman").exists() {
+                return Err(SandboxError::RootfsSetupFailed(
+                    "ALARM rootfs extraction incomplete - pacman not found".to_string(),
+                ));
+            }
+            tracing::info!("ALARM rootfs extraction completed successfully");
+            return Ok(());
+        }
+
         let tarball_path = self.config.data_dir.join("arch-bootstrap.tar.zst");
 
         if !tarball_path.exists() {
             tracing::info!("Downloading Arch bootstrap...");
             if self
-                .download_file(ARCH_BOOTSTRAP_URL, &tarball_path)
+                .download_file(bootstrap_url(), &tarball_path)
                 .await
                 .is_err()
             {
@@ -132,13 +280,37 @@ impl RootfsManager {
         }
 
         tracing::info!("Extracting rootfs...");
-        tokio::fs::create_dir_all(rootfs).await?;
 
+        // Remove any leftover staging dir from a previous interrupted extract.
+        // The archive nests everything under `root.x86_64/`, and re-extracting
+        // over a leftover read-only `cadir` there fails (tar can't recreate the
+        // symlinks), so start from a clean staging dir every time.
+        if let Some(subdir) = extracted_subdir_for(false) {
+            let staging = self.config.data_dir.join(subdir);
+            if staging.exists() {
+                tracing::info!(
+                    "Removing stale extraction staging dir {}",
+                    staging.display()
+                );
+                Self::force_remove_dir_all(&staging);
+            }
+        }
+
+        // --delay-directory-restore: the Arch bootstrap packs read-only dirs
+        // (e.g. etc/ca-certificates/extracted/cadir, mode 0555) BEFORE the
+        // symlinks that live inside them. Without this flag GNU tar creates the
+        // dir read-only, then can't write its own children -> "Cannot create
+        // symlink ... Permission denied" and the extract aborts, leaving a
+        // broken rootfs. The flag defers directory permission restoration until
+        // after contents are written. (Reproduced on the current .tar.zst
+        // bootstrap; the older .tar.gz didn't pack it this way, which is why the
+        // gz fallback worked and masked this.)
         let tarball_str = tarball_path.to_string_lossy();
         let extract_result = if tarball_str.ends_with(".zst") {
             Command::new("tar")
                 .args([
                     "--zstd",
+                    "--delay-directory-restore",
                     "-xf",
                     &tarball_str,
                     "-C",
@@ -150,6 +322,7 @@ impl RootfsManager {
         } else {
             Command::new("tar")
                 .args([
+                    "--delay-directory-restore",
                     "-xzf",
                     &tarball_str,
                     "-C",
@@ -174,14 +347,33 @@ impl RootfsManager {
             }
         }
 
-        // The archive extracts to a subdirectory, move contents up
-        let extracted_dir = self.config.data_dir.join("root.x86_64");
-        if extracted_dir.exists() && extracted_dir != *rootfs {
-            if rootfs.exists() {
-                tokio::fs::remove_dir_all(rootfs).await.ok();
+        // The archive packs its dirs (including the `root.x86_64` root itself)
+        // as mode 0555 (read-only). This bites in THREE places, so restore
+        // owner-write on every directory in the extracted tree BEFORE anything
+        // else touches it:
+        //   1. renaming the staging dir into place needs write on that dir
+        //      (`rename` updates its `..`), else the move fails Permission denied
+        //      and the whole provision aborts — leaving a broken 0555 rootfs that
+        //      is never repaired;
+        //   2. bwrap/proot must create mount points inside the rootfs at spawn;
+        //   3. pacman must write /var/lib/pacman.
+        // Do it on the staging dir first (fixes the rename), then again on the
+        // final rootfs after the move (belt and suspenders / no-move case).
+        if let Some(subdir) = extracted_subdir_for(false) {
+            let extracted_dir = self.config.data_dir.join(subdir);
+            if extracted_dir.exists() {
+                Self::make_owner_writable(&extracted_dir);
+                if extracted_dir != *rootfs {
+                    if rootfs.exists() {
+                        // force-remove: a prior rootfs also contains read-only dirs.
+                        Self::force_remove_dir_all(rootfs);
+                    }
+                    tokio::fs::rename(&extracted_dir, rootfs).await?;
+                }
             }
-            tokio::fs::rename(&extracted_dir, rootfs).await?;
         }
+
+        Self::make_owner_writable(rootfs);
 
         tokio::fs::remove_file(&tarball_path).await.ok();
 
@@ -209,13 +401,12 @@ impl RootfsManager {
         tokio::fs::create_dir_all(&pacman_gnupg).await?;
 
         // Initialize keyring and populate with Arch Linux keys
-        let init_script = r#"
-set -e
-pacman-key --init
-pacman-key --populate archlinux
-        "#;
+        let init_script = format!(
+            "set -e\npacman-key --init\npacman-key --populate {}\n",
+            arch::pacman_keyring()
+        );
 
-        match self.run_in_rootfs(rootfs, init_script).await {
+        match self.run_in_rootfs(rootfs, &init_script).await {
             Ok(output) => {
                 tracing::info!("Pacman keyring initialized successfully: {}", output.trim());
             }
@@ -229,6 +420,12 @@ pacman-key --populate archlinux
     }
 
     /// Add BlackArch repository to the rootfs
+    ///
+    /// On aarch64 this still runs strap.sh (unlike WSL/Docker which append
+    /// `[blackarch]` directly). strap.sh may assume an x86_64 bootstrap; if it
+    /// misbehaves on arm64 the `Err` fallback appends the repo manually. This
+    /// arm64-Linux path is unverified (no arm64 Linux test hardware yet) — verify
+    /// when a box exists.
     async fn add_blackarch_repo(&self, rootfs: &Path) -> SandboxResult<()> {
         tracing::info!("Adding BlackArch repository...");
 
@@ -284,12 +481,7 @@ set -e
         tracing::info!("Configuring mirrors...");
 
         let mirrorlist = rootfs.join("etc/pacman.d/mirrorlist");
-        tokio::fs::write(
-            &mirrorlist,
-            "Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch\n\
-             Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch\n",
-        )
-        .await?;
+        tokio::fs::write(&mirrorlist, arch::pacman_mirrorlist()).await?;
 
         Ok(())
     }
@@ -555,5 +747,19 @@ done
         file.write_all(&bytes).await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn x86_64_bootstrap_archive_has_wrapper_dir_aarch64_is_flat() {
+        // The x86_64 Arch bootstrap tarball extracts into a `root.x86_64/`
+        // wrapper dir that must then be moved up. The ALARM aarch64 tarball
+        // extracts flat (no wrapper), so no move is needed.
+        assert_eq!(extracted_subdir_for(false), Some("root.x86_64"));
+        assert_eq!(extracted_subdir_for(true), None);
     }
 }

@@ -22,12 +22,32 @@ use pentest_platform::PtyShell;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use tokio::sync::Mutex;
 
 #[derive(Deserialize)]
 struct ShellParams {
     cols: Option<u16>,
     rows: Option<u16>,
+    /// Per-session token gating access to the shell. The page's shell_init.js
+    /// is served the token via placeholder substitution; other local processes
+    /// (which matters on Android, where any app can reach 127.0.0.1 TCP) do not
+    /// have it and are rejected before the PTY is spawned.
+    token: Option<String>,
+}
+
+/// Process-global per-session shell token. Generated once on first read with
+/// `Uuid::new_v4()` and stable for the process lifetime. Mirrors the
+/// `WORKSPACE_PATH` OnceLock pattern in liveview_server.rs — a value any thread
+/// can read without threading it through the Dioxus component tree.
+pub fn shell_token() -> &'static str {
+    static SHELL_TOKEN: OnceLock<String> = OnceLock::new();
+    SHELL_TOKEN.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
+
+/// True when the supplied token exactly matches the session token.
+fn token_ok(supplied: Option<&str>) -> bool {
+    supplied == Some(shell_token())
 }
 
 /// Returns the router with shell WebSocket route.
@@ -39,6 +59,14 @@ pub fn shell_routes(_default_mode: ShellMode) -> Router {
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, Query(params): Query<ShellParams>) -> impl IntoResponse {
+    // Reject before upgrading if the token is missing or wrong. On Android the
+    // shell WS is served over a localhost TCP port reachable by any app, so this
+    // gate is what keeps a root proot shell from being opened by another process.
+    if !token_ok(params.token.as_deref()) {
+        tracing::warn!("[shell_ws] rejecting /ws/shell: missing or invalid token");
+        return axum::http::StatusCode::UNAUTHORIZED.into_response();
+    }
+
     let cols = params.cols.unwrap_or(80);
     let rows = params.rows.unwrap_or(24);
 
@@ -55,6 +83,7 @@ async fn ws_handler(ws: WebSocketUpgrade, Query(params): Query<ShellParams>) -> 
     };
 
     ws.on_upgrade(move |socket| handle_socket(socket, cols, rows, cwd, shell_mode))
+        .into_response()
 }
 
 async fn handle_socket(
@@ -64,6 +93,9 @@ async fn handle_socket(
     cwd: Option<PathBuf>,
     shell_mode: ShellMode,
 ) {
+    tracing::info!(
+        "[shell_ws] handle_socket: spawning PTY shell (mode={shell_mode:?}, {cols}x{rows})"
+    );
     let pty = match PtyShell::spawn(cols, rows, None, cwd.as_deref(), shell_mode).await {
         Ok(pty) => pty,
         Err(e) => {
@@ -71,6 +103,7 @@ async fn handle_socket(
             return;
         }
     };
+    tracing::info!("[shell_ws] PtyShell::spawn returned OK; wiring reader/writer");
 
     let reader = match pty.try_clone_reader() {
         Ok(r) => r,
@@ -101,16 +134,31 @@ async fn handle_socket(
         use std::io::Read;
         let mut reader = reader;
         let mut buf = [0u8; 4096];
+        let mut total: u64 = 0;
+        let mut first = true;
+        tracing::info!("[shell_ws] PTY reader loop started; blocking on first read()");
         loop {
             match reader.read(&mut buf) {
-                Ok(0) => break,
+                Ok(0) => {
+                    tracing::info!("[shell_ws] PTY reader hit EOF after {total} bytes");
+                    break;
+                }
                 Ok(n) => {
+                    if first {
+                        tracing::info!("[shell_ws] PTY reader got FIRST {n} bytes");
+                        first = false;
+                    }
+                    total += n as u64;
                     let text = String::from_utf8_lossy(&buf[..n]).to_string();
                     if pty_tx.blocking_send(text).is_err() {
+                        tracing::info!("[shell_ws] PTY reader: channel closed, stopping");
                         break;
                     }
                 }
-                Err(_) => break,
+                Err(e) => {
+                    tracing::warn!("[shell_ws] PTY reader error after {total} bytes: {e}");
+                    break;
+                }
             }
         }
     });
@@ -183,4 +231,27 @@ enum ShellCommand {
     },
     #[serde(other)]
     Unknown,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_token_is_stable_and_nonempty() {
+        let a = shell_token();
+        let b = shell_token();
+        assert!(!a.is_empty(), "token must be non-empty");
+        assert_eq!(a, b, "token must be stable across calls");
+    }
+
+    #[test]
+    fn token_matches_only_exact_value() {
+        let t = shell_token();
+        // Accept path: exact match.
+        assert!(token_ok(Some(t)));
+        // Reject paths: absent or wrong.
+        assert!(!token_ok(None));
+        assert!(!token_ok(Some("not-the-token")));
+    }
 }

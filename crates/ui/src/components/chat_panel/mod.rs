@@ -10,12 +10,13 @@ mod history;
 mod input;
 mod messages;
 mod next_steps;
-mod polling;
 mod render;
 
 use dioxus::prelude::*;
 use pentest_core::matrix::{
-    AgentInfo, ChatClient, ChatMessage, ConversationInfo, MatrixChatClient, UpdateAgentInput,
+    apply_event, build_error_notice, subscribe_conversation, AgentInfo, AgentStatus, ApplyOutcome,
+    ChatClient, ChatMessage, ChatNotice, ChatNoticeKind, ConnectionState, ConversationInfo,
+    ConversationStreamEvent, MatrixChatClient, UpdateAgentInput,
 };
 use pentest_core::terminal::TerminalLine;
 use std::collections::HashMap;
@@ -29,9 +30,161 @@ use constants::*;
 use history::HistoryDropdown;
 use input::ChatInput;
 use messages::MessageList;
-use polling::{notify_conversations_changed, poll_and_update, ChatNoticeKind};
 pub use render::format_relative_time;
 use render::{CHART_PROCESSOR_JS, UTILS_JS};
+
+/// Resolve the dev TLS-insecure flag the same way the rest of the app does
+/// (`liveview_connector::token_refresh::build_http_client` and
+/// `pentest_core::matrix::insecure_tls`): BUILD-time `option_env!` first — the
+/// only source that reaches the mobile apps, which have no runtime environment —
+/// then the RUNTIME env for desktop/dev/headless.
+fn subscription_insecure_tls() -> bool {
+    let truthy = |v: &str| v == "true" || v == "1";
+    option_env!("MATRIX_TLS_INSECURE")
+        .or(option_env!("MATRIX_INSECURE"))
+        .map(truthy)
+        .filter(|&b| b)
+        .unwrap_or_else(|| {
+            std::env::var("MATRIX_TLS_INSECURE")
+                .or_else(|_| std::env::var("MATRIX_INSECURE"))
+                .map(|v| truthy(&v))
+                .unwrap_or(false)
+        })
+}
+
+/// Bump the shared conversation-refresh trigger so the sidebar re-fetches its
+/// recent-conversations list. `Signal` is `Copy`, so callers pass it by value
+/// (including from inside spawned tasks). Only the *change* matters, so we wrap
+/// on overflow rather than saturate. (Previously lived in the polling module,
+/// which the subscription rewrite removed; kept here since conversation-create
+/// sites still need to nudge the sidebar.)
+fn notify_conversations_changed(mut trigger: Signal<u64>) {
+    trigger.with_mut(|n| *n = n.wrapping_add(1));
+}
+
+/// Human-readable label for a non-terminal agent status, mirroring the labels
+/// the old poller surfaced so the "Thinking..." semantics are preserved.
+fn status_label(status: AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::Processing => "Thinking...",
+        AgentStatus::Streaming => "Responding...",
+        AgentStatus::ExecutingTools => "Running tools...",
+        AgentStatus::AwaitingConsent => "Awaiting approval...",
+        AgentStatus::AwaitingClientTools => "Running client tools...",
+        _ => "Thinking...",
+    }
+}
+
+/// Merge server-truth messages with any local-only (`local-*`) messages the user
+/// has sent that the backend has not echoed yet, so a (re)connect catch-up never
+/// drops the in-flight user turn. Server messages win by id; unechoed locals are
+/// prepended.
+fn merge_server_messages(messages: &mut Signal<Vec<ChatMessage>>, server: Vec<ChatMessage>) {
+    let locals: Vec<ChatMessage> = messages
+        .peek()
+        .iter()
+        .filter(|m| m.id.starts_with("local-"))
+        .cloned()
+        .collect();
+    let mut merged = server;
+    for lm in locals {
+        let echoed = merged
+            .iter()
+            .any(|s| s.sender_type == "USER" && s.text == lm.text);
+        if !echoed {
+            merged.insert(0, lm);
+        }
+    }
+    messages.set(merged);
+}
+
+/// One HTTP `get_conversation` to seed history and the initial thinking state
+/// before the live subscription takes over (also used for reconnect catch-up).
+async fn seed_from_conversation(
+    client: &MatrixChatClient,
+    cid: &str,
+    messages: &mut Signal<Vec<ChatMessage>>,
+    agent_thinking: &mut Signal<bool>,
+    agent_status_text: &mut Signal<String>,
+    error_msg: &mut Signal<Option<String>>,
+) {
+    match client.get_conversation(cid).await {
+        Ok(state) => {
+            merge_server_messages(messages, state.messages);
+            if state.agent_status.is_terminal() {
+                agent_thinking.set(false);
+                agent_status_text.set(String::new());
+            } else {
+                agent_thinking.set(true);
+                agent_status_text.set(status_label(state.agent_status).to_string());
+            }
+            // Surface a durable mid-stream failure: a turn that died with the
+            // agent server reporting IDLE (not ERROR) still carries
+            // `metadata.stream_error`. Without this a crashed turn opens clean.
+            if let Some(err) = state.stream_error {
+                error_msg.set(Some(err));
+            }
+        }
+        Err(e) => tracing::warn!("[chat] seed get_conversation failed: {e}"),
+    }
+}
+
+/// Fold an [`ApplyOutcome`] into the thinking/status/error signals. Called for
+/// every streamed event. On a terminal status it clears the thinking state and,
+/// if a validation round-trip is in flight, parses the Validator's verdicts.
+#[allow(clippy::too_many_arguments)]
+async fn apply_outcome(
+    outcome: ApplyOutcome,
+    client: &MatrixChatClient,
+    agent_thinking: &mut Signal<bool>,
+    agent_status_text: &mut Signal<String>,
+    error_msg: &mut Signal<Option<String>>,
+    chat_notice: &mut Signal<Option<ChatNotice>>,
+    pending_validator_apply: &mut Signal<Option<usize>>,
+    messages: &mut Signal<Vec<ChatMessage>>,
+    conversation_id: &str,
+) {
+    // The streamed error reason (AgentStatusEvent.error) is now available
+    // directly — surface it. Polling never saw this.
+    if let Some(err) = outcome.error.clone() {
+        error_msg.set(Some(err));
+    }
+
+    let Some(status) = outcome.status else {
+        return;
+    };
+
+    if status == AgentStatus::Error {
+        // Richer notice (token/rate-limit classification) via the Studio usage
+        // stats query, same as the old poller surfaced.
+        let notice = build_error_notice(client).await;
+        chat_notice.set(Some(notice));
+    }
+
+    if status.is_terminal() {
+        agent_thinking.set(false);
+        agent_status_text.set(String::new());
+
+        // Validator round-trip: the turn is done, so parse its reply and apply
+        // the verdicts to the evidence graph (previously done after polling).
+        let pending = *pending_validator_apply.peek();
+        if let Some(pending_count) = pending {
+            pending_validator_apply.set(None);
+            // The terminal AgentStatusEvent can arrive BEFORE the final
+            // Message event carrying the Validator's verdict reply. Fetch the
+            // authoritative conversation first (the old poller parsed only
+            // after a post-terminal get_conversation), so the reply is present.
+            if let Ok(state) = client.get_conversation(conversation_id).await {
+                merge_server_messages(messages, state.messages);
+            }
+            let mut em = *error_msg;
+            apply_validator_reply(&messages.peek(), pending_count, &mut em);
+        }
+    } else {
+        agent_thinking.set(true);
+        agent_status_text.set(status_label(status).to_string());
+    }
+}
 
 /// Parse the Validator Agent's latest reply and apply its verdicts to the
 /// evidence graph.
@@ -133,11 +286,33 @@ pub struct ChatPanelProps {
     #[props(default)]
     pub send_mailbox: Option<Signal<Option<String>>>,
     /// When true, renders as an inline full-page view instead of a slide-out overlay.
+    /// Set by BOTH the easy-mode shell and the expert full-page Chat page, so it
+    /// controls layout only — use `easy_mode` for lay-friendly copy/behavior.
     #[props(default)]
     pub full_page: bool,
+    /// True only in the easy-mode shell. Drives lay-friendly empty-state copy
+    /// (the "Scan My Network" greeting) and hides the expert suggested-action
+    /// chips. Distinct from `full_page`, which the expert full-page chat also
+    /// sets — conflating them leaked easy-mode copy into the expert shell.
+    #[props(default)]
+    pub easy_mode: bool,
     /// Mailbox to open a specific conversation by ID (set by sidebar recent conversations).
     #[props(default)]
     pub open_conversation_id: Option<Signal<Option<String>>>,
+    /// Output signal: writes the selected agent ID whenever it changes (for Easy Mode documents list).
+    #[props(default)]
+    pub selected_agent_out: Option<Signal<Option<String>>>,
+    /// Output signal: true when a conversation is active (has messages). Easy
+    /// Mode uses this to hide the Scan card once a chat has started.
+    #[props(default)]
+    pub conversation_active_out: Option<Signal<bool>>,
+    /// Output signal: the active conversation's ID (None until one starts).
+    /// Easy Mode uses this to show a documents strip scoped to THIS conversation.
+    #[props(default)]
+    pub conversation_id_out: Option<Signal<Option<String>>>,
+    /// Callback to emit chat-level auth events (ChatReady, ChatAuthDead).
+    #[props(default)]
+    pub on_chat_event: EventHandler<crate::auth_flow::AuthEvent>,
 }
 
 #[component]
@@ -157,14 +332,47 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // Conversation state
     let mut conversation_id = use_signal(|| None::<String>);
     let mut messages = use_signal(Vec::<ChatMessage>::new);
+
+    // Mirror "conversation active" (has messages) to the optional out-signal so
+    // Easy Mode can hide the Scan card once a chat has started.
+    if let Some(mut out) = props.conversation_active_out {
+        use_effect(move || {
+            let active = !messages.read().is_empty();
+            if *out.peek() != active {
+                out.set(active);
+            }
+        });
+    }
+    // Mirror the active conversation ID so Easy Mode can scope its documents
+    // strip to the current conversation.
+    if let Some(mut out) = props.conversation_id_out {
+        use_effect(move || {
+            let cid = conversation_id.read().clone();
+            if *out.peek() != cid {
+                out.set(cid);
+            }
+        });
+    }
     let mut is_sending = use_signal(|| false);
     let mut agent_thinking = use_signal(|| false);
     let mut agent_status_text = use_signal(String::new);
     let mut error_msg = use_signal(|| None::<String>);
-    // Subtle inline notice driven by poll_and_update — distinct from `error_msg`
-    // (which renders the loud red banner for call-failures). Used for things
-    // like "Token limit reached" where we want a softer, link-bearing message.
-    let mut chat_notice = use_signal(|| None::<polling::ChatNotice>);
+    // Subtle inline notice driven by the stream applier — distinct from
+    // `error_msg` (which renders the loud red banner for call-failures). Used for
+    // things like "Token limit reached" where we want a softer, link-bearing
+    // message.
+    let mut chat_notice = use_signal(|| None::<ChatNotice>);
+
+    // Live subscription plumbing (replaces the old 800ms HTTP poll).
+    // `connection_state` mirrors the transport's watch channel so the header can
+    // show a "Reconnecting..." chip / "Retry" button. `retry_tick` is bumped by
+    // the Retry button to force the subscription effect to respawn. When the
+    // active conversation is a Validator round-trip, `pending_validator_apply`
+    // holds the pending-node count so the terminal-status handler knows to parse
+    // and apply the Validator's verdicts (previously done right after polling).
+    let connection_state = use_signal(|| ConnectionState::Connecting);
+    let mut retry_tick = use_signal(|| 0u32);
+    let mut pending_validator_apply = use_signal(|| None::<usize>);
 
     // Per-agent conversation tracking
     let mut agent_conversations: Signal<HashMap<String, String>> = use_signal(HashMap::new);
@@ -189,10 +397,23 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // AppLayout provides this via use_context_provider; ChatPanel writes when full_page.
     let mut chat_header_ctx: Signal<Option<ChatHeaderCtx>> = use_context();
 
-    // Shared sidebar-refresh trigger (provided by AppLayout). We bump it when a
-    // conversation is created or a turn completes so the sidebar's recent-
-    // conversations list re-fetches instead of staying frozen at its initial load.
-    let refresh_convos = use_context::<ConversationRefresh>().0;
+    // Count consecutive auth failures so a stale restored token forces a fresh
+    // sign-in (via the easy-mode overlay) rather than retrying the dead token
+    // forever.
+    let auth_fail_count = use_signal(|| 0u32);
+
+    // Shared sidebar-refresh trigger: bumped when a conversation is created so a
+    // recent-conversations list re-fetches instead of staying frozen. AppLayout
+    // (expert full-page mode) provides it via use_context_provider; easy mode
+    // mounts ChatPanel WITHOUT that ancestor, so `use_context` would panic
+    // ("Could not find context ConversationRefresh"). Always allocate a local
+    // fallback signal (unconditional hook — keeps hook order stable) and prefer
+    // the provided context when present; without a provider the bumps are
+    // harmless no-ops since no sidebar is listening.
+    let local_refresh = use_signal(|| 0u64);
+    let refresh_convos = try_consume_context::<ConversationRefresh>()
+        .map(|c| c.0)
+        .unwrap_or(local_refresh);
 
     // Reset closing when panel becomes visible again
     if props.visible && closing() {
@@ -206,7 +427,15 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // Auth token resolution — prefer session store (set by connector), then prop
     // -----------------------------------------------------------------------
 
+    // Bumped whenever we write the session token out-of-band (browser OAuth
+    // success). The session store is a process-global RwLock, not a signal, so
+    // without this the render never re-reads it after sign-in and stays stuck on
+    // the "complete sign-in in the browser" state until an unrelated re-render.
+    // Reading it here makes `effective_token` reactive to that write.
+    let token_tick = use_signal(|| 0u32);
+
     let effective_token = {
+        let _ = token_tick(); // subscribe: re-resolve the token when it changes
         let session_token = crate::session::get_auth_token();
         if !session_token.is_empty() {
             session_token
@@ -243,6 +472,38 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             Arc::new(c)
         }
     };
+
+    // Load the recent-conversations list as soon as an agent is selected, not
+    // only when the drawer/history dropdown opens. The Easy Mode drawer and the
+    // conversation view both render from this list, so it must be warm before
+    // either is opened. Keyed on the agent id (via a last-loaded guard) so it
+    // fetches once per agent rather than on every unrelated re-render; the
+    // drawer's on_refresh_conversations still re-syncs on demand.
+    {
+        let make_client = make_client.clone();
+        let mut last_loaded_agent = use_signal(|| None::<String>);
+        use_effect(move || {
+            let Some(agent_id) = selected_agent.read().as_ref().map(|a| a.id.clone()) else {
+                return;
+            };
+            if last_loaded_agent.peek().as_deref() == Some(agent_id.as_str()) {
+                return; // already loaded for this agent
+            }
+            last_loaded_agent.set(Some(agent_id.clone()));
+            let client = make_client();
+            history_loading.set(true);
+            spawn(async move {
+                match client.list_conversations(Some(&agent_id)).await {
+                    Ok(mut list) => {
+                        list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                        conversation_list.set(list);
+                    }
+                    Err(e) => tracing::warn!("Failed to load conversation list on select: {}", e),
+                }
+                history_loading.set(false);
+            });
+        });
+    }
 
     // -----------------------------------------------------------------------
     // One-time initialisations
@@ -288,45 +549,90 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // -----------------------------------------------------------------------
 
     // Track whether we've attempted browser auth
-    let mut browser_auth_attempted = use_signal(|| false);
+    let browser_auth_attempted = use_signal(|| false);
 
-    // If Chat panel is visible, we don't have a token, and we haven't tried browser auth yet
-    if props.visible
+    // Shared browser-OAuth kickoff — used both by the expert sidebar's lazy
+    // auto-trigger and the full-page empty-state "Sign in" button. Marks the
+    // attempt, opens the browser, and on success writes + persists the chat
+    // token (the effect on `effective_token` picks it up and loads agents).
+    let start_browser_auth = {
+        let api_url = api_url.clone();
+        move || {
+            if api_url.is_empty() {
+                return;
+            }
+            // Re-bind the Copy signals mutably per call so this stays an `Fn`
+            // closure (usable by both the auto-trigger and the button handler).
+            let mut browser_auth_attempted = browser_auth_attempted;
+            let mut token_tick = token_tick;
+            browser_auth_attempted.set(true);
+            let api_url_clone = api_url.clone();
+            crate::liveview_server::push_terminal_line(TerminalLine::info(
+                "[chat] No auth token — opening browser for authentication...",
+            ));
+            spawn(async move {
+                match pentest_core::matrix::fetch_matrix_token_browser(&api_url_clone).await {
+                    Ok(token) => {
+                        tracing::info!(
+                            "[chat] Browser auth succeeded, token length: {}",
+                            token.len()
+                        );
+                        crate::liveview_server::set_matrix_credentials(&api_url_clone, &token);
+                        crate::session::set_auth_token(&token);
+                        // Persist so relaunch skips sign-in: token → secure store,
+                        // api_url → settings. This path has no `settings` signal in
+                        // scope, so it writes the URL detached; the connector_app /
+                        // lib.rs paths (which own the signal) write it there.
+                        crate::session::persist_matrix_token(&token);
+                        crate::session::persist_matrix_api_url_detached(&api_url_clone);
+                        // Bump the tick so the render re-reads the session store
+                        // (RwLock, not a signal) and drops the awaiting state.
+                        token_tick += 1;
+                        crate::liveview_server::push_terminal_line(TerminalLine::success(
+                            "[chat] Authentication successful — chat ready",
+                        ));
+                    }
+                    Err(e) => {
+                        tracing::warn!("[chat] Browser auth failed: {}", e);
+                        crate::liveview_server::push_terminal_line(TerminalLine::error(format!(
+                            "[chat] Authentication failed: {}",
+                            e
+                        )));
+                    }
+                }
+            });
+        }
+    };
+
+    // Lazy browser-OAuth is for the EXPERT SIDEBAR only (not full_page). The
+    // full-page chat — expert AND easy — makes sign-in an explicit user gesture
+    // instead: mobile OAuth REQUIRES a user gesture with the scene foreground-
+    // active (auto-firing silently fails to present), and the expert full-page
+    // chat has no connection screen to kick it off. So full_page shows a
+    // "Sign in to Strike48" button (see `needs_sign_in` below); only the
+    // sidebar auto-triggers here.
+    if !props.full_page
+        && props.visible
         && effective_token.is_empty()
         && !api_url.is_empty()
         && !browser_auth_attempted()
         && !agents_loaded()
     {
-        browser_auth_attempted.set(true);
-        let api_url_clone = api_url.clone();
-
-        crate::liveview_server::push_terminal_line(TerminalLine::info(
-            "[chat] No auth token — opening browser for authentication...",
-        ));
-
-        spawn(async move {
-            match pentest_core::matrix::fetch_matrix_token_browser(&api_url_clone).await {
-                Ok(token) => {
-                    tracing::info!(
-                        "[chat] Browser auth succeeded, token length: {}",
-                        token.len()
-                    );
-                    crate::liveview_server::set_matrix_credentials(&api_url_clone, &token);
-                    crate::session::set_auth_token(&token);
-                    crate::liveview_server::push_terminal_line(TerminalLine::success(
-                        "[chat] Authentication successful — chat ready",
-                    ));
-                }
-                Err(e) => {
-                    tracing::warn!("[chat] Browser auth failed: {}", e);
-                    crate::liveview_server::push_terminal_line(TerminalLine::error(format!(
-                        "[chat] Authentication failed: {}",
-                        e
-                    )));
-                }
-            }
-        });
+        start_browser_auth.clone()();
     }
+
+    // Browser OAuth for the chat token has been opened but hasn't returned yet
+    // (no token, agents not loaded). Drives the "finish sign-in in the browser"
+    // empty state so the user isn't shown a misleading "Select an agent".
+    let awaiting_auth = browser_auth_attempted() && effective_token.is_empty() && !agents_loaded();
+
+    // Full-page chat with no token and sign-in not yet started: show the
+    // explicit "Sign in to Strike48" button in the empty state.
+    let needs_sign_in = props.full_page
+        && effective_token.is_empty()
+        && !api_url.is_empty()
+        && !browser_auth_attempted()
+        && !agents_loaded();
 
     // -----------------------------------------------------------------------
     // Fetch agents when we have a token
@@ -337,6 +643,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         let client = make_client();
         let tenant_id = props.tenant_id.clone();
         let log_url = api_url.clone();
+        // Captured for the auth-error recovery path below (Signals are Copy).
+        let mut auth_fail_count = auth_fail_count;
         crate::liveview_server::push_terminal_line(TerminalLine::info(format!(
             "[chat] fetching agents from {}",
             api_url
@@ -350,7 +658,15 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         log_url
                     )));
                     let connector_name = crate::session::get_connector_name();
-                    let auto = list.iter().find(|a| a.name == connector_name).cloned();
+                    // Prefer the enabled-list hit, but fall back to a name lookup
+                    // that includes DISABLED agents: our agent may exist but be
+                    // disabled (hidden from list_agents), in which case we must
+                    // update+re-enable it rather than createAgent (which the server
+                    // rejects with "a persona with that name already exists").
+                    let auto = match list.iter().find(|a| a.name == connector_name).cloned() {
+                        Some(a) => Some(a),
+                        None => client.find_own_agent(&connector_name).await.unwrap_or(None),
+                    };
 
                     // Ensure the Validator Agent sibling exists. It rides on
                     // the same connector but with a separate system prompt
@@ -424,11 +740,18 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             "ChatPanel: auto-selected agent: {}, updating tool configs",
                             agent.name
                         );
-                        // Update the existing agent's tool configs with current tools
+                        // Sync the existing agent's tools AND system message with the
+                        // current build. The system message carries the persona (report
+                        // format, safety-verdict rubric, etc.); without pushing it here
+                        // an agent created on an older build stays frozen on the old
+                        // prompt forever (create sets it; update must too).
                         let fresh_input = default_pentest_agent_input(&tenant_id, &connector_name);
                         let update_input = UpdateAgentInput {
                             id: agent.id.clone(),
                             tools: fresh_input.tools,
+                            system_message: fresh_input.system_message.clone(),
+                            // Re-enable in case find_own_agent matched a disabled one.
+                            is_enabled: Some(true),
                         };
                         match client.update_agent(update_input).await {
                             Ok(updated) => {
@@ -438,7 +761,13 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 );
                                 agents.set(list);
                                 agents_loaded.set(true);
-                                selected_agent.set(Some(updated));
+                                props
+                                    .on_chat_event
+                                    .call(crate::auth_flow::AuthEvent::ChatReady);
+                                selected_agent.set(Some(updated.clone()));
+                                if let Some(mut out) = props.selected_agent_out {
+                                    out.set(Some(updated.id.clone()));
+                                }
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -447,7 +776,13 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 );
                                 agents.set(list);
                                 agents_loaded.set(true);
-                                selected_agent.set(Some(agent));
+                                props
+                                    .on_chat_event
+                                    .call(crate::auth_flow::AuthEvent::ChatReady);
+                                selected_agent.set(Some(agent.clone()));
+                                if let Some(mut out) = props.selected_agent_out {
+                                    out.set(Some(agent.id.clone()));
+                                }
                             }
                         }
                     } else {
@@ -464,15 +799,34 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 list.push(new_agent.clone());
                                 agents.set(list);
                                 agents_loaded.set(true);
-                                selected_agent.set(Some(new_agent));
+                                props
+                                    .on_chat_event
+                                    .call(crate::auth_flow::AuthEvent::ChatReady);
+                                selected_agent.set(Some(new_agent.clone()));
+                                if let Some(mut out) = props.selected_agent_out {
+                                    out.set(Some(new_agent.id.clone()));
+                                }
                             }
                             Err(e) => {
-                                tracing::warn!(
+                                tracing::error!(
                                     "ChatPanel: failed to create pentest-connector agent: {}",
                                     e
                                 );
                                 agents.set(list);
                                 agents_loaded.set(true);
+                                props
+                                    .on_chat_event
+                                    .call(crate::auth_flow::AuthEvent::ChatReady);
+                                // No agent could be created and none was found, so
+                                // `selected_agent` stays None. Surface WHY instead of
+                                // silently dropping the user on the misleading "Select
+                                // an agent to begin" empty state (which implies an
+                                // action that doesn't exist — the connector owns its
+                                // one agent). This is the state a registration/setup
+                                // failure lands in.
+                                error_msg.set(Some(format!(
+                                    "Couldn't set up the assistant: {e}. This usually means the connector didn't finish registering — try again, or check the server connection."
+                                )));
                             }
                         }
                     }
@@ -498,7 +852,25 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         || err_str.contains("expired");
 
                     if is_auth_err {
-                        // Auth error — wait before retrying to avoid tight loop
+                        // A restored/persisted token whose server session is gone
+                        // (backend "session not found" -> "Not authenticated")
+                        // never recovers by retrying — the token is simply dead.
+                        // After a couple of attempts, clear it and emit ChatAuthDead
+                        // so the flow state machine routes back to the sign-in overlay.
+                        let n = auth_fail_count() + 1;
+                        auth_fail_count.set(n);
+                        if n >= 2 {
+                            tracing::info!(
+                                "ChatPanel: auth error persisted ({n}x); clearing stale token and emitting ChatAuthDead"
+                            );
+                            crate::session::clear_matrix_token();
+                            crate::session::set_auth_token("");
+                            pentest_core::matrix::clear_browser_token_cache();
+                            props
+                                .on_chat_event
+                                .call(crate::auth_flow::AuthEvent::ChatAuthDead);
+                            return;
+                        }
                         tracing::info!("ChatPanel: auth error, will retry in 5s");
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                         fetch_started.set(false);
@@ -506,6 +878,182 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         error_msg.set(Some(format!("Failed to load agents: {}", err_str)));
                     }
                 }
+            }
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Live conversation subscription (replaces HTTP polling)
+    // -----------------------------------------------------------------------
+    //
+    // A single `use_resource` owns the streaming lifecycle. It is keyed on the
+    // active `conversation_id` (+ `retry_tick`): when either changes, Dioxus
+    // drops the previous future — which drops the `ConversationSubscription`,
+    // whose `AbortOnDrop` tears the WebSocket down — and starts a fresh one for
+    // the new conversation. For each conversation it: (a) does one
+    // `get_conversation` to seed history + initial thinking state; (b) opens the
+    // subscription; (c) folds every event into `messages` via `apply_event` and
+    // updates the thinking/status/error/notice signals from the `ApplyOutcome`,
+    // mirroring the transport's connection state into `connection_state`; (d)
+    // re-runs the seed fetch on a Reconnecting -> Live transition to catch up on
+    // anything missed while offline. There is no post-send poll: replies arrive
+    // over this subscription.
+    {
+        let make_client = make_client.clone();
+        let api_url = api_url.clone();
+        let _subscription = use_resource(move || {
+            let make_client = make_client.clone();
+            let api_url = api_url.clone();
+            // Read the reactive deps synchronously so the resource restarts when
+            // the conversation changes, the user hits Retry, or the token lands.
+            // token_tick() is bumped whenever the session token is written, so
+            // reading it here makes a late/refreshed token restart the
+            // subscription instead of churning connects on an empty token.
+            let cid_opt = conversation_id();
+            let _ = retry_tick();
+            let _ = token_tick();
+            let token = crate::session::get_auth_token();
+            async move {
+                // Re-bind Copy signals mutably for use inside the async task.
+                let mut messages = messages;
+                let mut agent_thinking = agent_thinking;
+                let mut agent_status_text = agent_status_text;
+                let mut error_msg = error_msg;
+                let mut chat_notice = chat_notice;
+                let mut connection_state = connection_state;
+                let mut pending_validator_apply = pending_validator_apply;
+
+                let Some(cid) = cid_opt else {
+                    // No active conversation: nothing to stream. Reset the
+                    // connection chip so a stale Reconnecting/Failed doesn't linger.
+                    connection_state.set(ConnectionState::Connecting);
+                    return;
+                };
+
+                // Gate on credentials: without a token or api_url the WS join is
+                // rejected and the transport would churn connect attempts to
+                // Failed. Wait quietly instead; the resource restarts when the
+                // token lands (effective_token -> token_tick dependency above).
+                if token.is_empty() || api_url.is_empty() {
+                    connection_state.set(ConnectionState::Connecting);
+                    return;
+                }
+
+                let client = make_client();
+
+                // (a) Seed history + initial status.
+                seed_from_conversation(
+                    &client,
+                    &cid,
+                    &mut messages,
+                    &mut agent_thinking,
+                    &mut agent_status_text,
+                    &mut error_msg,
+                )
+                .await;
+
+                // (b) Open the live subscription. `token_fn` reads the current
+                // session token on every (re)connect so reconnects use a fresh
+                // token; `insecure_tls` matches the rest of the app's dev flag.
+                let token_fn: Arc<dyn Fn() -> String + Send + Sync> =
+                    Arc::new(crate::session::get_auth_token);
+                let insecure = subscription_insecure_tls();
+                // When embedded in StrikeHub, the proxy advertises the socket URL
+                // to dial (window.__MATRIX_WS_URL__); standalone this is None and
+                // the URL is derived from api_url.
+                let ws_url_override = crate::session::get_ws_url_override();
+                let mut sub = subscribe_conversation(
+                    api_url.clone(),
+                    ws_url_override,
+                    cid.clone(),
+                    insecure,
+                    token_fn,
+                );
+
+                let mut last_state = *sub.state.borrow();
+                connection_state.set(last_state);
+
+                // (c) Stream loop. `select!` over events + connection-state; a
+                // top-of-loop guard is a belt-and-suspenders check in case the
+                // conversation id changes while the future is being torn down.
+                loop {
+                    if conversation_id.peek().as_deref() != Some(cid.as_str()) {
+                        break;
+                    }
+                    tokio::select! {
+                        maybe_ev = sub.events.recv() => {
+                            match maybe_ev {
+                                Some(ev) => {
+                                    // Re-check the active conversation AFTER the
+                                    // await: if the user switched while this event
+                                    // was in flight, drop it rather than apply the
+                                    // old conversation's event to the new one.
+                                    if conversation_id.peek().as_deref() != Some(cid.as_str()) {
+                                        break;
+                                    }
+                                    // Tight write scope: never hold a signal guard
+                                    // across an await (AlreadyBorrowed panic).
+                                    let outcome = {
+                                        let mut m = messages.write();
+                                        apply_event(&mut m, &ev)
+                                    };
+                                    apply_outcome(
+                                        outcome,
+                                        &client,
+                                        &mut agent_thinking,
+                                        &mut agent_status_text,
+                                        &mut error_msg,
+                                        &mut chat_notice,
+                                        &mut pending_validator_apply,
+                                        &mut messages,
+                                        &cid,
+                                    )
+                                    .await;
+                                    // A final assistant Message clears the
+                                    // "Thinking…" spinner even if the terminal
+                                    // AgentStatusEvent is missed/late — otherwise
+                                    // a dropped status would leave it stuck on
+                                    // (no poller re-derives it now).
+                                    if let ConversationStreamEvent::Message(m) = &ev {
+                                        if m.sender_type != "USER" {
+                                            agent_thinking.set(false);
+                                            agent_status_text.set(String::new());
+                                        }
+                                    }
+                                }
+                                None => break, // transport ended for good
+                            }
+                        }
+                        changed = sub.state.changed() => {
+                            if changed.is_err() {
+                                break;
+                            }
+                            let new_state = *sub.state.borrow();
+                            connection_state.set(new_state);
+                            // (d) Catch-up fetch on EVERY transition into Live —
+                            // both the first connect and reconnects. The initial
+                            // seed (a) runs before subscribe, so a turn that
+                            // completes in the connect gap would otherwise be lost
+                            // (no polling fallback). Re-seeding on first Live
+                            // closes that window; on reconnect it fills the drop.
+                            if last_state != ConnectionState::Live
+                                && new_state == ConnectionState::Live
+                            {
+                                seed_from_conversation(
+                                    &client,
+                                    &cid,
+                                    &mut messages,
+                                    &mut agent_thinking,
+                                    &mut agent_status_text,
+                                    &mut error_msg,
+                                )
+                                .await;
+                            }
+                            last_state = new_state;
+                        }
+                    }
+                }
+                // `sub` drops here -> AbortOnDrop stops the transport.
             }
         });
     }
@@ -545,37 +1093,13 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             if let Some(ref ag) = agent {
                 let stored_cid = agent_conversations.peek().get(&ag.id).cloned();
                 if let Some(cid) = stored_cid {
-                    conversation_id.set(Some(cid.clone()));
-                    let client = make_client();
-                    spawn(async move {
-                        match client.get_conversation(&cid).await {
-                            Ok(state) => {
-                                let active = !state.agent_status.is_terminal();
-                                messages.set(state.messages);
-                                if active {
-                                    agent_thinking.set(true);
-                                    agent_status_text.set("Thinking...".to_string());
-                                    poll_and_update(
-                                        client,
-                                        cid,
-                                        conversation_id,
-                                        messages,
-                                        agent_thinking,
-                                        agent_status_text,
-                                        error_msg,
-                                        chat_notice,
-                                        refresh_convos,
-                                    )
-                                    .await;
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to restore conversation: {}", e);
-                                conversation_id.set(None);
-                                messages.set(Vec::new());
-                            }
-                        }
-                    });
+                    // Clear the previous conversation's messages and switch the
+                    // active id. The subscription resource (keyed on
+                    // conversation_id) seeds history via get_conversation and
+                    // streams live updates from here on.
+                    messages.set(Vec::new());
+                    pending_validator_apply.set(None);
+                    conversation_id.set(Some(cid));
                 } else {
                     conversation_id.set(None);
                     messages.set(Vec::new());
@@ -666,23 +1190,13 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     let _ = document::eval("clearTextarea('.chat-input')").await;
                 });
 
+                // Send over HTTP; the reply streams back in via the live
+                // subscription (no post-send poll).
                 match client.send_message(&conv_id, &agent.id, &text).await {
                     Ok(_) => {
                         agent_thinking.set(true);
                         agent_status_text.set("Thinking...".to_string());
                         is_sending.set(false);
-                        poll_and_update(
-                            client,
-                            conv_id,
-                            conversation_id,
-                            messages,
-                            agent_thinking,
-                            agent_status_text,
-                            error_msg,
-                            chat_notice,
-                            refresh_convos,
-                        )
-                        .await;
                     }
                     Err(e) => {
                         error_msg.set(Some(format!("Failed to send: {}", e)));
@@ -712,43 +1226,19 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
 
     // Consume conversation ID from the open_conversation_id mailbox (sidebar recent conversations).
     if let Some(mut conv_mailbox) = props.open_conversation_id {
-        let make_client = make_client.clone();
         use_effect(move || {
             let cid_opt = (conv_mailbox)();
             if let Some(cid) = cid_opt {
                 conv_mailbox.set(None);
-                conversation_id.set(Some(cid.clone()));
                 agent_thinking.set(false);
                 agent_status_text.set(String::new());
                 show_history.set(false);
-                let client = make_client();
-                spawn(async move {
-                    match client.get_conversation(&cid).await {
-                        Ok(state) => {
-                            messages.set(state.messages);
-                            let active = !state.agent_status.is_terminal();
-                            if active {
-                                agent_thinking.set(true);
-                                agent_status_text.set("Thinking...".to_string());
-                                poll_and_update(
-                                    client,
-                                    cid,
-                                    conversation_id,
-                                    messages,
-                                    agent_thinking,
-                                    agent_status_text,
-                                    error_msg,
-                                    chat_notice,
-                                    refresh_convos,
-                                )
-                                .await;
-                            }
-                        }
-                        Err(e) => {
-                            error_msg.set(Some(format!("Failed to load conversation: {}", e)));
-                        }
-                    }
-                });
+                // Switch the active id; the subscription resource seeds history
+                // and streams. Clear stale messages first so the previous
+                // conversation doesn't flash while the seed fetch runs.
+                messages.set(Vec::new());
+                pending_validator_apply.set(None);
+                conversation_id.set(Some(cid));
             }
         });
     }
@@ -832,6 +1322,32 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         }
     });
 
+    // Handler: refresh the conversation list WITHOUT opening the history
+    // dropdown. Used by the Easy Mode drawer, which renders its own "Recent
+    // chats" from the ctx snapshot — it needs the list fetched but must not
+    // toggle ChatPanel's `show_history` UI (that would stack a second list on
+    // top of the drawer).
+    let on_refresh_conversations = EventHandler::new({
+        let make_client = make_client.clone();
+        move |_: ()| {
+            if let Some(agent) = selected_agent.peek().as_ref() {
+                let agent_id = agent.id.clone();
+                let client = make_client();
+                history_loading.set(true);
+                spawn(async move {
+                    match client.list_conversations(Some(&agent_id)).await {
+                        Ok(mut list) => {
+                            list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                            conversation_list.set(list);
+                        }
+                        Err(e) => tracing::warn!("Failed to refresh conversation list: {}", e),
+                    }
+                    history_loading.set(false);
+                });
+            }
+        }
+    });
+
     // Handler: validate findings.
     //
     // The Validator round-trip that sits between evidence collection and
@@ -894,6 +1410,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             }
 
             selected_agent.set(Some(validator_agent.clone()));
+            if let Some(mut out) = props.selected_agent_out {
+                out.set(Some(validator_agent.id.clone()));
+            }
             conversation_id.set(None);
             messages.set(Vec::new());
             show_history.set(false);
@@ -914,15 +1433,19 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             };
             let client = make_client();
             is_sending.set(true);
+            // Arm the terminal-status handler to parse + apply the Validator's
+            // verdicts once its turn finishes over the subscription (this used
+            // to run right after the poll loop returned).
+            pending_validator_apply.set(Some(pending_count));
 
             spawn(async move {
                 let conv_title = format!("Validation for {}", manifest.engagement.target);
                 let conv_id = match client.create_conversation(Some(&conv_title)).await {
                     Ok(id) => {
-                        conversation_id.set(Some(id.clone()));
                         agent_conversations
                             .write()
                             .insert(validator_agent.id.clone(), id.clone());
+                        conversation_id.set(Some(id.clone()));
                         // New conversation exists — refresh the sidebar list.
                         notify_conversations_changed(refresh_convos);
                         id
@@ -934,6 +1457,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             validator_agent.name, e
                         )));
                         is_sending.set(false);
+                        pending_validator_apply.set(None);
                         return;
                     }
                 };
@@ -948,6 +1472,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 messages.write().push(user_msg);
                 user_scrolled_up.set(false);
 
+                // Send over HTTP; the Validator's reply streams back via the
+                // subscription. When the turn reaches a terminal status,
+                // apply_outcome parses the verdicts (see pending_validator_apply).
                 match client
                     .send_message(&conv_id, &validator_agent.id, &seed)
                     .await
@@ -956,30 +1483,11 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         agent_thinking.set(true);
                         agent_status_text.set("Validating findings...".to_string());
                         is_sending.set(false);
-                        poll_and_update(
-                            client,
-                            conv_id,
-                            conversation_id,
-                            messages,
-                            agent_thinking,
-                            agent_status_text,
-                            error_msg,
-                            chat_notice,
-                            refresh_convos,
-                        )
-                        .await;
-
-                        // Polling has ended. Parse the Validator's latest reply
-                        // and apply its verdicts to the evidence graph. The
-                        // verdict block is machine-parseable per the Validator
-                        // system prompt; a reply we cannot parse is surfaced so
-                        // the operator does not silently proceed to an empty or
-                        // stuck report.
-                        apply_validator_reply(&messages.peek(), pending_count, &mut error_msg);
                     }
                     Err(e) => {
                         error_msg.set(Some(format!("Failed to send validation seed: {e}")));
                         is_sending.set(false);
+                        pending_validator_apply.set(None);
                     }
                 }
             });
@@ -1012,11 +1520,22 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             let manifest = match pentest_core::orchestrator::gate_for_report(&snapshot, engagement)
             {
                 Ok(m) => m,
-                Err(e) => {
+                Err(pentest_core::orchestrator::GateError::PendingNodes { pending_ids }) => {
+                    // The most common gate failure: report requested before the
+                    // findings were validated. Show an ACTIONABLE message that
+                    // points at the Validate Findings (shield) button, rather
+                    // than dumping the raw evidence-node UUIDs at the operator.
+                    let n = pending_ids.len();
                     error_msg.set(Some(format!(
-                        "Cannot generate report: {e}. Ask the Validator to adjudicate \
-                         pending nodes first."
+                        "{n} finding{} need{} validation first. Click the shield \
+                         (\"Validate Findings\") button, then Generate Report.",
+                        if n == 1 { "" } else { "s" },
+                        if n == 1 { "s" } else { "" },
                     )));
+                    return;
+                }
+                Err(e) => {
+                    error_msg.set(Some(format!("Cannot generate report: {e}")));
                     return;
                 }
             };
@@ -1050,6 +1569,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             }
 
             selected_agent.set(Some(report_agent.clone()));
+            if let Some(mut out) = props.selected_agent_out {
+                out.set(Some(report_agent.id.clone()));
+            }
             conversation_id.set(None);
             messages.set(Vec::new());
             show_history.set(false);
@@ -1091,23 +1613,13 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 messages.write().push(user_msg);
                 user_scrolled_up.set(false);
 
+                // Send over HTTP; the Report Agent's reply streams back via the
+                // subscription (no post-send poll).
                 match client.send_message(&conv_id, &report_agent.id, &seed).await {
                     Ok(_) => {
                         agent_thinking.set(true);
                         agent_status_text.set("Rendering report...".to_string());
                         is_sending.set(false);
-                        poll_and_update(
-                            client,
-                            conv_id,
-                            conversation_id,
-                            messages,
-                            agent_thinking,
-                            agent_status_text,
-                            error_msg,
-                            chat_notice,
-                            refresh_convos,
-                        )
-                        .await;
                     }
                     Err(e) => {
                         error_msg.set(Some(format!("Failed to send report seed: {e}")));
@@ -1119,9 +1631,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     });
 
     let on_select_conversation = EventHandler::new({
-        let make_client = make_client.clone();
         move |cid: String| {
-            conversation_id.set(Some(cid.clone()));
             if let Some(agent) = selected_agent.peek().as_ref() {
                 agent_conversations
                     .write()
@@ -1130,34 +1640,12 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             show_history.set(false);
             agent_thinking.set(false);
             agent_status_text.set(String::new());
-            let client = make_client();
-            spawn(async move {
-                match client.get_conversation(&cid).await {
-                    Ok(state) => {
-                        messages.set(state.messages);
-                        let active = !state.agent_status.is_terminal();
-                        if active {
-                            agent_thinking.set(true);
-                            agent_status_text.set("Thinking...".to_string());
-                            poll_and_update(
-                                client,
-                                cid,
-                                conversation_id,
-                                messages,
-                                agent_thinking,
-                                agent_status_text,
-                                error_msg,
-                                chat_notice,
-                                refresh_convos,
-                            )
-                            .await;
-                        }
-                    }
-                    Err(e) => {
-                        error_msg.set(Some(format!("Failed to load conversation: {}", e)));
-                    }
-                }
-            });
+            // Switch the active id; the subscription resource seeds history and
+            // streams. Clear stale messages so the previous conversation doesn't
+            // flash while the seed fetch runs.
+            messages.set(Vec::new());
+            pending_validator_apply.set(None);
+            conversation_id.set(Some(cid));
         }
     });
 
@@ -1169,6 +1657,18 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // which would trigger parent→child re-render cascades (infinite loop).
     // The effect runs AFTER render and only re-runs when its tracked signal
     // dependencies (agents, selected_agent, agents_loaded, show_history) change.
+    // Retry handler for the desktop header bar's chip: bump retry_tick so the
+    // subscription resource respawns.
+    // This handler is published into the parent AppLayout's ChatHeaderCtx and can
+    // outlive the ChatPanel (e.g. the workspace is replaced by the session-expired
+    // overlay, unmounting the panel). Writing the dropped `retry_tick` signal via
+    // `+=` would panic with ValueDroppedError, so write fallibly and no-op if the
+    // signal is already gone.
+    let on_retry = EventHandler::new(move |_: ()| {
+        if let Ok(mut t) = retry_tick.try_write() {
+            *t += 1;
+        }
+    });
     {
         let is_full = props.full_page;
         let api_url_empty = api_url.is_empty();
@@ -1184,11 +1684,16 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 show_history: show_history(),
                 api_url_empty,
                 token_empty,
+                conversations: conversation_list.read().clone(),
                 on_agent_select,
                 on_new_chat,
                 on_toggle_history,
+                on_refresh_conversations,
+                on_select_conversation,
                 on_validate_findings,
                 on_generate_report,
+                connection_state: connection_state(),
+                on_retry,
             };
             // Only write if the data actually changed (avoids unnecessary parent re-renders).
             let needs_update = {
@@ -1200,6 +1705,27 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             };
             if needs_update {
                 chat_header_ctx.set(Some(new_ctx));
+            }
+        });
+    }
+
+    // When this ChatPanel unmounts (e.g. the workspace is replaced by the
+    // session-expired overlay, or the user navigates off the Chat page), clear
+    // the published header context. The ChatHeaderCtx we set above holds
+    // EventHandlers bound to THIS component's scope; if the parent AppLayout's
+    // desktop header bar fires one after we're gone, dioxus-core panics with
+    // ValueDroppedError (the handler's generational box was dropped with our
+    // scope). Dropping the ctx to None removes those stale handlers so the
+    // header bar simply renders nothing to fire.
+    {
+        let mut chat_header_ctx = chat_header_ctx;
+        use_drop(move || {
+            if chat_header_ctx
+                .try_peek()
+                .map(|c| c.is_some())
+                .unwrap_or(false)
+            {
+                let _ = chat_header_ctx.try_write().map(|mut c| *c = None);
             }
         });
     }
@@ -1331,6 +1857,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     show_history: show_history,
                     is_full: is_full,
                     on_close: move |_| trigger_close(),
+                    connection_state: connection_state,
+                    on_retry: move |_| { if let Ok(mut t) = retry_tick.try_write() { *t += 1; } },
                 }
             }
 
@@ -1364,6 +1892,13 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 on_send: send_message.clone(),
                 conversation_list: conversation_list,
                 on_select_conversation: on_select_conversation,
+                easy_mode: props.easy_mode,
+                awaiting_auth: awaiting_auth,
+                needs_sign_in: needs_sign_in,
+                on_sign_in: {
+                    let start = start_browser_auth.clone();
+                    move |_| start()
+                },
             }
 
             // Inline notice — quieter than `chat-error`, sits above the input.

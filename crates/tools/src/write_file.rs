@@ -16,6 +16,17 @@ pub struct WriteFileTool;
 
 #[async_trait]
 impl PentestTool for WriteFileTool {
+    fn supported_platforms(&self) -> Vec<pentest_core::tools::Platform> {
+        use pentest_core::tools::Platform;
+        // Workspace file write (container-scoped) — runs on iOS.
+        vec![
+            Platform::Desktop,
+            Platform::Android,
+            Platform::Ios,
+            Platform::Tui,
+        ]
+    }
+
     fn name(&self) -> &str {
         "write_file"
     }

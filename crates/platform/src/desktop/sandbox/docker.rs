@@ -14,39 +14,74 @@ use tokio::process::Command;
 /// Docker image name used for the pentest sandbox
 const DOCKER_IMAGE: &str = "pentest-blackarch:latest";
 
-/// Target platform for the Docker image. BlackArch packages and the archlinux
-/// base image are x86_64-only, so we pin to linux/amd64. On Apple Silicon Macs
-/// this runs under Rosetta / QEMU emulation via Docker Desktop.
-const DOCKER_PLATFORM: &str = "linux/amd64";
+/// Build the embedded Dockerfile for the current host arch. On x86_64 this is
+/// byte-for-byte the original (vanilla Arch + strap.sh); on aarch64 it uses an
+/// ArchLinuxARM base image (the official `archlinux` image has no arm64
+/// manifest), ALARM mirrors + keyring, and appends the BlackArch aarch64 repo
+/// directly (strap.sh assumes an x86_64 bootstrap).
+fn dockerfile_contents() -> String {
+    dockerfile_contents_for(super::arch::is_aarch64())
+}
 
-/// Embedded Dockerfile for building the pentest sandbox image.
-/// Mirrors the existing rootfs setup: archlinux base + BlackArch repo + pacman sync.
-const DOCKERFILE_CONTENTS: &str = r#"FROM --platform=linux/amd64 archlinux:latest
+fn dockerfile_contents_for(aarch64: bool) -> String {
+    let from = format!(
+        "FROM --platform={} {}",
+        super::arch::docker_platform_for(aarch64),
+        super::arch::docker_base_image_for(aarch64),
+    );
+    let mirror_block = if aarch64 {
+        "RUN echo 'Server = http://mirror.archlinuxarm.org/$arch/$repo' > /etc/pacman.d/mirrorlist"
+            .to_string()
+    } else {
+        "RUN echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist && \\\n    echo 'Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch' >> /etc/pacman.d/mirrorlist".to_string()
+    };
+    let keyring = super::arch::keyring_for(aarch64);
+    let blackarch_block = if aarch64 {
+        "RUN printf '\\n[blackarch]\\nServer = https://blackarch.org/blackarch/$repo/os/$arch\\nSigLevel = Never\\n' >> /etc/pacman.conf".to_string()
+    } else {
+        "RUN curl -sL https://blackarch.org/strap.sh -o /tmp/strap.sh && \\\n    chmod +x /tmp/strap.sh && \\\n    /tmp/strap.sh && \\\n    rm /tmp/strap.sh".to_string()
+    };
+    // Final DB sync. On aarch64 tolerate failure (`|| true`): BlackArch's arm64
+    // repo coverage is partial, and a 404 on its db must not abort the whole
+    // image build (the base Arch repos already synced above). This matches the
+    // WSL aarch64 path, which also uses `|| true`. x86_64 keeps the strict form
+    // (BlackArch's x86_64 repo is authoritative), preserving the golden Dockerfile.
+    let sync_block = if aarch64 {
+        "RUN pacman -Sy --noconfirm || true"
+    } else {
+        "RUN pacman -Sy --noconfirm"
+    };
+    format!(
+        r#"{from}
 
 # Configure mirrors
-RUN echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist && \
-    echo 'Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch' >> /etc/pacman.d/mirrorlist
+{mirror_block}
 
-# Fix pacman.conf for container usage
+# Fix pacman.conf for container usage. DisableSandbox: pacman 7's Landlock-based
+# download sandbox is incompatible with many container runtimes (the syscall is
+# blocked/unavailable), which makes -Syu fail; disable it (mirrors the WSL setup
+# script). Enable an existing commented entry, and append one if pacman.conf has
+# none (older configs).
 RUN sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf 2>/dev/null || true && \
-    sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf 2>/dev/null || true
+    sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf 2>/dev/null || true && \
+    sed -i 's/^#DisableSandbox/DisableSandbox/' /etc/pacman.conf 2>/dev/null || true && \
+    (grep -q '^DisableSandbox' /etc/pacman.conf || sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf)
 
 # Initialize pacman keyring and system update
 RUN pacman-key --init && \
-    pacman-key --populate archlinux && \
+    pacman-key --populate {keyring} && \
     pacman -Syu --noconfirm --overwrite '*'
 
 # Add BlackArch repository and import its key
-RUN curl -sL https://blackarch.org/strap.sh -o /tmp/strap.sh && \
-    chmod +x /tmp/strap.sh && \
-    /tmp/strap.sh && \
-    rm /tmp/strap.sh
+{blackarch_block}
 
 # Sync package databases
-RUN pacman -Sy --noconfirm
+{sync_block}
 
 WORKDIR /root
-"#;
+"#
+    )
+}
 
 /// Docker executor for container-based sandboxing
 pub struct DockerExecutor {
@@ -121,14 +156,14 @@ impl DockerExecutor {
         tokio::fs::create_dir_all(&dockerfile_dir).await?;
 
         let dockerfile_path = dockerfile_dir.join("Dockerfile");
-        tokio::fs::write(&dockerfile_path, DOCKERFILE_CONTENTS).await?;
+        tokio::fs::write(&dockerfile_path, dockerfile_contents()).await?;
 
-        // Run docker build (pin platform to linux/amd64 for BlackArch compatibility)
+        // Select platform for the host arch (arm64 native on Apple Silicon, amd64 on Intel)
         let output = Command::new("docker")
             .args([
                 "build",
                 "--platform",
-                DOCKER_PLATFORM,
+                super::arch::docker_platform(),
                 "-t",
                 DOCKER_IMAGE,
                 "-f",
@@ -171,9 +206,9 @@ impl DockerExecutor {
         let mut args = vec![
             "run".to_string(),
             "--rm".to_string(),
-            // Pin platform for Apple Silicon compatibility
+            // Select platform for the host arch (arm64 native on Apple Silicon, amd64 on Intel)
             "--platform".to_string(),
-            DOCKER_PLATFORM.to_string(),
+            super::arch::docker_platform().to_string(),
             // Security: drop all capabilities, only grant what pentest tools need
             "--cap-drop=ALL".to_string(),
             "--cap-add=NET_RAW".to_string(),
@@ -252,5 +287,89 @@ mod tests {
     async fn test_docker_image_check() {
         let built = DockerExecutor::is_image_built().await;
         println!("Docker image built: {}", built);
+    }
+
+    // Today's x86_64 Dockerfile, verbatim — regression guard so the arch-aware
+    // builder produces byte-for-byte-identical output on x86_64.
+    const DOCKERFILE_X86_64_GOLDEN: &str = r#"FROM --platform=linux/amd64 archlinux:latest
+
+# Configure mirrors
+RUN echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist && \
+    echo 'Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch' >> /etc/pacman.d/mirrorlist
+
+# Fix pacman.conf for container usage. DisableSandbox: pacman 7's Landlock-based
+# download sandbox is incompatible with many container runtimes (the syscall is
+# blocked/unavailable), which makes -Syu fail; disable it (mirrors the WSL setup
+# script). Enable an existing commented entry, and append one if pacman.conf has
+# none (older configs).
+RUN sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf 2>/dev/null || true && \
+    sed -i 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf 2>/dev/null || true && \
+    sed -i 's/^#DisableSandbox/DisableSandbox/' /etc/pacman.conf 2>/dev/null || true && \
+    (grep -q '^DisableSandbox' /etc/pacman.conf || sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf)
+
+# Initialize pacman keyring and system update
+RUN pacman-key --init && \
+    pacman-key --populate archlinux && \
+    pacman -Syu --noconfirm --overwrite '*'
+
+# Add BlackArch repository and import its key
+RUN curl -sL https://blackarch.org/strap.sh -o /tmp/strap.sh && \
+    chmod +x /tmp/strap.sh && \
+    /tmp/strap.sh && \
+    rm /tmp/strap.sh
+
+# Sync package databases
+RUN pacman -Sy --noconfirm
+
+WORKDIR /root
+"#;
+
+    #[test]
+    fn x86_64_dockerfile_is_byte_for_byte_unchanged() {
+        assert_eq!(dockerfile_contents_for(false), DOCKERFILE_X86_64_GOLDEN);
+    }
+
+    #[test]
+    fn both_dockerfiles_disable_pacman_landlock_sandbox() {
+        // pacman 7's Landlock download sandbox breaks -Syu in container runtimes
+        // where the syscall is blocked; both arches must DisableSandbox (verified
+        // empirically on colima/QEMU arm64 where -Syu failed without it).
+        for aarch64 in [false, true] {
+            let d = dockerfile_contents_for(aarch64);
+            assert!(
+                d.contains("DisableSandbox"),
+                "arch={aarch64}: Dockerfile must disable pacman's Landlock sandbox"
+            );
+        }
+    }
+
+    #[test]
+    fn aarch64_dockerfile_uses_alarm_base_mirrors_and_keyring() {
+        let d = dockerfile_contents_for(true);
+        assert!(d.contains("FROM --platform=linux/arm64 menci/archlinuxarm:latest"));
+        assert!(d.contains("mirror.archlinuxarm.org/$arch/$repo"));
+        assert!(d.contains("pacman-key --populate archlinuxarm"));
+        // ALARM: append the BlackArch repo directly rather than strap.sh (which
+        // assumes an x86_64 bootstrap). $arch resolves to aarch64 in-container.
+        assert!(d.contains("[blackarch]"));
+        assert!(d.contains("https://blackarch.org/blackarch/$repo/os/$arch"));
+        assert!(!d.contains("strap.sh"));
+        assert!(!d.contains("archlinux:latest"));
+        assert!(!d.contains("pkgbuild.com"));
+    }
+
+    #[test]
+    fn docker_mirror_matches_shared_arch_helper() {
+        // Docker inlines its mirror Server lines rather than reusing
+        // arch::mirrorlist_for (it needs a `RUN echo` shape, not the newline-
+        // joined mirrorlist). Guard against silent drift: the mirror host in the
+        // Dockerfile must match the shared helper for each arch.
+        use super::super::arch;
+        // x86_64: pkgbuild mirror.
+        assert!(arch::mirrorlist_for(false).contains("geo.mirror.pkgbuild.com"));
+        assert!(dockerfile_contents_for(false).contains("geo.mirror.pkgbuild.com"));
+        // aarch64: ALARM mirror.
+        assert!(arch::mirrorlist_for(true).contains("mirror.archlinuxarm.org"));
+        assert!(dockerfile_contents_for(true).contains("mirror.archlinuxarm.org"));
     }
 }

@@ -17,7 +17,7 @@ use pentest_core::error::{Error, Result};
 use std::time::Duration;
 
 /// Android application home directory inside the app's private storage.
-const APP_HOME: &str = "/data/data/com.strike48.pentest_connector/files";
+const APP_HOME: &str = "/data/data/com.strike48.pick/files";
 
 /// One-time Android environment setup.
 ///
@@ -60,9 +60,20 @@ pub fn open_browser(url: &str) -> Result<()> {
     jni_bridge::open_browser(url)
 }
 
-/// Tell the Android OAuthCallbackActivity which port the local callback server is on.
-pub fn set_oauth_callback_port(port: u16) -> Result<()> {
-    jni_bridge::set_oauth_callback_port(port)
+/// Share text via the OS share sheet.
+pub fn share_text(text: &str) -> Result<()> {
+    jni_bridge::share_text(text)
+}
+
+/// Secure storage (EncryptedSharedPreferences / Keystore-backed).
+pub fn secure_set(key: &str, value: &str) -> Result<()> {
+    jni_bridge::secure_set(key, value)
+}
+pub fn secure_get(key: &str) -> Result<Option<String>> {
+    jni_bridge::secure_get(key)
+}
+pub fn secure_delete(key: &str) -> Result<()> {
+    jni_bridge::secure_delete(key)
 }
 
 // Root detection: see `system::RootStatus` and `system::check_root_access` for
@@ -175,6 +186,25 @@ impl CommandExec for AndroidPlatform {
 
     fn is_command_exec_supported(&self) -> bool {
         true
+    }
+}
+
+/// Kick off provisioning the on-device BlackArch tool environment in the
+/// background (idempotent). Called at connect time so external tools are ready
+/// by the time the user runs a scan, instead of triggering a ~200MB download
+/// synchronously inside the first tool call's timeout.
+pub fn provision_tools() {
+    proot::provision_in_background();
+}
+
+/// Coarse state of on-device tool provisioning, for the UI "Setting up tools…"
+/// affordance. Maps proot's `ProvisionState` to the shared string form.
+pub fn tools_provisioning_state() -> &'static str {
+    match proot::provision_state() {
+        proot::ProvisionState::NotStarted => "not_started",
+        proot::ProvisionState::InProgress => "in_progress",
+        proot::ProvisionState::Ready => "ready",
+        proot::ProvisionState::Failed => "failed",
     }
 }
 

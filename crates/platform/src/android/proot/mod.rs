@@ -18,7 +18,10 @@ use std::time::{Duration, Instant};
 
 // Re-export public API from submodules
 pub use pacman::ensure_pacman_compatible;
-pub use rootfs::{ensure_rootfs, ensure_rootfs_with_progress};
+pub use rootfs::{
+    ensure_rootfs, ensure_rootfs_with_progress, provision_in_background, provision_state,
+    ProvisionState,
+};
 
 /// Get the app's native library directory (where .so files from jniLibs live).
 pub(super) fn get_native_lib_dir() -> Result<PathBuf> {
@@ -329,6 +332,18 @@ pub async fn execute_command(cmd: &str, args: &[&str], timeout: Duration) -> Res
                 e,
                 cmd
             );
+            // Distinguish "tools not provisioned yet" from "tool genuinely
+            // failed". When the BlackArch rootfs isn't set up, proot has no
+            // filesystem to exec into, busybox lacks the applet, and direct
+            // exec can't find the binary on the Android host — so ALL backends
+            // fail with a confusing generic error. Surface the real reason so
+            // the agent (and user) know it's a setup state, not a broken tool.
+            if !rootfs::is_rootfs_ready() {
+                return Err(Error::ToolExecution(format!(
+                    "'{cmd}' needs the on-device tool environment, which isn't set up yet. \
+                     Pick is downloading it in the background — try again once setup completes."
+                )));
+            }
             Err(Error::ToolExecution(format!(
                 "Command execution failed: {e}"
             )))
@@ -341,5 +356,31 @@ pub async fn execute_command(cmd: &str, args: &[&str], timeout: Duration) -> Res
                 duration_ms,
             ))
         }
+    }
+}
+
+#[cfg(all(test, target_os = "android"))]
+mod arch_sanity {
+    use super::*;
+    use std::time::Duration;
+
+    // Proves the proot shell actually executes and the guest arch matches the
+    // device — the same coverage the desktop exec-sanity test gives. Android is
+    // already arch-aware (see rootfs::get_rootfs_url / detect_arch); this guards
+    // against a future regression (e.g. a bad rootfs URL) that would reintroduce
+    // an Exec-format-error like the desktop arm64 bug. Device/emulator only.
+    #[tokio::test]
+    #[ignore = "requires a provisioned proot rootfs on-device; run with --ignored on a device/emulator"]
+    async fn proot_executes_and_reports_device_arch() {
+        let out = execute_in_proot("uname", &["-m"], Duration::from_secs(900))
+            .await
+            .expect("proot must execute uname, not Exec-format-error");
+        assert_eq!(
+            out.stdout.trim(),
+            std::env::consts::ARCH,
+            "proot `uname -m` should equal device arch {}; got {:?}",
+            std::env::consts::ARCH,
+            out
+        );
     }
 }

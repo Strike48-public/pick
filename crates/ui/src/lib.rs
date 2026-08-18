@@ -2,6 +2,7 @@
 //!
 //! Shared Dioxus UI components for all platforms.
 
+pub mod auth_flow;
 pub mod components;
 #[cfg(feature = "connector")]
 pub mod connector_app;
@@ -112,6 +113,9 @@ pub async fn run_event_loop(
                     if !api_url.is_empty() {
                         signals.matrix_api_url.set(api_url);
                     }
+                    // The OTT is single-use; once the SDK has persisted
+                    // connector credentials we no longer need the staged file.
+                    pentest_core::matrix::clear_staged_ott();
                 }
                 ConnectorEvent::MatrixTokenObtained {
                     auth_token,
@@ -121,11 +125,21 @@ pub async fn run_event_loop(
                         "Matrix access token obtained (chat only, not saving to config)"
                     );
                     if !auth_token.is_empty() && !api_url.is_empty() {
-                        signals.matrix_api_url.set(api_url);
+                        signals.matrix_api_url.set(api_url.clone());
                         signals.matrix_auth_token.set(auth_token.clone());
                         crate::session::set_auth_token(&auth_token);
                         crate::session::set_tenant_id(&signals.config.peek().tenant_id);
                         crate::session::set_connector_name(&signals.config.peek().connector_name);
+                        // Persist for relaunch: token → OS secure store; the API
+                        // URL → settings via the authoritative in-memory signal so
+                        // a later signal-based save_settings can't clobber it back
+                        // to empty (which forced a fresh sign-in every launch).
+                        {
+                            let mut s = signals.settings.write();
+                            s.matrix_api_url = api_url.clone();
+                            let _ = save_settings(&s);
+                        }
+                        crate::session::persist_matrix_token(&auth_token);
                     }
                 }
                 ConnectorEvent::ToolStarted { tool_name, params } => {

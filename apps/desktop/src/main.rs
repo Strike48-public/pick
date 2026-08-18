@@ -17,6 +17,14 @@ const DESKTOP_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
     extra_init_messages: &[],
     create_tools: pentest_tools::create_tool_registry,
     set_sandbox: Some(pentest_platform::set_use_sandbox),
+    sandbox_available: Some(pentest_platform::sandbox_available_blocking),
+    run_wsl_install: Some(pentest_platform::run_wsl_install_blocking),
+    poll_wsl_install_result: Some(pentest_platform::poll_wsl_install_result),
+    // Per-app fallback default. The effective mode is resolved at runtime as
+    // persisted-setting > build-time PICK_EASY_MODE env > this literal, so a
+    // desktop build can ship easy-mode-first via PICK_EASY_MODE=true without
+    // editing code, and the in-app Settings toggle overrides either.
+    easy_mode: false,
 };
 
 fn main() {
@@ -25,6 +33,22 @@ fn main() {
 
     tracing::info!("Log file: {}", log_path.display());
     tracing::info!("Starting Pentest Connector Desktop");
+
+    // Register the OS credential store as the secure backend for bearer tokens
+    // (Windows Credential Manager / macOS Keychain / Linux Secret Service). Without
+    // this, `pentest_core::secure_store` has no desktop backend and the Matrix chat
+    // token is never persisted — forcing a fresh browser sign-in on every launch.
+    // Mirrors the iOS Keychain / Android Keystore registration in apps/mobile.
+    pentest_core::secure_store::set_backend(
+        pentest_platform::desktop::secure_set,
+        pentest_platform::desktop::secure_get,
+        pentest_platform::desktop::secure_delete,
+    );
+
+    // Register the native OS clipboard so "Copy link" works on Windows, where
+    // WebView2 does not expose navigator.clipboard from the custom-protocol
+    // origin (the JS path silently no-ops there).
+    pentest_core::clipboard::set_clipboard_handler(pentest_platform::desktop::clipboard_copy_text);
 
     // Load theme from settings
     let settings = load_settings();
@@ -39,9 +63,12 @@ fn main() {
     dioxus::LaunchBuilder::desktop()
         .with_cfg(
             Config::default()
+                // No native menu bar — Dioxus adds a default Window/Edit/Help
+                // menu otherwise, which is noise for this single-view app.
+                .with_menu(None)
                 .with_window(
                     WindowBuilder::new()
-                        .with_title("Pentest Connector")
+                        .with_title("Pick")
                         .with_inner_size(LogicalSize::new(480.0, 800.0))
                         .with_min_inner_size(LogicalSize::new(360.0, 600.0)),
                 )

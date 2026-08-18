@@ -23,10 +23,23 @@ fn recover_poisoned<T>(err: PoisonError<T>, name: &'static str) -> T {
     err.into_inner()
 }
 
-static AUTH_TOKEN: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
+/// Auth token store, backed by a `watch` channel so it is both a plain
+/// process-global (any thread may `set`/`get`, including the non-Dioxus
+/// connector and token-refresh threads) AND reactively observable
+/// (`watch_auth_token` hands out a receiver a Dioxus `use_future` can await on).
+/// A raw Dioxus `GlobalSignal` cannot be used here: its writes panic outside a
+/// running Dioxus runtime, and several writers run on background tokio threads.
+static AUTH_TOKEN: LazyLock<(
+    tokio::sync::watch::Sender<String>,
+    tokio::sync::watch::Receiver<String>,
+)> = LazyLock::new(|| tokio::sync::watch::channel(String::new()));
 static TENANT_ID: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
 static CONNECTOR_NAME: LazyLock<RwLock<String>> =
     LazyLock::new(|| RwLock::new("pentest-connector".to_string()));
+/// Proxy-advertised subscription WebSocket URL (`window.__MATRIX_WS_URL__`),
+/// injected by StrikeHub's auth proxy when Pick is embedded. Empty when running
+/// standalone (the subscription then derives its URL from the Matrix API URL).
+static WS_URL_OVERRIDE: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
 static TOOL_NAMES: LazyLock<RwLock<Vec<String>>> = LazyLock::new(|| RwLock::new(Vec::new()));
 static ACTION_REGISTRY: LazyLock<pentest_tools::registry::QuickActionRegistry> =
     LazyLock::new(pentest_tools::create_action_registry);
@@ -58,19 +71,130 @@ static EVIDENCE_GRAPH: LazyLock<RwLock<Vec<EvidenceNode>>> =
 
 /// Read the current session auth token (Matrix access token for GraphQL).
 pub fn get_auth_token() -> String {
-    AUTH_TOKEN
-        .read()
-        .unwrap_or_else(|e| recover_poisoned(e, "AUTH_TOKEN"))
-        .clone()
+    AUTH_TOKEN.1.borrow().clone()
 }
 
-/// Store a new session auth token.
+/// Store a new session auth token. Safe to call from any thread (including the
+/// non-Dioxus connector/token-refresh threads); reactive observers subscribed
+/// via [`watch_auth_token`] are notified. A no-op (no notification) if the
+/// value is unchanged, so idempotent re-sets don't churn subscribers.
 pub fn set_auth_token(token: &str) {
-    let mut guard = AUTH_TOKEN
-        .write()
-        .unwrap_or_else(|e| recover_poisoned(e, "AUTH_TOKEN"));
-    guard.clear();
-    guard.push_str(token);
+    AUTH_TOKEN.0.send_if_modified(|current| {
+        if current == token {
+            false
+        } else {
+            current.clear();
+            current.push_str(token);
+            true
+        }
+    });
+}
+
+/// Persist the Matrix chat token to the OS secure store (Keychain on iOS /
+/// Keystore on Android / Credential Manager on Windows / Secret Service on
+/// Linux) for relaunch. Falls back to nothing if no secure store is registered
+/// (headless) — the token simply isn't persisted rather than written in
+/// plaintext.
+///
+/// This ONLY writes the token. The API URL the token was minted for is
+/// persisted separately by the caller, via [`persist_matrix_api_url`], which
+/// writes it through the in-memory `AppSettings` signal so a later
+/// signal-based `save_settings` cannot clobber it back to empty (which forced a
+/// fresh browser sign-in every launch — see `on_easy_mode_change` for the same
+/// convention). `persist_matrix_token` runs on background threads with no
+/// access to the Dioxus signal, so it must not touch settings at all.
+pub fn persist_matrix_token(token: &str) {
+    tracing::info!(
+        "[TOKEN_PERSIST] persist_matrix_token called: token_len={} secure_store_available={}",
+        token.len(),
+        pentest_core::secure_store::is_available()
+    );
+    match pentest_core::secure_store::store_token(token) {
+        Ok(()) => {
+            // Read back immediately: a `set` that returns Ok but does not
+            // persist is exactly the failure observed on Windows Credential
+            // Manager. This turns a silent no-op into a visible warning.
+            match pentest_core::secure_store::load_token() {
+                Ok(Some(v)) if v == token => {
+                    tracing::info!("[TOKEN_PERSIST] stored + verified chat token in secure store")
+                }
+                Ok(_) => tracing::warn!(
+                    "[TOKEN_PERSIST] stored chat token but read-back did not match (store not honoring writes?)"
+                ),
+                Err(e) => tracing::warn!("[TOKEN_PERSIST] stored chat token but read-back errored: {e}"),
+            }
+        }
+        Err(e) => {
+            tracing::info!("not persisting chat token (no secure store: {e})");
+        }
+    }
+}
+
+/// Persist `matrix_api_url` to `settings.json` for the token-restore path,
+/// WITHOUT going through the Dioxus signal. Used by callers that lack the
+/// signal (e.g. the chat panel's own sign-in). Callers that DO own the
+/// `settings` signal must instead write the signal and `save_settings(&signal)`
+/// so the two do not diverge (the signal is authoritative; a detached
+/// `load_settings`→save here would be clobbered by the next signal save).
+pub fn persist_matrix_api_url_detached(api_url: &str) {
+    let mut s = pentest_core::settings::load_settings();
+    s.matrix_api_url = api_url.to_string();
+    if let Err(e) = pentest_core::settings::save_settings(&s) {
+        tracing::warn!("failed to save matrix_api_url for token restore: {e}");
+    }
+}
+
+/// Restore a previously-persisted Matrix chat token on startup, if the secure
+/// store holds one and it isn't expired. Returns `(token, api_url)` — the saved
+/// API URL the token was minted for — so the caller can seed both the session
+/// and the chat client's URL and skip re-auth. The URL comes from settings (it
+/// isn't known from the live signal at startup), so the caller need not know it
+/// in advance.
+pub fn restore_matrix_token() -> Option<(String, String)> {
+    let saved_url = pentest_core::settings::load_settings().matrix_api_url;
+    tracing::info!(
+        "[TOKEN_RESTORE] restore_matrix_token: saved_url_empty={} secure_store_available={}",
+        saved_url.is_empty(),
+        pentest_core::secure_store::is_available()
+    );
+    if saved_url.is_empty() {
+        return None;
+    }
+    let load = pentest_core::secure_store::load_token();
+    tracing::info!(
+        "[TOKEN_RESTORE] load_token -> ok={} some={}",
+        load.is_ok(),
+        matches!(load, Ok(Some(ref t)) if !t.is_empty())
+    );
+    let token = match load {
+        Ok(Some(t)) if !t.is_empty() => t,
+        _ => return None,
+    };
+    // Drop an expired token so we fall through to a fresh sign-in.
+    match pentest_core::jwt_validator::is_jwt_expired(&token) {
+        Ok(false) => {
+            set_auth_token(&token);
+            Some((token, saved_url))
+        }
+        _ => {
+            let _ = pentest_core::secure_store::clear_token();
+            None
+        }
+    }
+}
+
+/// Clear the persisted chat token (sign-out): secure store + in-memory.
+pub fn clear_matrix_token() {
+    let _ = pentest_core::secure_store::clear_token();
+    set_auth_token("");
+}
+
+/// Reactive subscription to the session auth token. Returns a `watch::Receiver`
+/// whose `changed()` future resolves whenever the token is updated — lets a
+/// Dioxus `use_future` re-render when the token arrives asynchronously (e.g.
+/// after the browser-OAuth callback), instead of polling the store.
+pub fn watch_auth_token() -> tokio::sync::watch::Receiver<String> {
+    AUTH_TOKEN.1.clone()
 }
 
 /// Read the current tenant/realm name (e.g. "non-prod").
@@ -105,6 +229,29 @@ pub fn set_connector_name(name: &str) {
         .unwrap_or_else(|e| recover_poisoned(e, "CONNECTOR_NAME"));
     guard.clear();
     guard.push_str(name);
+}
+
+/// Read the proxy-advertised subscription WebSocket URL override, if any.
+/// Returns `None` when empty (standalone: derive the URL from the API URL).
+pub fn get_ws_url_override() -> Option<String> {
+    let v = WS_URL_OVERRIDE
+        .read()
+        .unwrap_or_else(|e| recover_poisoned(e, "WS_URL_OVERRIDE"))
+        .clone();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
+}
+
+/// Store the proxy-advertised subscription WebSocket URL (`__MATRIX_WS_URL__`).
+pub fn set_ws_url_override(url: &str) {
+    let mut guard = WS_URL_OVERRIDE
+        .write()
+        .unwrap_or_else(|e| recover_poisoned(e, "WS_URL_OVERRIDE"));
+    guard.clear();
+    guard.push_str(url);
 }
 
 /// Read the registered connector tool names.

@@ -13,6 +13,7 @@ use super::app_layout::AppLayout;
 use super::chat_panel::ChatPanel;
 use super::cyberchef_page::CyberChefPage;
 use super::dashboard::Dashboard;
+use super::easy_mode::EasyModeShell;
 use super::file_browser::FileBrowser;
 use super::help_modal::HelpModal;
 use super::icons::MessageCircle;
@@ -27,6 +28,7 @@ use super::sidebar::NavPage;
 use super::terminal::Terminal;
 use super::tools_page::ToolsPage;
 use super::WifiWarningDialog;
+use crate::auth_flow::AuthFlow;
 use crate::liveview_server::{get_terminal_lines, get_workspace_path, terminal_lines_count};
 use crate::theme::{responsive_css, tailwind_css, utils_css};
 use pentest_core::config::{BorderRadius, Density, ShellMode, Theme};
@@ -93,6 +95,12 @@ pub struct WorkspacePagesProps {
     density: Density,
     /// Callback when the user changes the density.
     on_density_change: EventHandler<Density>,
+    /// Whether easy mode is currently enabled.
+    #[props(default)]
+    easy_mode_on: bool,
+    /// Callback when the user toggles easy mode.
+    #[props(default)]
+    on_easy_mode_change: EventHandler<bool>,
 }
 
 /// Routes between Dashboard, Tools, Files, Shell, Logs, and Settings.
@@ -224,6 +232,8 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
                         // Theme imported - could trigger UI refresh here if needed
                         tracing::info!("Custom theme imported successfully");
                     },
+                    easy_mode_on: props.easy_mode_on,
+                    on_easy_mode_change: move |v: bool| props.on_easy_mode_change.call(v),
                 }
             }
 
@@ -269,9 +279,35 @@ pub fn WorkspaceApp() -> Element {
     });
 
     // Persisted settings (shell mode, downloads)
-    let mut settings = use_signal(|| {
-        let s = load_settings();
+    // Whether a command-sandbox backend is usable on this host (bwrap/proot/
+    // docker/WSL). StrikeHub-hosted connectors run WorkspaceApp, so this gates
+    // the easy-mode "Sandboxed scanning" toggle here too — not just connector_app.
+    // Non-desktop targets report false (no host command sandbox).
+    let sandbox_available = use_signal(pentest_platform::sandbox_available_blocking);
+
+    let has_sandbox = sandbox_available();
+    let mut settings = use_signal(move || {
+        let mut s = load_settings();
+        // Never start in a sandbox mode that can't run (e.g. macOS without Docker,
+        // Windows without WSL): coerce Proot -> Native so scans don't fail every
+        // command. The toggle lets the user re-enable it once a backend exists.
+        let resolved =
+            pentest_core::config::resolve_shell_mode(s.shell_mode, false, false, has_sandbox);
+        if resolved != s.shell_mode {
+            tracing::info!(
+                "[WorkspaceApp] startup shell mode {:?} -> {:?} (sandbox_available={})",
+                s.shell_mode,
+                resolved,
+                has_sandbox
+            );
+            s.shell_mode = resolved;
+        }
         let _ = save_settings(&s);
+        #[cfg(all(
+            feature = "shell-ws",
+            not(any(target_os = "android", target_os = "ios"))
+        ))]
+        pentest_platform::set_use_sandbox(s.shell_mode == ShellMode::Proot);
         s
     });
 
@@ -279,6 +315,15 @@ pub fn WorkspaceApp() -> Element {
     let mut theme = use_signal(move || settings.peek().theme);
     let mut border_radius = use_signal(move || settings.peek().border_radius);
     let mut density = use_signal(move || settings.peek().density);
+
+    // Easy mode: persisted Settings choice > build-time PICK_EASY_MODE > default(false).
+    // Reactive so the Settings toggle swaps the shell immediately.
+    let mut easy_mode =
+        use_signal(|| pentest_core::config::resolve_easy_mode(settings.peek().easy_mode, false));
+    // EasyModeShell consumes a flow context; connector mode is always connected
+    // (StrikeHub owns auth), so provide a fixed Connected flow. Without this the
+    // shell's use_context::<Signal<AuthFlow>>() panics.
+    use_context_provider(|| Signal::new(AuthFlow::Connected { chat_ready: true }));
 
     let mut download_progress: Signal<Option<f64>> =
         use_signal(crate::download_manager::get_download_progress);
@@ -323,7 +368,7 @@ pub fn WorkspaceApp() -> Element {
             .or_else(|_| std::env::var("MATRIX_URL"))
             .unwrap_or_default()
     });
-    let mut matrix_auth_token = use_signal(|| {
+    let matrix_auth_token = use_signal(|| {
         let session_token = crate::session::get_auth_token();
         if !session_token.is_empty() {
             return session_token;
@@ -333,45 +378,93 @@ pub fn WorkspaceApp() -> Element {
     let mut chat_mailbox: Signal<Option<String>> = use_signal(|| None);
     let mut conversation_mailbox: Signal<Option<String>> = use_signal(|| None);
 
-    // Poll for bridge-injected credentials (window.__MATRIX_SESSION_TOKEN__ etc.)
-    // The bridge injects these into the HTML but the scripts may not have executed
-    // by the time the component mounts — polling handles the race reliably.
+    // Pick up bridge-injected credentials (window.__MATRIX_SESSION_TOKEN__ etc.).
+    // StrikeHub injects these globals into the connector page's HTML; pick reads
+    // them back over the Dioxus eval channel.
+    //
+    // We use a JS-INITIATED PUSH (`dioxus.send(...)` read via `eval.recv()`), NOT
+    // the eval RETURN-value channel (`document::eval("return …")`). The return
+    // channel is dropped by Windows WebView2 — the token never arrived, the
+    // session store stayed empty, and WS auth (/ws/shell, conversationEvents) was
+    // rejected in a retry loop, so chat never streamed (Linux/WebKitGTK worked).
+    // `dioxus.send()` rides the WebView IPC (window.ipc.postMessage), which
+    // delivers on WebView2 AND WebKitGTK. The token still originates from the
+    // browser global — only the transport changed.
     {
         use_effect(move || {
+            let mut matrix_api_url = matrix_api_url;
+            let mut matrix_auth_token = matrix_auth_token;
             spawn(async move {
-                loop {
-                    // Pick up session token from bridge injection
-                    if let Ok(val) = document::eval(
-                        "return JSON.stringify({ t: window.__MATRIX_SESSION_TOKEN__ || '', u: window.__MATRIX_API_URL__ || '' })"
-                    ).await {
-                        if let Some(json_str) = val.as_str() {
-                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
-                                let token = parsed.get("t").and_then(|v| v.as_str()).unwrap_or_default();
-                                let url = parsed.get("u").and_then(|v| v.as_str()).unwrap_or_default();
-
-                                if !token.is_empty() {
-                                    let current = crate::session::get_auth_token();
-                                    if token != current {
-                                        tracing::info!(
-                                            "[WorkspaceApp] picked up session token from browser (len={})",
-                                            token.len()
-                                        );
-                                        crate::session::set_auth_token(token);
-                                        matrix_auth_token.set(token.to_string());
-                                    }
-                                }
-                                if !url.is_empty() && matrix_api_url.peek().is_empty() {
-                                    tracing::info!("[WorkspaceApp] picked up API URL from browser: {}", url);
-                                    matrix_api_url.set(url.to_string());
-                                }
-                            }
-                        }
+                let mut eval = document::eval(
+                    r#"
+                    // Push the injected creds to Rust over the eval reverse channel
+                    // (dioxus.send -> eval.recv). CRITICAL: the eval script must NOT
+                    // return while we still want to send — in LiveView the `dioxus`
+                    // send binding is torn down once the top-level script returns, so
+                    // a setInterval that fires after return sends into a dead binding
+                    // (nothing arrives). Instead we loop with awaited setTimeout and
+                    // park forever, exactly like installChatSendBridge in input.rs.
+                    // (dioxus.send now routes over the LiveView WS on WebView2 too —
+                    // see the vendored dioxus-liveview query.rs window.ipc fix.)
+                    function readCreds() {
+                        return JSON.stringify({
+                            t: window.__MATRIX_SESSION_TOKEN__ || '',
+                            u: window.__MATRIX_API_URL__ || '',
+                            w: window.__MATRIX_WS_URL__ || ''
+                        });
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    // Push immediately, then re-push every 250ms for ~10s to win the
+                    // mount/inject race, then keep the script alive (never return) so
+                    // dioxus.send stays valid for the pushes above.
+                    let tries = 0;
+                    while (true) {
+                        dioxus.send(readCreds());
+                        if ((window.__MATRIX_SESSION_TOKEN__ || '') !== '' || ++tries > 40) break;
+                        await new Promise(function(r) { setTimeout(r, 250); });
+                    }
+                    await new Promise(function() {});
+                    "#,
+                );
+                // Receive pushes on the eval channel (works on WebView2 + WebKitGTK).
+                while let Ok(json_str) = eval.recv::<String>().await {
+                    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) else {
+                        continue;
+                    };
+                    let token = parsed.get("t").and_then(|v| v.as_str()).unwrap_or_default();
+                    let url = parsed.get("u").and_then(|v| v.as_str()).unwrap_or_default();
+                    let ws_url = parsed.get("w").and_then(|v| v.as_str()).unwrap_or_default();
+
+                    if !token.is_empty() && token != crate::session::get_auth_token() {
+                        tracing::info!(
+                            "[WorkspaceApp] picked up session token from browser (len={})",
+                            token.len()
+                        );
+                        crate::session::set_auth_token(token);
+                        matrix_auth_token.set(token.to_string());
+                    }
+                    if !url.is_empty() && matrix_api_url.peek().is_empty() {
+                        tracing::info!("[WorkspaceApp] picked up API URL from browser: {}", url);
+                        matrix_api_url.set(url.to_string());
+                    }
+                    // Proxy-advertised subscription socket URL. Stored in the session
+                    // so the chat subscription dials the proxy (same authenticated
+                    // origin as HTTP) instead of Matrix directly. Only set once.
+                    if !ws_url.is_empty() && crate::session::get_ws_url_override().is_none() {
+                        tracing::info!("[WorkspaceApp] picked up WS URL from browser: {}", ws_url);
+                        crate::session::set_ws_url_override(ws_url);
+                    }
                 }
             });
         });
     }
+
+    // Easy mode toggle handler: persists + applies immediately
+    let on_easy_mode_change = move |v: bool| {
+        easy_mode.set(v);
+        let mut s = settings.write();
+        s.easy_mode = Some(v);
+        let _ = save_settings(&s);
+    };
 
     // Build the combined CSS (theme variables + responsive/sidebar classes + tailwind)
     // Generate CSS dynamically based on current theme settings
@@ -389,6 +482,13 @@ pub fn WorkspaceApp() -> Element {
         crate::components::toast_css(),
         crate::components::matrix_rain_css()
     );
+
+    let is_sage = matches!(*theme.read(), Theme::Sage | Theme::SageLight);
+    let root_class = if is_sage {
+        "workspace-root sage"
+    } else {
+        "workspace-root"
+    };
 
     let page = *active_page.read();
 
@@ -433,161 +533,205 @@ pub fn WorkspaceApp() -> Element {
     };
 
     rsx! {
+        // Static first-paint fade — its own node so a theme switch (which
+        // re-injects combined_css) never re-triggers the animation.
+        style { {crate::view_transitions::first_paint_fade_css()} }
         style { {combined_css} }
 
-        KeyboardShortcuts {
-            on_navigate: move |nav_page: NavPage| {
-                if nav_page == NavPage::Logs {
-                    last_seen_terminal_count.set(terminal_lines.read().len());
-                }
-                active_page.set(nav_page);
-            },
-            on_toggle_help: move |_| help_visible.set(!help_visible()),
-            help_visible: *help_visible.read(),
-            chat_visible: *active_page.read() == NavPage::Chat,
-            on_close_help: move |_| help_visible.set(false),
-            on_close_chat: move |_| {},
-            on_theme_change: move |t: Theme| {
-                let mut s = settings.write();
-                s.theme = t;
-                let _ = save_settings(&s);
-                theme.set(t);
-            },
-            on_konami: move |_| {
-                // Switch to Matrix theme immediately
-                let mut s = settings.write();
-                s.theme = Theme::Matrix;
-                let _ = save_settings(&s);
-                theme.set(Theme::Matrix);
-
-                // Show Matrix rain overlay
-                matrix_rain_visible.set(true);
-            },
-
-            AppLayout {
-                active_page: page,
-                page_subtitle,
-                page_actions,
+        div { class: "{root_class}", style: "display: contents;",
+            // Read easy_mode() at the top level of this component's rsx — NOT inside
+            // a child component's slot. KeyboardShortcuts derives PartialEq and is
+            // memoized, so a branch nested in its `children` keeps the stale subtree
+            // when easy_mode flips (the Settings/drawer toggle then appears dead).
+            // Rendering the branch here re-runs on every easy_mode change; the expert
+            // arm keeps its own KeyboardShortcuts wrapper (easy mode needs no shortcuts).
+            if easy_mode() {
+            EasyModeShell {
+                api_url: matrix_api_url.read().clone(),
+                auth_token: matrix_auth_token.read().clone(),
+                tenant_id: crate::session::get_tenant_id(),
+                chat_mailbox,
+                conversation_mailbox,
+                on_logout: move |_| {},
+                on_easy_mode_change: on_easy_mode_change,
+                on_sign_in: move |_| {},
+                on_chat_event: move |_ev| {},
+                current_host: matrix_api_url.read().clone(),
+                on_endpoint_save: move |raw: String| {
+                    matrix_api_url.set(raw);
+                },
+                // Sandbox toggle wiring (was omitted -> defaulted to
+                // sandbox_available=true + no-op handler, so the toggle showed ON
+                // and couldn't move on hosts without a backend, e.g. macOS w/o
+                // Docker). Thread the real probe result, mode, and a persisting
+                // handler through.
+                sandbox_available: sandbox_available(),
+                shell_mode: settings.read().shell_mode,
+                on_shell_mode_change: move |mode: ShellMode| {
+                    let mut s = settings.write();
+                    s.shell_mode = mode;
+                    let _ = save_settings(&s);
+                    #[cfg(all(feature = "shell-ws", not(any(target_os = "android", target_os = "ios"))))]
+                    pentest_platform::set_use_sandbox(mode == ShellMode::Proot);
+                },
+            }
+        } else {
+            KeyboardShortcuts {
                 on_navigate: move |nav_page: NavPage| {
                     if nav_page == NavPage::Logs {
                         last_seen_terminal_count.set(terminal_lines.read().len());
                     }
                     active_page.set(nav_page);
                 },
-                connected: true,
-                unread_logs: unread,
-                api_url: matrix_api_url.read().clone(),
-                auth_token: matrix_auth_token.read().clone(),
-                on_open_conversation: move |conv_id: String| {
-                    conversation_mailbox.set(Some(conv_id));
-                    active_page.set(NavPage::Chat);
+                on_toggle_help: move |_| help_visible.set(!help_visible()),
+                help_visible: *help_visible.read(),
+                chat_visible: *active_page.read() == NavPage::Chat,
+                on_close_help: move |_| help_visible.set(false),
+                on_close_chat: move |_| {},
+                on_theme_change: move |t: Theme| {
+                    let mut s = settings.write();
+                    s.theme = t;
+                    let _ = save_settings(&s);
+                    theme.set(t);
+                },
+                on_konami: move |_| {
+                    // Switch to Matrix theme immediately
+                    let mut s = settings.write();
+                    s.theme = Theme::Matrix;
+                    let _ = save_settings(&s);
+                    theme.set(Theme::Matrix);
+
+                    // Show Matrix rain overlay
+                    matrix_rain_visible.set(true);
                 },
 
-                // Page content — routed by WorkspacePages
-                WorkspacePages {
+                AppLayout {
                     active_page: page,
-                    workspace: workspace.clone(),
-                    terminal_lines,
-                    on_open_chat: move |msg: String| {
-                        if !msg.is_empty() {
-                            chat_mailbox.set(Some(msg));
+                    page_subtitle,
+                    page_actions,
+                    on_navigate: move |nav_page: NavPage| {
+                        if nav_page == NavPage::Logs {
+                            last_seen_terminal_count.set(terminal_lines.read().len());
                         }
-                        active_page.set(NavPage::Chat);
+                        active_page.set(nav_page);
                     },
-                    on_open_shell: move |_| {
-                        active_page.set(NavPage::Shell);
-                    },
-                    blackarch_downloaded: *blackarch_downloaded.read(),
-                    download_progress: *download_progress.read(),
-                    setup_error: setup_error.read().clone(),
-                    on_start_download: {
-                        let terminal_lines = terminal_lines;
-                        move |_: ()| {
-                            let mut download_progress = download_progress;
-                            let mut terminal_lines = terminal_lines;
-
-                            setup_error.set(None);
-                            terminal_lines
-                                .write()
-                                .push(TerminalLine::info("Setting up BlackArch environment..."));
-
-                            // Set immediately so UI shows progress bar without waiting for poll.
-                            crate::download_manager::set_global_progress(Some(-1.0));
-                            download_progress.set(Some(-1.0));
-
-                            spawn(async move {
-                                #[cfg(all(feature = "shell-ws", not(target_os = "android")))]
-                                {
-                                    let result = match pentest_platform::desktop::sandbox::get_sandbox_manager().await {
-                                        Ok(manager) => manager.ensure_ready().await.map_err(|e| format!("{}", e)),
-                                        Err(e) => Err(format!("{}", e)),
-                                    };
-                                    crate::download_manager::set_global_progress(None);
-                                    download_progress.set(None);
-                                    match result {
-                                        Ok(()) => {
-                                            blackarch_downloaded.set(true);
-                                            terminal_lines.write().push(TerminalLine::success(
-                                                "BlackArch environment ready.".to_string(),
-                                            ));
-                                        }
-                                        Err(e) => {
-                                            setup_error.set(Some(e.clone()));
-                                            terminal_lines.write().push(TerminalLine::error(format!(
-                                                "Setup failed: {}",
-                                                e
-                                            )));
-                                        }
-                                    }
-                                }
-                            });
-                        }
-                    },
-                    shell_mode: settings.read().shell_mode,
-                    on_shell_mode_change: move |mode: ShellMode| {
-                        let mut s = settings.write();
-                        s.shell_mode = mode;
-                        let _ = save_settings(&s);
-                        #[cfg(all(feature = "shell-ws", not(target_os = "android")))]
-                        pentest_platform::set_use_sandbox(mode == ShellMode::Proot);
-                    },
-                    wifi_adapter: settings.read().wifi_adapter.clone(),
-                    on_wifi_adapter_change: move |adapter: Option<String>| {
-                        let mut s = settings.write();
-                        s.wifi_adapter = adapter;
-                        let _ = save_settings(&s);
-                    },
+                    connected: true,
+                    unread_logs: unread,
                     api_url: matrix_api_url.read().clone(),
                     auth_token: matrix_auth_token.read().clone(),
-                    tenant_id: crate::session::get_tenant_id(),
-                    chat_mailbox,
-                    conversation_mailbox,
-                    on_wifi_warning: move |(status, action): (pentest_platform::WifiConnectionStatus, String)| {
-                        wifi_warning_status.set(Some(status));
-                        wifi_warning_action.set(Some(action));
-                        wifi_warning_visible.set(true);
+                    on_open_conversation: move |conv_id: String| {
+                        conversation_mailbox.set(Some(conv_id));
+                        active_page.set(NavPage::Chat);
                     },
-                    theme: *theme.read(),
-                    on_theme_change: move |t: Theme| {
-                        let mut s = settings.write();
-                        s.theme = t;
-                        let _ = save_settings(&s);
-                        theme.set(t);
-                    },
-                    border_radius: *border_radius.read(),
-                    on_border_radius_change: move |r: BorderRadius| {
-                        let mut s = settings.write();
-                        s.border_radius = r;
-                        let _ = save_settings(&s);
-                        border_radius.set(r);
-                    },
-                    density: *density.read(),
-                    on_density_change: move |d: Density| {
-                        let mut s = settings.write();
-                        s.density = d;
-                        let _ = save_settings(&s);
-                        density.set(d);
-                    },
+
+                    // Page content — routed by WorkspacePages
+                    WorkspacePages {
+                        active_page: page,
+                        workspace: workspace.clone(),
+                        terminal_lines,
+                        on_open_chat: move |msg: String| {
+                            if !msg.is_empty() {
+                                chat_mailbox.set(Some(msg));
+                            }
+                            active_page.set(NavPage::Chat);
+                        },
+                        on_open_shell: move |_| {
+                            active_page.set(NavPage::Shell);
+                        },
+                        blackarch_downloaded: *blackarch_downloaded.read(),
+                        download_progress: *download_progress.read(),
+                        setup_error: setup_error.read().clone(),
+                        on_start_download: {
+                            let terminal_lines = terminal_lines;
+                            move |_: ()| {
+                                let mut download_progress = download_progress;
+                                let mut terminal_lines = terminal_lines;
+
+                                setup_error.set(None);
+                                terminal_lines
+                                    .write()
+                                    .push(TerminalLine::info("Setting up BlackArch environment..."));
+
+                                // Set immediately so UI shows progress bar without waiting for poll.
+                                crate::download_manager::set_global_progress(Some(-1.0));
+                                download_progress.set(Some(-1.0));
+
+                                spawn(async move {
+                                    #[cfg(all(feature = "shell-ws", not(any(target_os = "android", target_os = "ios"))))]
+                                    {
+                                        let result = match pentest_platform::desktop::sandbox::get_sandbox_manager().await {
+                                            Ok(manager) => manager.ensure_ready().await.map_err(|e| format!("{}", e)),
+                                            Err(e) => Err(format!("{}", e)),
+                                        };
+                                        crate::download_manager::set_global_progress(None);
+                                        download_progress.set(None);
+                                        match result {
+                                            Ok(()) => {
+                                                blackarch_downloaded.set(true);
+                                                terminal_lines.write().push(TerminalLine::success(
+                                                    "BlackArch environment ready.".to_string(),
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                setup_error.set(Some(e.clone()));
+                                                terminal_lines.write().push(TerminalLine::error(format!(
+                                                    "Setup failed: {}",
+                                                    e
+                                                )));
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        },
+                        shell_mode: settings.read().shell_mode,
+                        on_shell_mode_change: move |mode: ShellMode| {
+                            let mut s = settings.write();
+                            s.shell_mode = mode;
+                            let _ = save_settings(&s);
+                            #[cfg(all(feature = "shell-ws", not(any(target_os = "android", target_os = "ios"))))]
+                            pentest_platform::set_use_sandbox(mode == ShellMode::Proot);
+                        },
+                        wifi_adapter: settings.read().wifi_adapter.clone(),
+                        on_wifi_adapter_change: move |adapter: Option<String>| {
+                            let mut s = settings.write();
+                            s.wifi_adapter = adapter;
+                            let _ = save_settings(&s);
+                        },
+                        api_url: matrix_api_url.read().clone(),
+                        auth_token: matrix_auth_token.read().clone(),
+                        tenant_id: crate::session::get_tenant_id(),
+                        chat_mailbox,
+                        conversation_mailbox,
+                        on_wifi_warning: move |(status, action): (pentest_platform::WifiConnectionStatus, String)| {
+                            wifi_warning_status.set(Some(status));
+                            wifi_warning_action.set(Some(action));
+                            wifi_warning_visible.set(true);
+                        },
+                        theme: *theme.read(),
+                        on_theme_change: move |t: Theme| {
+                            let mut s = settings.write();
+                            s.theme = t;
+                            let _ = save_settings(&s);
+                            theme.set(t);
+                        },
+                        border_radius: *border_radius.read(),
+                        on_border_radius_change: move |r: BorderRadius| {
+                            let mut s = settings.write();
+                            s.border_radius = r;
+                            let _ = save_settings(&s);
+                            border_radius.set(r);
+                        },
+                        density: *density.read(),
+                        on_density_change: move |d: Density| {
+                            let mut s = settings.write();
+                            s.density = d;
+                            let _ = save_settings(&s);
+                            density.set(d);
+                        },
+                        easy_mode_on: easy_mode(),
+                        on_easy_mode_change: on_easy_mode_change,
+                    }
                 }
             }
         }
@@ -620,12 +764,13 @@ pub fn WorkspaceApp() -> Element {
             }
         }
 
-        // Matrix rain overlay — triggered by Konami code
-        MatrixRainOverlay {
-            visible: matrix_rain_visible(),
-            on_dismiss: move |_| {
-                matrix_rain_visible.set(false);
-            },
+            // Matrix rain overlay — triggered by Konami code
+            MatrixRainOverlay {
+                visible: matrix_rain_visible(),
+                on_dismiss: move |_| {
+                    matrix_rain_visible.set(false);
+                },
+            }
         }
     }
 }

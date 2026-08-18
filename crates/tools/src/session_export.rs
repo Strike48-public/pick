@@ -12,6 +12,17 @@ pub struct SessionExportTool;
 
 #[async_trait]
 impl PentestTool for SessionExportTool {
+    fn supported_platforms(&self) -> Vec<pentest_core::tools::Platform> {
+        use pentest_core::tools::Platform;
+        // In-process serialization to the workspace — runs on iOS.
+        vec![
+            Platform::Desktop,
+            Platform::Android,
+            Platform::Ios,
+            Platform::Tui,
+        ]
+    }
+
     fn name(&self) -> &str {
         "export_session"
     }

@@ -1,15 +1,26 @@
 //! Desktop platform implementation
 
 mod capture;
+pub mod clipboard;
 pub mod command;
 mod network;
 pub mod pty_shell;
 pub mod sandbox;
+pub mod secure;
 mod system;
 mod wifi_attack;
 
 // Re-export sandbox control functions
 pub use command::{is_sandbox_enabled, set_use_sandbox};
+
+// Re-export the OS-credential-store secure token functions so the desktop app
+// can register them with `pentest_core::secure_store` (mirrors the iOS/Android
+// backends registered from `apps/mobile`).
+pub use secure::{secure_delete, secure_get, secure_set};
+
+// Re-export the native clipboard copy so the desktop app can register it with
+// `pentest_core::clipboard` (WebView2 has no navigator.clipboard on Windows).
+pub use clipboard::copy_text as clipboard_copy_text;
 
 /// Returns all local non-loopback IPv4 addresses (synchronous).
 /// Used by connectors to report their host interfaces during registration.
@@ -82,6 +93,138 @@ pub(crate) async fn wait_for_child_output(
     let stderr = String::from_utf8_lossy(&stderr_buf).to_string();
 
     Ok((stdout, stderr, exit_code))
+}
+
+/// Synchronous "is a sandbox backend available?" probe for startup-time UI.
+///
+/// Run an async future to completion from a synchronous (possibly-already-in-a-
+/// runtime) caller, on a DEDICATED thread with its own fresh multi-thread
+/// runtime.
+///
+/// Why a dedicated thread rather than `block_in_place` + `Handle::block_on` on
+/// the caller's runtime: these futures spawn `wsl.exe`/`docker` via
+/// `tokio::process::Command`, whose child-exit reaping is driven by the runtime
+/// that owns the process. Blocking on the Dioxus UI thread's runtime from within
+/// itself does not reliably drive that reaper, so `.output()`/`.status()` calls
+/// stall until the probe timeout — which made the sandbox look unavailable even
+/// when WSL was installed. A separate thread with its own runtime owns the child
+/// processes and reaps them promptly. The thread is short-lived (one probe /
+/// one install) and joined before returning.
+fn run_blocking_on_dedicated_runtime<T, F>(make: F) -> std::result::Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = T>>> + Send + 'static,
+{
+    let joined: std::result::Result<std::result::Result<T, String>, _> =
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("failed to build runtime: {e}"))?;
+            std::result::Result::<T, String>::Ok(rt.block_on(make()))
+        })
+        .join();
+    match joined {
+        Ok(inner) => inner,
+        Err(_) => Err("probe thread panicked".to_string()),
+    }
+}
+
+/// Wraps the async [`sandbox::probe::any_backend_available`] so it can be stored
+/// in the cross-target `ConnectorAppConfig` as a `fn() -> bool`. Runs on a
+/// dedicated-thread runtime (see [`run_blocking_on_dedicated_runtime`]) so the
+/// `wsl.exe`/`docker` child processes it spawns are reaped promptly instead of
+/// stalling. If the runtime can't be built we fail OPEN (return `true`) — this
+/// only affects the availability *display*; execution stays fail-closed
+/// elsewhere.
+pub fn sandbox_available_blocking() -> bool {
+    match run_blocking_on_dedicated_runtime(|| {
+        Box::pin(async {
+            let cfg = sandbox::config::SandboxConfig::default();
+            sandbox::probe::any_backend_available(&cfg).await
+        })
+    }) {
+        Ok(available) => available,
+        Err(e) => {
+            tracing::warn!("sandbox_available_blocking: {e}; assuming available");
+            true
+        }
+    }
+}
+
+/// Run the guided WSL install synchronously, for the cross-target UI banner.
+///
+/// Stored in the cross-target `ConnectorAppConfig` as a
+/// `fn() -> pentest_core::WslInstallStatus`, so `pentest-ui` never touches the
+/// desktop-only `wsl_install` module directly. The flow: check elevation; if
+/// NOT elevated, launch a UAC-elevating relaunch (the elevated helper does the
+/// feature-enable + kernel-update out of process) and report
+/// [`WslInstallStatus::ElevationLaunched`]; if already elevated, run the guided
+/// install inline and map its [`wsl_install::InstallOutcome`] onto the
+/// cross-target [`WslInstallStatus`].
+///
+/// Runs on a dedicated-thread runtime (see [`run_blocking_on_dedicated_runtime`])
+/// so the `powershell.exe`/`wsl.exe` child processes it spawns are reaped
+/// promptly instead of stalling on a nested runtime.
+pub fn run_wsl_install_blocking() -> pentest_core::WslInstallStatus {
+    use pentest_core::WslInstallStatus;
+
+    // Async body: decide elevation, then either relaunch or install inline.
+    async fn drive() -> WslInstallStatus {
+        use sandbox::wsl_install::{
+            is_elevated, relaunch_elevated, run_guided_install, InstallOutcome,
+        };
+        if is_elevated().await {
+            match run_guided_install().await {
+                InstallOutcome::Completed => WslInstallStatus::Completed,
+                InstallOutcome::RebootRequired => WslInstallStatus::RebootRequired,
+                // Already elevated, so this should not happen; treat as failure.
+                InstallOutcome::NeedsElevation => {
+                    WslInstallStatus::Failed("elevation lost mid-install".into())
+                }
+                InstallOutcome::Failed(msg) => WslInstallStatus::Failed(msg),
+            }
+        } else {
+            // Not elevated: launch the UAC-elevating helper which finishes the
+            // install out-of-process. The user must reboot afterwards.
+            match relaunch_elevated() {
+                Ok(()) => WslInstallStatus::ElevationLaunched,
+                Err(e) => WslInstallStatus::Failed(e),
+            }
+        }
+    }
+
+    match run_blocking_on_dedicated_runtime(|| Box::pin(drive())) {
+        Ok(status) => status,
+        Err(e) => WslInstallStatus::Failed(e),
+    }
+}
+
+/// Poll for the outcome of a previously-launched ELEVATED WSL install.
+///
+/// After [`run_wsl_install_blocking`] returns [`WslInstallStatus::ElevationLaunched`],
+/// the actual feature-enable + kernel-update runs in a separate elevated
+/// process. That child writes its result to a marker file; this reads (and
+/// consumes) it. Returns `None` while the elevated run is still in flight (or if
+/// the user dismissed the UAC prompt so nothing ran) — the UI should keep
+/// polling for a bounded window. `Some(RebootRequired)`/`Some(Failed)` is the
+/// terminal outcome. Stored in `ConnectorAppConfig` as an optional
+/// `fn() -> Option<WslInstallStatus>` so `pentest-ui` never touches the
+/// desktop-only `wsl_install` module directly.
+pub fn poll_wsl_install_result() -> Option<pentest_core::WslInstallStatus> {
+    use pentest_core::WslInstallStatus;
+    use sandbox::wsl_install::{poll_install_result, InstallOutcome};
+    match poll_install_result() {
+        None => None,
+        Some(InstallOutcome::RebootRequired) => Some(WslInstallStatus::RebootRequired),
+        Some(InstallOutcome::Completed) => Some(WslInstallStatus::Completed),
+        Some(InstallOutcome::Failed(msg)) => Some(WslInstallStatus::Failed(msg)),
+        // The elevated marker only ever carries RebootRequired/Failed, but map
+        // NeedsElevation defensively rather than silently dropping it.
+        Some(InstallOutcome::NeedsElevation) => Some(WslInstallStatus::Failed(
+            "elevation lost mid-install".into(),
+        )),
+    }
 }
 
 /// Desktop platform provider

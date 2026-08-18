@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Entitlements re-signed onto the ad-hoc Simulator build (see build-ios's
+      _sign-ios-entitlements) so the Matrix chat token persists in the Keychain
+      (crates/platform/src/ios/keychain.rs). Without these, SecItemAdd fails
+      with errSecMissingEntitlement (-34018) and the app re-prompts sign-in
+      every launch.
+
+      This is exactly what Xcode 26 embeds when it signs an app for the
+      Simulator (verified against dotnet/macios' byte-level replication, PRs
+      #24059/#24076): ad-hoc identity ("-"), entitlements in the Mach-O
+      __TEXT,__entitlements section, and NO `application-identifier`.
+
+      Do NOT add `application-identifier`. On iOS 26.5's Simulator the launch
+      validator resolves the app's identity from a team-prefixed
+      `application-identifier` and, with no provisioning profile to authorize
+      it, marks the identity "Invalid" -> SBMainWorkspace denies launch
+      (NSPOSIXErrorDomain 163). `keychain-access-groups` alone does not trip
+      that check and is a fully sufficient source for the Keychain access
+      group: SecItemAdd defaults to the first entitled group. The Simulator
+      does not validate a team-id prefix on the group, so the bare bundle id
+      works (Apple forums thread/114456). A real device/App Store build gets a
+      genuine team-prefixed value from its provisioning profile instead.
+    -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>com.strike48.pick</string>
+    </array>
+    <!-- Debug-attach + matches Xcode's simulator debug entitlements. Must be the
+         `com.apple.security.`-prefixed key; bare `get-task-allow` crashes launch. -->
+    <key>com.apple.security.get-task-allow</key>
+    <true/>
+</dict>
+</plist>

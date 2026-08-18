@@ -27,7 +27,6 @@ impl PentestTool for WifiScanTool {
             Platform::Desktop,
             Platform::Web,
             Platform::Android,
-            Platform::Ios,
             Platform::Tui,
         ]
     }

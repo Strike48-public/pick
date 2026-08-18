@@ -581,13 +581,33 @@ fn overview_category(name: &str, declared: Option<ToolCategory>) -> &'static str
     }
 }
 
-/// Build the full read-only tools overview: every registered tool with a
-/// display category, sorted by (category, name). Drives the Tools page so it
-/// always reflects the live registry instead of a hand-maintained list.
+/// Build the read-only tools overview: registered tools with a display
+/// category, sorted by (category, name). Drives the Tools page so it always
+/// reflects the live registry instead of a hand-maintained list.
 pub fn tools_overview() -> Vec<ToolOverviewItem> {
+    tools_overview_for(pentest_core::tools::Platform::current())
+}
+
+/// Platform-parameterized core of [`tools_overview`] (kept separate so the
+/// filtering is testable off-target).
+///
+/// On iOS the app sandbox can't run most tools, so surface only those that
+/// declare `Platform::Ios` support — otherwise the agent/UI would advertise
+/// capabilities that only fail at runtime. Every other platform keeps the full
+/// unfiltered list: their `supported_platforms` sets aren't audited tightly
+/// enough to gate on yet (e.g. Android runs many external tools via proot that
+/// don't list `Android`), so this stays a no-op off iOS.
+fn tools_overview_for(platform: pentest_core::tools::Platform) -> Vec<ToolOverviewItem> {
+    use pentest_core::tools::Platform;
     let registry = crate::create_tool_registry();
-    let mut items: Vec<ToolOverviewItem> = registry
-        .schemas()
+    // On iOS, gate on the trait-level supported_platforms (via the registry);
+    // everywhere else keep the full unfiltered list.
+    let schemas = if platform == Platform::Ios {
+        registry.schemas_for_platform(Platform::Ios)
+    } else {
+        registry.schemas()
+    };
+    let mut items: Vec<ToolOverviewItem> = schemas
         .into_iter()
         .map(|schema| {
             let declared = schema.external_dependencies.first().map(|d| d.category);
@@ -934,6 +954,52 @@ mod tests {
                 "overview must be sorted by (category, name)"
             );
         }
+    }
+
+    #[test]
+    fn ios_overview_keeps_only_ios_native_tools() {
+        use pentest_core::tools::Platform;
+        let ios = tools_overview_for(Platform::Ios);
+        let desktop = tools_overview_for(Platform::Desktop);
+        let names: Vec<&str> = ios.iter().map(|t| t.name.as_str()).collect();
+
+        // Native / in-process tools survive on iOS. ARP, SSDP and mDNS
+        // discovery are native on iOS (BSD route-socket sysctl + outbound UDP
+        // multicast with the local-network entitlement).
+        for t in [
+            "port_scan",
+            "cyberchef",
+            "device_info",
+            "read_file",
+            "write_file",
+            "list_files",
+            "safety_check",
+            "arp_table",
+            "ssdp_discover",
+            "network_discover",
+        ] {
+            assert!(names.contains(&t), "iOS overview should include {t}");
+        }
+        // Sandbox-blocked tools are filtered out on iOS.
+        for t in [
+            "nmap",
+            "wifi_scan",
+            "execute_command",
+            "traffic_capture",
+            "screenshot",
+        ] {
+            assert!(!names.contains(&t), "iOS overview must not include {t}");
+        }
+        // Desktop is unchanged (full unfiltered list), and iOS is a strict subset.
+        assert_eq!(
+            desktop.len(),
+            tools_overview().len(),
+            "desktop must be a no-op"
+        );
+        assert!(
+            ios.len() < desktop.len(),
+            "iOS list must be smaller than desktop"
+        );
     }
 
     #[test]

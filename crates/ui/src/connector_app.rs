@@ -16,10 +16,12 @@ use pentest_core::state::ConnectorStatus;
 use pentest_core::terminal::TerminalLine;
 use pentest_core::tools::ToolRegistry;
 
+use crate::auth_flow::{reduce, AuthEvent, AuthFlow};
 use crate::components::icons::MessageCircle;
 use crate::components::{
-    AppLayout, ChatPanel, ConfigForm, ConnectingScreen, ConnectingStep, Dashboard, FileBrowser,
-    InteractiveShell, NavPage, SettingsPage, Terminal, ToolsPage, STRIKE48_SIDEBAR_LOGO_SVG,
+    AppLayout, ChatPanel, ConfigForm, ConnectingScreen, ConnectingStep, Dashboard, EasyModeShell,
+    FileBrowser, InteractiveShell, NavPage, SettingsPage, Terminal, ToolsPage, WslInstallBanner,
+    STRIKE48_SIDEBAR_LOGO_SVG,
 };
 use crate::download_manager::is_blackarch_ready;
 use crate::{
@@ -55,6 +57,24 @@ pub struct ConnectorAppConfig {
     pub create_tools: fn() -> ToolRegistry,
     /// Optional sandbox toggle. Desktop/Web pass `pentest_platform::set_use_sandbox`.
     pub set_sandbox: Option<fn(bool)>,
+    /// Returns whether a sandbox backend is currently available. None (mobile/web) is treated as true.
+    pub sandbox_available: Option<fn() -> bool>,
+    /// Runs the guided Windows WSL install (blocking), returning a cross-target
+    /// [`pentest_core::WslInstallStatus`]. Desktop supplies
+    /// `pentest_platform::run_wsl_install_blocking`; `None` (mobile/web) means
+    /// the install affordance is a no-op. Kept as an indirection hook so
+    /// `pentest-ui` never depends on the desktop-only `wsl_install` module.
+    pub run_wsl_install: Option<fn() -> pentest_core::config::WslInstallStatus>,
+    /// Polls for the outcome of an ELEVATED WSL install after `run_wsl_install`
+    /// returned `ElevationLaunched` (the real work then runs out-of-process).
+    /// `Some(status)` is the terminal outcome (RebootRequired/Failed); `None`
+    /// means still in flight (or the user dismissed the UAC prompt). Desktop
+    /// supplies `pentest_platform::poll_wsl_install_result`; `None` (mobile/web)
+    /// means no elevated path exists, so the UI does not poll.
+    pub poll_wsl_install_result: Option<fn() -> Option<pentest_core::config::WslInstallStatus>>,
+    /// When true, render the simplified "Easy Mode" shell (scan + chat) instead
+    /// of the full dashboard/sidebar UI. Default target is mobile.
+    pub easy_mode: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +112,10 @@ pub struct ConnectorPagesProps {
     settings_shell_mode: ShellMode,
     /// Callback when the user changes the shell mode in Settings.
     on_shell_mode_change: EventHandler<ShellMode>,
+    /// Whether a command-sandbox backend is usable on this machine. Gates the
+    /// Sandboxed (Proot) shell mode toggle in Settings.
+    #[props(default = true)]
+    sandbox_available: bool,
     /// Selected WiFi adapter for scanning.
     #[props(default)]
     wifi_adapter: Option<String>,
@@ -110,6 +134,18 @@ pub struct ConnectorPagesProps {
     density: Density,
     /// Callback when the user changes the density.
     on_density_change: EventHandler<Density>,
+    /// Whether anonymous usage analytics are enabled (#278).
+    #[props(default = true)]
+    telemetry_enabled: bool,
+    /// Callback when the user toggles usage analytics.
+    #[props(default)]
+    on_telemetry_change: EventHandler<bool>,
+    /// Whether Easy Mode is currently active (for the Settings toggle).
+    #[props(default)]
+    easy_mode_on: bool,
+    /// Callback when the user toggles Easy Mode in Settings.
+    #[props(default)]
+    on_easy_mode_change: EventHandler<bool>,
     /// Matrix API URL for chat.
     api_url: String,
     /// Auth token for chat.
@@ -120,6 +156,11 @@ pub struct ConnectorPagesProps {
     chat_mailbox: Signal<Option<String>>,
     /// Mailbox for opening a specific conversation by ID.
     conversation_mailbox: Signal<Option<String>>,
+    /// Chat-level auth events (ChatReady, ChatAuthDead) → auth-flow dispatch, so
+    /// expert mode reacts to an expired chat token the same way easy mode does
+    /// (surfacing the re-sign-in overlay). Defaults to a no-op.
+    #[props(default)]
+    on_chat_event: EventHandler<crate::auth_flow::AuthEvent>,
 }
 
 /// Routes between Dashboard, Tools, Files, Shell, Logs, and Settings.
@@ -194,6 +235,7 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                     send_mailbox: props.chat_mailbox,
                     full_page: true,
                     open_conversation_id: props.conversation_mailbox,
+                    on_chat_event: move |ev| props.on_chat_event.call(ev),
                 }
             }
 
@@ -216,6 +258,7 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                     on_start_download: move |_| props.on_start_download.call(()),
                     shell_mode: props.settings_shell_mode,
                     on_shell_mode_change: move |mode: ShellMode| props.on_shell_mode_change.call(mode),
+                    sandbox_available: props.sandbox_available,
                     wifi_adapter: props.wifi_adapter.clone(),
                     on_wifi_adapter_change: move |adapter: Option<String>| props.on_wifi_adapter_change.call(adapter),
                     theme: props.theme,
@@ -224,6 +267,10 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                     on_border_radius_change: move |r: BorderRadius| props.on_border_radius_change.call(r),
                     density: props.density,
                     on_density_change: move |d: Density| props.on_density_change.call(d),
+                    telemetry_enabled: props.telemetry_enabled,
+                    on_telemetry_change: move |v: bool| props.on_telemetry_change.call(v),
+                    easy_mode_on: props.easy_mode_on,
+                    on_easy_mode_change: move |v: bool| props.on_easy_mode_change.call(v),
                     on_theme_imported: move |_| {
                         // Theme imported - could trigger UI refresh here if needed
                         tracing::info!("Custom theme imported successfully");
@@ -238,6 +285,13 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
 // Shared component
 // ---------------------------------------------------------------------------
 
+/// Derive the HTTPS(S) Matrix API URL from a connector host string.
+/// Delegates to the shared [`pentest_core::connector_registration::derive_api_url`]
+/// so the Dioxus app and the crux FFI use ONE implementation.
+fn derive_api_url(host: &str, use_tls: bool) -> String {
+    pentest_core::connector_registration::derive_api_url(host, use_tls)
+}
+
 /// Shared connector app component.
 ///
 /// Call this from a thin platform-specific wrapper component, e.g.:
@@ -248,12 +302,40 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
 /// }
 /// ```
 pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
+    // ---- sandbox availability ----
+    // Whether a command-sandbox backend (bwrap/proot/docker/WSL) is usable on
+    // this machine. Desktop supplies a blocking probe via the config hook; a
+    // `None` hook (mobile/web) means "always available" (mobile has its proot
+    // path). Read this signal to gate the Settings toggle, show a Windows
+    // install banner, and pick the startup shell mode. Computed BEFORE the
+    // settings default below so the default can honor it.
+    let sandbox_available = use_signal(|| cfg.sandbox_available.map(|f| f()).unwrap_or(true));
+    tracing::debug!("sandbox_available at startup: {}", sandbox_available());
+
     // ---- persisted settings ----
+    let has_sandbox = sandbox_available();
     let mut settings = use_signal(move || {
         let mut s = load_settings();
         s.ensure_device_id();
-        if cfg.default_proot && s.shell_mode == ShellMode::Native && s.last_config.is_none() {
-            s.shell_mode = ShellMode::Proot;
+        // Resolve the startup shell mode: first-run Proot bias for easy-mode-first
+        // builds, then coerce to Native when no sandbox backend exists so we never
+        // try a sandbox that fails every command (macOS without Docker, Windows
+        // without WSL). See `resolve_shell_mode`.
+        let resolved = pentest_core::config::resolve_shell_mode(
+            s.shell_mode,
+            cfg.default_proot,
+            s.last_config.is_none(),
+            has_sandbox,
+        );
+        if resolved != s.shell_mode {
+            tracing::info!(
+                "startup shell mode: {:?} -> {:?} (default_proot={}, sandbox_available={})",
+                s.shell_mode,
+                resolved,
+                cfg.default_proot,
+                has_sandbox
+            );
+            s.shell_mode = resolved;
         }
         let _ = save_settings(&s);
         if let Some(set_sb) = cfg.set_sandbox {
@@ -261,12 +343,139 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         }
         s
     });
-    let initial_auto_connect = settings.peek().auto_connect;
     let device_id = settings.peek().device_id.clone();
+
+    // ---- Windows WSL install banner state ----
+    // The banner surfaces only on Windows when no sandbox backend is available
+    // and the user hasn't dismissed it. `installing`/`wsl_reboot_required`/
+    // `wsl_install_error` are the controlled install state the banner renders;
+    // the parent owns them (the banner is presentation-only). Guarded by
+    // `cfg!(windows)` so it never shows off-Windows, where WSL is irrelevant.
+    let wsl_installing = use_signal(|| false);
+    let wsl_reboot_required = use_signal(|| false);
+    let wsl_install_error = use_signal(|| None::<String>);
+    let show_wsl_banner = cfg!(target_os = "windows")
+        && !sandbox_available()
+        && !settings.read().wsl_banner_dismissed;
+
+    // Banner handlers, shared by the easy-mode and workspace render sites.
+    // `run_wsl_install` (the platform hook) is blocking, so it runs on a blocking
+    // thread; the result maps to the controlled install-state signals.
+    let on_wsl_dismiss = move |_: ()| {
+        let mut s = settings.write();
+        s.wsl_banner_dismissed = true;
+        let _ = save_settings(&s);
+    };
+    let on_wsl_how = move |_: ()| {
+        let _ = pentest_core::matrix::open_url_in_browser(
+            "https://learn.microsoft.com/windows/wsl/install",
+        );
+    };
+    let on_wsl_install = move |_: ()| {
+        let Some(run) = cfg.run_wsl_install else {
+            return;
+        };
+        let mut wsl_installing = wsl_installing;
+        let mut wsl_reboot_required = wsl_reboot_required;
+        let mut wsl_install_error = wsl_install_error;
+        wsl_installing.set(true);
+        wsl_install_error.set(None);
+        spawn(async move {
+            // The hook shells out (elevation check, dism, wsl --update) and can
+            // take many seconds; keep it off the UI thread.
+            let status = tokio::task::spawn_blocking(run).await.unwrap_or_else(|e| {
+                pentest_core::config::WslInstallStatus::Failed(format!(
+                    "install task panicked: {e}"
+                ))
+            });
+            match status {
+                pentest_core::config::WslInstallStatus::RebootRequired => {
+                    wsl_installing.set(false);
+                    wsl_reboot_required.set(true);
+                }
+                pentest_core::config::WslInstallStatus::Completed => {
+                    wsl_installing.set(false);
+                }
+                pentest_core::config::WslInstallStatus::ElevationLaunched => {
+                    // The real install now runs in the elevated child process,
+                    // which writes its outcome to a marker. Poll for it so the
+                    // user gets reboot/failure feedback instead of a silent
+                    // "installing…" that never resolves. Stay in the installing
+                    // state while polling; time out generously (feature-enable +
+                    // kernel update can take minutes) so we don't spin forever if
+                    // the user dismissed the UAC prompt.
+                    let Some(poll) = cfg.poll_wsl_install_result else {
+                        wsl_installing.set(false);
+                        return;
+                    };
+                    let mut wsl_installing = wsl_installing;
+                    let mut wsl_reboot_required = wsl_reboot_required;
+                    let mut wsl_install_error = wsl_install_error;
+                    // ~5 min: 60 polls x 5s.
+                    for _ in 0..60 {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        let result = tokio::task::spawn_blocking(poll).await.ok().flatten();
+                        match result {
+                            Some(pentest_core::config::WslInstallStatus::RebootRequired) => {
+                                wsl_reboot_required.set(true);
+                                break;
+                            }
+                            Some(pentest_core::config::WslInstallStatus::Failed(msg)) => {
+                                wsl_install_error.set(Some(msg));
+                                break;
+                            }
+                            Some(pentest_core::config::WslInstallStatus::Completed) => break,
+                            // Still in flight, or a non-terminal status — keep polling.
+                            _ => continue,
+                        }
+                    }
+                    wsl_installing.set(false);
+                }
+                pentest_core::config::WslInstallStatus::Failed(msg) => {
+                    wsl_installing.set(false);
+                    wsl_install_error.set(Some(msg));
+                }
+            }
+        });
+    };
+
+    // ---- easy mode resolution ----
+    // The effective Easy Mode flag: persisted Settings choice > build-time
+    // PICK_EASY_MODE env > per-app compile default. `resolved_easy` is the
+    // startup value used for one-time setup (telemetry tag, PLG env seed,
+    // auto-connect). `easy_mode` is a reactive signal the render branch reads and
+    // the Settings toggle flips, so switching modes swaps the shell immediately.
+    let resolved_easy =
+        pentest_core::config::resolve_easy_mode(settings.peek().easy_mode, cfg.easy_mode);
+    let mut easy_mode = use_signal(|| resolved_easy);
+
+    // ---- telemetry (#278) ----
+    // Initialize once for the app lifetime (the client guard is retained inside
+    // the telemetry module). No-op when the user opted out or no DSN was baked in.
+    use_hook(|| {
+        let enabled = settings.peek().telemetry_enabled;
+        pentest_core::telemetry::init(enabled, &device_id, resolved_easy);
+    });
+
+    // Easy-mode default PLG connection (#283): when there's no saved config,
+    // easy mode seeds host/tenant from the PLG target baked in at BUILD time
+    // (option_env! STRIKE48_HOST/STRIKE48_TENANT), falling back to the runtime
+    // env on desktop/dev. Mobile apps have no runtime environment, so the host
+    // MUST be baked in at build time — same mechanism as the Sentry DSN. Empty
+    // token → the existing post-approval flow. If no build-time host is present
+    // we fall through to Default (empty host) and the connect form still shows —
+    // that form is the override/escape hatch. Nothing is hardcoded in the repo.
+    let easy_mode_env_config = if resolved_easy {
+        ConnectorConfig::from_baked_or_env().filter(|c| !c.host.is_empty())
+    } else {
+        None
+    };
+
     let initial_config = settings
         .peek()
         .last_config
         .clone()
+        .or_else(|| easy_mode_env_config.clone())
         .map(|mut c| {
             c.instance_id = device_id.clone();
             c
@@ -289,6 +498,24 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // button "did nothing" instead of finding it logged into a terminal that
     // is only rendered after a successful connection.
     let mut connect_error: Signal<Option<String>> = use_signal(|| None);
+
+    // Explicit easy-mode auth state machine (see auth_flow.rs). Provided as
+    // context so EasyModeShell and ChatPanel can read it. `dispatch` (below) is
+    // the ONLY writer.
+    let flow = use_context_provider(|| Signal::new(AuthFlow::Restoring));
+
+    // Single writer for `flow`. Plain Fn (no RefCell) — signals are Copy and
+    // use interior mutability. Rebind captured signals as mut inside the closure
+    // to keep the closure an Fn.
+    let dispatch = std::rc::Rc::new(move |ev: AuthEvent| {
+        let mut flow = flow;
+        let prev = flow.peek().clone();
+        let next = reduce(prev.clone(), ev.clone());
+        // Debug-level trace of every auth-flow transition — invaluable for
+        // diagnosing sign-in/logout issues; off unless RUST_LOG=debug.
+        tracing::debug!("[AUTHFLOW] {:?} --{:?}--> {:?}", prev, ev, next);
+        flow.set(next);
+    });
 
     // download state
     let mut download_progress: Signal<Option<f64>> =
@@ -318,12 +545,55 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     // chat state
     let mut chat_mailbox: Signal<Option<String>> = use_signal(|| None);
     let mut conversation_mailbox: Signal<Option<String>> = use_signal(|| None);
-    let matrix_api_url = use_signal(|| {
+    let mut matrix_api_url = use_signal(|| {
         std::env::var("MATRIX_API_URL")
             .or_else(|_| std::env::var("MATRIX_URL"))
             .unwrap_or_default()
     });
-    let matrix_auth_token = use_signal(|| std::env::var("MATRIX_AUTH_TOKEN").unwrap_or_default());
+    let mut matrix_auth_token =
+        use_signal(|| std::env::var("MATRIX_AUTH_TOKEN").unwrap_or_default());
+
+    // Restore a previously-persisted chat token (OS secure store) on startup so
+    // relaunching the app doesn't force a fresh browser sign-in. The API URL the
+    // token was minted for comes from settings (it isn't known from the live
+    // signal yet at startup), so we seed BOTH the token and the API URL signal —
+    // otherwise ChatPanel mounts with an empty URL and re-triggers browser auth.
+    use_hook(|| {
+        if matrix_auth_token.peek().is_empty() {
+            if let Some((token, api_url)) = crate::session::restore_matrix_token() {
+                tracing::info!("restored persisted chat token; skipping browser sign-in");
+                matrix_auth_token.set(token);
+                if matrix_api_url.peek().is_empty() {
+                    matrix_api_url.set(api_url);
+                }
+            }
+        }
+    });
+
+    // Extract candidate config picker (DRY for startup hook and launch effect).
+    let pick_candidate = {
+        let device_id = device_id.clone();
+        let easy_env = easy_mode_env_config.clone();
+        move || {
+            settings.peek().last_config.clone().or_else(|| {
+                easy_env.clone().map(|mut c| {
+                    c.instance_id = device_id.clone();
+                    c
+                })
+            })
+        }
+    };
+
+    // Drive the AuthFlow machine's initial transition: the chat token alone
+    // determines the startup route (connector creds are separate and do not
+    // gate the easy-mode UI). One-shot.
+    {
+        let dispatch = std::rc::Rc::clone(&dispatch);
+        use_hook(move || {
+            let have_token = !matrix_auth_token.peek().is_empty();
+            dispatch(AuthEvent::Restored { have_token });
+        });
+    }
 
     use_effect(move || {
         terminal_lines.write().push(TerminalLine::info(format!(
@@ -400,6 +670,9 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 new_config.tenant_id = canonical;
             }
         }
+        // Attach the (pseudonymous) PLG tenant to telemetry now that we know it.
+        pentest_core::telemetry::set_plg_identity(&new_config.tenant_id);
+
         config.set(new_config.clone());
         status.set(ConnectorStatus::Connecting);
         connecting_step.set(Some(ConnectingStep::Connecting));
@@ -420,6 +693,8 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         let mut terminal_lines = terminal_lines;
         let connecting_step = connecting_step;
         let mut workspace_path = workspace_path;
+        // Read the live mode so a runtime toggle is honored on the next connect.
+        let easy_mode = easy_mode();
 
         // Clone identity fields before we consume `new_config` in the
         // spawned connector task — we still need them for the first-run
@@ -537,56 +812,353 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 let mut conn = lv_connector.write().await;
                 if let Err(e) = conn.connect_and_run().await {
                     let display = format!("Connection error: {}", e);
+                    tracing::error!("[CONNECT] connect_and_run failed: {e}");
                     terminal_lines
                         .write()
                         .push(TerminalLine::error(display.clone()));
-                    // Also surface to the Connect-screen banner — status flips
-                    // back to Error which routes us there, and without this
-                    // the error would be silent (terminal is not rendered).
-                    connect_error.set(Some(display));
-                    status.set(ConnectorStatus::Error(e));
+                    if easy_mode {
+                        // A staged OTT is single-use; a failed registration
+                        // consumed or invalidated it, so drop it (a retry
+                        // re-mints a fresh one).
+                        pentest_core::matrix::clear_staged_ott();
+                        std::env::remove_var("STRIKE48_REGISTRATION_TOKEN_FILE");
+                        status.set(ConnectorStatus::Disconnected);
+                    } else {
+                        // Standard shell: surface to the Connect-screen banner.
+                        // status flips to Error which routes there; without this
+                        // the error would be silent (terminal isn't rendered).
+                        connect_error.set(Some(display));
+                        status.set(ConnectorStatus::Error(e));
+                    }
                 }
             }
         });
     };
 
-    // ---- auto-connect ----
-    use_effect(move || {
-        if initial_auto_connect {
-            if let Some(saved_config) = settings.read().last_config.clone() {
-                terminal_lines
-                    .write()
-                    .push(TerminalLine::info("Auto-connecting with saved settings..."));
-                on_connect((saved_config, true));
-            }
+    // PLG easy-mode OAuth-first connect: obtain the user JWT, exchange it for a
+    // tenant-scoped OTT, stage the OTT for the SDK, then connect. On any failure
+    // stop — never fall back to a tokenless connect.
+    let plg_sign_in_and_connect = {
+        let mut on_connect_clone = on_connect;
+        let dispatch = dispatch.clone();
+        move |base_config: ConnectorConfig| {
+            let mut connecting_step = connecting_step;
+            let mut status = status;
+            let mut terminal_lines = terminal_lines;
+            let mut config = config;
+            let mut matrix_auth_token = matrix_auth_token;
+            let mut matrix_api_url = matrix_api_url;
+            let dispatch = dispatch.clone();
+            spawn(async move {
+                tracing::info!("[CONNECT] plg_sign_in_and_connect spawn entered");
+                status.set(ConnectorStatus::Connecting);
+                connecting_step.set(Some(ConnectingStep::SigningIn));
+
+                // Drop any process-cached browser token so this sign-in always
+                // performs a FRESH login. Otherwise `fetch_matrix_token_browser`
+                // returns a stale cached token whose server-side session may be
+                // gone (backend: "Auth.verify_token: session not found" ->
+                // "Not authenticated"), and retry can never recover because it
+                // keeps re-serving the dead token.
+                pentest_core::matrix::clear_browser_token_cache();
+
+                // Derive the HTTPS API URL from the connector host using the
+                // same logic as the chat_api_url derivation below (connector_app.rs
+                // ~801-826). `matrix::normalize_url` is pub(crate) and not
+                // reachable from this crate, so use the shared helper added in
+                // Step 1b instead.
+                let api_url = derive_api_url(&base_config.host, base_config.use_tls);
+                tracing::info!("[CONNECT] derived api_url={api_url:?} host={:?} calling fetch_matrix_token_browser", base_config.host);
+
+                let jwt = match pentest_core::matrix::fetch_matrix_token_browser(&api_url).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::error!("[CONNECT] fetch_matrix_token_browser failed: {e}");
+                        terminal_lines
+                            .write()
+                            .push(TerminalLine::error(format!("Sign-in failed: {e}")));
+                        status.set(ConnectorStatus::Disconnected);
+                        connecting_step.set(None);
+                        dispatch(AuthEvent::TokenFailed(e.to_string()));
+                        return;
+                    }
+                };
+
+                // The browser-OAuth JWT is a session-backed Studio token — the
+                // credential GraphQL requires. Feed it to the chat path NOW
+                // (mirrors the MatrixTokenObtained event) so the chat panel uses
+                // this fresh token instead of a stale one restored from the secure
+                // store at startup, which would fail with "session not found" /
+                // "Not authenticated". The connector JWT that the connect flow
+                // emits later via CredentialsUpdated is gRPC-only and deliberately
+                // does not touch the chat token. Persisting here also means a
+                // relaunch restores THIS working token.
+                matrix_api_url.set(api_url.clone());
+                matrix_auth_token.set(jwt.clone());
+                crate::session::set_auth_token(&jwt);
+                // Write matrix_api_url into the authoritative in-memory `settings`
+                // signal (not just a detached load_settings copy). Other handlers
+                // persist by cloning this signal; if the URL only lived on disk,
+                // the next signal-based save_settings would clobber it back to
+                // empty and relaunch would force a fresh sign-in. See the same
+                // pattern in `on_easy_mode_change`.
+                {
+                    let mut s = settings.write();
+                    s.matrix_api_url = api_url.clone();
+                    let _ = save_settings(&s);
+                }
+                crate::session::persist_matrix_token(&jwt);
+                dispatch(AuthEvent::TokenObtained);
+
+                // Exchange the JWT for a tenant-scoped OTT, stage it, and point
+                // the SDK at it (STRIKE48_REGISTRATION_TOKEN_FILE) via the shared
+                // orchestration so the Dioxus app and crux FFI register the same
+                // way.
+                let ott =
+                    match pentest_core::connector_registration::prepare_connector_registration(
+                        &api_url,
+                        &jwt,
+                        &base_config.connector_name,
+                    )
+                    .await
+                    {
+                        Ok(o) => o,
+                        Err(e) => {
+                            tracing::error!("[CONNECT] prepare_connector_registration failed: {e}");
+                            terminal_lines
+                                .write()
+                                .push(TerminalLine::error(format!("Pre-approval failed: {e}")));
+                            // Setting status to Disconnected while the flow is in
+                            // Registering is bridged to AuthEvent::TokenFailed by the
+                            // status->flow effect, so easy mode leaves the
+                            // "Signing in…" screen instead of stranding on it.
+                            status.set(ConnectorStatus::Disconnected);
+                            connecting_step.set(None);
+                            return;
+                        }
+                    };
+
+                // Adopt the authoritative tenant so the connector registers under
+                // the personal tenant.
+                let mut c = base_config;
+                c.tenant_id = ott.tenant_id.clone();
+                config.set(c.clone());
+
+                terminal_lines.write().push(TerminalLine::info(
+                    "Signed in. Registering connector for your workspace...",
+                ));
+                connecting_step.set(Some(ConnectingStep::Connecting));
+                on_connect_clone((c, true));
+            });
         }
-    });
+    };
+
+    // Launch side effects on AuthFlow entry.
+    {
+        let plg_sign_in_and_connect = plg_sign_in_and_connect.clone();
+        let mut launched_signin = use_signal(|| false);
+        let mut launched_connect = use_signal(|| false);
+        let pick_candidate = pick_candidate.clone();
+        use_effect(move || {
+            match flow() {
+                AuthFlow::SigningIn => {
+                    if !*launched_signin.peek() {
+                        launched_signin.set(true);
+                        launched_connect.set(false);
+                        if let Some(c) = pick_candidate() {
+                            plg_sign_in_and_connect(c);
+                        }
+                    }
+                }
+                AuthFlow::Registering(_) => {
+                    // Silent auto-connect path (creds present at startup): connect
+                    // without a browser sign-in. Only when we did NOT just sign in.
+                    if !*launched_connect.peek() && !*launched_signin.peek() {
+                        launched_connect.set(true);
+                        if let Some(c) = pick_candidate() {
+                            let remember = settings.peek().last_config.is_some();
+                            on_connect((c, remember));
+                        }
+                    }
+                }
+                _ => {
+                    launched_signin.set(false);
+                    launched_connect.set(false);
+                }
+            }
+        });
+    }
+
+    // Bridge the connector event loop's status/step signals into AuthFlow events.
+    {
+        let mut last_status = use_signal(|| None::<ConnectorStatus>);
+        let dispatch = dispatch.clone();
+        use_effect(move || {
+            let s = status.read().clone();
+            if last_status.peek().as_ref() != Some(&s) {
+                last_status.set(Some(s.clone()));
+                match s {
+                    ConnectorStatus::Registered => dispatch(AuthEvent::ConnectorRegistered),
+                    ConnectorStatus::Connecting | ConnectorStatus::Reconnecting => {
+                        if let Some(step) = *connecting_step.peek() {
+                            dispatch(AuthEvent::ConnectorStep(step));
+                        }
+                    }
+                    // A connect/registration failure sets status to Disconnected
+                    // (easy mode) or Error (expert). Easy mode routes purely on
+                    // flow(), so if we're mid-connect the flow is stuck in
+                    // Registering; bridge the failure to a flow event so the shell
+                    // leaves the "Connecting…"/"Signing in…" screen instead of
+                    // stranding on it (Cancel-only). Only fire while Registering so
+                    // an idle Disconnected at startup doesn't churn the flow.
+                    ConnectorStatus::Disconnected | ConnectorStatus::Error(_)
+                        if matches!(*flow.peek(), AuthFlow::Registering(_)) =>
+                    {
+                        dispatch(AuthEvent::TokenFailed(
+                            "Connection failed. Please sign in again.".to_string(),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+
+    {
+        let mut last_step = use_signal(|| None::<ConnectingStep>);
+        let dispatch = dispatch.clone();
+        use_effect(move || {
+            let step = *connecting_step.read();
+            if *last_step.peek() != step {
+                last_step.set(step);
+                if let Some(step) = step {
+                    if matches!(*flow.peek(), AuthFlow::Registering(_)) {
+                        dispatch(AuthEvent::ConnectorStep(step));
+                    }
+                }
+            }
+        });
+    }
 
     // ---- disconnect handler ----
-    let on_disconnect = move |_: ()| {
-        let mut s = load_settings();
-        s.auto_connect = false;
-        let _ = save_settings(&s);
+    let on_disconnect = {
+        let dispatch = dispatch.clone();
+        move |_: ()| {
+            let mut s = load_settings();
+            s.auto_connect = false;
+            let _ = save_settings(&s);
 
-        let connector = connector;
-        let mut status = status;
-        let mut terminal_lines = terminal_lines;
-        let mut connecting_step = connecting_step;
+            let connector = connector;
+            let mut status = status;
+            let mut terminal_lines = terminal_lines;
+            let mut connecting_step = connecting_step;
+            let dispatch = dispatch.clone();
 
-        spawn(async move {
-            if let Some(conn) = connector.peek().as_ref() {
-                let conn = conn.read().await;
-                conn.shutdown();
-            }
+            // Update the UI state SYNCHRONOUSLY, before the async connector
+            // shutdown — same pattern as the logout handler. Cancel during
+            // SigningIn/Registering must feel instant: the connector shutdown
+            // below awaits an RwLock read that can block while the OAuth browser
+            // flow is in flight, and if the `dispatch(Disconnected)` lived after
+            // that await the ConnectingScreen would stay up and Cancel looked
+            // dead. Dispatch first, then tear the connector down in the background.
             status.set(ConnectorStatus::Disconnected);
             connecting_step.set(None);
             terminal_lines
                 .write()
                 .push(TerminalLine::info("Disconnected"));
-        });
+            dispatch(AuthEvent::Disconnected);
+
+            spawn(async move {
+                // Clone the Arc out and drop the signal borrow before awaiting (see
+                // the logout handler): holding connector.peek() across .await races
+                // connector.set(...) on reconnect and panics with AlreadyBorrowed.
+                let conn_arc = connector.peek().as_ref().cloned();
+                if let Some(conn) = conn_arc {
+                    conn.read().await.shutdown();
+                }
+            });
+        }
+    };
+
+    // ---- logout handler (easy mode) ----
+    // Full sign-out: drop the chat session token (secure store + process cache),
+    // delete the SDK connector credentials so the next launch does a fresh OTT
+    // registration, shut the connector down, and route back to the sign-in
+    // overlay. Distinct from `on_disconnect`, which only stops the connector but
+    // keeps credentials for a silent reconnect.
+    let on_logout = {
+        let device_id = device_id.clone();
+        let dispatch = dispatch.clone();
+        move |_: ()| {
+            let cfg_now = config.peek().clone();
+            let scoped_instance_id = pentest_core::config::ConnectorConfig::env_scoped_instance_id(
+                &device_id,
+                &cfg_now.host,
+            );
+            pentest_core::config::ConnectorConfig::clear_credentials(
+                &cfg_now.connector_name,
+                &scoped_instance_id,
+            );
+            crate::session::clear_matrix_token();
+            crate::session::set_auth_token("");
+            pentest_core::matrix::clear_browser_token_cache();
+            pentest_core::matrix::clear_staged_ott();
+
+            // Stop auto-connect so we land on sign-in, not a silent reconnect.
+            let mut s = load_settings();
+            s.auto_connect = false;
+            let _ = save_settings(&s);
+
+            let connector = connector;
+            let mut status = status;
+            let mut matrix_auth_token = matrix_auth_token;
+            let mut connecting_step = connecting_step;
+            let dispatch = dispatch.clone();
+            // Update the UI state SYNCHRONOUSLY, before the async connector
+            // shutdown. Previously these ran after `conn.read().await.shutdown()`
+            // inside the spawn; if that RwLock read blocks (the event loop can
+            // hold the lock), the token clear + LoggedOut dispatch never ran, so
+            // the shell stayed "logged in" and logout appeared to do nothing.
+            // The token was already cleared from the session store synchronously
+            // above; mirror that into the UI signals + flow here, then shut the
+            // connector down in the background.
+            matrix_auth_token.set(String::new());
+            connecting_step.set(None);
+            status.set(ConnectorStatus::Disconnected);
+            dispatch(AuthEvent::LoggedOut);
+            spawn(async move {
+                // Clone the Arc out and DROP the signal borrow before awaiting.
+                // Holding `connector.peek()` across `.await` keeps the signal
+                // borrowed while `connector.set(...)` (connect path) runs,
+                // panicking with AlreadyBorrowed on a logout->reconnect race.
+                let conn_arc = connector.peek().as_ref().cloned();
+                if let Some(conn) = conn_arc {
+                    conn.read().await.shutdown();
+                }
+            });
+        }
     };
 
     // ---- setup handler ----
+    // ---- easy-mode toggle (Settings) ----
+    // Persist the explicit choice and flip the reactive signal so the shell
+    // swaps (easy <-> expert) immediately, no relaunch. Reachable from both the
+    // Easy Mode drawer's Settings and the expert SettingsPage so it's never a
+    // one-way trap.
+    let on_easy_mode_change = move |on: bool| {
+        // Update the in-memory `settings` signal, NOT just a fresh load_settings().
+        // Other handlers (connect-with-remember, shell mode, telemetry) persist by
+        // cloning this signal; if we only wrote a detached copy to disk, the next
+        // signal-based save_settings would clobber easy_mode back to None. Writing
+        // the signal keeps it authoritative so the choice survives.
+        {
+            let mut s = settings.write();
+            s.easy_mode = Some(on);
+            let _ = save_settings(&s);
+        }
+        easy_mode.set(on);
+    };
+
     let on_start_download = move |_: ()| {
         let mut download_progress = download_progress;
         let mut terminal_lines = terminal_lines;
@@ -601,7 +1173,10 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         download_progress.set(Some(-1.0));
 
         spawn(async move {
-            #[cfg(all(feature = "shell-ws", not(target_os = "android")))]
+            #[cfg(all(
+                feature = "shell-ws",
+                not(any(target_os = "android", target_os = "ios"))
+            ))]
             {
                 let result = match pentest_platform::desktop::sandbox::get_sandbox_manager().await {
                     Ok(manager) => manager.ensure_ready().await.map_err(|e| format!("{}", e)),
@@ -658,6 +1233,9 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         let toast_css = crate::components::toast_css();
         let matrix_css = crate::components::matrix_rain_css();
         rsx! {
+            // Static first-paint fade — its own node so re-injecting the
+            // theme CSS below never re-triggers the animation.
+            style { {crate::view_transitions::first_paint_fade_css()} }
             style { {css} }
             style { {mcss} }
             style { {ucss} }
@@ -669,15 +1247,170 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         rsx! {}
     };
 
-    let container_class = cfg.container_class;
+    let is_sage = matches!(*theme.read(), Theme::Sage | Theme::SageLight);
+    let root_class = if is_sage {
+        format!("{} sage", cfg.container_class)
+    } else {
+        cfg.container_class.to_string()
+    };
     let platform_name = cfg.platform_name;
 
     rsx! {
         {css_block}
 
-        div { class: "{container_class}",
-            match screen {
-                AppScreen::Connect => rsx! {
+        div { class: "{root_class}",
+            if easy_mode() {
+                {
+                    let host = config.read().host.clone();
+                    let chat_api_url = {
+                        let sig = matrix_api_url.read().clone();
+                        if !sig.is_empty() {
+                            sig
+                        } else if !host.is_empty() {
+                            derive_api_url(&host, config.read().use_tls)
+                        } else {
+                            String::new()
+                        }
+                    };
+                    match flow() {
+                        AuthFlow::SigningIn => rsx! {
+                            ConnectingScreen {
+                                step: ConnectingStep::SigningIn,
+                                host: host.clone(),
+                                on_cancel: move |_| on_disconnect(()),
+                            }
+                        },
+                        AuthFlow::Registering(step) => rsx! {
+                            ConnectingScreen {
+                                step,
+                                host: host.clone(),
+                                on_cancel: move |_| on_disconnect(()),
+                            }
+                        },
+                        _ => {
+                            let d1 = dispatch.clone();
+                            let d2 = dispatch.clone();
+                            rsx! {
+                                EasyModeShell {
+                                    api_url: chat_api_url,
+                                    auth_token: matrix_auth_token.read().clone(),
+                                    tenant_id: config.read().tenant_id.clone(),
+                                    chat_mailbox,
+                                    conversation_mailbox,
+                                    on_logout: on_logout,
+                                    on_easy_mode_change: on_easy_mode_change,
+                                    on_sign_in: move |_| d1(AuthEvent::SignInRequested),
+                                    on_chat_event: move |ev| d2(ev),
+                                    current_host: config.read().host.clone(),
+                                    on_endpoint_save: move |raw: String| {
+                                        // Normalize the typed URL the same way the
+                                        // expert connect form does. On failure, log
+                                        // and keep the old endpoint (the modal already
+                                        // validated, so this should not fire).
+                                        let normalized = match ConnectorConfig::normalize_host(&raw) {
+                                            Ok(n) => n.value,
+                                            Err(e) => {
+                                                tracing::warn!("change-server: rejected URL {raw:?}: {e}");
+                                                return;
+                                            }
+                                        };
+                                        // Derive the chat API URL from the new host.
+                                        let api = pentest_core::connector_registration::derive_api_url(
+                                            &normalized,
+                                            config.peek().use_tls,
+                                        );
+                                        // Update in-memory config + chat URL signals.
+                                        {
+                                            let mut c = config.write();
+                                            c.host = normalized.clone();
+                                        }
+                                        matrix_api_url.set(api.clone());
+                                        // Persist so the new endpoint survives restart
+                                        // (last_config wins over the baked default at
+                                        // startup — see connector_app.rs:455).
+                                        {
+                                            let mut s = settings.write();
+                                            s.last_config = Some(config.peek().clone());
+                                            s.matrix_api_url = api;
+                                            let _ = save_settings(&s);
+                                        }
+                                        // Kick off a fresh sign-in against the new
+                                        // server. Without this the endpoint updates
+                                        // silently but the flow stays parked on the
+                                        // "Couldn't connect" screen (Failed/AwaitingGesture)
+                                        // — the user changed the server and nothing
+                                        // happened. SignInRequested advances Failed{reauth}
+                                        // / AwaitingGesture / Disconnected -> SigningIn,
+                                        // which drives the connect effect.
+                                        tracing::info!(
+                                            "change-server: reconnecting to {}",
+                                            config.peek().host
+                                        );
+                                        dispatch(AuthEvent::SignInRequested);
+                                    },
+                                    sandbox_available: sandbox_available(),
+                                    shell_mode: settings.read().shell_mode,
+                                    on_shell_mode_change: move |mode: ShellMode| {
+                                        if mode == ShellMode::Proot && !sandbox_available() {
+                                            return;
+                                        }
+                                        let mut s = settings.write();
+                                        s.shell_mode = mode;
+                                        let _ = save_settings(&s);
+                                        if let Some(set_sb) = cfg.set_sandbox {
+                                            set_sb(mode == ShellMode::Proot);
+                                        }
+                                    },
+                                    banner: if show_wsl_banner {
+                                        Some(rsx! {
+                                            WslInstallBanner {
+                                                installing: wsl_installing(),
+                                                reboot_required: wsl_reboot_required(),
+                                                error: wsl_install_error(),
+                                                on_dismiss: on_wsl_dismiss,
+                                                on_install: on_wsl_install,
+                                                on_how: on_wsl_how,
+                                            }
+                                        })
+                                    } else {
+                                        None
+                                    },
+                                }
+                            }
+                        },
+                    }
+                }
+            } else if matches!(flow(), AuthFlow::Failed { reauth: true, .. }) {
+                // Chat session token died (ChatAuthDead -> Failed{reauth}). The
+                // gRPC connector may still be "Registered", so the workspace would
+                // otherwise sit there throwing "Not authenticated" with no way
+                // back. Surface a re-sign-in prompt (mirrors easy mode's overlay);
+                // tapping it dispatches SignInRequested, which the general
+                // SigningIn launch effect turns into a fresh browser sign-in.
+                {
+                    let d_reauth = dispatch.clone();
+                    rsx! {
+                        div { class: "connect-screen",
+                            span {
+                                class: "header-logo mb-8",
+                                dangerous_inner_html: STRIKE48_SIDEBAR_LOGO_SVG,
+                            }
+                            h1 { class: "mb-4", "Session expired" }
+                            span { class: "connect-subtitle",
+                                "Your Strike48 session expired. Sign in again to continue."
+                            }
+                            button {
+                                r#type: "button",
+                                class: "success",
+                                onclick: move |_| d_reauth(AuthEvent::SignInRequested),
+                                "Sign in"
+                            }
+                        }
+                    }
+                }
+            } else {
+                match screen {
+                    AppScreen::Connect => rsx! {
                     div { class: "connect-screen",
                         span {
                             class: "header-logo mb-8",
@@ -727,133 +1460,148 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                         if !sig.is_empty() {
                             sig
                         } else if !host.is_empty() {
-                            let use_tls = config.read().use_tls;
-                            let scheme = if use_tls { "https" } else { "http" };
-
-                            // Strip URL scheme prefixes (grpc://, grpcs://, etc.) first (case-insensitive)
-                            let schemes = ["grpc://", "grpcs://", "http://", "https://", "ws://", "wss://"];
-                            let host_lower = host.to_lowercase();
-                            let mut bare_host = host.as_str();
-                            for prefix in &schemes {
-                                if host_lower.starts_with(prefix) {
-                                    bare_host = &host[prefix.len()..];
-                                    break;
-                                }
-                            }
-
-                            let api_host = bare_host.strip_prefix("connectors-")
-                                .unwrap_or(bare_host);
-                            format!("{}://{}", scheme, api_host)
+                            derive_api_url(&host, config.read().use_tls)
                         } else {
                             String::new()
                         }
                     };
-                    let page_subtitle = match page {
-                        NavPage::Dashboard => Some(host.clone()),
-                        NavPage::Tools => Some("12 connector tools available".to_string()),
-                        _ => None,
-                    };
-                    let page_actions = if page == NavPage::Dashboard {
-                        Some(rsx! {
-                            button {
-                                class: "desktop-header-btn",
-                                title: "Chat",
-                                onclick: move |_| {
-                                    active_page.set(NavPage::Chat);
-                                },
-                                MessageCircle { size: 20 }
-                            }
-                        })
-                    } else {
-                        None
-                    };
-                    rsx! {
-                        AppLayout {
-                            active_page: page,
-                            page_subtitle,
-                            page_actions,
-                            on_navigate: move |p: NavPage| {
-                                if p == NavPage::Logs {
-                                    last_seen_terminal_count.set(terminal_lines.peek().len());
-                                }
-                                active_page.set(p);
-                            },
-                            connected: true,
-                            unread_logs: unread,
-                            host: host.clone(),
-                            api_url: chat_api_url.clone(),
-                            auth_token: matrix_auth_token.read().clone(),
-                            on_open_conversation: move |conv_id: String| {
-                                conversation_mailbox.set(Some(conv_id));
-                                active_page.set(NavPage::Chat);
-                            },
 
-                            // Page content — routed by ConnectorPages
-                            ConnectorPages {
+                    {
+                        let page_subtitle = match page {
+                            NavPage::Dashboard => Some(host.clone()),
+                            NavPage::Tools => Some("12 connector tools available".to_string()),
+                            _ => None,
+                        };
+                        let page_actions = if page == NavPage::Dashboard {
+                            Some(rsx! {
+                                button {
+                                    class: "desktop-header-btn",
+                                    title: "Chat",
+                                    onclick: move |_| {
+                                        active_page.set(NavPage::Chat);
+                                    },
+                                    MessageCircle { size: 20 }
+                                }
+                            })
+                        } else {
+                            None
+                        };
+                        rsx! {
+                            AppLayout {
                                 active_page: page,
-                                host: host,
-                                terminal_lines,
-                                workspace_path,
-                                shell_mode: shell_mode_str,
-                                blackarch_downloaded: blackarch_ready,
-                                download_progress: *download_progress.read(),
-                                setup_error: setup_error.read().clone(),
-                                on_open_chat: move |msg: String| {
-                                    if !msg.is_empty() {
-                                        chat_mailbox.set(Some(msg));
+                                page_subtitle,
+                                page_actions,
+                                on_navigate: move |p: NavPage| {
+                                    if p == NavPage::Logs {
+                                        last_seen_terminal_count.set(terminal_lines.peek().len());
                                     }
+                                    active_page.set(p);
+                                },
+                                connected: true,
+                                unread_logs: unread,
+                                host: host.clone(),
+                                api_url: chat_api_url.clone(),
+                                auth_token: matrix_auth_token.read().clone(),
+                                on_open_conversation: move |conv_id: String| {
+                                    conversation_mailbox.set(Some(conv_id));
                                     active_page.set(NavPage::Chat);
                                 },
-                                on_open_shell: move |_| {
-                                    active_page.set(NavPage::Shell);
-                                },
-                                on_disconnect: move |_| on_disconnect(()),
-                                on_start_download: on_start_download,
-                                settings_shell_mode: settings.read().shell_mode,
-                                on_shell_mode_change: move |mode: ShellMode| {
-                                    let mut s = settings.write();
-                                    s.shell_mode = mode;
-                                    let _ = save_settings(&s);
-                                    if let Some(set_sb) = cfg.set_sandbox {
-                                        set_sb(mode == ShellMode::Proot);
-                                    }
-                                },
-                                wifi_adapter: settings.read().wifi_adapter.clone(),
-                                on_wifi_adapter_change: move |adapter: Option<String>| {
-                                    let mut s = settings.write();
-                                    s.wifi_adapter = adapter;
-                                    let _ = save_settings(&s);
-                                },
-                                theme: *theme.read(),
-                                on_theme_change: move |t: Theme| {
-                                    let mut s = settings.write();
-                                    s.theme = t;
-                                    let _ = save_settings(&s);
-                                    theme.set(t);
-                                },
-                                border_radius: *border_radius.read(),
-                                on_border_radius_change: move |r: BorderRadius| {
-                                    let mut s = settings.write();
-                                    s.border_radius = r;
-                                    let _ = save_settings(&s);
-                                    border_radius.set(r);
-                                },
-                                density: *density.read(),
-                                on_density_change: move |d: Density| {
-                                    let mut s = settings.write();
-                                    s.density = d;
-                                    let _ = save_settings(&s);
-                                    density.set(d);
-                                },
-                                api_url: chat_api_url,
-                                auth_token: matrix_auth_token.read().clone(),
-                                tenant_id: config.read().tenant_id.clone(),
-                                chat_mailbox,
-                                conversation_mailbox,
+
+                                // Page content — routed by ConnectorPages
+                                ConnectorPages {
+                                    active_page: page,
+                                    host: host,
+                                    terminal_lines,
+                                    workspace_path,
+                                    shell_mode: shell_mode_str,
+                                    blackarch_downloaded: blackarch_ready,
+                                    download_progress: *download_progress.read(),
+                                    setup_error: setup_error.read().clone(),
+                                    on_open_chat: move |msg: String| {
+                                        if !msg.is_empty() {
+                                            chat_mailbox.set(Some(msg));
+                                        }
+                                        active_page.set(NavPage::Chat);
+                                    },
+                                    on_open_shell: move |_| {
+                                        active_page.set(NavPage::Shell);
+                                    },
+                                    telemetry_enabled: settings.read().telemetry_enabled,
+                                    on_telemetry_change: move |v: bool| {
+                                        let mut s = settings.write();
+                                        s.telemetry_enabled = v;
+                                        let _ = save_settings(&s);
+                                        // Apply immediately: on disables the
+                                        // Sentry client (no events/sessions),
+                                        // off re-inits. No relaunch needed.
+                                        pentest_core::telemetry::set_enabled(v);
+                                    },
+                                    easy_mode_on: easy_mode(),
+                                    on_easy_mode_change: on_easy_mode_change,
+                                    on_disconnect: move |_| on_disconnect(()),
+                                    on_start_download: on_start_download,
+                                    settings_shell_mode: settings.read().shell_mode,
+                                    sandbox_available: sandbox_available(),
+                                    on_chat_event: {
+                                        let d = dispatch.clone();
+                                        move |ev| d(ev)
+                                    },
+                                    on_shell_mode_change: move |mode: ShellMode| {
+                                        // Defense in depth: ignore a switch to Proot when no
+                                        // sandbox backend is available on this machine. The
+                                        // Settings toggle already disables it, but a stale or
+                                        // programmatic request must not enable sandboxing.
+                                        if mode == ShellMode::Proot && !sandbox_available() {
+                                            tracing::warn!(
+                                                "Ignoring switch to Proot: no sandbox backend available"
+                                            );
+                                            return;
+                                        }
+                                        let mut s = settings.write();
+                                        s.shell_mode = mode;
+                                        let _ = save_settings(&s);
+                                        if let Some(set_sb) = cfg.set_sandbox {
+                                            set_sb(mode == ShellMode::Proot);
+                                        }
+                                    },
+                                    wifi_adapter: settings.read().wifi_adapter.clone(),
+                                    on_wifi_adapter_change: move |adapter: Option<String>| {
+                                        let mut s = settings.write();
+                                        s.wifi_adapter = adapter;
+                                        let _ = save_settings(&s);
+                                    },
+                                    theme: *theme.read(),
+                                    on_theme_change: move |t: Theme| {
+                                        let mut s = settings.write();
+                                        s.theme = t;
+                                        let _ = save_settings(&s);
+                                        theme.set(t);
+                                    },
+                                    border_radius: *border_radius.read(),
+                                    on_border_radius_change: move |r: BorderRadius| {
+                                        let mut s = settings.write();
+                                        s.border_radius = r;
+                                        let _ = save_settings(&s);
+                                        border_radius.set(r);
+                                    },
+                                    density: *density.read(),
+                                    on_density_change: move |d: Density| {
+                                        let mut s = settings.write();
+                                        s.density = d;
+                                        let _ = save_settings(&s);
+                                        density.set(d);
+                                    },
+                                    api_url: chat_api_url,
+                                    auth_token: matrix_auth_token.read().clone(),
+                                    tenant_id: config.read().tenant_id.clone(),
+                                    chat_mailbox,
+                                    conversation_mailbox,
+                                }
                             }
                         }
                     }
                 },
+                }
             }
         }
     }

@@ -19,13 +19,15 @@ pub enum Platform {
     Tui,
 }
 
-/// Default platforms supported by most tools (all except Web).
-pub const DEFAULT_TOOL_PLATFORMS: &[Platform] = &[
-    Platform::Desktop,
-    Platform::Android,
-    Platform::Ios,
-    Platform::Tui,
-];
+/// Default platforms supported by most tools.
+///
+/// iOS is intentionally NOT in the default: the iOS app sandbox can't spawn
+/// subprocesses, open raw sockets, or run the proot toolchain, so almost no
+/// tool works there. iOS is opt-in — a tool that genuinely runs natively on
+/// iOS (in-process / outbound-network only) declares `Platform::Ios` in its
+/// own `supported_platforms` override.
+pub const DEFAULT_TOOL_PLATFORMS: &[Platform] =
+    &[Platform::Desktop, Platform::Android, Platform::Tui];
 
 impl Platform {
     /// Get the current platform
@@ -894,6 +896,21 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// Schemas for tools that declare support for `platform`, gated on the
+    /// trait-level `supported_platforms()` (the source of truth a tool
+    /// intentionally overrides — the `ToolSchema.supported_platforms` field is
+    /// only kept in sync when a tool doesn't override `schema()`).
+    ///
+    /// Takes an explicit platform (rather than `Platform::current()`) so the
+    /// per-platform tool list is testable off-target.
+    pub fn schemas_for_platform(&self, platform: Platform) -> Vec<ToolSchema> {
+        self.tools
+            .values()
+            .filter(|t| t.supported_platforms().contains(&platform))
+            .map(|t| t.schema())
+            .collect()
+    }
+
     /// `is_supported()` with an observability side-effect: when a tool is
     /// filtered *out* of the advertised set, emit a `debug` line naming the
     /// tool and the host platform/OS. Per the epic's "fail loudly, no silent
@@ -955,7 +972,43 @@ impl ToolRegistry {
                      (required: {required:?}, current: {current:?})"
                 )))
             }
-            Some(tool) => tool.execute(params, ctx).await,
+            Some(tool) => {
+                // Telemetry (#278): time the tool run as a Sentry span WITH
+                // DURATION — opened before execute(), finished after — so it
+                // nests under the open conversation session as a child span
+                // (the waterfall). Only the tool name, a coarse outcome, and the
+                // network-check flag are attached — never arguments, targets, or
+                // output.
+                let is_net = is_network_check_tool(name);
+                // Continue the distributed trace from headers the backend
+                // forwarded in the tool request (carried in ctx.metadata), so
+                // this tool span nests under the backend's conversation trace as
+                // one cross-process trace. Absent headers -> standalone span.
+                let span = crate::telemetry::start_tool_span(
+                    &[
+                        ("tool", name),
+                        ("network_check", if is_net { "true" } else { "false" }),
+                    ],
+                    ctx.metadata
+                        .get(crate::telemetry::SENTRY_TRACE_HEADER)
+                        .map(String::as_str),
+                    ctx.metadata
+                        .get(crate::telemetry::BAGGAGE_HEADER)
+                        .map(String::as_str),
+                );
+                let result = tool.execute(params, ctx).await;
+                let outcome = if result.is_ok() { "ok" } else { "error" };
+                span.finish(&[("outcome", outcome)]);
+                // Network-discovery tools also fire the network.check activity so
+                // the "did they check their network" funnel is measurable.
+                if is_net {
+                    crate::telemetry::record(
+                        crate::telemetry::Activity::NetworkCheck,
+                        &[("tool", name), ("outcome", outcome)],
+                    );
+                }
+                result
+            }
             None => {
                 // Find similar tool names for suggestions
                 let suggestions = self.find_similar_tools(name);
@@ -1015,6 +1068,16 @@ impl ToolRegistry {
             .map(|(name, _)| name)
             .collect()
     }
+}
+
+/// Whether a tool name is a local-network discovery/check tool, for the
+/// `network.check` telemetry event (#278). Matches the tools the Easy Mode scan
+/// drives (interface/host/service discovery) — not every scanner.
+fn is_network_check_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "network_discover" | "ssdp_discover" | "arp_table" | "port_scan" | "device_info"
+    )
 }
 
 /// Calculate Levenshtein distance between two strings

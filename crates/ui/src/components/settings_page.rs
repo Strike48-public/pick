@@ -23,6 +23,11 @@ pub fn SettingsPage(
     #[props(default)] setup_error: Option<String>,
     shell_mode: ShellMode,
     on_shell_mode_change: EventHandler<ShellMode>,
+    // Whether a command-sandbox backend (bwrap/proot/docker/WSL) is usable on
+    // this machine. When false (e.g. Windows without WSL) the Sandboxed (Proot)
+    // shell mode is disabled and forced to display as Native. Defaults on so
+    // mobile/other call sites that don't gate keep their existing behavior.
+    #[props(default = true)] sandbox_available: bool,
     #[props(default)] wifi_adapter: Option<String>,
     #[props(default)] on_wifi_adapter_change: EventHandler<Option<String>>,
     // Appearance settings
@@ -33,12 +38,21 @@ pub fn SettingsPage(
     density: Density,
     on_density_change: EventHandler<Density>,
     #[props(default)] on_theme_imported: EventHandler<()>,
+    // Telemetry opt-out (#278). Defaults on; toggling saves the setting.
+    #[props(default = true)] telemetry_enabled: bool,
+    #[props(default)] on_telemetry_change: EventHandler<bool>,
+    // Easy Mode toggle. Off in the expert shell; turning it on swaps to the
+    // simplified scan+chat view immediately.
+    #[props(default)] easy_mode_on: bool,
+    #[props(default)] on_easy_mode_change: EventHandler<bool>,
 ) -> Element {
     // -----------------------------------------------------------------------
     // Auto-save on toggle with visual feedback
     // -----------------------------------------------------------------------
 
-    let is_proot = shell_mode == ShellMode::Proot;
+    // When no sandbox backend is available, Proot is not selectable — force the
+    // effective display to Native regardless of the persisted setting.
+    let is_proot = sandbox_available && shell_mode == ShellMode::Proot;
 
     // Track which mode was just saved for visual feedback (bold border)
     let mut just_saved = use_signal(|| None::<ShellMode>);
@@ -842,7 +856,7 @@ pub fn SettingsPage(
                         div { class: "setting-label",
                             div { class: "setting-name", "Shell Mode" }
                             div { class: "text-dim-xs",
-                                if is_proot { "BlackArch proot" } else { "Native shell" }
+                                if is_proot { "Sandboxed (isolated Linux)" } else { "Native (this host)" }
                             }
                         }
                         div { class: "setting-controls",
@@ -870,14 +884,92 @@ pub fn SettingsPage(
                                     } else {
                                         "toggle-btn"
                                     },
-                                    disabled: !blackarch_downloaded,
+                                    disabled: !sandbox_available || !blackarch_downloaded,
                                     onclick: move |_| {
-                                        if blackarch_downloaded {
+                                        // Defense in depth: never switch to Proot when the
+                                        // sandbox backend is missing or BlackArch isn't set up.
+                                        if sandbox_available && blackarch_downloaded {
                                             on_toggle(ShellMode::Proot);
                                         }
                                     },
-                                    title: if !blackarch_downloaded { "Set up BlackArch environment first" } else { "" },
-                                    "Proot"
+                                    title: if !sandbox_available {
+                                        "No sandbox available — install WSL for isolated scanning"
+                                    } else if !blackarch_downloaded {
+                                        "Set up BlackArch environment first"
+                                    } else {
+                                        ""
+                                    },
+                                    "Sandboxed"
+                                }
+                            }
+                        }
+                    }
+                    // Helper text when no sandbox backend is available on this host.
+                    if !sandbox_available {
+                        div { class: "text-dim-xs", style: "margin-top: 8px;",
+                            "No sandbox available — install WSL for isolated scanning"
+                        }
+                    }
+                }
+            }
+
+            // Privacy / telemetry card (#278)
+            div { class: "settings-card dashboard-card",
+                div { class: "settings-card-header",
+                    span { class: "settings-card-icon", Settings { size: 16 } }
+                    h2 { "Usage Analytics" }
+                }
+                div { class: "settings-card-body",
+                    div { class: "setting-row",
+                        div { class: "setting-label",
+                            div { class: "setting-name", "Anonymous usage analytics" }
+                            div { class: "text-dim-xs",
+                                "Helps us understand which features are used. No personal data, targets, or scan results are ever sent."
+                            }
+                        }
+                        div { class: "setting-controls",
+                            div { class: "setting-toggle",
+                                button {
+                                    class: if telemetry_enabled { "toggle-btn active" } else { "toggle-btn" },
+                                    onclick: move |_| on_telemetry_change.call(true),
+                                    "On"
+                                }
+                                button {
+                                    class: if !telemetry_enabled { "toggle-btn active" } else { "toggle-btn" },
+                                    onclick: move |_| on_telemetry_change.call(false),
+                                    "Off"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Interface Mode card (Easy Mode toggle)
+            div { class: "settings-card dashboard-card",
+                div { class: "settings-card-header",
+                    span { class: "settings-card-icon", Settings { size: 16 } }
+                    h2 { "Interface Mode" }
+                }
+                div { class: "settings-card-body",
+                    div { class: "setting-row",
+                        div { class: "setting-label",
+                            div { class: "setting-name", "Easy Mode" }
+                            div { class: "text-dim-xs",
+                                "Simplified scan + chat view for quick assessments. Turn off for the full expert interface (dashboard, tools, shell, files)."
+                            }
+                        }
+                        div { class: "setting-controls",
+                            div { class: "setting-toggle",
+                                button {
+                                    class: if easy_mode_on { "toggle-btn active" } else { "toggle-btn" },
+                                    onclick: move |_| on_easy_mode_change.call(true),
+                                    "On"
+                                }
+                                button {
+                                    class: if !easy_mode_on { "toggle-btn active" } else { "toggle-btn" },
+                                    onclick: move |_| on_easy_mode_change.call(false),
+                                    "Off"
                                 }
                             }
                         }
@@ -1036,6 +1128,8 @@ pub fn SettingsPage(
                                         "Matrix" => Theme::Matrix,
                                         "Cyberpunk" => Theme::Cyberpunk,
                                         "Nord" => Theme::Nord,
+                                        "Sage" => Theme::Sage,
+                                        "SageLight" => Theme::SageLight,
                                         _ => Theme::Strike48,
                                     };
                                     on_theme_change.call(new_theme);
@@ -1049,6 +1143,8 @@ pub fn SettingsPage(
                                 option { value: "Matrix", "Matrix" }
                                 option { value: "Cyberpunk", "Cyberpunk" }
                                 option { value: "Nord", "Nord" }
+                                option { value: "Sage", "Sage" }
+                                option { value: "SageLight", "Sage Light" }
                             }
                             button {
                                 class: "button button-secondary",
@@ -1065,6 +1161,8 @@ pub fn SettingsPage(
                                         Theme::Matrix,
                                         Theme::Cyberpunk,
                                         Theme::Nord,
+                                        Theme::Sage,
+                                        Theme::SageLight,
                                     ];
 
                                     // Get random theme different from current

@@ -135,11 +135,23 @@ fn parse_token_remaining_secs(token: &str) -> Option<i64> {
 }
 
 /// Build a reqwest client that respects MATRIX_TLS_INSECURE.
+///
+/// Resolves the dev TLS-insecure flag at BUILD time via `option_env!` first —
+/// the only source that reaches the mobile apps, which have no runtime
+/// environment — then the RUNTIME env for desktop/dev/headless. Reading only the
+/// runtime env would verify-fail on mobile, where that env is always empty.
 fn build_http_client() -> reqwest::Client {
-    let insecure = std::env::var("MATRIX_TLS_INSECURE")
-        .or_else(|_| std::env::var("MATRIX_INSECURE"))
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
+    let truthy = |v: &str| v == "true" || v == "1";
+    let insecure = option_env!("MATRIX_TLS_INSECURE")
+        .or(option_env!("MATRIX_INSECURE"))
+        .map(truthy)
+        .filter(|&b| b)
+        .unwrap_or_else(|| {
+            std::env::var("MATRIX_TLS_INSECURE")
+                .or_else(|_| std::env::var("MATRIX_INSECURE"))
+                .map(|v| truthy(&v))
+                .unwrap_or(false)
+        });
 
     reqwest::Client::builder()
         .danger_accept_invalid_certs(insecure)

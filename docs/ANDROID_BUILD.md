@@ -76,11 +76,11 @@ just build-android
 
 This command:
 1. Sets up NDK toolchain paths
-2. Runs `dx build --platform android --package pentest-mobile`
+2. Runs `dx build --platform android --package pick`
 3. Injects `android-lib` Kotlin bridge module
 4. Runs `./gradlew assembleDebug`
 
-Output: `target/dx/pentest-mobile/debug/android/app/app/build/outputs/apk/debug/app-debug.apk`
+Output: `target/dx/pick/debug/android/app/app/build/outputs/apk/debug/app-debug.apk`
 
 ### Release Build (Production)
 
@@ -90,7 +90,7 @@ Build optimized APK with release configuration:
 just build-android-release
 ```
 
-Output: `target/dx/pentest-mobile/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk`
+Output: `target/dx/pick/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk`
 
 **Note:** Release APKs must be signed before distribution. See signing documentation (TBD).
 
@@ -101,10 +101,10 @@ Build for a specific target only:
 ```bash
 # ARM64 only (most physical devices)
 export DX_PATH="$(which dx)"
-dx build --platform android --package pentest-mobile --target aarch64-linux-android
+dx build --platform android --package pick --target aarch64-linux-android
 
 # x86_64 only (emulators)
-dx build --platform android --package pentest-mobile --target x86_64-linux-android
+dx build --platform android --package pick --target x86_64-linux-android
 ```
 
 ## Deployment
@@ -149,7 +149,7 @@ This will:
 
 ```bash
 # Install APK
-APK="target/dx/pentest-mobile/debug/android/app/app/build/outputs/apk/debug/app-debug.apk"
+APK="target/dx/pick/debug/android/app/app/build/outputs/apk/debug/app-debug.apk"
 adb install -r "$APK"
 
 # Launch app
@@ -331,7 +331,7 @@ adb shell dumpsys package com.strike48.pentest_connector | grep "granted=true"
 After a successful build, the following structure is created:
 
 ```
-target/dx/pentest-mobile/debug/android/app/
+target/dx/pick/debug/android/app/
 ├── android-lib/          # Symlink to ../../../../../../android-lib
 ├── app/
 │   ├── build/

@@ -22,10 +22,7 @@ pub async fn start_traffic_capture() -> Result<CaptureHandle> {
                 .and_then(|v| v.l())
                 .map_err(|e| Error::ToolExecution(format!("getApplicationContext: {e}")))?;
 
-            let vpn_cls = find_app_class(
-                env,
-                "com/strike48/pentest_connector/PacketCaptureVpnService",
-            )?;
+            let vpn_cls = find_app_class(env, "com/strike48/pick/PacketCaptureVpnService")?;
 
             let started = env
                 .call_static_method(
@@ -61,10 +58,7 @@ pub async fn get_captured_packets(
     let limit = limit as i32;
     tokio::task::spawn_blocking(move || {
         with_activity(move |env, _activity| {
-            let vpn_cls = find_app_class(
-                env,
-                "com/strike48/pentest_connector/PacketCaptureVpnService",
-            )?;
+            let vpn_cls = find_app_class(env, "com/strike48/pick/PacketCaptureVpnService")?;
 
             let result = env
                 .call_static_method(
@@ -98,10 +92,7 @@ pub async fn stop_traffic_capture(_handle: CaptureHandle) -> Result<()> {
                 .and_then(|v| v.l())
                 .map_err(|e| Error::ToolExecution(format!("getApplicationContext: {e}")))?;
 
-            let vpn_cls = find_app_class(
-                env,
-                "com/strike48/pentest_connector/PacketCaptureVpnService",
-            )?;
+            let vpn_cls = find_app_class(env, "com/strike48/pick/PacketCaptureVpnService")?;
 
             env.call_static_method(
                 &vpn_cls,

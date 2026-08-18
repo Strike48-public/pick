@@ -85,6 +85,10 @@ const WEB_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
     extra_init_messages: &["Tools execute on the server machine."],
     create_tools: pentest_tools::create_tool_registry,
     set_sandbox: Some(pentest_platform::set_use_sandbox),
+    sandbox_available: None,
+    run_wsl_install: None,
+    poll_wsl_install_result: None,
+    easy_mode: false,
 };
 
 #[tokio::main]

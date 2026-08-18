@@ -38,7 +38,9 @@ pub fn render_message(
     let msg_id = msg.id.clone();
 
     if msg.parts.is_empty() {
-        let html = render_markdown(&msg.text);
+        // Stable viz key so a streaming mermaid/echarts block keeps its
+        // last-good render across ticks instead of flashing a parse error.
+        let html = render_markdown_streaming(&msg.text, &format!("{msg_id}-text"));
         return rsx! {
             div {
                 key: "{msg_id}",
@@ -61,10 +63,16 @@ pub fn render_message(
             if show_sender {
                 div { class: "chat-bubble-sender", "{sender}" }
             }
-            for part in msg.parts.iter() {
+            for (part_idx, part) in msg.parts.iter().enumerate() {
                 {match part {
                     MessagePart::Text(text) => {
-                        let html = render_markdown(text);
+                        // Stable viz key per (message, part) so a streaming
+                        // mermaid/echarts block keeps its last-good render
+                        // across ticks instead of flashing a parse error.
+                        let html = render_markdown_streaming(
+                            text,
+                            &format!("{msg_id}-{part_idx}"),
+                        );
                         rsx! {
                             div {
                                 class: "chat-bubble-text chat-markdown",
@@ -148,7 +156,7 @@ fn render_tool_call(tc: &ToolCallInfo, expanded_tools: &mut Signal<Vec<String>>)
     };
 
     rsx! {
-        div { class: "chat-tool-call", style: "margin-bottom: 8px; border-bottom: 1px solid #21262d; padding-bottom: 8px;",
+        div { class: "chat-tool-call",
             div {
                 class: "chat-tool-header",
                 onclick: {
@@ -226,17 +234,138 @@ pub fn render_markdown(input: &str) -> String {
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
 
-    // Security (#365): route events through the shared sanitizer so untrusted
-    // chat/agent content (which reflects tool and target output) cannot inject
-    // HTML or unsafe link/image schemes into `dangerous_inner_html`. Same choke
-    // point as the core file renderer, so the two cannot drift apart. The
-    // sanitizer is stateful (it unwraps rejected links/images), so it is threaded
-    // through filter_map by a mutable closure.
+    // Normalize escaped code fences first (streamed markdown sometimes arrives
+    // with backslash-escaped ``` fences), THEN route events through the shared
+    // sanitizer (#365) so untrusted chat/agent content — which reflects tool and
+    // target output — cannot inject HTML or unsafe link/image schemes into
+    // `dangerous_inner_html`. Same choke point as the core file renderer, so the
+    // two cannot drift apart. The sanitizer is stateful (it unwraps rejected
+    // links/images), so it is threaded through filter_map by a mutable closure.
+    let normalized = unescape_code_fences(input);
     let mut sanitizer = MarkdownSanitizer::new();
-    let parser = Parser::new_ext(input, options).filter_map(move |e| sanitizer.process(e));
+    let parser = Parser::new_ext(&normalized, options).filter_map(move |e| sanitizer.process(e));
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
     html_output
+}
+
+/// Undo a backslash that escapes a code-fence marker at line start
+/// (`\`\`\`mermaid` -> `\`\`\``mermaid`). Some agent outputs escape the fence
+/// backticks; CommonMark then reads `\`` as a literal backtick and the leftover
+/// `` opens an inline code span that swallows the rest of the message, so a viz
+/// block (and everything after it) renders as garbled one-line text. Only a
+/// backslash directly preceding a run of 3+ back-tick/tilde fence chars at the
+/// start of a line (after up to 3 spaces of indent) is stripped, so escaped
+/// backticks inside prose are untouched.
+fn unescape_code_fences(input: &str) -> std::borrow::Cow<'_, str> {
+    if !input.contains("\\```") && !input.contains("\\~~~") {
+        return std::borrow::Cow::Borrowed(input);
+    }
+    let mut out = String::with_capacity(input.len());
+    for (i, line) in input.split_inclusive('\n').enumerate() {
+        // Preserve the original line terminator; operate on the content.
+        let (content, nl) = match line.strip_suffix('\n') {
+            Some(c) => (c, "\n"),
+            None => (line, ""),
+        };
+        let trimmed = content.trim_start_matches(' ');
+        let indent = content.len() - trimmed.len();
+        let is_fence = indent <= 3 && trimmed.starts_with('\\') && {
+            let after = &trimmed[1..];
+            after.starts_with("```") || after.starts_with("~~~")
+        };
+        if is_fence {
+            // Drop just the escaping backslash; keep indent + the fence + info.
+            out.push_str(&content[..indent]);
+            out.push_str(&trimmed[1..]);
+        } else {
+            out.push_str(content);
+        }
+        out.push_str(nl);
+        let _ = i;
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// Render markdown and annotate a still-streaming viz block so the chart
+/// post-processor (chart_processor.js) can render it optimistically without
+/// flashing a parse error. `key` must be STABLE across streaming ticks (the
+/// message text changes every tick, so it can't be content-derived) — the JS
+/// caches the last successful render under it and, while the fence is open,
+/// shows that cached frame instead of the error when the in-progress diagram
+/// doesn't yet parse. Once the fence closes the annotation is gone and a
+/// genuine error surfaces normally.
+pub fn render_markdown_streaming(input: &str, key: &str) -> String {
+    let mut html = render_markdown(input);
+    // Only the trailing fence can be open mid-stream (a later block requires the
+    // previous one to have closed), so the LAST viz code block of the open
+    // language is the one still streaming. pulldown-cmark renders an unclosed
+    // fence identically to a closed one, hence the Rust-side detection.
+    let token = match trailing_open_fence_lang(input).as_deref() {
+        Some("mermaid") => "language-mermaid",
+        Some("echarts") => "language-echarts",
+        Some("echart") => "language-echart",
+        _ => return html,
+    };
+    annotate_last_open_viz(&mut html, token, key);
+    html
+}
+
+/// Mark the last `<code class="{token}">` as the open, still-streaming viz block
+/// by adding `data-viz-open` + a stable `data-viz-key`. No-op if absent.
+fn annotate_last_open_viz(html: &mut String, token: &str, key: &str) {
+    let needle = format!("<code class=\"{token}\">");
+    if let Some(pos) = html.rfind(&needle) {
+        let repl =
+            format!("<code class=\"{token}\" data-viz-open=\"true\" data-viz-key=\"{key}\">");
+        html.replace_range(pos..pos + needle.len(), &repl);
+    }
+}
+
+/// The first word of the info string of the currently-open trailing fenced code
+/// block, lowercased, or `None` when the source ends outside any fence (all
+/// blocks closed) or the open block has no language. Used to tell whether a
+/// viz block is still streaming so it isn't rendered until its fence closes.
+fn trailing_open_fence_lang(src: &str) -> Option<String> {
+    // `open_lang` is `Some(lang)` while inside a fence, `None` when closed;
+    // `fence` remembers the opening fence char + length so we match its closer.
+    let mut open_lang: Option<Option<String>> = None;
+    let mut fence: Option<(char, usize)> = None;
+
+    for line in src.lines() {
+        let trimmed = line.trim_start();
+        // A fence may be indented up to 3 spaces; more makes it code content.
+        if line.len() - trimmed.len() > 3 {
+            continue;
+        }
+        let first = match trimmed.chars().next() {
+            Some(c) if c == '`' || c == '~' => c,
+            _ => continue,
+        };
+        let run = trimmed.chars().take_while(|&c| c == first).count();
+        if run < 3 {
+            continue;
+        }
+        let info = trimmed[run..].trim();
+        match fence {
+            None => {
+                // Opening fence: remember its first info word as the language.
+                let lang = info.split_whitespace().next().map(str::to_ascii_lowercase);
+                fence = Some((first, run));
+                open_lang = Some(lang);
+            }
+            Some((fc, flen)) => {
+                // A closing fence uses the same char, at least as long, no info.
+                if first == fc && run >= flen && info.is_empty() {
+                    fence = None;
+                    open_lang = None;
+                }
+                // Otherwise it's just content inside the open block — ignore.
+            }
+        }
+    }
+
+    open_lang.flatten()
 }
 
 /// JS snippet that loads mermaid + echarts CDN scripts and defines
@@ -247,35 +376,10 @@ pub const CHART_PROCESSOR_JS: &str = include_str!("../../assets/chart_processor.
 pub const UTILS_JS: &str = include_str!("../../assets/utils.js");
 
 /// Format an ISO 8601 timestamp as a relative time string (e.g. "2m ago").
+/// Delegates to the shared `pentest_core` impl so the Dioxus history and the
+/// crux conversation list format identically.
 pub fn format_relative_time(iso: &str) -> String {
-    let parsed = chrono::DateTime::parse_from_rfc3339(iso)
-        .or_else(|_| chrono::DateTime::parse_from_rfc3339(&format!("{}Z", iso.trim())))
-        .map(|dt| dt.with_timezone(&chrono::Utc));
-
-    let now = chrono::Utc::now();
-    let ts = match parsed {
-        Ok(dt) => dt,
-        Err(_) => return "\u{2014}".to_string(),
-    };
-
-    let diff = (now - ts).num_seconds();
-    if diff <= 0 {
-        return "now".to_string();
-    }
-    let diff = diff as u64;
-    if diff < 60 {
-        return format!("{}s ago", diff);
-    }
-    let mins = diff / 60;
-    if mins < 60 {
-        return format!("{}m ago", mins);
-    }
-    let hours = mins / 60;
-    if hours < 24 {
-        return format!("{}h ago", hours);
-    }
-    let days = hours / 24;
-    format!("{}d ago", days)
+    pentest_core::rendering::format_relative_time(iso)
 }
 
 // ---------------------------------------------------------------------------
@@ -772,7 +876,10 @@ fn load_screenshots_from_result(result_json: &str) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_markdown, webwright_display_name};
+    use super::{
+        render_markdown, render_markdown_streaming, trailing_open_fence_lang,
+        webwright_display_name,
+    };
 
     // Security (#365): the chat renderer must route through the shared markdown
     // sanitizer. These guard the chat sink specifically (the file-viewer sink is
@@ -790,6 +897,117 @@ mod tests {
         assert!(
             !out.contains("javascript:"),
             "javascript scheme leaked: {out}"
+        );
+    }
+
+    #[test]
+    fn escaped_code_fence_still_renders_as_a_mermaid_block() {
+        // Some agent outputs escape the fence backticks (\```mermaid). Without
+        // normalization CommonMark treats \` as a literal backtick and the rest
+        // opens an inline code span, so the diagram renders as garbled one-line
+        // text. We strip the escaping backslash so it parses as a real fence.
+        let src = "intro\n\n\\```mermaid\ngraph TD\n  A --> B\n\\```\n";
+        let html = render_markdown(src);
+        assert!(
+            html.contains("class=\"language-mermaid\""),
+            "escaped fence should still yield a mermaid code block: {html}"
+        );
+    }
+
+    #[test]
+    fn escaped_backticks_in_prose_are_left_alone() {
+        // A backslash-backtick mid-line (not a fence) must be untouched.
+        let src = "use \\`code\\` spans normally";
+        let html = render_markdown(src);
+        // No fenced code block should be produced.
+        assert!(
+            !html.contains("<pre>"),
+            "prose must not become a code block: {html}"
+        );
+    }
+
+    #[test]
+    fn open_mermaid_fence_is_detected_while_streaming() {
+        // Fence opened, no closing ``` yet — the block is still streaming.
+        let src = "Here is a diagram:\n```mermaid\ngraph TD\n  A --> B";
+        assert_eq!(trailing_open_fence_lang(src).as_deref(), Some("mermaid"));
+    }
+
+    #[test]
+    fn closed_mermaid_fence_is_not_flagged() {
+        // Fully streamed block: closing ``` present -> eligible to render.
+        let src = "```mermaid\ngraph TD\n  A --> B\n```";
+        assert_eq!(trailing_open_fence_lang(src), None);
+    }
+
+    #[test]
+    fn closed_block_then_open_block_flags_only_the_open_one() {
+        // A completed mermaid block, then a second block still streaming. Only
+        // the trailing open block should be neutralized; the first stays live.
+        let src = "```mermaid\ngraph TD\n  A --> B\n```\ntext\n```echarts\n{\"x\":";
+        assert_eq!(trailing_open_fence_lang(src).as_deref(), Some("echarts"));
+    }
+
+    #[test]
+    fn open_fence_without_language_returns_none() {
+        // A plain ``` fence carries no viz language, so nothing to hide.
+        let src = "```\nsome code\nmore code";
+        assert_eq!(trailing_open_fence_lang(src), None);
+    }
+
+    #[test]
+    fn prose_with_no_fence_returns_none() {
+        assert_eq!(
+            trailing_open_fence_lang("just some text\nno fences here"),
+            None
+        );
+    }
+
+    #[test]
+    fn streaming_open_mermaid_is_annotated_with_stable_key() {
+        // While open, the block keeps its live language class (so it still
+        // renders optimistically) AND gains the open marker + stable key the JS
+        // uses to hold the last-good render.
+        let open = render_markdown_streaming("```mermaid\ngraph TD\n  A --> B", "m1-0");
+        assert!(
+            open.contains("class=\"language-mermaid\""),
+            "open fence must keep the live class so it can render: {open}"
+        );
+        assert!(
+            open.contains("data-viz-open=\"true\""),
+            "open fence should be marked open: {open}"
+        );
+        assert!(
+            open.contains("data-viz-key=\"m1-0\""),
+            "open fence should carry the stable key: {open}"
+        );
+    }
+
+    #[test]
+    fn closed_mermaid_is_not_annotated() {
+        // Once closed, no streaming annotation — a genuine parse error may
+        // surface normally.
+        let closed = render_markdown_streaming("```mermaid\ngraph TD\n  A --> B\n```", "m1-0");
+        assert!(
+            closed.contains("class=\"language-mermaid\""),
+            "closed fence carries the live class: {closed}"
+        );
+        assert!(
+            !closed.contains("data-viz-open"),
+            "closed fence must not be marked open: {closed}"
+        );
+    }
+
+    #[test]
+    fn only_trailing_open_block_is_annotated() {
+        // First mermaid block closed, second still streaming: only the second
+        // (trailing/open) one is annotated.
+        let src = "```mermaid\ngraph TD\n  A --> B\n```\ntext\n```mermaid\ngraph TD\n  C --> D";
+        let html = render_markdown_streaming(src, "m1-0");
+        assert_eq!(
+            html.matches("data-viz-open").count(),
+            1,
+            "exactly one (the trailing open) block is annotated: {html}"
         );
     }
 

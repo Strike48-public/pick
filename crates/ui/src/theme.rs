@@ -12,10 +12,28 @@ pub fn generate_theme_css(theme: Theme, radius: BorderRadius, density: Density) 
     let radius_value = get_radius_value(radius);
     let spacing = get_density_spacing(density);
 
-    // IBM Plex fonts for Strike48 theme
-    let (font_import, font_sans, font_mono) = if theme == Theme::Strike48 {
+    // IBM Plex fonts for Strike48 and Sage themes.
+    //
+    // We list `'IBM Plex Sans'` / `'IBM Plex Mono'` first in the stack so the
+    // font is picked up when a user has it installed locally (developers
+    // often do) or when a future build bundles the WOFF2 files. The previous
+    // `@import url('https://fonts.googleapis.com/...')` was intentionally
+    // removed: this UI runs inside Matrix's sandboxed iframe, whose CSP
+    // (`matrix_studio/lib/matrix_studio/controllers/app_controller/security.ex`)
+    // sets `font-src {origin} data:` with the explicit comment "no https: -
+    // prevents token exfiltration". The remote import always fails there and
+    // showed as a red CSP violation in every console. Falling back through
+    // the system-font stack keeps Sage/Strike48 legible without leaking a
+    // request to any external origin. To restore Plex specifically, embed
+    // the WOFF2 files in `assets/` and inject them as base64 `@font-face`
+    // rules — the pattern is proven in `liveview_connector/injections.rs`
+    // (JetBrains Mono is already shipped that way).
+    let (font_import, font_sans, font_mono) = if matches!(
+        theme,
+        Theme::Strike48 | Theme::Sage | Theme::SageLight
+    ) {
         (
-            "@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');\n",
+            "",
             "'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji'",
             "'IBM Plex Mono', ui-monospace, monospace",
         )
@@ -140,6 +158,75 @@ pub fn generate_theme_css(theme: Theme, radius: BorderRadius, density: Density) 
         font_mono,
         spacing.font_size,
     ) + BASE_COMPONENT_STYLES
+        + sage_extra_tokens_css(theme)
+        + sage_theme_css(theme)
+}
+
+/// Extra Sage-only CSS custom properties (glass surfaces, gold accent, tints,
+/// panel shades, status backgrounds) that the shared ThemeColors struct does
+/// not carry. Returns "" for any non-Sage theme so their emitted CSS is
+/// unchanged. `sage`-scoped chrome rules (see sage_theme_css) read these.
+fn sage_extra_tokens_css(theme: Theme) -> &'static str {
+    match theme {
+        Theme::Sage => {
+            r#"
+:root {
+    --sage-p1: #1b201d;
+    --sage-p3: #101312;
+    --sage-surf2: #2c352f;
+    --sage-line2: rgba(255,255,255,0.17);
+    --sage-dim: #78847d;
+    --sage-pri2: #b3d2c3;
+    --sage-gold: #c9b27e;
+    --sage-tint: rgba(156,191,174,0.16);
+    --sage-glass-bg: rgba(255,255,255,0.05);
+    --sage-glass-line: rgba(255,255,255,0.09);
+    --sage-glass-sh: 0 14px 34px rgba(6,12,9,0.3), inset 0 1px 0 rgba(255,255,255,0.06);
+    --sage-ok-bg: rgba(143,196,171,0.14);
+    --sage-warn-bg: rgba(217,176,124,0.14);
+    --sage-err-bg: rgba(217,154,154,0.14);
+    --sage-info-bg: rgba(156,184,191,0.14);
+    --sage-grad-a: rgba(156,191,174,0.13);
+    --sage-grad-b: rgba(156,191,174,0.08);
+}
+"#
+        }
+        Theme::SageLight => {
+            r#"
+:root {
+    --sage-p1: #ffffff;
+    --sage-p3: #edf0ec;
+    --sage-surf2: #dbe2da;
+    --sage-line2: rgba(30,45,36,0.18);
+    --sage-dim: #8b968e;
+    --sage-pri2: #4e7d69;
+    --sage-gold: #a08a4e;
+    --sage-tint: rgba(95,143,122,0.14);
+    --sage-glass-bg: rgba(255,255,255,0.62);
+    --sage-glass-line: rgba(255,255,255,0.75);
+    --sage-glass-sh: 0 14px 34px rgba(44,60,50,0.1), inset 0 1px 0 rgba(255,255,255,0.8);
+    --sage-ok-bg: rgba(79,147,119,0.14);
+    --sage-warn-bg: rgba(181,131,74,0.15);
+    --sage-err-bg: rgba(181,110,110,0.15);
+    --sage-info-bg: rgba(95,143,143,0.14);
+    --sage-grad-a: rgba(156,191,174,0.33);
+    --sage-grad-b: rgba(156,191,174,0.2);
+}
+"#
+        }
+        _ => "",
+    }
+}
+
+/// Sage chrome stylesheet, scoped under `.sage`. Restyles the advanced-mode
+/// shell (sidebar, header, nav, buttons, cards, status bar) to the Sage design
+/// language. Returns "" for non-Sage themes so their CSS is unchanged; the
+/// `.sage` scoping is a second guard so the rules cannot leak even if injected.
+fn sage_theme_css(theme: Theme) -> &'static str {
+    match theme {
+        Theme::Sage | Theme::SageLight => include_str!("styles/sage.css"),
+        _ => "",
+    }
 }
 
 /// Legacy function for backwards compatibility - uses Dark theme defaults
@@ -405,6 +492,9 @@ pub fn theme_css() -> &'static str {
 
         button:hover {
             background-color: var(--ring);
+            /* Keep label legible on the (often light/sage) ring fill — without
+               this the text stays its default light color → white-on-light. */
+            color: var(--primary-foreground);
         }
 
         button:disabled {
@@ -762,6 +852,8 @@ fn get_theme_colors(theme: Theme) -> ThemeColors {
         Theme::Matrix => matrix_theme(),
         Theme::Cyberpunk => cyberpunk_theme(),
         Theme::Nord => nord_theme(),
+        Theme::Sage => sage_theme(),
+        Theme::SageLight => sage_light_theme(),
     }
 }
 
@@ -841,6 +933,82 @@ fn strike48_theme() -> ThemeColors {
         success: "oklch(0.650 0.200 145)",        // status-resolved #10b981
         warning: "oklch(0.750 0.180 85)",         // status-in-progress #eab308
         info: "oklch(0.575 0.145 250)",           // brand-500
+    }
+}
+
+fn sage_theme() -> ThemeColors {
+    ThemeColors {
+        color_scheme: "dark",
+        background: "#141715",                 // --bg
+        foreground: "#e9eeeb",                 // --tx
+        card: "#242b27",                       // --surf
+        popover: "#242b27",                    // --surf
+        primary: "#9cbfae",                    // --pri
+        primary_foreground: "#151a17",         // --on-pri
+        secondary: "#2c352f",                  // --surf2
+        secondary_foreground: "#e9eeeb",       // --tx
+        muted: "#1b201d",                      // --p1
+        muted_foreground: "#a7b2ab",           // --mut
+        accent: "#c9b27e",                     // --acc (gold)
+        accent_foreground: "#151a17",          // --on-pri
+        destructive: "#d99a9a",                // --err
+        border: "rgba(255,255,255,0.09)",      // --line
+        input: "#242b27",                      // --surf
+        ring: "#9cbfae",                       // --pri
+        sidebar: "#101312",                    // --p3
+        sidebar_foreground: "#e9eeeb",         // --tx
+        sidebar_primary: "#9cbfae",            // --pri
+        sidebar_primary_foreground: "#151a17", // --on-pri
+        sidebar_accent: "#2c352f",             // --surf2
+        sidebar_accent_foreground: "#e9eeeb",
+        sidebar_border: "rgba(255,255,255,0.09)", // --line
+        sidebar_ring: "#9cbfae",
+        chart_1: "#9cbfae", // --pri
+        chart_2: "#8fc4ab", // --ok
+        chart_3: "#d9b07c", // --warn
+        chart_4: "#9cb8bf", // --info
+        chart_5: "#d99a9a", // --err
+        success: "#8fc4ab", // --ok
+        warning: "#d9b07c", // --warn
+        info: "#9cb8bf",    // --info
+    }
+}
+
+fn sage_light_theme() -> ThemeColors {
+    ThemeColors {
+        color_scheme: "light",
+        background: "#f2f4f1",
+        foreground: "#2a332d",
+        card: "#e5eae4",
+        popover: "#e5eae4",
+        primary: "#5f8f7a",
+        primary_foreground: "#ffffff",
+        secondary: "#dbe2da",
+        secondary_foreground: "#2a332d",
+        muted: "#ffffff",
+        muted_foreground: "#5e6a62",
+        accent: "#a08a4e",
+        accent_foreground: "#ffffff",
+        destructive: "#b56e6e",
+        border: "rgba(30,45,36,0.10)",
+        input: "#e5eae4",
+        ring: "#5f8f7a",
+        sidebar: "#edf0ec",
+        sidebar_foreground: "#2a332d",
+        sidebar_primary: "#5f8f7a",
+        sidebar_primary_foreground: "#ffffff",
+        sidebar_accent: "#dbe2da",
+        sidebar_accent_foreground: "#2a332d",
+        sidebar_border: "rgba(30,45,36,0.10)",
+        sidebar_ring: "#5f8f7a",
+        chart_1: "#5f8f7a",
+        chart_2: "#4f9377",
+        chart_3: "#b5834a",
+        chart_4: "#5f8f8f",
+        chart_5: "#b56e6e",
+        success: "#4f9377",
+        warning: "#b5834a",
+        info: "#5f8f8f",
     }
 }
 
@@ -1310,6 +1478,9 @@ const BASE_COMPONENT_STYLES: &str = r#"
 
         button:hover {
             background-color: var(--ring);
+            /* Keep label legible on the (often light/sage) ring fill — without
+               this the text stays its default light color → white-on-light. */
+            color: var(--primary-foreground);
         }
 
         button:disabled {
@@ -1384,3 +1555,88 @@ const BASE_COMPONENT_STYLES: &str = r#"
             font-size: 16px;
         }
         "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pentest_core::config::{BorderRadius, Density, Theme};
+
+    #[test]
+    fn sage_dark_palette_tokens() {
+        let c = get_theme_colors(Theme::Sage);
+        assert_eq!(c.color_scheme, "dark");
+        assert_eq!(c.background, "#141715");
+        assert_eq!(c.primary, "#9cbfae");
+        assert_eq!(c.primary_foreground, "#151a17");
+        assert_eq!(c.card, "#242b27");
+        assert_eq!(c.foreground, "#e9eeeb");
+        assert_eq!(c.accent, "#c9b27e");
+    }
+
+    #[test]
+    fn sage_light_palette_tokens() {
+        let c = get_theme_colors(Theme::SageLight);
+        assert_eq!(c.color_scheme, "light");
+        assert_eq!(c.background, "#f2f4f1");
+        assert_eq!(c.primary, "#5f8f7a");
+        assert_eq!(c.primary_foreground, "#ffffff");
+        assert_eq!(c.accent, "#a08a4e");
+    }
+
+    #[test]
+    fn sage_css_declares_plex_font_and_extra_tokens() {
+        let css = generate_theme_css(Theme::Sage, BorderRadius::Soft, Density::Comfortable);
+        // The old assertion looked for the Google Fonts URL literal
+        // (`"IBM+Plex+Sans"`). That URL was removed because Matrix's sandbox
+        // CSP forbids external font-src (see the doc-comment on
+        // `generate_theme_css`). What remains — and what we want to pin —
+        // is that Sage still declares `'IBM Plex Sans'` first in its
+        // font-family stack, so a system-installed or later-bundled Plex is
+        // still picked up.
+        assert!(
+            css.contains("'IBM Plex Sans'"),
+            "Sage should list IBM Plex Sans first in the font-family stack"
+        );
+        assert!(
+            css.contains("'IBM Plex Mono'"),
+            "Sage should list IBM Plex Mono first in the mono font-family stack"
+        );
+        assert!(
+            !css.contains("fonts.googleapis.com"),
+            "Sage MUST NOT emit an external font @import — Matrix's sandbox CSP blocks it"
+        );
+        assert!(
+            css.contains("--sage-tint:"),
+            "Sage should emit extra tokens"
+        );
+        assert!(css.contains("--sage-glass-bg:"));
+    }
+
+    #[test]
+    fn non_sage_css_has_no_sage_tokens() {
+        let css = generate_theme_css(Theme::Dark, BorderRadius::Soft, Density::Comfortable);
+        assert!(
+            !css.contains("--sage-tint:"),
+            "non-Sage must not emit Sage tokens"
+        );
+        assert!(!css.contains("--sage-glass-bg:"));
+    }
+
+    #[test]
+    fn sage_chrome_css_scoped_and_gated() {
+        let sage = generate_theme_css(Theme::Sage, BorderRadius::Soft, Density::Comfortable);
+        assert!(
+            sage.contains(".sage .sidebar"),
+            "Sage chrome must be present + scoped"
+        );
+        assert!(
+            sage.contains("border-radius: 999px"),
+            "Sage buttons are pills"
+        );
+        let dark = generate_theme_css(Theme::Dark, BorderRadius::Soft, Density::Comfortable);
+        assert!(
+            !dark.contains(".sage .sidebar"),
+            "non-Sage must not emit chrome rules"
+        );
+    }
+}

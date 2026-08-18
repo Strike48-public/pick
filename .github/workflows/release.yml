@@ -23,6 +23,17 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Baked into release builds via option_env!("PICK_SENTRY_DSN") for usage
+  # telemetry (#278). Named PICK_SENTRY_DSN (not the SDK's magic SENTRY_DSN) so
+  # it's distinct from StrikeHub's own DSN and never read implicitly at runtime.
+  # Absent/empty in forks and PRs -> telemetry compiles to a no-op.
+  PICK_SENTRY_DSN: ${{ secrets.PICK_SENTRY_DSN }}
+  # The Sentry environment for released builds. Baked in via
+  # option_env!("STRIKE48_SENTRY_ENV") (telemetry::environment). Explicit here
+  # because the mobile release-ffi libs build with debug_assertions OFF and have
+  # no runtime env, so without this they'd fall through to the profile default.
+  # Set as a workflow-level env so every build job inherits it.
+  STRIKE48_SENTRY_ENV: production
 
 jobs:
   # ===========================================
@@ -48,12 +59,12 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/pentest-connector dist/
-          cd dist && tar -czvf pentest-connector-linux-x86_64.tar.gz pentest-connector
+          cd dist && tar -czvf pick-linux-x86_64.tar.gz pentest-connector
 
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-linux-x86_64
-          path: dist/pentest-connector-linux-x86_64.tar.gz
+          path: dist/pick-linux-x86_64.tar.gz
 
   build-desktop-windows:
     name: Desktop (Windows)
@@ -92,12 +103,12 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item target/release/pentest-connector.exe dist/
-          Compress-Archive -Path dist/pentest-connector.exe -DestinationPath dist/pentest-connector-windows-x86_64.zip
+          Compress-Archive -Path dist/pentest-connector.exe -DestinationPath dist/pick-windows-x86_64.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-windows-x86_64
-          path: dist/pentest-connector-windows-x86_64.zip
+          path: dist/pick-windows-x86_64.zip
 
   build-desktop-macos:
     name: Desktop (macOS ${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }})
@@ -180,12 +191,12 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/pentest-connector dist/
-          cd dist && tar -czvf pentest-connector-macos-${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }}.tar.gz pentest-connector
+          cd dist && tar -czvf pick-macos-${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }}.tar.gz pentest-connector
 
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-macos-${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }}
-          path: dist/pentest-connector-macos-*.tar.gz
+          path: dist/pick-macos-*.tar.gz
 
   # ===========================================
   # Web Build
@@ -210,74 +221,102 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/pentest-web dist/
-          cd dist && tar -czvf ../pentest-connector-web.tar.gz pentest-web
+          cd dist && tar -czvf ../pick-web.tar.gz pentest-web
 
       - uses: actions/upload-artifact@v4
         with:
           name: web-wasm
-          path: pentest-connector-web.tar.gz
+          path: pick-web.tar.gz
 
   # ===========================================
   # Android Build
   # ===========================================
   build-android:
     name: Android
-    if: false  # Disabled: Android build has pre-existing compile issues
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+
+      # Build through the nix flake so CI uses the exact same toolchain, SDK/NDK,
+      # dx CLI, build-tools and aapt2 as local `just build-android` — no drift.
+      - uses: DeterminateSystems/nix-installer-action@main
+      # Cache the nix store (toolchain, Android SDK/NDK, dx) across release runs.
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      # Cache cargo downloads + the Android release cross-compile target dir.
+      - uses: actions/cache@v4
         with:
-          targets: aarch64-linux-android,x86_64-linux-android
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-android-release-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-android-release-${{ runner.os }}-
+      - uses: actions/cache@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'android-lib/**/*.gradle*') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      # Fetch the Termux proot runtime (proot + libtalloc + busybox +
+      # libandroid-shmem) into android-jniLibs/ before building. android-jniLibs/
+      # is gitignored (fetched artifacts), and _inject-android-lib copies it into
+      # the APK/AAB. Without this the build ships no proot binaries and the
+      # interactive shell fails to spawn at runtime. Matches the CI android job.
+      - name: Fetch Android proot runtime
+        run: nix develop --command just fetch-proot
 
-      - name: Install Android NDK
-        run: sdkmanager "ndk;26.1.10909125"
-
-      - name: Install protoc
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-
-      - name: Install Dioxus CLI
-        run: curl -sSLf https://dioxus.dev/install.sh | bash
-
-      - name: Build APK
+      # STRIKE48_HOST is baked at build time (mobile has no runtime env). Without
+      # it the app has no backend URL, so the OAuth sign-in browser never opens
+      # (Url::parse of an empty base fails). Matches the CI android job.
+      - name: Build APK (release, arm64)
         env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.1.10909125
+          STRIKE48_HOST: https://studio.strike48.com
+        run: nix develop --command just build-android-release
+
+      # AAB is the Play-distribution deliverable (issue #279). It is UNSIGNED —
+      # release signing needs the Play upload key we do not have yet; wire that
+      # in here once the key exists. The universal APK is converted from the AAB
+      # and debug-signed by bundletool purely so the release bundle's output is
+      # installable for testing.
+      - name: Build AAB + universal APK (release)
+        env:
+          STRIKE48_HOST: https://studio.strike48.com
         run: |
-          export PATH="$HOME/.dx/bin:$PATH"
-          unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH
-          dx build --platform android --package pentest-mobile --release
+          nix develop --command just bundle-android
+          nix develop --command just bundle-android-universal-apk
 
       - name: Package
         run: |
           mkdir -p dist
-          cp target/dx/pentest-mobile/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk \
-             dist/pentest-connector-android.apk 2>/dev/null || \
-          cp target/dx/pentest-mobile/release/android/app/app/build/outputs/apk/debug/app-debug.apk \
-             dist/pentest-connector-android.apk
+          cp target/dx/pick/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk \
+             dist/pick-android-arm64.apk
+          cp target/dx/pick/release/android/app/app/build/outputs/bundle/release/app-release.aab \
+             dist/pick-android-release-unsigned.aab
+          cp target/dx/pick/release/android/pick-android-universal.apk \
+             dist/pick-android-universal.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: dist/pentest-connector-android.apk
+          path: |
+            dist/pick-android-arm64.apk
+            dist/pick-android-release-unsigned.aab
+            dist/pick-android-universal.apk
 
   # ===========================================
   # iOS Build (requires macOS + signing)
   # ===========================================
   build-ios:
     name: iOS
-    if: false  # Disabled: iOS build requires Apple signing setup
+    # Disabled: blocked on Apple Developer signing (account suspended, see the
+    # macos_signing note above). The build environment now exists — the flake's
+    # aarch64-darwin devShell + `just build-ios` — so re-enable this (as a
+    # simulator/unsigned build first) once signing is available.
+    if: false
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -292,24 +331,24 @@ jobs:
       - name: Build (Simulator)
         run: |
           export PATH="$HOME/.dx/bin:$PATH"
-          dx build --platform ios --package pentest-mobile --release || echo "iOS build requires signing"
+          dx build --platform ios --package pick --release || echo "iOS build requires signing"
 
       # Note: Real iOS builds require Apple Developer signing
       - name: Package (if built)
         run: |
           mkdir -p dist
-          if [ -d "target/dx/pentest-mobile/release/ios" ]; then
-            cd target/dx/pentest-mobile/release/ios
-            zip -r ../../../../../dist/pentest-connector-ios.zip .
+          if [ -d "target/dx/pick/release/ios" ]; then
+            cd target/dx/pick/release/ios
+            zip -r ../../../../../dist/pick-ios.zip .
           else
             echo "iOS build artifacts not found (signing required)"
-            touch dist/pentest-connector-ios-placeholder.txt
+            touch dist/pick-ios-placeholder.txt
           fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: ios-build
-          path: dist/pentest-connector-ios*
+          path: dist/pick-ios*
 
   # ===========================================
   # Headless (pentest-agent) Builds
@@ -334,12 +373,12 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/pentest-agent dist/
-          cd dist && tar -czvf pentest-agent-linux-x86_64.tar.gz pentest-agent
+          cd dist && tar -czvf pick-agent-linux-x86_64.tar.gz pentest-agent
 
       - uses: actions/upload-artifact@v4
         with:
           name: headless-linux-x86_64
-          path: dist/pentest-agent-linux-x86_64.tar.gz
+          path: dist/pick-agent-linux-x86_64.tar.gz
 
   build-headless-windows:
     name: Headless (Windows)
@@ -378,12 +417,12 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item target/release/pentest-agent.exe dist/
-          Compress-Archive -Path dist/pentest-agent.exe -DestinationPath dist/pentest-agent-windows-x86_64.zip
+          Compress-Archive -Path dist/pentest-agent.exe -DestinationPath dist/pick-agent-windows-x86_64.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: headless-windows-x86_64
-          path: dist/pentest-agent-windows-x86_64.zip
+          path: dist/pick-agent-windows-x86_64.zip
 
   build-headless-macos:
     name: Headless (macOS ${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }})
@@ -466,12 +505,12 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/pentest-agent dist/
-          cd dist && tar -czvf pentest-agent-${{ matrix.target == 'aarch64-apple-darwin' && 'darwin-aarch64' || 'darwin-x86_64' }}.tar.gz pentest-agent
+          cd dist && tar -czvf pick-agent-${{ matrix.target == 'aarch64-apple-darwin' && 'darwin-aarch64' || 'darwin-x86_64' }}.tar.gz pentest-agent
 
       - uses: actions/upload-artifact@v4
         with:
           name: headless-macos-${{ matrix.target == 'aarch64-apple-darwin' && 'aarch64' || 'x86_64' }}
-          path: dist/pentest-agent-*.tar.gz
+          path: dist/pick-agent-*.tar.gz
 
   # ===========================================
   # Create Release
@@ -525,21 +564,23 @@ jobs:
 
             | Platform | Architecture | Download |
             |----------|--------------|----------|
-            | Linux | x86_64 | `pentest-connector-linux-x86_64.tar.gz` |
-            | Windows | x86_64 | `pentest-connector-windows-x86_64.zip` |
-            | macOS | x86_64 | `pentest-connector-macos-x86_64.tar.gz` |
-            | macOS | Apple Silicon | `pentest-connector-macos-aarch64.tar.gz` |
-            | Web | WASM | `pentest-connector-web.tar.gz` |
-            | Android | APK | `pentest-connector-android.apk` |
+            | Linux | x86_64 | `pick-linux-x86_64.tar.gz` |
+            | Windows | x86_64 | `pick-windows-x86_64.zip` |
+            | macOS | x86_64 | `pick-macos-x86_64.tar.gz` |
+            | macOS | Apple Silicon | `pick-macos-aarch64.tar.gz` |
+            | Web | WASM | `pick-web.tar.gz` |
+            | Android | APK (arm64) | `pick-android-arm64.apk` |
+            | Android | APK (universal) | `pick-android-universal.apk` |
+            | Android | AAB (Play) | `pick-android-release-unsigned.aab` |
 
-            #### Headless (pentest-agent)
+            #### Headless agent
 
             | Platform | Architecture | Download |
             |----------|--------------|----------|
-            | Linux | x86_64 | `pentest-agent-linux-x86_64.tar.gz` |
-            | Windows | x86_64 | `pentest-agent-windows-x86_64.zip` |
-            | macOS | x86_64 | `pentest-agent-darwin-x86_64.tar.gz` |
-            | macOS | Apple Silicon | `pentest-agent-darwin-aarch64.tar.gz` |
+            | Linux | x86_64 | `pick-agent-linux-x86_64.tar.gz` |
+            | Windows | x86_64 | `pick-agent-windows-x86_64.zip` |
+            | macOS | x86_64 | `pick-agent-darwin-x86_64.tar.gz` |
+            | macOS | Apple Silicon | `pick-agent-darwin-aarch64.tar.gz` |
 
             ### Checksums
 

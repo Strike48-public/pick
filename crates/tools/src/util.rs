@@ -36,9 +36,44 @@ pub fn param_u64(params: &Value, key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// Extract an optional `u16` parameter (e.g. a network port).
+///
+/// Accepts integer, float, or string JSON values and clamps to the valid u16
+/// range: `22`, `22.0`, and `"22"` all yield `Some(22)`. LLM tool callers
+/// frequently emit numeric args as floats (`22.0`), so a raw `as_u64()` here
+/// silently rejected valid ports — this coerces them the same way `param_u64`
+/// does. Out-of-range or non-numeric values yield `None`.
+pub fn param_u16_opt(params: &Value, key: &str) -> Option<u16> {
+    params.get(key).and_then(|v| {
+        v.as_u64()
+            .or_else(|| v.as_f64().map(|f| f as u64))
+            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+            .filter(|n| *n >= 1 && *n <= u16::MAX as u64)
+            .map(|n| n as u16)
+    })
+}
+
 /// Extract a `bool` parameter with a default value.
+///
+/// Accepts real JSON booleans, plus the string forms LLM tool callers emit
+/// (`"true"`/`"false"`/`"yes"`/`"no"`/`"1"`/`"0"`, case-insensitive) and the
+/// integers `1`/`0` — mirroring the loose coercion `param_u64` does for numbers.
+/// Unparseable or missing values yield `default`.
 pub fn param_bool(params: &Value, key: &str, default: bool) -> bool {
-    params.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
+    match params.get(key) {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => match s.trim().to_ascii_lowercase().as_str() {
+            "true" | "yes" | "1" => true,
+            "false" | "no" | "0" => false,
+            _ => default,
+        },
+        Some(Value::Number(n)) => match n.as_i64() {
+            Some(0) => false,
+            Some(_) => true,
+            None => default,
+        },
+        _ => default,
+    }
 }
 
 /// Convert dBm signal strength to signal quality percentage (0-100)
@@ -97,4 +132,49 @@ pub fn quality_to_bars(quality: u8) -> &'static str {
 /// Unicode bar visualization string
 pub fn dbm_to_bars(dbm: i32) -> &'static str {
     quality_to_bars(dbm_to_quality(dbm))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn param_u16_opt_accepts_int_float_and_string() {
+        // The bug this guards: LLM tool callers send ports as JSON floats
+        // (`22.0`), which `as_u64()` rejects. All three forms must coerce.
+        assert_eq!(param_u16_opt(&json!({"port": 22}), "port"), Some(22));
+        assert_eq!(param_u16_opt(&json!({"port": 22.0}), "port"), Some(22));
+        assert_eq!(param_u16_opt(&json!({"port": 5432.0}), "port"), Some(5432));
+        assert_eq!(param_u16_opt(&json!({"port": "22"}), "port"), Some(22));
+        assert_eq!(param_u16_opt(&json!({"port": 65535}), "port"), Some(65535));
+    }
+
+    #[test]
+    fn param_u16_opt_rejects_missing_and_out_of_range() {
+        assert_eq!(param_u16_opt(&json!({}), "port"), None);
+        assert_eq!(param_u16_opt(&json!({"port": 0}), "port"), None);
+        assert_eq!(param_u16_opt(&json!({"port": 70000}), "port"), None);
+        assert_eq!(param_u16_opt(&json!({"port": -1}), "port"), None);
+        assert_eq!(param_u16_opt(&json!({"port": "nope"}), "port"), None);
+    }
+
+    #[test]
+    fn param_bool_coerces_bool_string_and_int() {
+        assert!(param_bool(&json!({"append": true}), "append", false));
+        assert!(param_bool(&json!({"append": "true"}), "append", false));
+        assert!(param_bool(&json!({"append": "TRUE"}), "append", false));
+        assert!(param_bool(&json!({"recursive": 1}), "recursive", false));
+        assert!(param_bool(&json!({"recursive": "yes"}), "recursive", false));
+        assert!(!param_bool(&json!({"append": "false"}), "append", true));
+        assert!(!param_bool(&json!({"append": "0"}), "append", true));
+        assert!(!param_bool(&json!({"append": 0}), "append", true));
+    }
+
+    #[test]
+    fn param_bool_falls_back_to_default_when_missing_or_unparseable() {
+        assert!(param_bool(&json!({}), "append", true));
+        assert!(!param_bool(&json!({}), "append", false));
+        assert!(param_bool(&json!({"append": "maybe"}), "append", true));
+    }
 }

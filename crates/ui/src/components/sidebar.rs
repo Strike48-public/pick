@@ -7,8 +7,7 @@ use std::sync::Arc;
 use super::app_layout::ConversationRefresh;
 use super::chat_panel::format_relative_time;
 use super::icons::{
-    Bolt, FileText, Folder, House, MessageSquare, ScrollText, Settings, Terminal, Wrench,
-    STRIKE48_SIDEBAR_LOGO_SVG, X,
+    Bolt, FileText, Folder, House, MessageSquare, ScrollText, Settings, Terminal, Wrench, X,
 };
 use crate::text::truncate_chars;
 
@@ -157,12 +156,8 @@ pub fn Sidebar(
             // Header
             div { class: "sidebar-header",
                 div { class: "sidebar-header-brand",
-                    span {
-                        class: "header-logo",
-                        dangerous_inner_html: STRIKE48_SIDEBAR_LOGO_SVG,
-                    }
                     if !sidebar_collapsed {
-                        span { class: "sidebar-header-title", "Pentest" }
+                        span { class: "sidebar-header-title", "Pick" }
                     }
                 }
                 div { class: "sidebar-header-actions",
@@ -186,7 +181,9 @@ pub fn Sidebar(
 
             // Nav items
             div { class: "sidebar-flat-nav",
-                for page in ALL_PAGES {
+                // The interactive shell has no iOS implementation (no PTY/proot
+                // under the iOS sandbox), so drop it from the nav on iOS.
+                for page in ALL_PAGES.into_iter().filter(|&p| !(cfg!(target_os = "ios") && p == NavPage::Shell)) {
                     {
                         let is_active = page == active_page;
                         let class_name = if is_active { "sidebar-flat-item active" } else { "sidebar-flat-item" };

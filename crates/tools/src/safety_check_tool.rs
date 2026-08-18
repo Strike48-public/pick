@@ -17,6 +17,17 @@ pub struct SafetyCheckTool;
 
 #[async_trait]
 impl PentestTool for SafetyCheckTool {
+    fn supported_platforms(&self) -> Vec<pentest_core::tools::Platform> {
+        use pentest_core::tools::Platform;
+        // Native network-safety checks (DNS/gateway heuristics) — runs on iOS.
+        vec![
+            Platform::Desktop,
+            Platform::Android,
+            Platform::Ios,
+            Platform::Tui,
+        ]
+    }
+
     fn name(&self) -> &str {
         "safety_check"
     }

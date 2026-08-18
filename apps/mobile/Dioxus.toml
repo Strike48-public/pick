@@ -3,8 +3,48 @@ name = "pentest-connector"
 default_platform = "android"
 
 [bundle]
-identifier = "com.strike48.pentest_connector"
+name = "Pick"
+identifier = "com.strike48.pick"
 publisher = "Strike48"
+
+# Android SDK versions. nixpkgs androidenv packages platform/build-tools 35 & 36
+# (not 34, dx's built-in default), so pin to 35 here. dx writes these into the
+# generated Gradle project on every build, so no post-generation patching is
+# needed. See flake.nix for the matching NDK/SDK and the aapt2 override.
+[android]
+compile_sdk = 35
+target_sdk = 35
+min_sdk = 24
 
 [web.app]
 title = "Pentest Connector"
+
+# iOS Info.plist additions. Since iOS 14 any local-network access (even the
+# native TCP port scan) triggers the Local Network privacy prompt, and the OS
+# blocks it unless this usage-description key is present. dx merges [ios.plist]
+# entries into the generated Info.plist on every build.
+[ios.plist]
+NSLocalNetworkUsageDescription = "Pick discovers and scans hosts on your local network during authorized security engagements."
+CFBundleDisplayName = "Pick"
+CFBundleName = "Pick"
+
+# Register the OAuth callback scheme. ASWebAuthenticationSession redirects to
+# com.strike48.pentest://oauth/callback; without this CFBundleURLTypes entry the
+# session's SafariViewService can't bind the callback, so the auth view fails to
+# present (blank screen, no completion, apparent hang) — matches the working
+# crux shell's Info.plist. dx merges [ios.plist] into the generated Info.plist.
+#
+# BOTH the legacy (com.strike48.pentest) and new (com.strike48.pick) schemes are
+# registered so native sign-in survives the backend's redirect-URI migration.
+# The scheme actually presented follows the redirect the server uses; the Rust
+# callback parser is scheme-agnostic. Drop the legacy entry once the backend
+# only redirects to com.strike48.pick.
+[[ios.plist.CFBundleURLTypes]]
+CFBundleTypeRole = "Editor"
+CFBundleURLName = "com.strike48.pentest.oauth"
+CFBundleURLSchemes = ["com.strike48.pentest"]
+
+[[ios.plist.CFBundleURLTypes]]
+CFBundleTypeRole = "Editor"
+CFBundleURLName = "com.strike48.pick.oauth"
+CFBundleURLSchemes = ["com.strike48.pick"]

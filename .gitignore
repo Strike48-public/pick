@@ -84,6 +84,9 @@ android-jniLibs
 .direnv/
 __pycache__/
 
+# Repo-local GRADLE_USER_HOME provisioned by the nix devshell (Android builds)
+/.gradle-nix/
+
 # PII scanner: the real banned-name list lives here, never committed.
 # Seed it from .pii-names.local.example. See scripts/check-pii.sh.
 .pii-names.local

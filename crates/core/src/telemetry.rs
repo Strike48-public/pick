@@ -1,0 +1,654 @@
+//! Usage telemetry + release health via Sentry.
+//!
+//! Mirrors StrikeHub's `sentry_init.rs`: release-health sessions (DAU/WAU +
+//! crash-free rate), platform tags, and per-activity business events. Ties into
+//! the PLG "who is using Pick and how" goal (Strike48-public/pick#278).
+//!
+//! Privacy model: only anonymous/pseudonymous data leaves the device — the
+//! per-install `device_id`, platform/mode tags, and coarse event names. **No
+//! PII, no target hosts, no scan results, no command arguments.** Event
+//! properties are restricted to safe enums/counts. Telemetry is opt-out
+//! (enabled by default) and honors the `telemetry_enabled` setting.
+//!
+//! The Sentry DSN is baked at build time via `option_env!("PICK_SENTRY_DSN")`;
+//! when it's absent (local dev, forks) telemetry is a no-op — nothing is sent.
+//! Named `PICK_SENTRY_DSN` (not the SDK's magic `SENTRY_DSN`) so it can't be
+//! confused with StrikeHub's own DSN or picked up implicitly by the SDK at
+//! runtime — Pick's DSN is always the compile-time one.
+//!
+//! NOTE: the event names below (`scan.start`, `tool.run`, `network.check`) are
+//! PROVISIONAL, pending the shared taxonomy spec (project-management#101). They
+//! route through the helpers here so renaming is a one-file change.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
+/// True while a live Sentry client is installed, so event helpers can cheaply
+/// no-op when telemetry is disabled or the DSN is absent.
+static ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Holds the Sentry client guard. A `Mutex<Option<..>>` (not a `OnceLock`) so
+/// telemetry can be turned OFF at runtime: dropping the guard closes the client
+/// and stops release-health sessions, and turning it back ON re-inits. The
+/// guard isn't `Clone` and its only job is to live until torn down (drop
+/// flushes pending events).
+static GUARD: Mutex<Option<sentry::ClientInitGuard>> = Mutex::new(None);
+
+/// The last `(device_id, easy_mode)` seen by `init`, retained so `set_enabled`
+/// can re-init with the same identity/tags after the user toggles telemetry
+/// back on within a session.
+static IDENTITY: Mutex<Option<(String, bool)>> = Mutex::new(None);
+
+/// Metadata keys under which the backend forwards distributed-trace headers in
+/// the tool-request frame, so a connector-side tool span can join the backend's
+/// conversation trace. The connector copies these from the inbound request's
+/// `metadata` into `ToolContext::metadata`; `start_tool_span` reads them. Named
+/// after the W3C/Sentry headers so the platform contract is obvious.
+pub const SENTRY_TRACE_HEADER: &str = "sentry_trace";
+pub const BAGGAGE_HEADER: &str = "baggage";
+
+/// Compile-time DSN. `None` (the default in local/dev builds) disables Sentry
+/// entirely — release CI injects `PICK_SENTRY_DSN` so shipped builds report.
+/// Deliberately NOT the SDK's magic `SENTRY_DSN` name: Pick's DSN is always the
+/// one compiled in, never one the SDK might read from the ambient env of a host
+/// process (e.g. StrikeHub) that spawned us.
+const DSN: Option<&str> = option_env!("PICK_SENTRY_DSN");
+
+/// The build environment reported to Sentry. Resolved in priority order:
+///   1. `STRIKE48_SENTRY_ENV` baked at BUILD time (`option_env!`) — the source
+///      that works for the mobile FFI libs, which have no runtime environment.
+///   2. `STRIKE48_SENTRY_ENV` at RUNTIME (`std::env::var`) — for the desktop /
+///      headless path where the process env is set.
+///   3. The fallback `development` when nothing is set.
+///
+/// `production` is **opt-in only**: the tagged release workflow sets
+/// `STRIKE48_SENTRY_ENV=production` at build time, so only shipped artifacts
+/// report as production. Everything else — local dev, branch builds, ad-hoc
+/// `--release` builds, and the mobile `release-ffi` libs (which build with
+/// debug_assertions OFF) — falls through to `development` rather than silently
+/// claiming to be production. That keeps test-run traffic out of the production
+/// environment automatically; set `STRIKE48_SENTRY_ENV=staging` on a branch
+/// build to bucket it distinctly.
+fn environment() -> String {
+    if let Some(env) = option_env!("STRIKE48_SENTRY_ENV") {
+        if !env.is_empty() {
+            return env.to_string();
+        }
+    }
+    if let Ok(env) = std::env::var("STRIKE48_SENTRY_ENV") {
+        if !env.is_empty() {
+            return env;
+        }
+    }
+    "development".to_string()
+}
+
+/// The Sentry traces (span) sample rate, resolved in priority order:
+///   1. `STRIKE48_SENTRY_TRACES_SAMPLE_RATE` baked at BUILD time (`option_env!`)
+///      — the source that reaches the mobile FFI libs (no runtime env).
+///   2. `STRIKE48_SENTRY_TRACES_SAMPLE_RATE` at RUNTIME (`std::env::var`) — for
+///      the desktop / headless path.
+///   3. Default [`DEFAULT_TRACES_SAMPLE_RATE`].
+///
+/// Parsed as a float and clamped to `0.0..=1.0`; an unparseable/out-of-range
+/// value falls through to the default. Previously this was hard-coded to `1.0`
+/// (100% span sampling), which — on a connector that emits a span per tool run
+/// and network check — burned through the Sentry spans quota and paused
+/// ingestion. A lower default keeps volume sane; set the env var to `1.0` to
+/// capture everything when debugging.
+const DEFAULT_TRACES_SAMPLE_RATE: f32 = 0.1;
+
+fn traces_sample_rate() -> f32 {
+    fn parse(v: &str) -> Option<f32> {
+        v.trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|r| (0.0..=1.0).contains(r))
+    }
+    if let Some(v) = option_env!("STRIKE48_SENTRY_TRACES_SAMPLE_RATE") {
+        if let Some(r) = parse(v) {
+            return r;
+        }
+    }
+    if let Ok(v) = std::env::var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE") {
+        if let Some(r) = parse(&v) {
+            return r;
+        }
+    }
+    DEFAULT_TRACES_SAMPLE_RATE
+}
+
+/// The app channel tag: easy mode vs the full advanced UI.
+fn channel(easy_mode: bool) -> &'static str {
+    if easy_mode {
+        "easy"
+    } else {
+        "advanced"
+    }
+}
+
+/// The app form-factor tag (`app.mode`): mobile vs desktop, from the build target.
+fn form_factor() -> &'static str {
+    if cfg!(any(target_os = "android", target_os = "ios")) {
+        "mobile"
+    } else {
+        "desktop"
+    }
+}
+
+/// The hosting context tag (`app.host`): whether this connector is running
+/// embedded in StrikeHub (which spawns Pick with `STRIKEHUB_SOCKET` set for IPC)
+/// or as a standalone app. StrikeHub runs its OWN Sentry in a separate process
+/// with a separate DSN; this tag lets Pick's dashboard tell embedded usage from
+/// standalone without conflating the two. Same signal every other subsystem uses
+/// (liveview_server, shell, easy_mode).
+fn host_context() -> &'static str {
+    if std::env::var_os("STRIKEHUB_SOCKET").is_some() {
+        "strikehub"
+    } else {
+        "standalone"
+    }
+}
+
+/// Initialize telemetry at startup with the user's opt-out setting. Remembers
+/// the identity so a later runtime toggle (see [`set_enabled`]) can re-install
+/// with the same tags. Does nothing when the DSN is absent or the user has
+/// opted out (the env override or `enabled=false`).
+///
+/// - `enabled`: the user's `telemetry_enabled` setting (opt-out).
+/// - `device_id`: the persistent anonymous install id.
+/// - `easy_mode`: whether this build runs the easy-mode UI (channel tag).
+pub fn init(enabled: bool, device_id: &str, easy_mode: bool) {
+    if let Ok(mut id) = IDENTITY.lock() {
+        *id = Some((device_id.to_string(), easy_mode));
+    }
+    if enabled {
+        install(device_id, easy_mode);
+    } else {
+        tracing::debug!("telemetry disabled at startup (opt-out)");
+    }
+}
+
+/// Turn telemetry on or off at runtime (from the Settings toggle). Turning it
+/// OFF fully closes the Sentry client — no events AND no release-health sessions
+/// leave the device. Turning it ON re-installs with the identity captured at
+/// [`init`]. No-op if the requested state already matches, or if `init` was
+/// never called (no identity to install with).
+pub fn set_enabled(enabled: bool) {
+    let currently = ENABLED.load(Ordering::Relaxed);
+    if enabled == currently {
+        return;
+    }
+    if enabled {
+        let identity = IDENTITY.lock().ok().and_then(|g| g.clone());
+        match identity {
+            Some((device_id, easy_mode)) => install(&device_id, easy_mode),
+            None => tracing::warn!("telemetry set_enabled(true) before init; ignoring"),
+        }
+    } else {
+        // Drop the guard -> flush pending events, end the release-health
+        // session, close the client. Nothing further sent until re-enabled.
+        ENABLED.store(false, Ordering::Relaxed);
+        if let Ok(mut g) = GUARD.lock() {
+            *g = None;
+        }
+        tracing::info!("telemetry disabled at runtime");
+    }
+}
+
+/// Whether telemetry should mark itself enabled given the init guard's own
+/// report. A rejected/invalid DSN yields a *disabled* client rather than an
+/// error, so trusting `sentry::init` returning is wrong — ask the guard.
+fn guard_reports_enabled(guard: &sentry::ClientInitGuard) -> bool {
+    guard.is_enabled()
+}
+
+/// Build and install a live Sentry client, storing the guard. Private: callers
+/// go through [`init`] or [`set_enabled`]. No-op when the DSN is absent or the
+/// `STRIKE48_TELEMETRY` env kill-switch is set, or a client is already live.
+fn install(device_id: &str, easy_mode: bool) {
+    if ENABLED.load(Ordering::Relaxed) {
+        return; // already installed
+    }
+    // An env override lets any target opt out without touching settings/UI
+    // (e.g. `STRIKE48_TELEMETRY=0`). Truthy setting AND not env-disabled.
+    let env_opt_out = std::env::var("STRIKE48_TELEMETRY")
+        .map(|v| matches!(v.as_str(), "0" | "false" | "off" | "no"))
+        .unwrap_or(false);
+    let dsn = match (!env_opt_out, DSN) {
+        (true, Some(dsn)) if !dsn.is_empty() => dsn,
+        _ => {
+            tracing::debug!("telemetry not installed (env kill-switch or no DSN)");
+            return;
+        }
+    };
+
+    // The SDK's internal transport logging, on only when STRIKE48_SENTRY_DEBUG
+    // is set — surfaces "sending envelope"/transport errors so a dev build can
+    // see WHY delivery fails (TLS, DNS, timeout) instead of guessing.
+    let debug = option_env!("STRIKE48_SENTRY_DEBUG").is_some()
+        || std::env::var("STRIKE48_SENTRY_DEBUG").is_ok();
+
+    let guard = sentry::init((
+        dsn,
+        sentry::ClientOptions {
+            release: Some(env!("CARGO_PKG_VERSION").into()),
+            environment: Some(environment().into()),
+            debug,
+            // Release-health sessions power DAU/WAU + crash-free rate.
+            auto_session_tracking: true,
+            session_mode: sentry::SessionMode::Application,
+            // Span sampling for activity transactions (see `record`). Defaults to
+            // DEFAULT_TRACES_SAMPLE_RATE and is overridable via
+            // STRIKE48_SENTRY_TRACES_SAMPLE_RATE (build-time or runtime). Was 1.0
+            // (100%), which exhausted the Sentry spans quota and paused ingestion
+            // — a connector emits a span per tool run / network check. A rate of
+            // 0.0 disables span sampling entirely (start_transaction is sampled
+            // out and nothing reaches Traces); set 1.0 to capture everything.
+            traces_sample_rate: traces_sample_rate(),
+            // Never attach the connecting server URL or request bodies.
+            send_default_pii: false,
+            // Defense-in-depth scrub of anything credential-shaped that slips
+            // into an event, on top of `send_default_pii: false` and the
+            // caller-side "safe values only" discipline. Mirrors StrikeHub's
+            // `before_send` (sh-core/src/sentry_init.rs).
+            before_send: Some(std::sync::Arc::new(redact_event)),
+            ..Default::default()
+        },
+    ));
+
+    // Static platform/identity tags on every event and session.
+    sentry::configure_scope(|scope| {
+        // Pseudonymous install identity (no PII).
+        scope.set_user(Some(sentry::User {
+            id: Some(device_id.to_string()),
+            ..Default::default()
+        }));
+        scope.set_tag("app.platform", std::env::consts::OS);
+        scope.set_tag("app.arch", std::env::consts::ARCH);
+        scope.set_tag("app.mode", form_factor());
+        scope.set_tag("app.channel", channel(easy_mode));
+        scope.set_tag("app.host", host_context());
+    });
+
+    let enabled = guard_reports_enabled(&guard);
+    if let Ok(mut g) = GUARD.lock() {
+        *g = Some(guard);
+    }
+    ENABLED.store(enabled, Ordering::Relaxed);
+    if enabled {
+        tracing::info!(
+            "telemetry initialized (env={}, channel={})",
+            environment(),
+            channel(easy_mode)
+        );
+    } else {
+        tracing::warn!("telemetry DSN rejected; client disabled, no events will be sent");
+    }
+}
+
+/// Flush any queued telemetry to Sentry, blocking up to `timeout`. The shell
+/// should call this when it backgrounds so batched events survive a subsequent
+/// process termination (our client guard lives in a `static` and never Drops).
+/// No-op when telemetry is disabled.
+pub fn flush() {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    if let Some(client) = sentry::Hub::current().client() {
+        let flushed = client.flush(Some(std::time::Duration::from_secs(3)));
+        tracing::debug!("telemetry flush requested (drained={flushed})");
+    }
+}
+
+/// `before_send` hook: last-line redaction of credential-shaped data from any
+/// event before it leaves the device. Pick's primary defense is `send_default_pii:
+/// false` plus caller-side discipline (only safe enums/counts in span props), but
+/// this catches anything that slips through — e.g. an `authorization` header or a
+/// `*token*`-named field on a captured error. Mirrors StrikeHub's `before_send`.
+fn redact_event(
+    mut event: sentry::protocol::Event<'static>,
+) -> Option<sentry::protocol::Event<'static>> {
+    if let Some(ref mut request) = event.request {
+        for (key, value) in request.headers.iter_mut() {
+            let k = key.to_lowercase();
+            if k == "authorization" || k == "cookie" || k.contains("token") {
+                *value = "[REDACTED]".to_string();
+            }
+        }
+    }
+    for (key, value) in event.extra.iter_mut() {
+        let k = key.to_lowercase();
+        if k.contains("token") || k.contains("secret") || k.contains("password") {
+            *value = serde_json::Value::String("[REDACTED]".to_string());
+        }
+    }
+    Some(event)
+}
+
+/// Attach the authenticated PLG identity once the user connects. Still
+/// pseudonymous — an opaque tenant/user id, never an email or target data.
+pub fn set_plg_identity(tenant_id: &str) {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    sentry::configure_scope(|scope| {
+        scope.set_tag("plg.tenant", tenant_id);
+    });
+}
+
+/// Capture an agent backend error as a Sentry **issue** (a captured event, not a
+/// span). Usage activity is emitted only as traces and the tracing layer ignores
+/// events, so real failures like an agent-turn error would otherwise never reach
+/// Sentry. `kind` is a coarse classifier (e.g. "token_limit" / "upstream" /
+/// "stream_error"); `detail` MUST be non-PII (a short reason string, never a
+/// host, argument, or scan output). No-op when telemetry is disabled.
+pub fn capture_agent_error(kind: &str, detail: &str) {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("error.source", "agent_backend");
+            scope.set_tag("error.kind", kind);
+        },
+        || {
+            sentry::capture_message(&format!("agent error: {kind}"), sentry::Level::Error);
+        },
+    );
+    tracing::warn!("captured agent error to sentry: kind={kind} detail={detail}");
+}
+
+/// A telemetry-safe activity event. Names are provisional (see module docs) and
+/// deliberately coarse; properties must be non-PII (enums, counts, booleans) —
+/// never hostnames, tool arguments, or scan output.
+///
+/// Provisional taxonomy (pending project-management#101):
+/// - `scan.start`   — the easy-mode "Scan My Network" action fired
+/// - `tool.run`     — a connector tool executed (property: tool name only)
+/// - `network.check`— a network discovery/check completed
+#[derive(Debug, Clone, Copy)]
+pub enum Activity {
+    ScanStart,
+    ToolRun,
+    NetworkCheck,
+}
+
+impl Activity {
+    fn name(self) -> &'static str {
+        match self {
+            Activity::ScanStart => "scan.start",
+            Activity::ToolRun => "tool.run",
+            Activity::NetworkCheck => "network.check",
+        }
+    }
+}
+
+/// Record an INSTANTANEOUS activity (no duration) as a standalone Sentry
+/// transaction. Routes to Traces, never Issues. Use [`ToolSpan`] for durationful
+/// work (tool runs).
+///
+/// Property values MUST be non-sensitive: tool names, result enums, counts —
+/// never target hosts, arguments, or scan data. Callers are responsible for
+/// passing only safe values; this is the single choke point so the rule is easy
+/// to audit.
+pub fn record(activity: Activity, props: &[(&str, &str)]) {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    let ctx = sentry::TransactionContext::new(activity.name(), "activity");
+    let tx = sentry::start_transaction(ctx);
+    for (k, v) in props {
+        tx.set_data(k, sentry::protocol::Value::from(*v));
+    }
+    tx.finish();
+}
+
+/// A live, timed span for a user-facing UI action (e.g. "send", "open reports",
+/// "create share link"). Opened when the action's async work starts and finished
+/// when it returns, so each becomes a small standalone trace with a real
+/// duration and outcome — the lightweight "what did the user do and how long did
+/// it take" signal. `None` when telemetry is off (cheap no-op).
+#[must_use = "a UiSpan must be finished to record its duration"]
+pub struct UiSpan(Option<sentry::Transaction>);
+
+/// Start a timed UI-action span named `action` (a short, stable verb like
+/// "send", "load_conversation", "create_share_link"). Finish with
+/// [`UiSpan::finish`], passing the outcome ("ok"/"error").
+pub fn start_ui_span(action: &str) -> UiSpan {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return UiSpan(None);
+    }
+    let ctx = sentry::TransactionContext::new(action, "ui.action");
+    UiSpan(Some(sentry::start_transaction(ctx)))
+}
+
+impl UiSpan {
+    /// Finish the span with an outcome tag and send it with its measured
+    /// duration. No-op if telemetry was off.
+    pub fn finish(self, outcome: &str) {
+        if let Some(tx) = self.0 {
+            tx.set_data("outcome", sentry::protocol::Value::from(outcome));
+            tx.finish();
+        }
+    }
+}
+
+/// A live, timed span for a tool run. Opened before `execute()` and finished
+/// after, so it carries the real duration. When the inbound tool request carried
+/// distributed-trace headers (`sentry-trace` / `baggage`, forwarded by the
+/// backend), the span CONTINUES that trace — so the tool nests under the
+/// backend's conversation transaction as part of ONE cross-process trace, with
+/// no shared-memory parent. Absent headers it's a standalone transaction.
+/// `None` inside when telemetry is off, so it's a cheap no-op handle callers can
+/// hold across an await unconditionally.
+#[must_use = "a ToolSpan must be finished to record its duration"]
+pub struct ToolSpan(Option<sentry::TransactionOrSpan>);
+
+/// Start a timed `tool.run` span, continuing the distributed trace from the
+/// (optional) `sentry-trace` / `baggage` headers the backend forwarded in the
+/// tool request. Pass safe start props (e.g. tool name); finish with
+/// [`ToolSpan::finish`] and the outcome once the tool returns.
+pub fn start_tool_span(
+    props: &[(&str, &str)],
+    sentry_trace: Option<&str>,
+    baggage: Option<&str>,
+) -> ToolSpan {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return ToolSpan(None);
+    }
+    let name = Activity::ToolRun.name();
+    // Build trace headers from whatever the backend sent so the span joins the
+    // distributed trace. `continue_from_headers` with no headers just starts a
+    // fresh root transaction, so this is safe when the backend sends nothing.
+    let mut headers: Vec<(&str, &str)> = Vec::new();
+    if let Some(t) = sentry_trace.filter(|s| !s.is_empty()) {
+        headers.push(("sentry-trace", t));
+    }
+    if let Some(b) = baggage.filter(|s| !s.is_empty()) {
+        headers.push(("baggage", b));
+    }
+    let ctx = sentry::TransactionContext::continue_from_headers(name, "activity", headers);
+    let span: sentry::TransactionOrSpan = sentry::start_transaction(ctx).into();
+    for (k, v) in props {
+        span.set_data(k, sentry::protocol::Value::from(*v));
+    }
+    ToolSpan(Some(span))
+}
+
+impl ToolSpan {
+    /// Finish the span, stamping final props (e.g. outcome) and sending it with
+    /// its measured duration. No-op if telemetry was off.
+    pub fn finish(self, extra: &[(&str, &str)]) {
+        if let Some(span) = self.0 {
+            for (k, v) in extra {
+                span.set_data(k, sentry::protocol::Value::from(*v));
+            }
+            span.finish();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activity_names_are_stable() {
+        assert_eq!(Activity::ScanStart.name(), "scan.start");
+        assert_eq!(Activity::ToolRun.name(), "tool.run");
+        assert_eq!(Activity::NetworkCheck.name(), "network.check");
+    }
+
+    #[test]
+    fn environment_defaults_to_development_and_honors_override() {
+        // One test (not two) so the env var can't race a sibling running in
+        // parallel. With nothing set the env is "development" (production is
+        // opt-in only, set explicitly by the release workflow); the runtime
+        // override wins when present, so a branch build can bucket itself as
+        // "staging". Restore prior state to avoid leaking into other tests.
+        let prior = std::env::var("STRIKE48_SENTRY_ENV").ok();
+        std::env::remove_var("STRIKE48_SENTRY_ENV");
+        assert_eq!(environment(), "development");
+
+        std::env::set_var("STRIKE48_SENTRY_ENV", "staging");
+        assert_eq!(environment(), "staging");
+
+        match prior {
+            Some(v) => std::env::set_var("STRIKE48_SENTRY_ENV", v),
+            None => std::env::remove_var("STRIKE48_SENTRY_ENV"),
+        }
+    }
+
+    #[test]
+    fn channel_reflects_mode() {
+        assert_eq!(channel(true), "easy");
+        assert_eq!(channel(false), "advanced");
+    }
+
+    #[test]
+    fn traces_sample_rate_default_override_and_clamp() {
+        // One test so the shared env var can't race parallel siblings. Restore
+        // prior state at the end. (option_env! baked value is None in tests, so
+        // only the runtime env + default paths are exercised here.)
+        let prior = std::env::var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE").ok();
+
+        std::env::remove_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE");
+        assert_eq!(traces_sample_rate(), DEFAULT_TRACES_SAMPLE_RATE);
+
+        std::env::set_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE", "1.0");
+        assert_eq!(traces_sample_rate(), 1.0);
+
+        std::env::set_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE", "0");
+        assert_eq!(traces_sample_rate(), 0.0);
+
+        // Out-of-range and unparseable fall back to the default (never panics the
+        // sentry builder, whose setter rejects values outside [0,1]).
+        std::env::set_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE", "5");
+        assert_eq!(traces_sample_rate(), DEFAULT_TRACES_SAMPLE_RATE);
+        std::env::set_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE", "nope");
+        assert_eq!(traces_sample_rate(), DEFAULT_TRACES_SAMPLE_RATE);
+
+        match prior {
+            Some(v) => std::env::set_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE", v),
+            None => std::env::remove_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE"),
+        }
+    }
+
+    #[test]
+    fn form_factor_is_desktop_in_host_tests() {
+        // The test suite runs on a desktop host target.
+        assert_eq!(form_factor(), "desktop");
+    }
+
+    #[test]
+    fn host_context_reflects_strikehub_socket() {
+        // Single test so the shared env var can't race parallel siblings.
+        // Absent -> standalone; present (any value) -> strikehub. Restore prior.
+        let prior = std::env::var("STRIKEHUB_SOCKET").ok();
+        std::env::remove_var("STRIKEHUB_SOCKET");
+        assert_eq!(host_context(), "standalone");
+
+        std::env::set_var("STRIKEHUB_SOCKET", "/tmp/strikehub.sock");
+        assert_eq!(host_context(), "strikehub");
+
+        match prior {
+            Some(v) => std::env::set_var("STRIKEHUB_SOCKET", v),
+            None => std::env::remove_var("STRIKEHUB_SOCKET"),
+        }
+    }
+
+    #[test]
+    fn redact_event_scrubs_credentials() {
+        use sentry::protocol::{Event, Request};
+
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert("Authorization".to_string(), "Bearer secret".to_string());
+        headers.insert("X-Session-Token".to_string(), "abc123".to_string());
+        headers.insert("Accept".to_string(), "application/json".to_string());
+        let req = Request {
+            headers,
+            ..Default::default()
+        };
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert("access_token".to_string(), "leaked".into());
+        extra.insert("tool".to_string(), "nmap".into());
+        let event = Event {
+            request: Some(req),
+            extra,
+            ..Default::default()
+        };
+
+        let out = redact_event(event).expect("event should pass through");
+        let req = out.request.unwrap();
+        assert_eq!(req.headers.get("Authorization").unwrap(), "[REDACTED]");
+        assert_eq!(req.headers.get("X-Session-Token").unwrap(), "[REDACTED]");
+        // Non-sensitive headers/fields are left intact.
+        assert_eq!(req.headers.get("Accept").unwrap(), "application/json");
+        assert_eq!(
+            out.extra.get("access_token").unwrap(),
+            &serde_json::Value::String("[REDACTED]".into())
+        );
+        assert_eq!(
+            out.extra.get("tool").unwrap(),
+            &serde_json::Value::String("nmap".into())
+        );
+    }
+
+    #[test]
+    fn record_is_noop_when_disabled() {
+        // Not initialized in tests -> ENABLED is false -> record must not panic.
+        record(Activity::ScanStart, &[("k", "v")]);
+        set_plg_identity("tenant-x");
+    }
+
+    #[test]
+    fn init_without_dsn_is_noop() {
+        // No SENTRY_DSN in the test build -> init does nothing and telemetry
+        // stays disabled (record/set_plg_identity remain no-ops).
+        init(true, "device-1", true);
+        assert!(!ENABLED.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn set_enabled_is_noop_without_dsn() {
+        // Toggling telemetry with no DSN must never panic and must leave it
+        // disabled (install() bails when the DSN is absent).
+        init(true, "device-1", true); // records identity, installs nothing
+        set_enabled(false);
+        assert!(!ENABLED.load(Ordering::Relaxed));
+        set_enabled(true);
+        assert!(!ENABLED.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn disabled_guard_does_not_enable_telemetry() {
+        // sentry::init(()) with no DSN yields a DISABLED client (not an error).
+        // Confirmed: init only panics on an *invalid* DSN string; empty options have none.
+        let guard = sentry::init(());
+        assert!(
+            !guard_reports_enabled(&guard),
+            "no-DSN client must report disabled"
+        );
+    }
+}

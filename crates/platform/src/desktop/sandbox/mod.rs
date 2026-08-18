@@ -4,12 +4,15 @@
 //! penetration testing commands. Uses bubblewrap (Linux namespaces)
 //! as the primary backend, with proot as a universal fallback.
 
+mod arch;
 pub mod bwrap;
 pub mod config;
 pub mod docker;
+pub mod probe;
 pub mod proot;
 pub mod rootfs;
 pub mod wsl;
+pub mod wsl_install;
 
 use crate::traits::CommandResult;
 use config::{SandboxBackend, SandboxConfig, SandboxError, SandboxResult};
@@ -358,6 +361,48 @@ impl SandboxManager {
             tracing::info!("[SandboxManager::ensure_ready] Rootfs setup complete");
         } else {
             tracing::debug!("[SandboxManager::ensure_ready] Rootfs already ready");
+        }
+
+        // The Arch bootstrap packs the rootfs ROOT dir as mode 0555, and pacman
+        // provisioning (arch-chroot/bwrap running the `filesystem` package) can
+        // re-assert that mode. But bwrap must create mount points (/proc, /dev,
+        // /tmp) directly inside the bind root at spawn, and pacman must write
+        // `.rootfs_version` / its DB there — a read-only root makes every command
+        // fail with EPERM. Restore owner-write on the root each time we're about
+        // to run, since provisioning may have reset it (bwrap only; WSL/Docker
+        // manage their own filesystems and returned above).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let root = self.config.rootfs_dir();
+            if let Ok(meta) = std::fs::metadata(&root) {
+                let mode = meta.permissions().mode();
+                if mode & 0o200 == 0 {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(mode | 0o700);
+                    if let Err(e) = std::fs::set_permissions(&root, perms) {
+                        tracing::warn!(
+                            "[SandboxManager::ensure_ready] could not make rootfs root writable: {e}"
+                        );
+                    }
+                }
+            }
+        }
+
+        // Clear a stale pacman lock left by a previously-killed run (a scan whose
+        // pacman was interrupted by a timeout/crash leaves `/var/lib/pacman/db.lck`
+        // behind, which wedges EVERY later `pacman` with "unable to lock database"
+        // until it's removed). pacman itself never auto-clears it. The interactive
+        // PTY shell already does this; do it here too so the command-execution path
+        // (execute_command -> tools) self-heals. Safe because SandboxManager runs
+        // one command at a time and provisioning is serialized by SETUP_LOCK.
+        let stale_lock = self.config.rootfs_dir().join("var/lib/pacman/db.lck");
+        if stale_lock.exists() {
+            tracing::warn!(
+                "[SandboxManager::ensure_ready] Removing stale pacman lock {}",
+                stale_lock.display()
+            );
+            let _ = std::fs::remove_file(&stale_lock);
         }
         Ok(())
     }

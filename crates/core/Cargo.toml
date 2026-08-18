@@ -18,6 +18,7 @@ async-trait = { workspace = true }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yml = { workspace = true }
 
 # Time
 chrono = { workspace = true }
@@ -30,6 +31,9 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+# Telemetry
+sentry = { workspace = true }
+
 # Utilities
 uuid = { workspace = true }
 dirs = { workspace = true }
@@ -39,6 +43,7 @@ regex = { workspace = true }
 syntect = { workspace = true }
 pulldown-cmark = { workspace = true }
 base64 = { workspace = true }
+html-escape = { workspace = true }
 
 # Strike48 Connector SDK
 strike48-connector = { workspace = true }
@@ -47,14 +52,27 @@ strike48-connector = { workspace = true }
 reqwest = { workspace = true }
 futures = { workspace = true }
 
+# WebSocket transport for the Absinthe conversationEvents subscription.
+# native-tls connector matches strikehub's ws_relay so the insecure-certs
+# dev flag maps to danger_accept_invalid_certs.
+tokio-tungstenite = { workspace = true, features = ["native-tls"] }
+native-tls = "0.2"
+
+# URL encoding
+urlencoding = "2.1"
+
+# CSPRNG for OAuth `state` generation (already present transitively via rustls).
+getrandom = "0.2"
+
 # Browser-based OAuth login (optional, desktop only)
 open = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 
 [dev-dependencies]
-pentest-tools = { path = "../tools" }
+pentest-tools = { path = "../tools", default-features = false }
 pentest-platform = { path = "../platform", features = ["desktop"] }
 tempfile = "3"
+wiremock = "0.6"
 # `test-util` (for `tokio::time::pause`/`start_paused`) is NOT part of tokio's
 # `full` feature, so enable it here for deterministic time in async tests.
 tokio = { workspace = true, features = ["test-util"] }

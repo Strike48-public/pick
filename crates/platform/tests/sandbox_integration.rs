@@ -5,19 +5,53 @@
 //! - Command execution as root inside the sandbox
 //! - Package installation via pacman
 //!
+//! They exercise the platform-agnostic sandbox entry point
+//! ([`pentest_platform::get_platform`] → [`CommandExec::execute_command`]), so
+//! the SAME tests run against whatever sandbox the target provides — WSL/bwrap/
+//! proot/Docker on desktop, proot on Android — rather than hard-coding one OS.
+//!
 //! Run with: `cargo test --test sandbox_integration -- --nocapture --ignored`
-//! (ignored by default because they download ~500MB rootfs)
+//! (ignored by default because they download a ~500MB rootfs / provision a
+//! distro). Gated to targets that actually have a command sandbox.
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(
+    test,
+    any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "android"
+    )
+))]
 mod sandbox_tests {
     use pentest_platform::CommandExec;
+    use std::sync::OnceLock;
     use std::time::Duration;
+    use tokio::sync::{Mutex, MutexGuard};
+
+    /// Every test in this module drives the SAME global sandbox rootfs (one
+    /// `/var/lib/pacman` DB, one `db.lck`). Rust runs tests in parallel, so
+    /// running them together makes concurrent `pacman` invocations collide on
+    /// the DB lock (`exit_code=1`) and one blocks until its 600s timeout. The
+    /// rootfs manager's SETUP_LOCK only serializes provisioning, not command
+    /// execution. Acquire this shared async guard at the top of each test so the
+    /// suite runs sandbox commands one at a time (a `--test-threads=1` equivalent
+    /// scoped to just these tests).
+    fn sandbox_guard() -> &'static Mutex<()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD.get_or_init(|| Mutex::new(()))
+    }
+
+    async fn lock_sandbox() -> MutexGuard<'static, ()> {
+        sandbox_guard().lock().await
+    }
 
     /// Test that we can execute basic commands in the sandbox as root
     #[tokio::test]
     #[ignore = "downloads rootfs, run explicitly"]
     async fn test_sandbox_whoami() {
-        let platform = pentest_platform::desktop::DesktopPlatform;
+        let _guard = lock_sandbox().await;
+        let platform = pentest_platform::get_platform();
 
         let result = platform
             .execute_command("whoami", &[], Duration::from_secs(10))
@@ -38,7 +72,8 @@ mod sandbox_tests {
     #[tokio::test]
     #[ignore = "downloads rootfs, run explicitly"]
     async fn test_sandbox_pacman_sync() {
-        let platform = pentest_platform::desktop::DesktopPlatform;
+        let _guard = lock_sandbox().await;
+        let platform = pentest_platform::get_platform();
 
         // First ensure the sandbox is set up by running a simple command
         let _ = platform
@@ -62,7 +97,8 @@ mod sandbox_tests {
     #[tokio::test]
     #[ignore = "downloads rootfs and packages, run explicitly"]
     async fn test_sandbox_install_nmap() {
-        let platform = pentest_platform::desktop::DesktopPlatform;
+        let _guard = lock_sandbox().await;
+        let platform = pentest_platform::get_platform();
 
         // Sync databases first
         let sync_result = platform
@@ -122,7 +158,16 @@ mod sandbox_tests {
         );
     }
 
-    /// Comprehensive test: Install nmap, verify raw sockets work via execute_command and PTY
+    /// Comprehensive test: Install nmap, verify raw sockets work via execute_command and PTY.
+    ///
+    /// Desktop-only (linux/macos/windows): it drives the desktop `PtyShell`,
+    /// which lives in the `desktop` module and so is absent on android/ios.
+    /// `ShellMode::Proot` here is Pick's generic "run sandboxed" mode, NOT the
+    /// proot binary specifically — `PtyShell::spawn` routes it to whatever
+    /// backend the platform provides: bwrap/proot on Linux, WSL on Windows,
+    /// Docker on macOS (see `build_cmd_for_backend`). So the PTY path is
+    /// exercised on every desktop OS, not just Linux.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[tokio::test]
     #[ignore = "comprehensive end-to-end test, run explicitly"]
     async fn test_sandbox_nmap_raw_sockets_comprehensive() {
@@ -130,7 +175,8 @@ mod sandbox_tests {
         use pentest_platform::desktop::pty_shell::PtyShell;
         use std::io::{Read, Write};
 
-        let platform = pentest_platform::desktop::DesktopPlatform;
+        let _guard = lock_sandbox().await;
+        let platform = pentest_platform::get_platform();
 
         println!("=== Step 1: Install nmap via pacman ===");
 
@@ -187,47 +233,88 @@ mod sandbox_tests {
 
         println!("\n=== Step 3: Test nmap scan via PTY shell ===");
 
-        // Spawn sandboxed PTY shell
+        // Spawn sandboxed PTY shell (WSL on Windows, bwrap/proot on Linux,
+        // Docker on macOS — PtyShell::spawn picks the backend).
         let pty = PtyShell::spawn(24, 80, None, None, ShellMode::Proot)
             .await
             .expect("Failed to spawn PTY shell");
 
-        // Get reader and writer
         let mut reader = pty.try_clone_reader().expect("Failed to get PTY reader");
         let mut writer = pty.take_writer().expect("Failed to get PTY writer");
 
-        // Give shell time to initialize
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        // The PtyShell reader is a plain blocking `Read` with no timeout, and
+        // shells differ in WHEN they first emit (a Linux bwrap/proot PTY prints a
+        // prompt immediately; the Windows WSL2 PTY may not), so a bare
+        // `reader.read()` can block forever — that hung this test on Windows.
+        // Instead, pump the reader on a dedicated thread into a channel and
+        // consume with a wall-clock deadline until the sentinel appears. Portable
+        // across Linux/WSL2/Docker and can never hang the suite.
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let reader_thread = std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break, // EOF: shell closed
+                    Ok(n) => {
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break; // receiver gone (test finished)
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
 
-        // Read initial prompt/output
-        let mut initial_buf = vec![0u8; 4096];
-        let _ = reader.read(&mut initial_buf);
-        println!(
-            "Initial PTY output: {}",
-            String::from_utf8_lossy(&initial_buf)
-        );
-
-        // Run nmap command in PTY (TCP connect scan works without raw sockets)
-        let cmd = "nmap -sT 127.0.0.1 -p 22; echo NMAP_DONE\n";
+        // Run a TCP connect scan (no raw sockets needed) and mark completion with
+        // a unique sentinel we can wait for.
         writer
-            .write_all(cmd.as_bytes())
+            .write_all(b"nmap -sT 127.0.0.1 -p 22; echo NMAP_DONE_SENTINEL\n")
             .expect("Failed to write to PTY");
+        writer.flush().expect("Failed to flush PTY");
 
-        // Wait for command to complete and read output
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        // Accumulate output until the sentinel shows up or we hit the deadline.
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let mut collected = String::new();
+        while std::time::Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(chunk) => {
+                    collected.push_str(&String::from_utf8_lossy(&chunk));
+                    if collected.contains("NMAP_DONE_SENTINEL") {
+                        break;
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
 
-        let mut output = vec![0u8; 8192];
-        let n = reader.read(&mut output).unwrap_or(0);
-        let output_str = String::from_utf8_lossy(&output[..n]);
+        // Tell the interactive shell to exit so the PTY closes and the reader
+        // thread hits EOF. `/bin/bash -l -i` does NOT terminate just from stdin
+        // closing (and PtyShell has no kill() and no Drop that reaps the child),
+        // so `exit` is what actually ends it — without it the reader thread
+        // blocks on read() forever and a join() here would deadlock.
+        let _ = writer.write_all(b"exit\n");
+        let _ = writer.flush();
+        drop(writer);
+        drop(pty);
+        // Reap the reader thread, but never block the test on it: if the shell
+        // somehow doesn't close, joining in a bounded side-thread lets the test
+        // finish and report rather than hang the whole suite (the observed
+        // Windows failure mode). The child dies with the test process anyway.
+        let joiner = std::thread::spawn(move || {
+            let _ = reader_thread.join();
+        });
+        let join_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !joiner.is_finished() && std::time::Instant::now() < join_deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
 
-        println!("PTY nmap output:\n{}", output_str);
-
+        println!("PTY output:\n{collected}");
         assert!(
-            output_str.contains("Nmap scan report")
-                || output_str.contains("Starting Nmap")
-                || output_str.contains("NMAP_DONE"),
-            "PTY nmap should run (got: {})",
-            output_str
+            collected.contains("Nmap scan report")
+                || collected.contains("Starting Nmap")
+                || collected.contains("NMAP_DONE_SENTINEL"),
+            "PTY nmap should run (got: {collected})",
         );
 
         println!("\n=== SUCCESS: Nmap works in both execute_command and PTY shell! ===");
@@ -237,7 +324,8 @@ mod sandbox_tests {
     #[tokio::test]
     #[ignore = "downloads rootfs and updates all packages, run explicitly"]
     async fn test_sandbox_pacman_update() {
-        let platform = pentest_platform::desktop::DesktopPlatform;
+        let _guard = lock_sandbox().await;
+        let platform = pentest_platform::get_platform();
 
         // Full system update with --overwrite to handle any conflicts
         let result = platform

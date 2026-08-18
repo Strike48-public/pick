@@ -50,3 +50,31 @@ url = "2.5"
 urlencoding = "2.1"
 uuid = { workspace = true }
 default-net = "0.22" # Network interface detection for safety checks
+
+# Embedded JavaScript engine for the `run_js` tool. QuickJS is a bytecode
+# interpreter (no JIT), so it runs inside the iOS app sandbox. See the two
+# target-conditional rquickjs deps below — desktop/CI hosts use the FFI
+# bindings rquickjs-sys ships prebuilt (no libclang needed, so the common
+# build "just works"), while iOS/Android — for which no prebuilt bindings are
+# shipped — generate them at build time via bindgen. The nix devShells provide
+# the libclang + target sysroot those cross-builds need (see flake.nix).
+
+# Desktop / CI / macOS hosts: rquickjs-sys ships prebuilt bindings.
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+rquickjs = { version = "0.9", features = ["loader"] }
+
+# iOS / Android cross-targets: no prebuilt bindings — generate via bindgen.
+[target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
+rquickjs = { version = "0.9", features = ["loader", "bindgen"] }
+
+# aarch64 Windows: rquickjs-sys 0.9 ships prebuilt bindings for
+# x86_64-pc-windows-msvc but NOT aarch64-pc-windows-msvc, so the prebuilt path
+# fails to `include!` a nonexistent bindings file. Generate via bindgen instead
+# (needs libclang, provided by the LLVM/clang install on the arm64 build host).
+# Cargo unions features across target tables, so this arm64-Windows entry adds
+# `bindgen` on top of the `loader` from the desktop table above.
+[target.'cfg(all(target_arch = "aarch64", target_os = "windows"))'.dependencies]
+rquickjs = { version = "0.9", features = ["loader", "bindgen"] }
+
+[dev-dependencies]
+tempfile = "3"

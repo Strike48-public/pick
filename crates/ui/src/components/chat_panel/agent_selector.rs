@@ -5,7 +5,7 @@
 //! button, and optional close button on the right.
 
 use dioxus::prelude::*;
-use pentest_core::matrix::{AgentInfo, ConversationInfo};
+use pentest_core::matrix::{AgentInfo, ConnectionState, ConversationInfo};
 
 use super::constants::SUGGESTED_ACTIONS;
 use super::render::format_relative_time;
@@ -43,6 +43,12 @@ pub struct ChatHeaderProps {
     pub is_full: bool,
     /// Called when the close button is clicked (overlay mode only).
     pub on_close: EventHandler<()>,
+    /// Live subscription connection state — drives the "Reconnecting..." chip
+    /// and the "Retry" button (shown on `Failed`). History stays rendered
+    /// regardless; this is a non-blocking status affordance.
+    pub connection_state: Signal<ConnectionState>,
+    /// Respawn the subscription (bumps the retry_tick the resource keys on).
+    pub on_retry: EventHandler<()>,
 }
 
 /// Chat panel header with title, history toggle, and segmented new-chat button.
@@ -59,6 +65,7 @@ pub fn ChatHeader(props: ChatHeaderProps) -> Element {
         .unwrap_or_default();
 
     let ready = !props.api_url_empty && !props.token_empty && (props.agents_loaded)();
+    let conn = (props.connection_state)();
 
     rsx! {
         // Click-outside backdrop for agent menu
@@ -73,6 +80,10 @@ pub fn ChatHeader(props: ChatHeaderProps) -> Element {
             h3 { "Chat" }
 
             div { class: "chat-header-actions",
+                // Connection status chip: subtle when reconnecting, offers a
+                // Retry when the transport has given up. History stays rendered.
+                ReconnectingChip { connection_state: conn, on_retry: props.on_retry }
+
                 if !ready {
                     span { class: "chat-loading-sm",
                         if props.api_url_empty {
@@ -201,11 +212,24 @@ pub struct ChatHeaderCtx {
     pub show_history: bool,
     pub api_url_empty: bool,
     pub token_empty: bool,
+    /// Recent conversations for the selected agent, so surfaces outside the chat
+    /// panel (e.g. the Easy Mode drawer's "Recent chats") can list and open them
+    /// without re-querying.
+    pub conversations: Vec<ConversationInfo>,
     pub on_agent_select: EventHandler<String>,
     pub on_new_chat: EventHandler<()>,
     pub on_toggle_history: EventHandler<()>,
+    /// Refresh the recent-conversations list WITHOUT opening the history
+    /// dropdown (for the Easy Mode drawer, which renders its own list).
+    pub on_refresh_conversations: EventHandler<()>,
+    /// Open a past conversation by id (drives the same path as the history list).
+    pub on_select_conversation: EventHandler<String>,
     pub on_validate_findings: EventHandler<()>,
     pub on_generate_report: EventHandler<()>,
+    /// Live subscription connection state for the "Reconnecting..." chip.
+    pub connection_state: ConnectionState,
+    /// Respawn the subscription from the desktop header bar's Retry button.
+    pub on_retry: EventHandler<()>,
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +258,9 @@ pub fn ChatHeaderActions(ctx: ChatHeaderCtx) -> Element {
                 onclick: move |_| agent_menu_open.set(false),
             }
         }
+
+        // Connection status chip (mirrors the overlay header).
+        ReconnectingChip { connection_state: ctx.connection_state, on_retry: ctx.on_retry }
 
         if !ready {
             span { class: "chat-loading-sm",
@@ -320,6 +347,48 @@ pub fn ChatHeaderActions(ctx: ChatHeaderCtx) -> Element {
 }
 
 // ---------------------------------------------------------------------------
+// ReconnectingChip
+// ---------------------------------------------------------------------------
+
+/// Props for [`ReconnectingChip`].
+#[derive(Props, Clone, PartialEq)]
+pub struct ReconnectingChipProps {
+    /// Current transport connection state.
+    pub connection_state: ConnectionState,
+    /// Respawn the subscription (shown as a Retry button on `Failed`).
+    pub on_retry: EventHandler<()>,
+}
+
+/// Subtle chat-header status chip for the live subscription.
+///
+/// Renders nothing while `Connecting`/`Live` (the happy path). On
+/// `Reconnecting` it shows a muted "Reconnecting..." label; on `Failed` it adds
+/// a "Retry" button that respawns the subscription. History stays rendered
+/// throughout — this is a non-blocking affordance, not a modal.
+#[component]
+pub fn ReconnectingChip(props: ReconnectingChipProps) -> Element {
+    match props.connection_state {
+        ConnectionState::Reconnecting => rsx! {
+            span { class: "chat-reconnecting", "Reconnecting..." }
+        },
+        ConnectionState::Failed => rsx! {
+            span { class: "chat-reconnecting chat-reconnecting--failed",
+                "Disconnected"
+                button {
+                    class: "chat-reconnecting__retry",
+                    onclick: {
+                        let retry = props.on_retry;
+                        move |_| retry.call(())
+                    },
+                    "Retry"
+                }
+            }
+        },
+        ConnectionState::Connecting | ConnectionState::Live => rsx! {},
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SuggestedActions
 // ---------------------------------------------------------------------------
 
@@ -334,6 +403,9 @@ pub struct SuggestedActionsProps {
     pub conversation_list: Signal<Vec<ConversationInfo>>,
     /// Called when the user clicks a recent conversation.
     pub on_select_conversation: EventHandler<String>,
+    /// Easy Mode: lay-friendly prompts + greeting instead of the expert set.
+    #[props(default)]
+    pub easy_mode: bool,
 }
 
 /// Grid of suggested quick-action buttons + recent conversations shown in the empty-chat state.
@@ -341,6 +413,16 @@ pub struct SuggestedActionsProps {
 pub fn SuggestedActions(props: SuggestedActionsProps) -> Element {
     let selected_agent = props.selected_agent;
     let conversation_list = props.conversation_list;
+    let easy_mode = props.easy_mode;
+
+    // In easy mode the `.easy-home` hero (scan card + resume + recent list, in
+    // easy_mode.rs) IS the empty-state UI and is rendered on top of this
+    // always-mounted ChatPanel. Rendering this centered `.chat-empty` greeting
+    // too made the italic "…your network." text overlap the hero/cards. So
+    // render nothing here in easy mode — easy-home owns the empty state.
+    if easy_mode {
+        return rsx! {};
+    }
 
     rsx! {
         div { class: "chat-empty",

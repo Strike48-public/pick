@@ -544,6 +544,13 @@ impl BaseConnector for PickConnector {
                     let ws_connections = self.ws_connections.clone();
                     let handle_clone = handle.clone();
                     tokio::spawn(async move {
+                        let mut ws_bridge_frames: u64 = 0;
+                        let mut ws_bridge_bytes: u64 = 0;
+                        let mut ws_bridge_first = true;
+                        tracing::info!(
+                            "[ws-bridge] backend->platform loop started for {}",
+                            conn_id_read
+                        );
                         while let Some(msg_result) = ws_source.next().await {
                             match msg_result {
                                 Ok(msg) => {
@@ -568,6 +575,18 @@ impl BaseConnector for PickConnector {
                                         WsMessage::Frame(_) => continue,
                                     };
 
+                                    if ws_bridge_first {
+                                        tracing::info!(
+                                            "[ws-bridge] FIRST backend frame for {} ({:?}, {} b64 bytes)",
+                                            conn_id_read,
+                                            frame_type,
+                                            data.len()
+                                        );
+                                        ws_bridge_first = false;
+                                    }
+                                    ws_bridge_frames += 1;
+                                    ws_bridge_bytes += data.len() as u64;
+
                                     if let Err(e) = handle_clone
                                         .send_ws_frame(&conn_id_read, frame_type, data)
                                         .await
@@ -586,6 +605,12 @@ impl BaseConnector for PickConnector {
                                 }
                             }
                         }
+                        tracing::info!(
+                            "[ws-bridge] backend->platform loop ended for {} ({} frames, {} b64 bytes total)",
+                            conn_id_read,
+                            ws_bridge_frames,
+                            ws_bridge_bytes
+                        );
                         ws_connections.remove(&conn_id_read);
                     });
                 }

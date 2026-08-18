@@ -10,9 +10,22 @@ default:
 
 # ============ Desktop ============
 
+# Sentry telemetry, baked at build time via option_env! (telemetry.rs). The DSN
+# is read from the AMBIENT env (empty default -> telemetry compiled to a no-op,
+# unchanged from before), so it is NOT published in this public repo — export
+# PICK_SENTRY_DSN (e.g. in your shell or .env) to enable dev telemetry. A Sentry
+# DSN is a write-only client ingest key, not a secret, but keeping it out of the
+# committed file avoids quota abuse from the public repo. Dev/branch builds
+# report to the `dev` environment so they never mix with production traffic
+# (release CI overrides STRIKE48_SENTRY_ENV=production). cargo tracks these in
+# its fingerprint (env! deps), so a changed value rebuilds without a build.rs.
+sentry_dsn := env_var_or_default("PICK_SENTRY_DSN", "")
+sentry_env := env_var_or_default("STRIKE48_SENTRY_ENV", "dev")
+
 # Build desktop app
 build-desktop:
-    cargo build --package pentest-desktop
+    PICK_SENTRY_DSN="{{sentry_dsn}}" STRIKE48_SENTRY_ENV="{{sentry_env}}" \
+        cargo build --package pentest-desktop
 
 # Build desktop app (release)
 build-desktop-release:
@@ -369,7 +382,8 @@ plg-down *ARGS:
 
 # Build web app
 build-web:
-    cargo build --package pentest-web
+    PICK_SENTRY_DSN="{{sentry_dsn}}" STRIKE48_SENTRY_ENV="{{sentry_env}}" \
+        cargo build --package pentest-web
 
 # Build web app (release)
 build-web-release:
@@ -470,7 +484,7 @@ emulator-list:
 # every `dx build` and BEFORE every gradle invocation. The recipe verifies the
 # additions are actually present and aborts loudly if not — silently dropping
 # the kotlin module produces a runtime ClassNotFoundException for
-# `com.strike48.pentest_connector.ConnectorBridge` that's painful to diagnose.
+# `com.strike48.pick.ConnectorBridge` that's painful to diagnose.
 _inject-android-lib proj:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -496,6 +510,28 @@ _inject-android-lib proj:
         exit 1
     fi
 
+    # Opt out of Android 15's forced edge-to-edge. dx regenerates styles.xml on
+    # every build with a plain NoActionBar theme; on targetSdk 35 (Android 15)
+    # that makes the WebView draw UNDER the status bar, so the OS clock/battery
+    # overlap Pick's brand bar. env(safe-area-inset-top) resolves to 0 in this
+    # WebView (see mobile.css), so CSS can't compensate — we opt out at the theme
+    # level, restoring the inset window the layout assumes on iOS and Android <=14.
+    # windowOptOutEdgeToEdgeEnforcement is honored on API 35 and ignored below it.
+    styles="{{proj}}/app/src/main/res/values/styles.xml"
+    if [ -f "$styles" ] && ! grep -q "windowOptOutEdgeToEdgeEnforcement" "$styles"; then
+        cat > "$styles" <<'XML'
+    <resources>
+
+        <!-- Base application theme. -->
+        <style name="AppTheme" parent="@style/Theme.AppCompat.Light.NoActionBar">
+            <!-- Opt out of Android 15 forced edge-to-edge so the WebView stays
+                 below the status bar (patched by justfile _inject-android-lib). -->
+            <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+        </style>
+    </resources>
+    XML
+    fi
+
     # Copy proot, busybox, and dependencies into jniLibs
     for arch in android-jniLibs/*/; do
         abi=$(basename "$arch")
@@ -505,6 +541,75 @@ _inject-android-lib proj:
         cp -n "$arch"lib*.so "$dest/" 2>/dev/null || true
         cp -n "$arch"lib*.so.* "$dest/" 2>/dev/null || true
     done
+
+    # Allow the dx WebView to reach the localhost TCP LiveView server
+    # (http://127.0.0.1:3030). The Dioxus WebView renders under a custom scheme;
+    # without these cross-origin settings the shell's fetch/WebSocket to
+    # 127.0.0.1:3030 is blocked. dx regenerates RustWebView.kt every build, so
+    # (like the android-lib injection) this must run after dx and be idempotent.
+    # android.webkit.* is already imported in the generated file, so
+    # WebSettings.MIXED_CONTENT_ALWAYS_ALLOW resolves without a new import.
+    webview_file="{{proj}}/app/src/main/kotlin/dev/dioxus/main/RustWebView.kt"
+    anchor="settings.javaScriptCanOpenWindowsAutomatically = true"
+    if [ ! -f "$webview_file" ]; then
+        echo "ERROR: generated RustWebView.kt not found at $webview_file" >&2
+        exit 1
+    fi
+    if ! grep -q "MIXED_CONTENT_ALWAYS_ALLOW" "$webview_file"; then
+        if ! grep -qF "$anchor" "$webview_file"; then
+            echo "ERROR: RustWebView.kt anchor not found ('$anchor'); dx template changed." >&2
+            exit 1
+        fi
+        # Insert the four settings immediately after the anchor line. Use awk
+        # (no heredoc): every line of a just recipe body must be indented, and a
+        # column-0 heredoc body makes just's own parser choke before bash ever
+        # runs. awk keeps this to a single indented invocation.
+        awk -v anchor="$anchor" '
+            { print }
+            index($0, anchor) {
+                print "        settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW"
+                print "        @Suppress(\"DEPRECATION\")"
+                print "        settings.allowUniversalAccessFromFileURLs = true"
+                print "        settings.allowContentAccess = true"
+                print "        settings.allowFileAccess = true"
+            }
+        ' "$webview_file" > "$webview_file.tmp" && mv "$webview_file.tmp" "$webview_file"
+    fi
+    if ! grep -q "MIXED_CONTENT_ALWAYS_ALLOW" "$webview_file"; then
+        echo "ERROR: failed to inject WebView cross-origin settings into $webview_file" >&2
+        exit 1
+    fi
+
+    # Copy restty.js into the APK assets so the WebView asset path can serve it
+    # (the LiveView server also serves it over HTTP, this is the belt-and-braces
+    # asset copy the original Android shell shipped).
+    assets_dir="{{proj}}/app/src/main/assets/assets"
+    mkdir -p "$assets_dir"
+    cp crates/ui/src/assets/restty.js "$assets_dir/restty.js"
+
+    # Replace dx's stock (green-robot) launcher icon with the strike48 brand
+    # icon. dx regenerates res/mipmap-* on every build, so — like the other
+    # patches here — this runs after `dx build` and is idempotent. The brand set
+    # (apps/mobile/icons/res, regenerate via apps/mobile/icons/gen-android-icons.sh)
+    # uses dx's EXACT filenames (ic_launcher.webp / _round.webp / _foreground.webp
+    # + the adaptive XML + background color), so this copy overwrites dx's art in
+    # place — no duplicate-resource error, no delete step needed.
+    icon_src="apps/mobile/icons/res"
+    res_dir="{{proj}}/app/src/main/res"
+    if [ ! -d "$icon_src" ]; then
+        echo "ERROR: brand icon set not found at $icon_src (run apps/mobile/icons/gen-android-icons.sh)" >&2
+        exit 1
+    fi
+    # Clear any launcher .png left in the generated res dir by an older build
+    # (we used to emit .png; dx never cleans stale output, so a leftover
+    # ic_launcher.png would collide with our ic_launcher.webp -> "Duplicate
+    # resources"). Harmless when absent.
+    find "$res_dir" -type f -name 'ic_launcher*.png' -delete 2>/dev/null || true
+    cp -r "$icon_src"/. "$res_dir"/
+    if [ ! -f "$res_dir/mipmap-xxxhdpi/ic_launcher.webp" ]; then
+        echo "ERROR: failed to inject brand launcher icon into $res_dir" >&2
+        exit 1
+    fi
 
 # Verify the produced APK contains the kotlin bridge class.
 #
@@ -520,9 +625,14 @@ _verify-android-apk apk:
         exit 1
     fi
     # APKs split classes across classes.dex, classes2.dex, etc. — scan all of them.
+    # NOTE: use `grep -c` (counts, reads to EOF), NOT `grep -q`. `grep -q` exits on
+    # the first match and closes the pipe, killing the upstream `strings` with
+    # SIGPIPE (exit 141); under `set -o pipefail` that turns a *successful* match on
+    # a large dex into a pipeline failure, so a correctly-built APK was reported as
+    # missing ConnectorBridge. Counting consumes the whole stream, so no SIGPIPE.
     found=0
     for dex in $(unzip -l "{{apk}}" 2>/dev/null | awk '/classes[0-9]*\.dex/ {print $4}'); do
-        if unzip -p "{{apk}}" "$dex" 2>/dev/null | strings | grep -q "ConnectorBridge"; then
+        if [[ "$(unzip -p "{{apk}}" "$dex" 2>/dev/null | strings | grep -c "ConnectorBridge")" -gt 0 ]]; then
             found=1
             break
         fi
@@ -577,6 +687,54 @@ build-android:
     # Unset global CC/CXX that would override the target-specific ones
     unset CC CXX
 
+    # Mobile is easy-mode-first: bake PICK_EASY_MODE at build time (mobile has no
+    # runtime env, and apps/mobile carries a neutral `easy_mode: false` literal so
+    # the env is the single source of the default). Override by exporting
+    # PICK_EASY_MODE=false before the build. The in-app Settings toggle wins over
+    # either at runtime.
+    export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
+    echo "PICK_EASY_MODE=$PICK_EASY_MODE"
+
+    # Bake the PLG target host so a debug install can sign in without manually
+    # typing a server (mobile has no runtime env; the host reaches the binary via
+    # option_env!("STRIKE48_HOST") — same mechanism release CI uses). NOT
+    # hardcoded to an operator-specific URL (CLAUDE.md): export STRIKE48_HOST
+    # before the build to set it. Absent, the app boots to the connect form
+    # (the escape hatch) instead of silently failing sign-in.
+    if [ -n "${STRIKE48_HOST:-}" ]; then
+        export STRIKE48_HOST
+        echo "STRIKE48_HOST=$STRIKE48_HOST (baked)"
+    else
+        echo "STRIKE48_HOST not set — app will show the connect form (set it to bake a default)"
+    fi
+
+    # Dev-only: bake MATRIX_TLS_INSECURE so a debug build can talk to a *.test
+    # server with a self-signed / private-CA cert (main.rs reads it via
+    # option_env! -> client uses danger_accept_invalid_certs). Without it, HTTPS
+    # to plg.strike48.test fails with "certificate verify failed" and the app
+    # shows "Connection failed". NEVER set this for a release/store build — real
+    # hosts (studio.strike48.com) have valid certs.
+    if [ -n "${MATRIX_TLS_INSECURE:-}" ]; then
+        export MATRIX_TLS_INSECURE
+        echo "MATRIX_TLS_INSECURE=$MATRIX_TLS_INSECURE (baked — dev only)"
+    fi
+
+    # Bake Sentry telemetry (option_env! in telemetry.rs). DSN comes from the
+    # AMBIENT env (empty -> no-op, so nothing is published in this public repo);
+    # export PICK_SENTRY_DSN to enable. Dev/branch builds report to the `dev`
+    # environment by default so they never mix with production (release CI sets
+    # STRIKE48_SENTRY_ENV=production). A DSN is a write-only ingest key, not a
+    # secret, but kept out of the committed file to avoid public quota abuse.
+    if [ -n "${PICK_SENTRY_DSN:-}" ]; then
+        export PICK_SENTRY_DSN
+        export STRIKE48_SENTRY_ENV="${STRIKE48_SENTRY_ENV:-dev}"
+        echo "PICK_SENTRY_DSN baked (env=$STRIKE48_SENTRY_ENV)"
+    fi
+
+    # Drop dev debuginfo — large disk the APK doesn't need. Overridable; output
+    # correctness is unchanged.
+    export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
+
     # Build each Rust target. Without --target, dx builds only the host arch
     # (x86_64) and gradle silently packages stale arm64 .so files left over
     # from previous successful builds — physical devices then run obsolete
@@ -584,21 +742,21 @@ build-android:
     targets="${ANDROID_TARGETS:-aarch64-linux-android x86_64-linux-android}"
     for target in $targets; do
         echo "==> Building Rust for $target..."
-        {{dx}} build --platform android --package pentest-mobile --target "$target"
+        {{dx}} build --platform android --package pick --target "$target"
     done
 
     # Re-inject AFTER dx (which regenerates settings.gradle and build.gradle.kts).
-    just _inject-android-lib target/dx/pentest-mobile/debug/android/app
+    just _inject-android-lib target/dx/pick/debug/android/app
 
     # `clean` is required: gradle's incremental task cache doesn't notice when
     # `_inject-android-lib` adds the kotlin module (settings.gradle changes
     # don't invalidate downstream task fingerprints), so without clean it can
     # silently package a stale APK that omits ConnectorBridge.
-    pushd target/dx/pentest-mobile/debug/android/app > /dev/null
+    pushd target/dx/pick/debug/android/app > /dev/null
     ./gradlew clean assembleDebug
     popd > /dev/null
 
-    just _verify-android-apk target/dx/pentest-mobile/debug/android/app/app/build/outputs/apk/debug/app-debug.apk
+    just _verify-android-apk target/dx/pick/debug/android/app/app/build/outputs/apk/debug/app-debug.apk
 
 # Build mobile app for Android (release)
 #
@@ -626,34 +784,54 @@ build-android-release:
     # Unset global CC/CXX that would override the target-specific ones
     unset CC CXX
 
+    # Mobile is easy-mode-first: bake PICK_EASY_MODE at build time (see the debug
+    # build-android recipe). Override with PICK_EASY_MODE=false.
+    export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
+    echo "PICK_EASY_MODE=$PICK_EASY_MODE"
+
     # Build each Rust target. See build-android comment for why this loop matters.
     targets="${ANDROID_TARGETS:-aarch64-linux-android x86_64-linux-android}"
     for target in $targets; do
         echo "==> Building Rust for $target (release)..."
-        {{dx}} build --platform android --package pentest-mobile --release --target "$target"
+        {{dx}} build --platform android --package pick --release --target "$target"
     done
 
     # Re-inject AFTER dx (which regenerates settings.gradle and build.gradle.kts).
-    just _inject-android-lib target/dx/pentest-mobile/release/android/app
+    just _inject-android-lib target/dx/pick/release/android/app
 
     # See build-android comment for why `clean` is required.
-    pushd target/dx/pentest-mobile/release/android/app > /dev/null
+    pushd target/dx/pick/release/android/app > /dev/null
     ./gradlew clean assembleRelease
     popd > /dev/null
 
-    just _verify-android-apk target/dx/pentest-mobile/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk
+    just _verify-android-apk target/dx/pick/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk
 
 # Build, install, and launch Android app on connected device/emulator
 run-android:
     #!/usr/bin/env bash
     set -euo pipefail
     just build-android
-    APK="target/dx/pentest-mobile/debug/android/app/app/build/outputs/apk/debug/app-debug.apk"
+    APK="target/dx/pick/debug/android/app/app/build/outputs/apk/debug/app-debug.apk"
     adb install -r "$APK"
-    adb shell am force-stop com.strike48.pentest_connector
-    adb shell am start -n com.strike48.pentest_connector/dev.dioxus.main.MainActivity
+    adb shell am force-stop com.strike48.pick
+    adb shell am start -n com.strike48.pick/dev.dioxus.main.MainActivity
 
-# Bundle mobile app for Android distribution
+# Bundle mobile app for Android distribution as an Android App Bundle (.aab).
+#
+# NOTE: we deliberately do NOT use `dx bundle` here. `dx bundle` regenerates the
+# Gradle project AND runs Gradle in a single step, leaving no window to inject
+# the `android-lib` module (ConnectorBridge etc.) — the resulting bundle would
+# build but crash at runtime with ClassNotFoundException. Instead we mirror
+# `build-android-release`: `dx build` per target, then `_inject-android-lib`,
+# then drive Gradle's `bundleRelease` task ourselves.
+#
+# The .aab is UNSIGNED (release signing needs the Play upload key we don't have
+# yet). It is the distribution deliverable for issue #279; install-testing uses
+# `bundle-android-universal-apk` (below), which converts it to an installable
+# APK via bundletool + a throwaway debug key.
+#
+# By default builds both arm64 and x86_64. Override with:
+#   ANDROID_TARGETS="aarch64-linux-android" just bundle-android
 bundle-android:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -676,7 +854,80 @@ bundle-android:
     # Unset global CC/CXX that would override the target-specific ones
     unset CC CXX
 
-    {{dx}} bundle --platform android --package pentest-mobile
+    # Mobile is easy-mode-first: bake PICK_EASY_MODE at build time (see the debug
+    # build-android recipe). Override with PICK_EASY_MODE=false.
+    export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
+    echo "PICK_EASY_MODE=$PICK_EASY_MODE"
+
+    # Build each Rust target. See build-android comment for why this loop matters.
+    targets="${ANDROID_TARGETS:-aarch64-linux-android x86_64-linux-android}"
+    for target in $targets; do
+        echo "==> Building Rust for $target (release, aab)..."
+        {{dx}} build --platform android --package pick --release --target "$target"
+    done
+
+    # Re-inject AFTER dx (which regenerates settings.gradle and build.gradle.kts).
+    just _inject-android-lib target/dx/pick/release/android/app
+
+    # `clean` is required for the same reason as build-android: settings.gradle
+    # changes don't invalidate Gradle's task fingerprints, so a stale bundle
+    # missing android-lib could otherwise be produced.
+    pushd target/dx/pick/release/android/app > /dev/null
+    ./gradlew clean bundleRelease
+    popd > /dev/null
+
+    AAB=target/dx/pick/release/android/app/app/build/outputs/bundle/release/app-release.aab
+    if [ ! -f "$AAB" ]; then
+        echo "ERROR: expected AAB not found at $AAB" >&2
+        exit 1
+    fi
+    echo "AAB built: $AAB ($(wc -c < "$AAB") bytes)"
+
+# Convert the release AAB into an installable universal APK for testing.
+#
+# An .aab cannot be installed with `adb install`. bundletool expands it into an
+# APK set; `--mode=universal` yields a single APK covering all ABIs. bundletool
+# requires the APK set to be signed, so we generate a THROWAWAY debug keystore
+# (never for distribution — purely to make the artifact installable). Run
+# `just bundle-android` first (or CI runs both in sequence).
+bundle-android-universal-apk:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    AAB=target/dx/pick/release/android/app/app/build/outputs/bundle/release/app-release.aab
+    if [ ! -f "$AAB" ]; then
+        echo "ERROR: $AAB not found — run 'just bundle-android' first." >&2
+        exit 1
+    fi
+
+    OUT=target/dx/pick/release/android
+    KEYSTORE="$OUT/debug-universal.keystore"
+    APKS="$OUT/app-release-universal.apks"
+    APK="$OUT/pick-android-universal.apk"
+
+    # Throwaway debug keystore (regenerated each run; NOT for distribution).
+    rm -f "$KEYSTORE"
+    keytool -genkeypair -v \
+        -keystore "$KEYSTORE" \
+        -storepass android -keypass android \
+        -alias androiddebugkey \
+        -keyalg RSA -keysize 2048 -validity 10000 \
+        -dname "CN=Pick Debug, OU=CI, O=Strike48, L=NA, S=NA, C=US"
+
+    rm -f "$APKS"
+    bundletool build-apks \
+        --bundle="$AAB" \
+        --output="$APKS" \
+        --mode=universal \
+        --ks="$KEYSTORE" \
+        --ks-pass=pass:android \
+        --ks-key-alias=androiddebugkey \
+        --key-pass=pass:android
+
+    # The .apks archive is a zip; the universal APK is at universal.apk inside it.
+    rm -f "$APK"
+    unzip -p "$APKS" universal.apk > "$APK"
+    echo "Universal APK: $APK ($(wc -c < "$APK") bytes)"
 
 # ============ Proot (Termux-patched) ============
 
@@ -701,8 +952,10 @@ build-syscall-compat:
     echo "Done! syscall_compat shims built in android-jniLibs/"
 
 # Termux package versions
-proot_version := "5.1.107-70"
+proot_version := "5.1.107.91"
 talloc_version := "2.4.3"
+busybox_version := "1.38.0-1"
+shmem_version := "0.7"
 termux_repo := "https://packages.termux.dev/apt/termux-main/pool/main"
 
 # Download Termux proot + dependencies for Android (x86_64 + arm64)
@@ -727,7 +980,7 @@ fetch-proot:
 
         # Download and extract proot
         echo "Downloading proot {{proot_version}}..."
-        curl -sL "{{termux_repo}}/p/proot/proot_{{proot_version}}_${arch}.deb" -o "$TMP/proot_${arch}.deb"
+        curl -fSL --retry 3 "{{termux_repo}}/p/proot/proot_{{proot_version}}_${arch}.deb" -o "$TMP/proot_${arch}.deb"
         mkdir -p "$TMP/proot_${arch}"
         cd "$TMP/proot_${arch}"
         ar x "../proot_${arch}.deb"
@@ -740,7 +993,7 @@ fetch-proot:
 
         # Download and extract libtalloc (proot dependency)
         echo "Downloading libtalloc {{talloc_version}}..."
-        curl -sL "{{termux_repo}}/libt/libtalloc/libtalloc_{{talloc_version}}_${arch}.deb" -o "$TMP/talloc_${arch}.deb"
+        curl -fSL --retry 3 "{{termux_repo}}/libt/libtalloc/libtalloc_{{talloc_version}}_${arch}.deb" -o "$TMP/talloc_${arch}.deb"
         mkdir -p "$TMP/talloc_${arch}"
         cd "$TMP/talloc_${arch}"
         ar x "../talloc_${arch}.deb"
@@ -749,6 +1002,42 @@ fetch-proot:
         # Android only packages lib*.so files, so rename libtalloc.so.2 -> libtalloc.so
         cp -f "./data/data/com.termux/files/usr/lib/libtalloc.so.2" "$dest/libtalloc.so"
         echo "  -> libtalloc.so ($(wc -c < "$dest/libtalloc.so") bytes)"
+
+        # Download and extract busybox. The Android proot layer uses busybox
+        # applets (via symlinks it creates at runtime in the app files dir) to
+        # bootstrap/extract the BlackArch rootfs; without libbusybox.so the shell
+        # fails with "busybox binary not found". Packaged as lib*.so so the APK
+        # ships it in jniLibs like proot.
+        echo "Downloading busybox {{busybox_version}}..."
+        curl -fSL --retry 3 "{{termux_repo}}/b/busybox/busybox_{{busybox_version}}_${arch}.deb" -o "$TMP/busybox_${arch}.deb"
+        mkdir -p "$TMP/busybox_${arch}"
+        cd "$TMP/busybox_${arch}"
+        ar x "../busybox_${arch}.deb"
+        tar xf data.tar.xz
+        # Modern Termux busybox is split: usr/bin/busybox is a tiny (~4KB)
+        # launcher stub, while the real ~870KB applet multiplexer lives at
+        # usr/lib/libbusybox.so.<ver>. Ship the REAL binary as libbusybox.so
+        # (the proot layer runs it directly via applet symlinks).
+        bb_src=$(ls ./data/data/com.termux/files/usr/lib/libbusybox.so.* 2>/dev/null | grep -v '\.so$' | head -1)
+        if [ -z "$bb_src" ]; then
+            echo "ERROR: real busybox lib not found in package" >&2
+            exit 1
+        fi
+        cp -f "$bb_src" "$dest/libbusybox.so"
+        echo "  -> libbusybox.so ($(wc -c < "$dest/libbusybox.so") bytes)"
+
+        # Download and extract libandroid-shmem. proot links against it for SysV
+        # IPC (shmget/shmat), which bare Android lacks; without it proot fails at
+        # load with `library "libandroid-shmem.so" not found`. It is in proot's
+        # ELF NEEDED list, so it must ship in jniLibs alongside libproot.so.
+        echo "Downloading libandroid-shmem {{shmem_version}}..."
+        curl -fSL --retry 3 "{{termux_repo}}/liba/libandroid-shmem/libandroid-shmem_{{shmem_version}}_${arch}.deb" -o "$TMP/shmem_${arch}.deb"
+        mkdir -p "$TMP/shmem_${arch}"
+        cd "$TMP/shmem_${arch}"
+        ar x "../shmem_${arch}.deb"
+        tar xf data.tar.xz
+        cp -f "./data/data/com.termux/files/usr/lib/libandroid-shmem.so" "$dest/libandroid-shmem.so"
+        echo "  -> libandroid-shmem.so ($(wc -c < "$dest/libandroid-shmem.so") bytes)"
 
         # Use patchelf to change NEEDED from libtalloc.so.2 to libtalloc.so
         # This avoids needing symlinks at runtime (Android's /data/app is read-only)
@@ -781,14 +1070,106 @@ build-ios:
     #!/usr/bin/env bash
     set -euo pipefail
     unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH
-    {{dx}} build --platform ios --package pentest-mobile
+    # Mobile is easy-mode-first: bake PICK_EASY_MODE at build time so iOS matches
+    # Android (build-android does the same). Mobile has no runtime env, so the
+    # default must be baked via option_env!; without this iOS fell back to the
+    # neutral expert-mode literal in apps/mobile/src/main.rs. Override with
+    # PICK_EASY_MODE=false; the in-app Settings toggle still wins at runtime.
+    export PICK_EASY_MODE="${PICK_EASY_MODE:-true}"
+    echo "PICK_EASY_MODE=$PICK_EASY_MODE"
+
+    # Bake the PLG target host + dev TLS bypass the same way build-android does.
+    # Mobile has no runtime env; the host reaches the binary via
+    # option_env!("STRIKE48_HOST"), so without baking these a debug sim build
+    # can't reach a *.test server (private CA) and OAuth never advances past
+    # "Complete your sign-in in the browser". Export before the build to set
+    # them; absent, the app boots to the connect form. NEVER bake
+    # MATRIX_TLS_INSECURE into a release/store build (real hosts have valid certs).
+    if [ -n "${STRIKE48_HOST:-}" ]; then
+        export STRIKE48_HOST
+        echo "STRIKE48_HOST=$STRIKE48_HOST (baked)"
+    else
+        echo "STRIKE48_HOST not set — app will show the connect form (set it to bake a default)"
+    fi
+    if [ -n "${MATRIX_TLS_INSECURE:-}" ]; then
+        export MATRIX_TLS_INSECURE
+        echo "MATRIX_TLS_INSECURE=$MATRIX_TLS_INSECURE (baked — dev only)"
+    fi
+    # Bake Sentry from the ambient env (see build-android for the rationale).
+    if [ -n "${PICK_SENTRY_DSN:-}" ]; then
+        export PICK_SENTRY_DSN
+        export STRIKE48_SENTRY_ENV="${STRIKE48_SENTRY_ENV:-dev}"
+        echo "PICK_SENTRY_DSN baked (env=$STRIKE48_SENTRY_ENV)"
+    fi
+
+    {{dx}} build --platform ios --package pick
+    just _inject-ios-icon target/dx/pick/debug/ios/Pick.app
+    # Re-sign the app bundle with the keychain entitlement. Without a
+    # keychain-access-groups entitlement, SecItemAdd fails with -34018
+    # (errSecMissingEntitlement) and the chat token never persists, so the app
+    # re-prompts sign-in every launch. We do NOT use `dx --apple-entitlements`
+    # (it forces a real "Apple Development" identity we don't have on the sim
+    # box); instead ad-hoc re-sign (`-s -`), which the Simulator accepts.
+    just _sign-ios-entitlements target/dx/pick/debug/ios/Pick.app
+
+# Ad-hoc re-sign an iOS .app bundle with the keychain entitlement so keychain
+# access works on the Simulator (see build-ios). macOS-only (codesign).
+_sign-ios-entitlements app:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    codesign --force --sign - \
+        --entitlements apps/mobile/Pick.entitlements \
+        --timestamp=none \
+        "{{app}}"
+    echo "re-signed {{app}} with keychain entitlement:"
+    codesign -d --entitlements - "{{app}}" 2>&1 | grep -iE "keychain|access-group" || true
+
+# Compile the strike48 AppIcon into an iOS .app bundle. dx does not manage iOS
+# icons at all (no xcassets handling), so — like _inject-android-lib — we patch
+# the generated bundle after `dx build`: actool compiles
+# apps/mobile/icons/ios/AppIcon.appiconset into Assets.car + emits the
+# CFBundleIcons plist keys, which we merge into the app's Info.plist. macOS-only
+# (actool ships with Xcode). Idempotent: re-run after every `dx build`.
+_inject-ios-icon app:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    APP="{{app}}"
+    ICONSET="apps/mobile/icons/ios/AppIcon.appiconset"
+    if [ ! -d "$APP" ]; then echo "ERROR: app bundle not found: $APP" >&2; exit 1; fi
+    if [ ! -d "$ICONSET" ]; then echo "ERROR: appiconset not found: $ICONSET" >&2; exit 1; fi
+    ACTOOL="$(xcrun --find actool)"
+    # actool wants the .xcassets parent dir; wrap the appiconset in a temp catalog.
+    WORK="$(mktemp -d)"
+    trap 'rm -rf "$WORK"' EXIT
+    mkdir -p "$WORK/Assets.xcassets"
+    cp -R "$ICONSET" "$WORK/Assets.xcassets/"
+    # Minimal catalog Contents.json.
+    printf '{\n  "info" : { "author" : "xcode", "version" : 1 }\n}\n' > "$WORK/Assets.xcassets/Contents.json"
+    # Compile: emits Assets.car + AppIcon*.png into $APP and writes the icon
+    # plist keys (CFBundleIcons etc.) to a partial plist we merge next.
+    PARTIAL="$WORK/partial.plist"
+    "$ACTOOL" "$WORK/Assets.xcassets" \
+        --compile "$APP" \
+        --app-icon AppIcon \
+        --platform iphoneos \
+        --minimum-deployment-target 14.0 \
+        --output-partial-info-plist "$PARTIAL" \
+        --output-format human-readable-text
+    # Merge the icon keys into the app's Info.plist.
+    PLIST="$APP/Info.plist"
+    /usr/libexec/PlistBuddy -c "Merge $PARTIAL" "$PLIST"
+    if [ ! -f "$APP/Assets.car" ]; then
+        echo "ERROR: actool did not produce Assets.car in $APP" >&2
+        exit 1
+    fi
+    echo "Injected iOS AppIcon (Assets.car) into $APP"
 
 # Run mobile app on iOS simulator (debug, hot-reload)
 run-ios:
     #!/usr/bin/env bash
     set -euo pipefail
     unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH
-    {{dx}} serve --platform ios --package pentest-mobile
+    {{dx}} serve --platform ios --package pick
 
 # ============ All Targets ============
 

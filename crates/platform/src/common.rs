@@ -3,6 +3,15 @@
 //! This module extracts duplicated port-scanning and ARP-parsing code that was
 //! previously copy-pasted across android, desktop, and iOS implementations.
 
+/// Platform-agnostic SSDP/UPnP discovery (pure-std UDP M-SEARCH).
+pub mod ssdp;
+
+/// Platform-agnostic mDNS/DNS-SD discovery (pure-std UDP multicast).
+pub mod mdns;
+
+/// Shared outcome type for best-effort network discovery probes.
+pub mod probe;
+
 use crate::traits::{
     port_to_service, ArpEntry, HostReachability, PortState, ScanResult, ScannedPort,
 };

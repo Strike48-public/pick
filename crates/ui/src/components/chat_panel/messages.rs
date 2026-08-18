@@ -31,6 +31,25 @@ pub struct MessageListProps {
     pub conversation_list: Signal<Vec<ConversationInfo>>,
     /// Called when the user clicks a recent conversation in the empty state.
     pub on_select_conversation: EventHandler<String>,
+    /// Easy Mode: show lay-friendly empty-state prompts instead of the expert
+    /// red-team suggestions (the big "Scan My Network" card is the primary action).
+    #[props(default)]
+    pub easy_mode: bool,
+    /// True while the browser OAuth for the chat token is in flight (opened, not
+    /// yet returned). The empty state then tells the user to finish sign-in in
+    /// the browser rather than the misleading "Select an agent to begin".
+    #[props(default)]
+    pub awaiting_auth: bool,
+    /// True when the chat has no auth token yet and sign-in has not started.
+    /// The empty state then shows an explicit "Sign in to Strike48" button
+    /// instead of the misleading "Select an agent to begin". Used by the
+    /// expert full-page chat, which (unlike the lazy-OAuth expert sidebar) has
+    /// no other way to kick off sign-in.
+    #[props(default)]
+    pub needs_sign_in: bool,
+    /// Called when the user clicks the empty-state "Sign in to Strike48" button.
+    #[props(default)]
+    pub on_sign_in: EventHandler<()>,
 }
 
 /// Scrollable message list, thinking indicator, and scroll-to-bottom FAB.
@@ -100,10 +119,35 @@ pub fn MessageList(props: MessageListProps) -> Element {
                         on_send: props.on_send,
                         conversation_list: props.conversation_list,
                         on_select_conversation: props.on_select_conversation,
+                        easy_mode: props.easy_mode,
                     }
                 } else if selected_agent.read().is_none() {
-                    div { class: "chat-empty",
-                        p { "Select an agent to begin" }
+                    if props.awaiting_auth {
+                        div { class: "chat-empty chat-empty-auth",
+                            p { class: "chat-empty-auth-title", "Complete your sign-in in the browser" }
+                            p { class: "chat-empty-auth-sub", "We opened your browser to sign in to Strike48. Come back here once you're done — this will update automatically." }
+                        }
+                    } else if props.needs_sign_in {
+                        div { class: "chat-empty chat-empty-auth",
+                            p { class: "chat-empty-auth-title", "Chat needs sign-in" }
+                            p { class: "chat-empty-auth-sub", "Sign in to Strike48 to talk to the agent." }
+                            button {
+                                class: "button",
+                                "data-style": "primary",
+                                onclick: move |_| props.on_sign_in.call(()),
+                                "Sign in to Strike48"
+                            }
+                        }
+                    } else {
+                        // No agent selected and we're not mid/awaiting sign-in. The
+                        // user never picks an agent (the connector owns its one
+                        // agent), so "Select an agent" is nonsense — this state means
+                        // agent setup hasn't completed. An error_msg is surfaced
+                        // separately (chat-error) when creation actually failed; this
+                        // is the neutral in-between copy.
+                        div { class: "chat-empty",
+                            p { "Setting up your assistant…" }
+                        }
                     }
                 }
 
@@ -133,9 +177,14 @@ pub fn MessageList(props: MessageListProps) -> Element {
                 // Thinking indicator (standard)
                 if agent_thinking() {
                     div { class: "chat-bubble chat-bubble-agent chat-thinking",
-                        div { class: "chat-bubble-sender",
-                            if let Some(agent) = selected_agent.read().as_ref() {
-                                "{agent.name}"
+                        // Easy mode hides the connector/agent name above the
+                        // in-progress status — the user thinks of it as "Pick",
+                        // not "pentest-connector".
+                        if !props.easy_mode {
+                            div { class: "chat-bubble-sender",
+                                if let Some(agent) = selected_agent.read().as_ref() {
+                                    "{agent.name}"
+                                }
                             }
                         }
                         div { class: "chat-thinking-status",

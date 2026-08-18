@@ -1,9 +1,47 @@
 //! iOS platform implementation (stub)
 
+pub mod browser;
+pub mod keychain;
+pub mod network;
+pub mod oauth;
+pub mod pty_shell;
+pub mod share;
+pub mod system;
+
+pub use browser::open_url;
+pub use oauth::present_web_auth_session;
+pub use share::share_text;
+
 use crate::traits::*;
 use async_trait::async_trait;
 use pentest_core::error::{Error, Result};
 use std::time::Duration;
+
+/// Run `f` on the main dispatch queue (required for UIKit calls).
+pub(crate) fn dispatch_on_main<F: FnOnce() + Send + 'static>(f: F) {
+    use std::os::raw::c_void;
+
+    extern "C" {
+        static _dispatch_main_q: c_void;
+        fn dispatch_async_f(
+            queue: *const c_void,
+            context: *mut c_void,
+            work: extern "C" fn(*mut c_void),
+        );
+    }
+
+    extern "C" fn trampoline<F: FnOnce()>(ctx: *mut c_void) {
+        // SAFETY: ctx is the Box<F> we leaked below; reconstruct and call once.
+        let f = unsafe { Box::from_raw(ctx as *mut F) };
+        f();
+    }
+
+    let boxed = Box::into_raw(Box::new(f)) as *mut c_void;
+    // SAFETY: dispatching the boxed closure to the main queue; trampoline frees it.
+    unsafe {
+        dispatch_async_f(&_dispatch_main_q as *const c_void, boxed, trampoline::<F>);
+    }
+}
 
 /// iOS platform provider
 pub struct IosPlatform;
@@ -29,46 +67,26 @@ impl NetworkOps for IosPlatform {
     }
 
     async fn get_arp_table(&self) -> Result<Vec<ArpEntry>> {
-        Err(Error::PlatformNotSupported(
-            "get_arp_table not available on iOS".into(),
-        ))
+        network::get_arp_table().await
     }
 
-    async fn ssdp_discover(&self, _timeout_ms: u64) -> Result<Vec<SsdpDevice>> {
-        Err(Error::PlatformNotSupported(
-            "ssdp_discover not available on iOS".into(),
-        ))
+    async fn ssdp_discover(&self, timeout_ms: u64) -> Result<Vec<SsdpDevice>> {
+        network::ssdp_discover(timeout_ms).await
     }
 
-    async fn mdns_discover(
-        &self,
-        _service_type: &str,
-        _timeout_ms: u64,
-    ) -> Result<Vec<MdnsService>> {
-        Err(Error::PlatformNotSupported(
-            "mdns_discover not available on iOS (requires Bonjour framework)".into(),
-        ))
+    async fn mdns_discover(&self, service_type: &str, timeout_ms: u64) -> Result<Vec<MdnsService>> {
+        network::mdns_discover(service_type, timeout_ms).await
     }
 }
 
 #[async_trait]
 impl SystemInfo for IosPlatform {
     async fn get_device_info(&self) -> Result<DeviceInfo> {
-        Ok(DeviceInfo {
-            os_name: "iOS".to_string(),
-            os_version: String::new(),
-            hostname: "iphone".to_string(),
-            architecture: std::env::consts::ARCH.to_string(),
-            cpu_count: 1,
-            total_memory_mb: 0,
-            platform_specific: PlatformDetails::Ios,
-        })
+        system::get_device_info().await
     }
 
     async fn get_network_interfaces(&self) -> Result<Vec<NetworkInterface>> {
-        Err(Error::PlatformNotSupported(
-            "get_network_interfaces not available on iOS".into(),
-        ))
+        system::get_network_interfaces().await
     }
 
     async fn get_wifi_networks(&self, interface: Option<String>) -> Result<Vec<WifiNetwork>> {

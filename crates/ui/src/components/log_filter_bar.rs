@@ -22,14 +22,25 @@ pub fn LogFilterBar(
         set
     });
 
-    // Persist filter state to localStorage
+    // Persist filter state to localStorage.
+    //
+    // In Matrix's sandboxed iframe (CSP `sandbox` directive without
+    // `allow-same-origin`) the browser assigns the document an opaque
+    // origin, and any read of `localStorage` throws `SecurityError`.
+    // We wrap the JS in try/catch so the eval future resolves with an
+    // empty string instead of an uncaught exception in the browser
+    // console. Persistence then degrades to session-only (the levels
+    // default on every mount) — cosmetic, not correctness.
     let storage_key = "pick_log_filter_state";
 
     // Load from localStorage on mount
     use_effect(move || {
         spawn(async move {
-            if let Ok(result) =
-                document::eval(&format!("localStorage.getItem('{}')", storage_key)).await
+            if let Ok(result) = document::eval(&format!(
+                "try {{ return localStorage.getItem('{}') || ''; }} catch (e) {{ return ''; }}",
+                storage_key
+            ))
+            .await
             {
                 if let Some(stored) = result.as_str() {
                     if !stored.is_empty() && stored != "null" {
@@ -107,8 +118,13 @@ pub fn LogFilterBar(
         let stored_value = level_names.join(",");
 
         spawn(async move {
+            // See the read effect above for why this is wrapped in try/catch:
+            // in Matrix's opaque-origin iframe, `localStorage.setItem` throws
+            // `SecurityError` uncaught and shows a red error in the console
+            // on every toggle. The Rust-side `.await` already discards its
+            // result, but the browser-side exception still surfaces.
             let _ = document::eval(&format!(
-                "localStorage.setItem('{}', '{}')",
+                "try {{ localStorage.setItem('{}', '{}'); }} catch (e) {{ /* opaque-origin iframe: persistence not available */ }}",
                 storage_key, stored_value
             ))
             .await;
