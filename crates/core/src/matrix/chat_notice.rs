@@ -78,7 +78,6 @@ fn strip_port_suffix(rest: &str, port_suffix: &str) -> Option<String> {
     Some(format!("{}{}", stripped_host, path_part))
 }
 
-
 /// Build a `ChatNotice` describing why the conversation transitioned to
 /// `AgentStatus::Error`. Queries `tokenUsageStats` to distinguish a real
 /// limit-hit from a generic upstream blip; falls back to a generic notice

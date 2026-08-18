@@ -308,7 +308,6 @@ where
 #[cfg(feature = "browser-auth")]
 const NATIVE_OAUTH_SCHEME: &str = "com.strike48.pentest";
 
-
 /// Deliver an Android native-OAuth callback URL into the in-flight login.
 ///
 /// `OAuthCallbackActivity` calls this (via its JNI export in the app's native
@@ -953,7 +952,10 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
     // Carry the CSRF `state` on the loopback redirect so a token the server
     // hands back directly on `/callback?access_token=…` arrives with it
     // (issue #375). The custom percent-encoder below encodes `?`/`=`.
-    let redirect_url = format!("http://localhost:{}/callback?state={}", local_port, oauth_state);
+    let redirect_url = format!(
+        "http://localhost:{}/callback?state={}",
+        local_port, oauth_state
+    );
 
     // Percent-encode the redirect URL for the query parameter.
     // We only need to handle the chars present in our redirect URLs.
@@ -1674,5 +1676,4 @@ mod native_oauth_tests {
         );
         assert_eq!(rx.blocking_recv().unwrap(), "tok456");
     }
-
 }
