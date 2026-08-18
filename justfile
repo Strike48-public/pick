@@ -952,7 +952,7 @@ build-syscall-compat:
     echo "Done! syscall_compat shims built in android-jniLibs/"
 
 # Termux package versions
-proot_version := "5.1.107.89"
+proot_version := "5.1.107.91"
 talloc_version := "2.4.3"
 busybox_version := "1.38.0-1"
 shmem_version := "0.7"
@@ -980,7 +980,7 @@ fetch-proot:
 
         # Download and extract proot
         echo "Downloading proot {{proot_version}}..."
-        curl -sL "{{termux_repo}}/p/proot/proot_{{proot_version}}_${arch}.deb" -o "$TMP/proot_${arch}.deb"
+        curl -fSL --retry 3 "{{termux_repo}}/p/proot/proot_{{proot_version}}_${arch}.deb" -o "$TMP/proot_${arch}.deb"
         mkdir -p "$TMP/proot_${arch}"
         cd "$TMP/proot_${arch}"
         ar x "../proot_${arch}.deb"
@@ -993,7 +993,7 @@ fetch-proot:
 
         # Download and extract libtalloc (proot dependency)
         echo "Downloading libtalloc {{talloc_version}}..."
-        curl -sL "{{termux_repo}}/libt/libtalloc/libtalloc_{{talloc_version}}_${arch}.deb" -o "$TMP/talloc_${arch}.deb"
+        curl -fSL --retry 3 "{{termux_repo}}/libt/libtalloc/libtalloc_{{talloc_version}}_${arch}.deb" -o "$TMP/talloc_${arch}.deb"
         mkdir -p "$TMP/talloc_${arch}"
         cd "$TMP/talloc_${arch}"
         ar x "../talloc_${arch}.deb"
@@ -1009,7 +1009,7 @@ fetch-proot:
         # fails with "busybox binary not found". Packaged as lib*.so so the APK
         # ships it in jniLibs like proot.
         echo "Downloading busybox {{busybox_version}}..."
-        curl -sL "{{termux_repo}}/b/busybox/busybox_{{busybox_version}}_${arch}.deb" -o "$TMP/busybox_${arch}.deb"
+        curl -fSL --retry 3 "{{termux_repo}}/b/busybox/busybox_{{busybox_version}}_${arch}.deb" -o "$TMP/busybox_${arch}.deb"
         mkdir -p "$TMP/busybox_${arch}"
         cd "$TMP/busybox_${arch}"
         ar x "../busybox_${arch}.deb"
@@ -1031,7 +1031,7 @@ fetch-proot:
         # load with `library "libandroid-shmem.so" not found`. It is in proot's
         # ELF NEEDED list, so it must ship in jniLibs alongside libproot.so.
         echo "Downloading libandroid-shmem {{shmem_version}}..."
-        curl -sL "{{termux_repo}}/liba/libandroid-shmem/libandroid-shmem_{{shmem_version}}_${arch}.deb" -o "$TMP/shmem_${arch}.deb"
+        curl -fSL --retry 3 "{{termux_repo}}/liba/libandroid-shmem/libandroid-shmem_{{shmem_version}}_${arch}.deb" -o "$TMP/shmem_${arch}.deb"
         mkdir -p "$TMP/shmem_${arch}"
         cd "$TMP/shmem_${arch}"
         ar x "../shmem_${arch}.deb"
