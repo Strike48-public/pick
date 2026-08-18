@@ -402,10 +402,18 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // forever.
     let auth_fail_count = use_signal(|| 0u32);
 
-    // Shared sidebar-refresh trigger (provided by AppLayout). We bump it when a
-    // conversation is created or a turn completes so the sidebar's recent-
-    // conversations list re-fetches instead of staying frozen at its initial load.
-    let refresh_convos = use_context::<ConversationRefresh>().0;
+    // Shared sidebar-refresh trigger: bumped when a conversation is created so a
+    // recent-conversations list re-fetches instead of staying frozen. AppLayout
+    // (expert full-page mode) provides it via use_context_provider; easy mode
+    // mounts ChatPanel WITHOUT that ancestor, so `use_context` would panic
+    // ("Could not find context ConversationRefresh"). Always allocate a local
+    // fallback signal (unconditional hook — keeps hook order stable) and prefer
+    // the provided context when present; without a provider the bumps are
+    // harmless no-ops since no sidebar is listening.
+    let local_refresh = use_signal(|| 0u64);
+    let refresh_convos = try_consume_context::<ConversationRefresh>()
+        .map(|c| c.0)
+        .unwrap_or(local_refresh);
 
     // Reset closing when panel becomes visible again
     if props.visible && closing() {
