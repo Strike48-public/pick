@@ -255,10 +255,15 @@ jobs:
       - name: Rust toolchain + android targets
         run: |
           rustup target add aarch64-linux-android x86_64-linux-android
-      # `just` was previously provided by the nix shell; install it directly now.
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: just
+      # `just` was previously provided by the nix shell; install it directly.
+      # (Plain `run:` — the org action allowlist forbids third-party actions like
+      # taiki-e/install-action; only actions/*, android-actions/*, dtolnay/*, etc.
+      # are permitted, so command-line installs are the portable choice.)
+      - name: Install just
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
+            | bash -s -- --to "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       # Cache cargo downloads + the Android cross-compile target dir. Keyed on
       # Cargo.lock so the job doesn't re-download ~1165 crates; per-job target key
       # for incremental reuse across runs.
@@ -309,13 +314,21 @@ jobs:
       #   - a universal APK converted from that AAB (debug-signed by bundletool
       #     so it is installable for testing)
       # bundletool (for the universal APK) was provided by the nix shell; install
-      # it here for the labeled release path. Scoped to the same label so the
-      # default PR build doesn't pay for it.
+      # it here for the labeled release path (plain `run:` — third-party actions
+      # are blocked by the org allowlist). A wrapper script named `bundletool` on
+      # PATH invokes the jar, matching how the recipe calls `bundletool ...`.
       - name: Install bundletool
         if: contains(github.event.pull_request.labels.*.name, 'build-apk')
-        uses: taiki-e/install-action@v2
-        with:
-          tool: bundletool
+        run: |
+          BT_VERSION=1.17.2
+          mkdir -p "$HOME/.local/bin"
+          curl --proto '=https' --tlsv1.2 -sSfL \
+            "https://github.com/google/bundletool/releases/download/${BT_VERSION}/bundletool-all-${BT_VERSION}.jar" \
+            -o "$HOME/.local/bin/bundletool.jar"
+          printf '#!/usr/bin/env bash\nexec java -jar "%s/.local/bin/bundletool.jar" "$@"\n' "$HOME" \
+            > "$HOME/.local/bin/bundletool"
+          chmod +x "$HOME/.local/bin/bundletool"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Build release AAB + universal APK
         if: contains(github.event.pull_request.labels.*.name, 'build-apk')
         env:
