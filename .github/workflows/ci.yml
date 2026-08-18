@@ -233,40 +233,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      # Standard Android CI toolchain (NOT nix). The job used to build through
-      # the flake, but that dragged in magic-nix-cache, which the GitHub Actions
-      # Cache THROTTLES (HTTP 418) under the heavy Nix traffic — the job failed
-      # at `fetch-proot` on every run and retries kept hitting the throttle. The
-      # build only needs the NDK, Java, `dx`, and the Rust android targets, all
-      # available as plain actions here. Versions mirror flake.nix (NDK r28,
-      # build-tools 35.0.1, dioxus-cli 0.7.9) so CI stays close to local
-      # `just build-android`. `just` reads ANDROID_HOME/NDK via _android-ndk-bin
-      # and `dx` via DX_PATH, both set below — no nix develop wrapper needed.
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-      - name: Set up Android SDK + NDK
-        uses: android-actions/setup-android@v3
-      - name: Install NDK + build-tools (versions from flake.nix)
-        run: |
-          sdkmanager --install "ndk;28.2.13676358" "build-tools;35.0.1" "platforms;android-35"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
-      - name: Rust toolchain + android targets
-        run: |
-          rustup target add aarch64-linux-android x86_64-linux-android
-      # `just` was previously provided by the nix shell; install it directly.
-      # (Plain `run:` — the org action allowlist forbids third-party actions like
-      # taiki-e/install-action; only actions/*, android-actions/*, dtolnay/*, etc.
-      # are permitted, so command-line installs are the portable choice.)
-      - name: Install just
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
-            | bash -s -- --to "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # Build through the nix flake so PR CI uses the exact same toolchain,
+      # SDK/NDK, dx, build-tools and aapt2 as local `just build-android`. This
+      # job builds Android green (see history: it passed on many commits); the
+      # only failures were the magic-nix-cache HTTP-418 throttle introduced with
+      # a main merge — so we KEEP nix (a standard-actions rewrite just surfaced
+      # every toolchain bit nix provides for free: libclang, aapt2, dx-version
+      # match, etc.) and DROP only the throttle-prone cache action below.
+      - uses: DeterminateSystems/nix-installer-action@main
+      # NOTE: DeterminateSystems/magic-nix-cache-action was intentionally removed.
+      # It backs the Nix store cache with the GitHub Actions Cache, which THROTTLES
+      # this job's heavy Nix traffic — every post-merge run failed at fetch-proot /
+      # build with "GitHub Actions Cache throttled Magic Nix Cache" (HTTP 418), and
+      # retries kept hitting the exhausted quota. Without it, Nix substitutes
+      # directly from cache.nixos.org (no GH-cache throttle); the cold toolchain
+      # fetch is slower but reliable. The expensive Rust/gradle bits are still
+      # cached via the actions/cache steps below.
       # Cache cargo downloads + the Android cross-compile target dir. Keyed on
-      # Cargo.lock so the job doesn't re-download ~1165 crates; per-job target key
-      # for incremental reuse across runs.
+      # Cargo.lock so the Android job doesn't re-download ~1165 crates; per-job
+      # target key for incremental reuse across runs. `just build-android` runs
+      # cargo via nix but still uses ~/.cargo and
+      # ./target, so a plain actions/cache is the robust choice here (Swatinem's
+      # action expects rustc on PATH, which lives inside `nix develop`).
       - uses: actions/cache@v4
         with:
           path: |
@@ -285,41 +273,18 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'android-lib/**/*.gradle*') }}
           restore-keys: |
             gradle-${{ runner.os }}-
-      # Cache the compiled `dx` BINARY so we don't recompile dioxus-cli (a
-      # multi-minute build) every run. `cargo install` drops it in ~/.cargo/bin,
-      # which the cargo-registry cache above does NOT cover — cache it separately,
-      # keyed on the pinned version so a bump busts it.
-      #
-      # dx MUST match the dioxus RUNTIME crates in Cargo.lock (dioxus-core /
-      # -html / -hooks = 0.7.10), NOT the `dioxus` metacrate's 0.7.3 or the
-      # flake's 0.7.9 — dx enforces an exact match and errored "dx and dioxus
-      # versions are incompatible!" with 0.7.9 against 0.7.10 core. (The nix
-      # flake's 0.7.9 build happens to be lenient; the crates.io CLI is not.)
-      - uses: actions/cache@v4
-        id: dx-cache
-        with:
-          path: ~/.cargo/bin/dx
-          key: dx-${{ runner.os }}-0.7.10
-      # Install the Dioxus CLI (`dx`) only on a cache miss, then expose it to
-      # `just` via DX_PATH.
-      - name: Install dioxus-cli (dx)
-        if: steps.dx-cache.outputs.cache-hit != 'true'
-        run: cargo install dioxus-cli --version 0.7.10 --locked
-      - name: Expose dx on PATH
-        run: echo "DX_PATH=$HOME/.cargo/bin/dx" >> "$GITHUB_ENV"
       # Fetch the Termux proot runtime (proot + libtalloc + busybox +
       # libandroid-shmem) into android-jniLibs/ BEFORE building. android-jniLibs/
       # is gitignored (fetched artifacts, not source), and _inject-android-lib
       # copies whatever is there into the APK. Without this the APK builds but
       # ships no proot binaries, so the interactive shell fails to spawn at
       # runtime ("proot binary not found"). Mirrors the local dev prerequisite.
-      # (Pure curl/ar/tar — no nix needed.)
       - name: Fetch Android proot runtime
-        run: just fetch-proot
+        run: nix develop --command just fetch-proot
       - name: Build debug APK
         env:
           STRIKE48_HOST: https://studio.strike48.com
-        run: just build-android
+        run: nix develop --command just build-android
 
       # Installable artifacts, gated on the `build-apk` PR label so we only pay
       # the extra build time when someone actually wants a test build. Adds:
@@ -328,29 +293,13 @@ jobs:
       #   - a release AAB (issue #279 deliverable, unsigned — no Play key yet)
       #   - a universal APK converted from that AAB (debug-signed by bundletool
       #     so it is installable for testing)
-      # bundletool (for the universal APK) was provided by the nix shell; install
-      # it here for the labeled release path (plain `run:` — third-party actions
-      # are blocked by the org allowlist). A wrapper script named `bundletool` on
-      # PATH invokes the jar, matching how the recipe calls `bundletool ...`.
-      - name: Install bundletool
-        if: contains(github.event.pull_request.labels.*.name, 'build-apk')
-        run: |
-          BT_VERSION=1.17.2
-          mkdir -p "$HOME/.local/bin"
-          curl --proto '=https' --tlsv1.2 -sSfL \
-            "https://github.com/google/bundletool/releases/download/${BT_VERSION}/bundletool-all-${BT_VERSION}.jar" \
-            -o "$HOME/.local/bin/bundletool.jar"
-          printf '#!/usr/bin/env bash\nexec java -jar "%s/.local/bin/bundletool.jar" "$@"\n' "$HOME" \
-            > "$HOME/.local/bin/bundletool"
-          chmod +x "$HOME/.local/bin/bundletool"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Build release AAB + universal APK
         if: contains(github.event.pull_request.labels.*.name, 'build-apk')
         env:
           STRIKE48_HOST: https://studio.strike48.com
         run: |
-          just bundle-android
-          just bundle-android-universal-apk
+          nix develop --command just bundle-android
+          nix develop --command just bundle-android-universal-apk
 
       - name: Stage Android artifacts
         if: contains(github.event.pull_request.labels.*.name, 'build-apk')
