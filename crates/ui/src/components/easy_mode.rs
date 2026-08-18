@@ -521,12 +521,13 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                 }
             }
         }
-        if matches!(
-            flow(),
-            crate::auth_flow::AuthFlow::AwaitingGesture
-                | crate::auth_flow::AuthFlow::Failed { reauth: true, .. }
-                | crate::auth_flow::AuthFlow::Disconnected
-        ) {
+        // Suppress the offline screen while the change-server modal is open.
+        // Both render as opaque `easy-overlay` fixed layers at the SAME z-index
+        // (40); with OfflineScreen still mounted underneath, clicks on the
+        // EndpointEntry form (incl. Save) landed ambiguously and the modal felt
+        // dead. `should_show_offline_screen` is the pure, unit-tested guard for
+        // this "never both overlays" invariant.
+        if crate::auth_flow::should_show_offline_screen(&flow(), show_endpoint_entry()) {
             {
                 // Surface the failure reason when the offline state came from a
                 // Failed transition; a plain Disconnected/AwaitingGesture has none.

@@ -124,6 +124,29 @@ pub fn reduce(state: AuthFlow, event: AuthEvent) -> AuthFlow {
     }
 }
 
+/// Whether the easy-mode "offline" overlay (sign-in / retry / change-server)
+/// should be shown, given the flow state and whether the change-server modal is
+/// open.
+///
+/// The offline screen and the change-server modal are BOTH opaque, full-screen
+/// `easy-overlay` layers at the same z-index. If both render at once they stack
+/// ambiguously and clicks on the modal's form (notably Save) land on the wrong
+/// layer — the modal feels dead. `flow()` stays in an offline state while the
+/// modal is open (opening it is not an auth transition), so the modal-open flag
+/// must explicitly suppress the offline screen. This is the single invariant
+/// that guards against the two overlays coexisting.
+pub fn should_show_offline_screen(flow: &AuthFlow, endpoint_modal_open: bool) -> bool {
+    if endpoint_modal_open {
+        return false;
+    }
+    matches!(
+        flow,
+        AuthFlow::AwaitingGesture
+            | AuthFlow::Failed { reauth: true, .. }
+            | AuthFlow::Disconnected
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,6 +320,53 @@ mod tests {
                 matches!(s, AuthFlow::Failed { reauth: true, .. }),
                 "TokenFailed from {state:?} must fail-reauth (not strand in Registering), got {s:?}"
             );
+        }
+    }
+
+    // --- Overlay coexistence guard (change-server Save was un-clickable) ---
+
+    // The bug: after logout the flow is AwaitingGesture, so the offline screen
+    // renders; opening the change-server modal did NOT hide it, so two opaque
+    // same-z-index overlays stacked and Save clicks hit the wrong layer. The
+    // modal-open flag must suppress the offline screen.
+    #[test]
+    fn offline_screen_hidden_while_change_server_modal_open() {
+        for flow in [
+            AuthFlow::AwaitingGesture,
+            AuthFlow::Disconnected,
+            AuthFlow::Failed {
+                reason: "x".into(),
+                reauth: true,
+            },
+        ] {
+            assert!(
+                should_show_offline_screen(&flow, false),
+                "{flow:?} should show the offline screen when no modal is open"
+            );
+            assert!(
+                !should_show_offline_screen(&flow, true),
+                "{flow:?} must NOT show the offline screen while the change-server modal is open \
+                 (else it stacks over the modal and eats the Save click)"
+            );
+        }
+    }
+
+    // Non-offline states never show the offline screen regardless of the modal.
+    #[test]
+    fn offline_screen_hidden_in_connected_and_transient_states() {
+        for flow in [
+            AuthFlow::Restoring,
+            AuthFlow::SigningIn,
+            AuthFlow::Registering(ConnectingStep::Connecting),
+            AuthFlow::Connected { chat_ready: true },
+            // A non-reauth failure is a hard error screen, not the offline overlay.
+            AuthFlow::Failed {
+                reason: "x".into(),
+                reauth: false,
+            },
+        ] {
+            assert!(!should_show_offline_screen(&flow, false), "{flow:?}");
+            assert!(!should_show_offline_screen(&flow, true), "{flow:?}");
         }
     }
 }
