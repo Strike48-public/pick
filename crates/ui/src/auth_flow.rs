@@ -141,9 +141,7 @@ pub fn should_show_offline_screen(flow: &AuthFlow, endpoint_modal_open: bool) ->
     }
     matches!(
         flow,
-        AuthFlow::AwaitingGesture
-            | AuthFlow::Failed { reauth: true, .. }
-            | AuthFlow::Disconnected
+        AuthFlow::AwaitingGesture | AuthFlow::Failed { reauth: true, .. } | AuthFlow::Disconnected
     )
 }
 
