@@ -289,16 +289,22 @@ jobs:
       # multi-minute build) every run. `cargo install` drops it in ~/.cargo/bin,
       # which the cargo-registry cache above does NOT cover — cache it separately,
       # keyed on the pinned version so a bump busts it.
+      #
+      # dx MUST match the dioxus RUNTIME crates in Cargo.lock (dioxus-core /
+      # -html / -hooks = 0.7.10), NOT the `dioxus` metacrate's 0.7.3 or the
+      # flake's 0.7.9 — dx enforces an exact match and errored "dx and dioxus
+      # versions are incompatible!" with 0.7.9 against 0.7.10 core. (The nix
+      # flake's 0.7.9 build happens to be lenient; the crates.io CLI is not.)
       - uses: actions/cache@v4
         id: dx-cache
         with:
           path: ~/.cargo/bin/dx
-          key: dx-${{ runner.os }}-0.7.9
-      # Install the Dioxus CLI (`dx`) at the flake-pinned version only on a cache
-      # miss, then expose it to `just` via DX_PATH.
+          key: dx-${{ runner.os }}-0.7.10
+      # Install the Dioxus CLI (`dx`) only on a cache miss, then expose it to
+      # `just` via DX_PATH.
       - name: Install dioxus-cli (dx)
         if: steps.dx-cache.outputs.cache-hit != 'true'
-        run: cargo install dioxus-cli --version 0.7.9 --locked
+        run: cargo install dioxus-cli --version 0.7.10 --locked
       - name: Expose dx on PATH
         run: echo "DX_PATH=$HOME/.cargo/bin/dx" >> "$GITHUB_ENV"
       # Fetch the Termux proot runtime (proot + libtalloc + busybox +
