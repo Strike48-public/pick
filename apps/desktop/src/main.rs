@@ -68,7 +68,7 @@ fn main() {
                 .with_menu(None)
                 .with_window(
                     WindowBuilder::new()
-                        .with_title("Pentest Connector")
+                        .with_title("Pick")
                         .with_inner_size(LogicalSize::new(480.0, 800.0))
                         .with_min_inner_size(LogicalSize::new(360.0, 600.0)),
                 )
