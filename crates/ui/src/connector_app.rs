@@ -1054,6 +1054,20 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             let mut connecting_step = connecting_step;
             let dispatch = dispatch.clone();
 
+            // Update the UI state SYNCHRONOUSLY, before the async connector
+            // shutdown — same pattern as the logout handler. Cancel during
+            // SigningIn/Registering must feel instant: the connector shutdown
+            // below awaits an RwLock read that can block while the OAuth browser
+            // flow is in flight, and if the `dispatch(Disconnected)` lived after
+            // that await the ConnectingScreen would stay up and Cancel looked
+            // dead. Dispatch first, then tear the connector down in the background.
+            status.set(ConnectorStatus::Disconnected);
+            connecting_step.set(None);
+            terminal_lines
+                .write()
+                .push(TerminalLine::info("Disconnected"));
+            dispatch(AuthEvent::Disconnected);
+
             spawn(async move {
                 // Clone the Arc out and drop the signal borrow before awaiting (see
                 // the logout handler): holding connector.peek() across .await races
@@ -1062,12 +1076,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 if let Some(conn) = conn_arc {
                     conn.read().await.shutdown();
                 }
-                status.set(ConnectorStatus::Disconnected);
-                connecting_step.set(None);
-                terminal_lines
-                    .write()
-                    .push(TerminalLine::info("Disconnected"));
-                dispatch(AuthEvent::Disconnected);
             });
         }
     };
