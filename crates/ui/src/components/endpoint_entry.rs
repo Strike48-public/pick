@@ -20,25 +20,28 @@ pub struct EndpointEntryProps {
     pub on_cancel: EventHandler<()>,
 }
 
+/// The DOM id of the URL input. Save reads its value straight from the DOM.
+const INPUT_ID: &str = "endpoint-url-input";
+
 /// Modal URL entry for changing the Strike48 endpoint.
 ///
-/// The field is UNCONTROLLED and its value is read once, on submit, from the
-/// form event (`FormData::get_first`). This is the idiomatic Dioxus pattern for
-/// a simple form and it avoids two traps we previously hit with a value-bound
-/// signal:
-///   1. `<input value=…>` is `volatile` in dioxus-html — every re-render (the
-///      always-mounted ChatPanel re-renders on a 5s poll) re-writes it to the
-///      DOM, blanking mid-typing.
-///   2. Gating Save on a signal let a stray empty `oninput` (fired when the
-///      field remounts on logout prop churn) wipe the value and silently
-///      disable Save.
-/// Reading the DOM's own value on submit sidesteps both: nothing is bound, and
-/// Save's value is whatever is actually in the field. A small local signal backs
-/// only the live "Will connect to: …" / error preview, which gates nothing.
+/// The field is UNCONTROLLED (`initial_value`, no bound `value:`) and Save reads
+/// its value **directly from the DOM** on submit. This is the only approach that
+/// actually works in Pick's WebKitGTK desktop webview, where the alternatives
+/// silently return empty:
+///   * a bound `value:` is `volatile` — the always-mounted ChatPanel's 5s
+///     re-render rewrites it to the DOM and blanks mid-typing;
+///   * `FormData::get_first()` / the `oninput`-backed signal both come back
+///     EMPTY for an uncontrolled input on this webview (observed: DOM `value`
+///     was correct but the signal/form event were empty, so Save no-op'd and
+///     the modal wouldn't close).
+/// The DOM node is the single source of truth, so we `eval` its `.value` on
+/// submit. The `preview` signal drives ONLY the live hint/error text; it may be
+/// wiped by a stray empty `oninput`, which is harmless (it gates nothing).
 #[component]
 pub fn EndpointEntry(props: EndpointEntryProps) -> Element {
-    // Preview-only state. Seeded from current_host so the hint shows before the
-    // user types; updated on input. Never used for the saved value.
+    // Preview-only state for the "Will connect to: …" / error line. NEVER the
+    // source of the saved value — see the doc comment.
     let mut preview = use_signal(|| props.current_host.clone());
 
     let trimmed = preview.read().trim().to_string();
@@ -55,29 +58,43 @@ pub fn EndpointEntry(props: EndpointEntryProps) -> Element {
         }
     };
 
+    let current_host = props.current_host.clone();
+    // Save: read the DOM input's value via eval (the source of truth on this
+    // webview), fall back to current_host if the read fails/empty, validate, then
+    // hand it up. Async because document::eval is a future.
+    let on_submit = move |e: FormEvent| {
+        e.prevent_default();
+        let current_host = current_host.clone();
+        spawn(async move {
+            let dom_val = document::eval(&format!(
+                "return (document.getElementById('{INPUT_ID}') || {{}}).value || '';"
+            ))
+            .await
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+            let typed = dom_val.trim().to_string();
+            let v = if typed.is_empty() {
+                current_host.trim().to_string()
+            } else {
+                typed
+            };
+            if !v.is_empty() && ConnectorConfig::normalize_host(&v).is_ok() {
+                props.on_save.call(v);
+            }
+        });
+    };
+
     rsx! {
         div { class: "easy-doc-screen easy-overlay",
             div { class: "easy-signin",
                 p { class: "easy-signin-title", "Change Strike48 server" }
                 p { class: "easy-signin-sub", "Enter the URL of the Strike48 server to connect to." }
                 form {
-                    // Read the field once, on submit, from the form event. Enter or
-                    // the Save button both fire this.
-                    onsubmit: move |e: FormEvent| {
-                        e.prevent_default();
-                        let raw = match e.get_first("server_url") {
-                            Some(FormValue::Text(s)) => s,
-                            _ => String::new(),
-                        };
-                        let v = raw.trim().to_string();
-                        // Only save a valid URL; a bad/empty one leaves the inline
-                        // error visible (the preview updates on input below).
-                        if !v.is_empty() && ConnectorConfig::normalize_host(&v).is_ok() {
-                            props.on_save.call(v);
-                        }
-                    },
+                    onsubmit: on_submit,
                     div { class: "input-group",
                         input {
+                            id: "{INPUT_ID}",
                             name: "server_url",
                             r#type: "text",
                             placeholder: "wss://strike48.example.com:443",

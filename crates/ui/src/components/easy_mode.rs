@@ -160,20 +160,26 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                     let token = auth_token.peek().clone();
                     let aid = agent_id.peek().clone();
                     if token.is_empty() || api_url.is_empty() {
-                        // Logged out / not signed in yet: drop any prior
-                        // session's reports so the badge and resume card don't
-                        // flash a stale count on the next sign-in.
+                        // Logged out / not signed in yet. Clear any prior session's
+                        // reports ONCE (so the badge/resume card don't flash a stale
+                        // count on next sign-in), then idle on a long sleep. Do NOT
+                        // keep waking every 5s: with no session there's nothing to
+                        // fetch, and the repeated signal reads/writes re-render the
+                        // whole easy-mode subtree — which includes the change-server
+                        // modal, recreating its <input> mid-edit (wiped the field's
+                        // preview + reflowed its width). No token => no churn.
                         if !docs.peek().is_empty() {
                             docs.set(Vec::new());
                         }
-                    } else {
-                        let client = pentest_core::matrix::MatrixChatClient::new(api_url.clone())
-                            .with_auth_token(token);
-                        if let Ok(mut list) = client.list_documents(aid.as_deref()).await {
-                            // Newest first (timestamp is ISO-8601, lexical sort works).
-                            list.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-                            docs.set(list);
-                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        continue;
+                    }
+                    let client = pentest_core::matrix::MatrixChatClient::new(api_url.clone())
+                        .with_auth_token(token);
+                    if let Ok(mut list) = client.list_documents(aid.as_deref()).await {
+                        // Newest first (timestamp is ISO-8601, lexical sort works).
+                        list.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+                        docs.set(list);
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }

@@ -839,6 +839,21 @@ body {
     text-align: center;
 }
 .easy-signin-title { font-size: 22px; font-weight: 700; color: var(--em-text); margin: 0; }
+/* The change-server modal is a <form> flex-item inside the centered
+   `.easy-signin` column. As a flex item it shrinks to its content, so when the
+   "Will connect to: …" hint (a sibling of the input) appears/disappears the
+   whole form — input, Save, Cancel — resizes. Pin the form (and the input) to a
+   stable width so nothing reflows while editing. */
+.easy-signin form {
+    width: 100%;
+    max-width: 320px;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--em-space-3);
+}
+.easy-signin .input-group { width: 100%; }
+.easy-signin .input-group input { width: 100%; box-sizing: border-box; }
 .easy-signin-sub {
     font-size: 15px;
     line-height: 1.5;
