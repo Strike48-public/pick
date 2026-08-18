@@ -1,0 +1,23 @@
+[
+  {
+    "label": "unauth",
+    "role": "anonymous"
+  },
+  {
+    "label": "user_a",
+    "role": "user",
+    "tenant": "tenant-1",
+    "session": "Cookie: session=REPLACE_WITH_REAL_SESSION_COOKIE"
+  },
+  {
+    "label": "user_b",
+    "role": "user",
+    "tenant": "tenant-2",
+    "session": "Cookie: session=REPLACE_WITH_REAL_SESSION_COOKIE"
+  },
+  {
+    "label": "admin",
+    "role": "privileged",
+    "session": "Authorization: Bearer REPLACE_WITH_REAL_ADMIN_TOKEN"
+  }
+]

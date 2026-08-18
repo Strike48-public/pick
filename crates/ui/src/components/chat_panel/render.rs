@@ -3,6 +3,7 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use dioxus::prelude::*;
 use pentest_core::matrix::{ChatMessage, MessagePart, ToolCallInfo, ToolCallStatus};
+use pentest_core::rendering::MarkdownSanitizer;
 use pentest_tools::webwright::{
     live_peek, live_subscribe, signature_for_call, task_for_request, WebwrightProgress,
 };
@@ -233,8 +234,16 @@ pub fn render_markdown(input: &str) -> String {
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
 
+    // Normalize escaped code fences first (streamed markdown sometimes arrives
+    // with backslash-escaped ``` fences), THEN route events through the shared
+    // sanitizer (#365) so untrusted chat/agent content — which reflects tool and
+    // target output — cannot inject HTML or unsafe link/image schemes into
+    // `dangerous_inner_html`. Same choke point as the core file renderer, so the
+    // two cannot drift apart. The sanitizer is stateful (it unwraps rejected
+    // links/images), so it is threaded through filter_map by a mutable closure.
     let normalized = unescape_code_fences(input);
-    let parser = Parser::new_ext(&normalized, options);
+    let mut sanitizer = MarkdownSanitizer::new();
+    let parser = Parser::new_ext(&normalized, options).filter_map(move |e| sanitizer.process(e));
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
     html_output
@@ -872,6 +881,25 @@ mod tests {
         webwright_display_name,
     };
 
+    // Security (#365): the chat renderer must route through the shared markdown
+    // sanitizer. These guard the chat sink specifically (the file-viewer sink is
+    // guarded in pentest_core::rendering).
+    #[test]
+    fn chat_markdown_strips_raw_html() {
+        let out = render_markdown("hi <script>alert(1)</script> <img src=x onerror=\"alert(1)\">");
+        assert!(!out.contains("<script"), "script leaked: {out}");
+        assert!(!out.contains("onerror"), "event handler leaked: {out}");
+    }
+
+    #[test]
+    fn chat_markdown_neutralizes_javascript_link() {
+        let out = render_markdown("[x](javascript:alert(1))");
+        assert!(
+            !out.contains("javascript:"),
+            "javascript scheme leaked: {out}"
+        );
+    }
+
     #[test]
     fn escaped_code_fence_still_renders_as_a_mermaid_block() {
         // Some agent outputs escape the fence backticks (\```mermaid). Without
@@ -980,6 +1008,16 @@ mod tests {
             html.matches("data-viz-open").count(),
             1,
             "exactly one (the trailing open) block is annotated: {html}"
+        );
+    }
+
+    #[test]
+    fn chat_markdown_preserves_safe_content() {
+        let out = render_markdown("**bold** [ok](https://example.com/)");
+        assert!(out.contains("<strong>bold</strong>"), "bold lost: {out}");
+        assert!(
+            out.contains("href=\"https://example.com/\""),
+            "safe link lost: {out}"
         );
     }
 

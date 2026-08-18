@@ -12,7 +12,9 @@ pub mod mdns;
 /// Shared outcome type for best-effort network discovery probes.
 pub mod probe;
 
-use crate::traits::{port_to_service, ArpEntry, PortState, ScanResult, ScannedPort};
+use crate::traits::{
+    port_to_service, ArpEntry, HostReachability, PortState, ScanResult, ScannedPort,
+};
 use std::io;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
@@ -111,6 +113,8 @@ fn assemble_scan_result(host: String, ports: Vec<ScannedPort>, duration_ms: u64)
         .filter(|p| p.state == PortState::Unreachable)
         .count();
 
+    let reachability = infer_reachability(&ports);
+
     let errors: Vec<String> = ports
         .iter()
         .filter(|p| p.state == PortState::Unreachable)
@@ -134,6 +138,40 @@ fn assemble_scan_result(host: String, ports: Vec<ScannedPort>, duration_ms: u64)
         open_count,
         unreachable_count,
         errors,
+        reachability,
+    }
+}
+
+/// Infer host-level reachability from a single-host scan's port states (#337).
+///
+/// The honest three-way split:
+/// * any `Open` or `Closed` -> [`HostReachability::Reachable`]: the host
+///   answered at least once (a refusal is still an answer), so it is up.
+/// * ports scanned, none reachable-responding, and **every** probe was
+///   `Unreachable` -> [`HostReachability::Unreachable`]: an errno said no packet
+///   reached the target (the #306/#333 case).
+/// * ports scanned, no response of any kind, at least one `Filtered` (timeout)
+///   and no proof of reach -> [`HostReachability::NoResponse`]: down OR silently
+///   firewalled. Deliberately not called "down" (#337 false-positive guard).
+///
+/// An empty port list is [`HostReachability::Reachable`] (nothing was probed, so
+/// there is no basis to claim a reachability problem).
+fn infer_reachability(ports: &[ScannedPort]) -> HostReachability {
+    // A response of any kind (listening OR actively refused) proves the host is up.
+    let got_response = ports
+        .iter()
+        .any(|p| matches!(p.state, PortState::Open | PortState::Closed));
+    if got_response || ports.is_empty() {
+        return HostReachability::Reachable;
+    }
+
+    // No response. If every probe carried an errno-unreachable, the host was
+    // never reached; otherwise (at least one bare timeout) it is the ambiguous
+    // down-or-firewalled case.
+    if ports.iter().all(|p| p.state == PortState::Unreachable) {
+        HostReachability::Unreachable
+    } else {
+        HostReachability::NoResponse
     }
 }
 
@@ -430,5 +468,82 @@ mod tests {
         );
         assert_eq!(result.errors.len(), 1);
         assert!(result.errors[0].contains(":82"), "error names the port");
+    }
+
+    // ---- #337: host-level reachability inference -------------------------
+
+    #[test]
+    fn all_timeout_scan_is_no_response_not_down_or_unreachable() {
+        // The #337 case: a dead-or-firewalled host on a routed network — every
+        // port times out (Filtered), no errno. Must be NoResponse: distinct from
+        // a reachable scan, but NOT asserted as "down" or errno-"unreachable".
+        let ports = vec![
+            port(22, PortState::Filtered),
+            port(80, PortState::Filtered),
+            port(443, PortState::Filtered),
+        ];
+        let result = assemble_scan_result("203.0.113.9".to_string(), ports, 6000);
+
+        assert_eq!(result.reachability, HostReachability::NoResponse);
+        assert_ne!(
+            result.reachability,
+            HostReachability::Unreachable,
+            "a bare timeout is not an errno-unreachable"
+        );
+        assert_eq!(result.open_count, 0);
+        assert_eq!(result.unreachable_count, 0, "timeouts are not unreachable");
+    }
+
+    #[test]
+    fn refused_port_makes_host_reachable_even_with_zero_open() {
+        // A single ConnectionRefused is a response: the host is up, just closed.
+        // Must NOT read as NoResponse.
+        let ports = vec![port(22, PortState::Closed), port(80, PortState::Filtered)];
+        let result = assemble_scan_result("192.0.2.20".to_string(), ports, 2000);
+
+        assert_eq!(result.reachability, HostReachability::Reachable);
+        assert_eq!(
+            result.open_count, 0,
+            "reachable does not require an open port"
+        );
+    }
+
+    #[test]
+    fn open_port_makes_host_reachable() {
+        let ports = vec![port(80, PortState::Open), port(22, PortState::Filtered)];
+        let result = assemble_scan_result("192.0.2.21".to_string(), ports, 100);
+        assert_eq!(result.reachability, HostReachability::Reachable);
+    }
+
+    #[test]
+    fn all_errno_unreachable_scan_is_unreachable_not_no_response() {
+        // Every probe carried an errno-unreachable (#306/#333). This stays
+        // Unreachable — distinct from the all-timeout NoResponse case.
+        let ports = vec![
+            port(22, PortState::Unreachable),
+            port(80, PortState::Unreachable),
+        ];
+        let result = assemble_scan_result("203.0.113.7".to_string(), ports, 5);
+        assert_eq!(result.reachability, HostReachability::Unreachable);
+    }
+
+    #[test]
+    fn mixed_timeout_and_unreachable_with_no_response_is_no_response() {
+        // No response of any kind, but not *every* probe was errno-unreachable
+        // (one bare timeout). We can't claim "no packet reached the target", so
+        // the honest verdict is the ambiguous NoResponse, not Unreachable.
+        let ports = vec![
+            port(22, PortState::Unreachable),
+            port(80, PortState::Filtered),
+        ];
+        let result = assemble_scan_result("203.0.113.8".to_string(), ports, 4000);
+        assert_eq!(result.reachability, HostReachability::NoResponse);
+    }
+
+    #[test]
+    fn empty_port_list_is_reachable_no_basis_to_flag() {
+        // Nothing probed -> no basis to assert a reachability problem.
+        let result = assemble_scan_result("192.0.2.30".to_string(), vec![], 0);
+        assert_eq!(result.reachability, HostReachability::Reachable);
     }
 }

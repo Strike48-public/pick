@@ -222,15 +222,6 @@ static NATIVE_OAUTH_TX: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Str
 #[cfg(feature = "browser-auth")]
 static NATIVE_OAUTH_STATE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// Generate an unguessable OAuth `state` (128 bits, hex). Uses `getrandom` (a
-/// transitive dep via reqwest/rustls) so no new crate is added.
-#[cfg(feature = "browser-auth")]
-fn generate_oauth_state() -> String {
-    let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes).expect("CSPRNG available");
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// Extract the `state` parameter from a callback URL (query or fragment),
 /// mirroring `token_from_callback_url`.
 #[cfg(feature = "browser-auth")]
@@ -317,30 +308,6 @@ where
 #[cfg(feature = "browser-auth")]
 const NATIVE_OAUTH_SCHEME: &str = "com.strike48.pentest";
 
-/// Sage-themed "signed in" page served by the loopback OAuth callback once the
-/// token is captured. Matches the easy-mode app (brand #9cbfae, dark ink, "S"
-/// badge) and tells the user to return to Pick. Self-contained (no external
-/// assets) since it renders in the user's system browser.
-#[cfg(feature = "browser-auth")]
-const SIGNED_IN_HTML: &str = r#"<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Signed in to Pick</title>
-<style>
-  :root { --sage:#9cbfae; --ink:#17201b; --bg:#1b211e; --surface:#242b27; --text:#e9eeeb; --muted:rgba(233,238,235,0.62); }
-  * { box-sizing:border-box; }
-  body { font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; margin:0; min-height:100vh;
-         display:flex; align-items:center; justify-content:center; background:var(--bg); color:var(--text); }
-  .card { text-align:center; padding:40px 28px; max-width:420px; }
-  .badge { width:56px; height:56px; border-radius:16px; background:var(--sage); color:var(--ink);
-           display:flex; align-items:center; justify-content:center; margin:0 auto 20px;
-           font-size:30px; font-weight:700; }
-  h1 { font-size:1.35rem; font-weight:600; margin:0 0 8px; }
-  p { font-size:0.95rem; color:var(--muted); line-height:1.5; margin:0; }
-</style></head>
-<body><div class="card">
-  <div class="badge">S</div>
-  <h1>You are signed in</h1>
-  <p>You can close this tab and return to Pick to start scanning.</p>
-</div></body></html>"#;
 
 /// Deliver an Android native-OAuth callback URL into the in-flight login.
 ///
@@ -801,6 +768,13 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
         local_port
     );
 
+    // CSRF `state`: an unguessable, single-use token that binds the browser
+    // callback to the flow this connector initiated. `/callback` and `/token`
+    // only accept an `access_token` accompanied by a matching `state`, so a
+    // cross-site page or a local process cannot fixate an attacker-chosen
+    // token into the session while the loopback server is up (issue #375).
+    let oauth_state = generate_oauth_state();
+
     // -----------------------------------------------------------------------
     // Callback HTML — tries multiple strategies to obtain the access token:
     //
@@ -811,131 +785,7 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
     //    navigations DO send SameSite=Lax cookies. Server's /auth/refresh
     //    with ?redirect=<url> does the refresh and redirects back with token.
     // -----------------------------------------------------------------------
-    let callback_html = format!(
-        r#"<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Signing in to Pick</title>
-<style>
-  :root {{ --sage:#9cbfae; --ink:#17201b; --bg:#1b211e; --surface:#242b27; --text:#e9eeeb; --muted:rgba(233,238,235,0.62); }}
-  * {{ box-sizing:border-box; }}
-  body {{ font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; margin:0; min-height:100vh;
-         display:flex; align-items:center; justify-content:center; background:var(--bg); color:var(--text); }}
-  .card {{ text-align:center; padding:40px 28px; max-width:420px; }}
-  .badge {{ width:56px; height:56px; border-radius:16px; background:var(--sage); color:var(--ink);
-            display:flex; align-items:center; justify-content:center; margin:0 auto 20px;
-            font-size:30px; font-weight:700; }}
-  #status {{ font-size:1.35rem; font-weight:600; margin:0 0 8px; }}
-  #detail {{ font-size:0.95rem; color:var(--muted); line-height:1.5; margin:0; }}
-  .spinner {{ width:28px; height:28px; margin:22px auto 0; border:3px solid var(--surface);
-              border-top-color:var(--sage); border-radius:50%; animation:spin 0.8s linear infinite; }}
-  @keyframes spin {{ to {{ transform:rotate(360deg); }} }}
-  .done .spinner {{ display:none; }}
-  #debug {{ display:none; }}
-</style></head>
-<body>
-<div class="card" id="card">
-  <div class="badge">S</div>
-  <h1 id="status">Completing sign-in…</h1>
-  <p id="detail">Fetching your access token from Strike48.</p>
-  <div class="spinner"></div>
-</div>
-<pre id="debug"></pre>
-<script>
-(async function() {{
-  var s = document.getElementById('status');
-  var d = document.getElementById('detail');
-  var dbg = document.getElementById('debug');
-  function log(msg) {{
-    console.log(msg);
-    dbg.textContent += msg + '\n';
-  }}
-
-  var LOCAL_PORT = {local_port};
-  var MATRIX_URL = '{matrix_url}';
-
-  try {{
-    log('[CALLBACK] Page loaded, starting token fetch...');
-    log('[CALLBACK] Matrix URL: ' + MATRIX_URL);
-
-    // Strategy 1: Token passed directly in the URL query params
-    // (server supports redirect-based token relay)
-    var params = new URLSearchParams(window.location.search);
-    var urlToken = params.get('access_token');
-    if (urlToken) {{
-      log('[CALLBACK] Got token from URL param (len=' + urlToken.length + ')');
-      var localResp = await fetch('/token?access_token=' + encodeURIComponent(urlToken));
-      log('[CALLBACK] Local /token response: ' + localResp.status);
-      s.textContent = 'You are signed in';
-      d.textContent = 'You can close this tab and return to Pick to start scanning.';
-      document.getElementById('card').classList.add('done');
-      return;
-    }}
-
-    // Strategy 2: Cross-origin POST to /auth/refresh
-    // Works on desktop browsers. Fails on mobile due to SameSite=Lax cookie
-    // policy blocking cookies on cross-origin subresource requests.
-    log('[CALLBACK] Trying cross-origin fetch to ' + MATRIX_URL + '/auth/refresh');
-    var resp = await fetch(MATRIX_URL + '/auth/refresh', {{
-      method: 'POST',
-      credentials: 'include',
-      headers: {{ 'Accept': 'application/json' }}
-    }});
-
-    log('[CALLBACK] Fetch response status: ' + resp.status);
-
-    if (resp.ok) {{
-      var data = await resp.json();
-      log('[CALLBACK] Response JSON keys: ' + Object.keys(data).join(', '));
-      var token = data.access_token || '';
-      if (token) {{
-        log('[CALLBACK] Token present (len=' + token.length + '), sending to /token');
-        var localResp = await fetch('/token?access_token=' + encodeURIComponent(token));
-        log('[CALLBACK] Local /token response: ' + localResp.status);
-        s.textContent = 'You are signed in';
-        d.textContent = 'You can close this tab and return to Pick to start scanning.';
-        document.getElementById('card').classList.add('done');
-        log('[CALLBACK] SUCCESS via cross-origin fetch');
-        return;
-      }}
-    }}
-
-    // Strategy 2 failed (no cookie sent) — fall through to redirect
-    log('[CALLBACK] Cross-origin fetch failed (status=' + resp.status + '), trying redirect');
-    throw new Error('cross-origin fetch returned ' + resp.status);
-
-  }} catch(e) {{
-    log('[CALLBACK] Fetch error: ' + e.message);
-
-    // Strategy 3: Redirect to Matrix origin for same-site token exchange.
-    // Top-level GET navigations send SameSite=Lax cookies. The server's
-    // /auth/refresh?redirect=<url> is *expected* to do the refresh and 302
-    // back to our /token endpoint with ?access_token=xxx appended.
-    //
-    // Known failure (issue #194): some server builds return the token as a
-    // JSON body instead of honoring ?redirect=, so the browser lands on raw
-    // JSON on the Matrix origin, this page's JS is gone, and /token is never
-    // hit. Because that navigation is one-way, we ping our own same-origin
-    // /diag endpoint FIRST so the connector can fail fast with a precise
-    // message instead of blocking for the full 120s timeout.
-    var tokenUrl = 'http://localhost:' + LOCAL_PORT + '/token';
-    var refreshUrl = MATRIX_URL + '/auth/refresh?redirect=' + encodeURIComponent(tokenUrl);
-    log('[CALLBACK] Strategies 1+2 failed; arming diagnostic before redirect');
-    try {{
-      await fetch('/diag?stage=strategy3_redirect&reason=' +
-        encodeURIComponent(e && e.message ? e.message : 'strategy2_failed'));
-    }} catch (diagErr) {{
-      log('[CALLBACK] /diag ping failed: ' + diagErr.message);
-    }}
-    log('[CALLBACK] Redirecting to Matrix origin: ' + refreshUrl);
-    s.textContent = 'Completing login…';
-    d.textContent = 'Redirecting for token exchange…';
-    window.location.href = refreshUrl;
-  }}
-}})();
-</script>
-</body></html>"#,
-        matrix_url = base,
-        local_port = local_port,
-    );
+    let callback_html = build_callback_html(&base, local_port, &oauth_state);
 
     // -----------------------------------------------------------------------
     // Routes
@@ -946,22 +796,47 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
             axum::routing::get({
                 let callback_html = callback_html.clone();
                 let tx_cb = tx.clone();
+                let expected_state = oauth_state.clone();
                 move |query: axum::extract::Query<std::collections::HashMap<String, String>>| {
                     let html = callback_html.clone();
                     let tx = tx_cb.clone();
+                    let expected_state = expected_state.clone();
                     async move {
                         // If the server already passed the token in the redirect URL,
-                        // capture it directly — no HTML page / JS needed.
-                        if let Some(token) = query.get("access_token") {
-                            if !token.is_empty() {
-                                tracing::info!(
-                                    "[BROWSER_AUTH] /callback got access_token in URL (len={})",
-                                    token.len()
-                                );
-                                if let Some(sender) = tx.lock().await.take() {
-                                    let _ = sender.send(token.clone());
+                        // capture it directly — no HTML page / JS needed. It is only
+                        // honored when accompanied by the matching CSRF `state`
+                        // (issue #375); otherwise the request is rejected without
+                        // touching the token channel.
+                        let raw_token = query.get("access_token").map(String::as_str).unwrap_or("");
+                        if !raw_token.is_empty() {
+                            match accept_callback_token(
+                                &expected_state,
+                                Some(raw_token),
+                                query.get("state").map(String::as_str),
+                            ) {
+                                Some(token) => {
+                                    tracing::info!(
+                                        "[BROWSER_AUTH] /callback got valid access_token in URL (len={})",
+                                        token.len()
+                                    );
+                                    if let Some(sender) = tx.lock().await.take() {
+                                        let _ = sender.send(token.to_string());
+                                    }
+                                    return axum::response::Html(
+                                        "<html><body style='background:#1e1e2e;color:#cdd6f4;\
+                                         text-align:center;margin-top:60px;font-family:system-ui'>\
+                                         <h2>Login successful!</h2>\
+                                         <p>You can close this tab and return to the app.</p>\
+                                         </body></html>"
+                                            .to_string(),
+                                    );
                                 }
-                                return axum::response::Html(SIGNED_IN_HTML.to_string());
+                                None => {
+                                    tracing::warn!(
+                                        "[BROWSER_AUTH] /callback rejected access_token: missing/mismatched CSRF state (possible token fixation)"
+                                    );
+                                    return axum::response::Html(REJECTED_CALLBACK_HTML.to_string());
+                                }
                             }
                         }
                         tracing::info!(
@@ -977,35 +852,59 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
             "/token",
             axum::routing::get({
                 let tx = tx.clone();
+                let expected_state = oauth_state.clone();
                 move |query: axum::extract::Query<std::collections::HashMap<String, String>>| {
                     let tx = tx.clone();
+                    let expected_state = expected_state.clone();
                     async move {
                         tracing::info!(
                             "[BROWSER_AUTH] /token called with query params: {:?}",
                             query.0.keys().collect::<Vec<_>>()
                         );
-                        if let Some(token) = query.get("access_token") {
-                            tracing::info!(
-                                "[BROWSER_AUTH] access_token present, len={}, sending to channel",
-                                token.len()
-                            );
-                            if !token.is_empty() {
+                        // Accept only a non-empty access_token that carries the
+                        // matching CSRF `state`. A cross-site page or local
+                        // process that hits /token without the state cannot
+                        // fixate a token into the session (issue #375).
+                        match accept_callback_token(
+                            &expected_state,
+                            query.get("access_token").map(String::as_str),
+                            query.get("state").map(String::as_str),
+                        ) {
+                            Some(token) => {
+                                tracing::info!(
+                                    "[BROWSER_AUTH] access_token accepted (len={}), sending to channel",
+                                    token.len()
+                                );
                                 if let Some(sender) = tx.lock().await.take() {
                                     tracing::info!("[BROWSER_AUTH] Sending token to channel");
-                                    let _ = sender.send(token.clone());
+                                    let _ = sender.send(token.to_string());
                                 } else {
-                                    tracing::warn!(
-                                        "[BROWSER_AUTH] Channel sender already consumed!"
-                                    );
+                                    tracing::warn!("[BROWSER_AUTH] Channel sender already consumed!");
                                 }
-                                return axum::response::Html(SIGNED_IN_HTML.to_string());
-                            } else {
-                                tracing::warn!("[BROWSER_AUTH] access_token is empty");
+                                axum::response::Html(
+                                    "<html><body style='background:#1e1e2e;color:#cdd6f4;\
+                                     text-align:center;margin-top:60px;font-family:system-ui'>\
+                                     <h2>Login successful!</h2>\
+                                     <p>You can close this tab and return to the app.</p>\
+                                     </body></html>"
+                                        .to_string(),
+                                )
                             }
-                        } else {
-                            tracing::warn!("[BROWSER_AUTH] No access_token in query params");
+                            None => {
+                                let had_token = query
+                                    .get("access_token")
+                                    .map(|t| !t.is_empty())
+                                    .unwrap_or(false);
+                                if had_token {
+                                    tracing::warn!(
+                                        "[BROWSER_AUTH] /token rejected access_token: missing/mismatched CSRF state"
+                                    );
+                                } else {
+                                    tracing::warn!("[BROWSER_AUTH] No access_token in query params");
+                                }
+                                axum::response::Html("missing token".to_string())
+                            }
                         }
-                        axum::response::Html("missing token".to_string())
                     }
                 }
             }),
@@ -1047,10 +946,14 @@ pub async fn fetch_matrix_token_browser(matrix_url: &str) -> crate::error::Resul
         }
     });
 
-    // This loopback flow is desktop-only: Android and iOS return their token
-    // from the native paths above before reaching here. The browser reaches the
-    // callback server directly over localhost.
-    let redirect_url = format!("http://localhost:{}/callback", local_port);
+    // This loopback flow is desktop-only: Android and iOS deliver their token
+    // via the native custom-scheme paths above (deliver_native_oauth_callback)
+    // before reaching here. The browser hits the callback server over localhost.
+    //
+    // Carry the CSRF `state` on the loopback redirect so a token the server
+    // hands back directly on `/callback?access_token=…` arrives with it
+    // (issue #375). The custom percent-encoder below encodes `?`/`=`.
+    let redirect_url = format!("http://localhost:{}/callback?state={}", local_port, oauth_state);
 
     // Percent-encode the redirect URL for the query parameter.
     // We only need to handle the chars present in our redirect URLs.
@@ -1226,6 +1129,341 @@ fn extract_form_action(html: &str) -> Option<String> {
     Some(rest[..end].replace("&amp;", "&"))
 }
 
+// ---------------------------------------------------------------------------
+// Browser-OAuth hardening helpers (issue #375)
+// ---------------------------------------------------------------------------
+
+/// Encode `value` as a JavaScript string literal safe to embed inside an inline
+/// `<script>` element.
+///
+/// `serde_json` emits a correctly quoted-and-escaped string literal (handling
+/// `'`, `"`, `\`, and the C0 control characters). We additionally escape:
+/// - `<`/`>` as `\uXXXX` so a value containing `</script>` cannot terminate the
+///   surrounding `<script>` block;
+/// - U+2028/U+2029, which are valid in JSON but are JavaScript line terminators
+///   that would otherwise break out of the string literal.
+///
+/// Without this a maliciously-configured server URL could break out of the JS
+/// string and inject script into the page that handles the access token, which
+/// equals token theft.
+#[cfg_attr(not(feature = "browser-auth"), allow(dead_code))]
+fn js_string_literal(value: &str) -> String {
+    serde_json::to_string(value)
+        .unwrap_or_else(|_| "\"\"".to_string())
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
+}
+
+/// Generate an unguessable, single-use CSRF `state` token for the loopback
+/// OAuth flow. 122 bits of CSPRNG entropy (UUIDv4), matching the token style
+/// already used for connector identifiers elsewhere in the crate.
+#[cfg_attr(not(feature = "browser-auth"), allow(dead_code))]
+fn generate_oauth_state() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// Constant-time equality for the OAuth `state` token.
+///
+/// The token is single-use per login, so a plain compare would already be
+/// safe; constant-time is defense-in-depth against a timing oracle. A missing
+/// or differently-sized value never matches.
+#[cfg_attr(not(feature = "browser-auth"), allow(dead_code))]
+fn state_matches(expected: &str, provided: Option<&str>) -> bool {
+    let provided = match provided {
+        Some(p) => p.as_bytes(),
+        None => return false,
+    };
+    let expected = expected.as_bytes();
+    if expected.len() != provided.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (a, b) in expected.iter().zip(provided.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
+}
+
+/// Single choke point deciding whether a loopback callback/token request may
+/// hand a token to the connector.
+///
+/// Both `/callback` and `/token` route through this, so the CSRF check cannot
+/// be bypassed by hitting one endpoint rather than the other. A token is
+/// accepted only when it is non-empty AND accompanied by the matching CSRF
+/// `state`. Returns the token to forward, or `None` to reject.
+#[cfg_attr(not(feature = "browser-auth"), allow(dead_code))]
+fn accept_callback_token<'a>(
+    expected_state: &str,
+    access_token: Option<&'a str>,
+    provided_state: Option<&str>,
+) -> Option<&'a str> {
+    let token = access_token.filter(|t| !t.is_empty())?;
+    if state_matches(expected_state, provided_state) {
+        Some(token)
+    } else {
+        None
+    }
+}
+
+/// Page shown when a `/callback` token arrives without the matching CSRF state.
+#[cfg(feature = "browser-auth")]
+const REJECTED_CALLBACK_HTML: &str = "<html><body style='background:#1e1e2e;color:#cdd6f4;\
+     text-align:center;margin-top:60px;font-family:system-ui'>\
+     <h2>Login could not be verified</h2>\
+     <p>This callback did not match the pending login (state mismatch). \
+     Please close this tab and start the login again from the app.</p>\
+     </body></html>";
+
+/// Build the loopback callback page served on `/callback`.
+///
+/// `matrix_url` and `oauth_state` are interpolated through [`js_string_literal`]
+/// so a hostile configured server URL cannot break out of the inline script
+/// (issue #375). The state is embedded so every client-side path that posts to
+/// `/token` (Strategies 1 and 2 fetches, and the Strategy 3 redirect target)
+/// carries it — otherwise the server-side `/token` state check would reject the
+/// legitimate flow.
+#[cfg(feature = "browser-auth")]
+fn build_callback_html(matrix_url: &str, local_port: u16, oauth_state: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Logging in…</title></head>
+<body style="font-family:system-ui;text-align:center;margin-top:60px;background:#1e1e2e;color:#cdd6f4">
+<h2 id="status">Completing login…</h2>
+<p id="detail">Fetching access token from server.</p>
+<pre id="debug" style="text-align:left;background:#2e2e3e;padding:10px;margin:20px;font-size:10px;max-height:300px;overflow:auto;"></pre>
+<script>
+(async function() {{
+  var s = document.getElementById('status');
+  var d = document.getElementById('detail');
+  var dbg = document.getElementById('debug');
+  function log(msg) {{
+    console.log(msg);
+    dbg.textContent += msg + '\n';
+  }}
+
+  var LOCAL_PORT = {local_port};
+  var MATRIX_URL = {matrix_url};
+  var OAUTH_STATE = {oauth_state};
+
+  try {{
+    log('[CALLBACK] Page loaded, starting token fetch...');
+    log('[CALLBACK] Matrix URL: ' + MATRIX_URL);
+
+    // Strategy 1: Token passed directly in the URL query params
+    // (server supports redirect-based token relay)
+    var params = new URLSearchParams(window.location.search);
+    var urlToken = params.get('access_token');
+    if (urlToken) {{
+      log('[CALLBACK] Got token from URL param (len=' + urlToken.length + ')');
+      var localResp = await fetch('/token?access_token=' + encodeURIComponent(urlToken) + '&state=' + encodeURIComponent(OAUTH_STATE));
+      log('[CALLBACK] Local /token response: ' + localResp.status);
+      s.textContent = 'Login successful!';
+      d.textContent = 'You can close this tab and return to the app.';
+      return;
+    }}
+
+    // Strategy 2: Cross-origin POST to /auth/refresh
+    // Works on desktop browsers. Fails on mobile due to SameSite=Lax cookie
+    // policy blocking cookies on cross-origin subresource requests.
+    log('[CALLBACK] Trying cross-origin fetch to ' + MATRIX_URL + '/auth/refresh');
+    var resp = await fetch(MATRIX_URL + '/auth/refresh', {{
+      method: 'POST',
+      credentials: 'include',
+      headers: {{ 'Accept': 'application/json' }}
+    }});
+
+    log('[CALLBACK] Fetch response status: ' + resp.status);
+
+    if (resp.ok) {{
+      var data = await resp.json();
+      log('[CALLBACK] Response JSON keys: ' + Object.keys(data).join(', '));
+      var token = data.access_token || '';
+      if (token) {{
+        log('[CALLBACK] Token present (len=' + token.length + '), sending to /token');
+        var localResp = await fetch('/token?access_token=' + encodeURIComponent(token) + '&state=' + encodeURIComponent(OAUTH_STATE));
+        log('[CALLBACK] Local /token response: ' + localResp.status);
+        s.textContent = 'Login successful!';
+        d.textContent = 'You can close this tab and return to the app.';
+        log('[CALLBACK] SUCCESS via cross-origin fetch');
+        return;
+      }}
+    }}
+
+    // Strategy 2 failed (no cookie sent) — fall through to redirect
+    log('[CALLBACK] Cross-origin fetch failed (status=' + resp.status + '), trying redirect');
+    throw new Error('cross-origin fetch returned ' + resp.status);
+
+  }} catch(e) {{
+    log('[CALLBACK] Fetch error: ' + e.message);
+
+    // Strategy 3: Redirect to Matrix origin for same-site token exchange.
+    // Top-level GET navigations send SameSite=Lax cookies. The server's
+    // /auth/refresh?redirect=<url> is *expected* to do the refresh and 302
+    // back to our /token endpoint with ?access_token=xxx appended.
+    //
+    // Known failure (issue #194): some server builds return the token as a
+    // JSON body instead of honoring ?redirect=, so the browser lands on raw
+    // JSON on the Matrix origin, this page's JS is gone, and /token is never
+    // hit. Because that navigation is one-way, we ping our own same-origin
+    // /diag endpoint FIRST so the connector can fail fast with a precise
+    // message instead of blocking for the full 120s timeout.
+    var tokenUrl = 'http://localhost:' + LOCAL_PORT + '/token?state=' + encodeURIComponent(OAUTH_STATE);
+    var refreshUrl = MATRIX_URL + '/auth/refresh?redirect=' + encodeURIComponent(tokenUrl);
+    log('[CALLBACK] Strategies 1+2 failed; arming diagnostic before redirect');
+    try {{
+      await fetch('/diag?stage=strategy3_redirect&reason=' +
+        encodeURIComponent(e && e.message ? e.message : 'strategy2_failed'));
+    }} catch (diagErr) {{
+      log('[CALLBACK] /diag ping failed: ' + diagErr.message);
+    }}
+    log('[CALLBACK] Redirecting to Matrix origin: ' + refreshUrl);
+    s.textContent = 'Completing login…';
+    d.textContent = 'Redirecting for token exchange…';
+    window.location.href = refreshUrl;
+  }}
+}})();
+</script>
+</body></html>"#,
+        matrix_url = js_string_literal(matrix_url),
+        local_port = local_port,
+        oauth_state = js_string_literal(oauth_state),
+    )
+}
+
+#[cfg(test)]
+mod oauth_hardening_tests {
+    use super::{accept_callback_token, generate_oauth_state, js_string_literal, state_matches};
+
+    #[test]
+    fn js_string_literal_wraps_plain_url_in_double_quotes() {
+        assert_eq!(
+            js_string_literal("https://host.example:443"),
+            "\"https://host.example:443\""
+        );
+    }
+
+    #[test]
+    fn js_string_literal_defuses_single_quote_breakout() {
+        // #375 vector: a `'` in the configured URL must stay inside the literal.
+        // serde_json double-quotes the value, so a bare `'` cannot close the
+        // (now double-quoted) literal. Exactly the two wrapping quotes appear.
+        let encoded = js_string_literal("https://evil'-alert(1)-'");
+        assert!(encoded.starts_with('"') && encoded.ends_with('"'));
+        assert_eq!(
+            encoded.matches('"').count(),
+            2,
+            "unexpected quote: {encoded}"
+        );
+    }
+
+    #[test]
+    fn js_string_literal_neutralizes_script_close() {
+        // A value carrying </script> must not terminate the inline <script>.
+        let encoded = js_string_literal("x</script><script>alert(1)</script>");
+        assert!(!encoded.contains('<'), "'<' must be escaped, got {encoded}");
+        assert!(!encoded.contains('>'), "'>' must be escaped, got {encoded}");
+        assert!(!encoded.contains("</script>"));
+        assert!(encoded.contains("\\u003c") && encoded.contains("\\u003e"));
+    }
+
+    #[test]
+    fn js_string_literal_escapes_js_line_terminators() {
+        // U+2028/U+2029 are valid JSON but are JS line terminators that would
+        // otherwise break out of the string literal inside a <script> block.
+        let encoded = js_string_literal("https://evil\u{2028}alert(1)//\u{2029}x");
+        assert!(
+            !encoded.contains('\u{2028}'),
+            "U+2028 must be escaped: {encoded}"
+        );
+        assert!(
+            !encoded.contains('\u{2029}'),
+            "U+2029 must be escaped: {encoded}"
+        );
+        assert!(encoded.contains("\\u2028") && encoded.contains("\\u2029"));
+    }
+
+    #[test]
+    fn generate_oauth_state_is_unique_and_unguessable() {
+        let a = generate_oauth_state();
+        let b = generate_oauth_state();
+        assert_ne!(a, b, "state must not repeat between logins");
+        assert!(!a.is_empty());
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
+    }
+
+    #[test]
+    fn state_matches_only_on_exact_value() {
+        let s = generate_oauth_state();
+        assert!(state_matches(&s, Some(&s)));
+        assert!(!state_matches(&s, Some("nope")));
+        assert!(
+            !state_matches(&s, Some(&format!("{s}x"))),
+            "length mismatch"
+        );
+        assert!(!state_matches(&s, None), "missing state must not match");
+    }
+
+    #[test]
+    fn accept_callback_token_requires_matching_state() {
+        let st = "s3cr3t-state";
+        // Happy path: non-empty token WITH the matching state.
+        assert_eq!(
+            accept_callback_token(st, Some("jwt"), Some("s3cr3t-state")),
+            Some("jwt")
+        );
+        // CSRF: correct token shape, wrong or absent state -> rejected. These
+        // go red if the state gate is removed from the choke point.
+        assert_eq!(accept_callback_token(st, Some("jwt"), Some("wrong")), None);
+        assert_eq!(accept_callback_token(st, Some("jwt"), None), None);
+        // Degenerate tokens -> rejected regardless of state.
+        assert_eq!(
+            accept_callback_token(st, Some(""), Some("s3cr3t-state")),
+            None
+        );
+        assert_eq!(accept_callback_token(st, None, Some("s3cr3t-state")), None);
+    }
+}
+
+#[cfg(all(test, feature = "browser-auth"))]
+mod callback_html_tests {
+    use super::build_callback_html;
+
+    #[test]
+    fn malicious_matrix_url_cannot_break_out_of_script() {
+        // A configured server URL laced with a script-close plus a quote
+        // breakout must escape neither the inline <script> nor the JS literal.
+        // Reverting the js_string_literal wiring turns this red.
+        let html =
+            build_callback_html("https://evil'</script><script>steal()//", 4000, "abc-state");
+        // Our page carries exactly one <script>...</script>; no injected pair.
+        assert_eq!(html.matches("<script>").count(), 1, "injected <script>");
+        assert_eq!(html.matches("</script>").count(), 1, "injected </script>");
+        // matrix_url is embedded as a double-quoted literal, so the `'` is inert
+        // data, and the </script> from the payload is unicode-escaped.
+        assert!(html.contains("var MATRIX_URL = \"https://evil'"));
+        assert!(html.contains("\\u003c/script\\u003e"));
+    }
+
+    #[test]
+    fn callback_html_wires_state_into_every_token_path() {
+        // The CSRF state must reach every path that posts to /token, or the
+        // /token state check would reject the legitimate flow.
+        let html = build_callback_html("https://host", 4000, "the-state-token");
+        assert!(html.contains("var OAUTH_STATE = \"the-state-token\";"));
+        // Strategy 1 + Strategy 2 same-origin fetches carry the state.
+        assert_eq!(
+            html.matches("'&state=' + encodeURIComponent(OAUTH_STATE)")
+                .count(),
+            2,
+            "both /token fetches must append the state"
+        );
+        // Strategy 3 redirect target carries the state.
+        assert!(html.contains("'/token?state=' + encodeURIComponent(OAUTH_STATE)"));
+    }
+}
+
 #[cfg(all(test, feature = "browser-auth"))]
 mod browser_token_tests {
     use super::await_browser_token;
@@ -1363,9 +1601,7 @@ mod browser_token_tests {
 
 #[cfg(all(test, feature = "browser-auth"))]
 mod native_oauth_tests {
-    use super::{
-        deliver_native_oauth_callback, generate_oauth_state, NATIVE_OAUTH_STATE, NATIVE_OAUTH_TX,
-    };
+    use super::{deliver_native_oauth_callback, NATIVE_OAUTH_STATE, NATIVE_OAUTH_TX};
 
     // These tests share the NATIVE_OAUTH_TX / NATIVE_OAUTH_STATE process-globals,
     // so they would race under the default multi-threaded runner. Serialize them
@@ -1439,12 +1675,4 @@ mod native_oauth_tests {
         assert_eq!(rx.blocking_recv().unwrap(), "tok456");
     }
 
-    #[test]
-    fn generate_oauth_state_is_random_and_hex() {
-        let a = generate_oauth_state();
-        let b = generate_oauth_state();
-        assert_ne!(a, b, "two states must differ");
-        assert_eq!(a.len(), 32);
-        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
-    }
 }

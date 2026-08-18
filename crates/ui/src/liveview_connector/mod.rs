@@ -970,6 +970,66 @@ impl LiveViewConnector {
                 .and_then(|h| h.ipc_addr().cloned()),
         ));
 
+        // Load operator-provided test identities for differential-authz tools
+        // (pick#162) once at startup. A missing file yields an empty store; a
+        // malformed file is logged and treated as empty rather than blocking
+        // connector startup (the operator can fix the file and reconnect).
+        //
+        // Resolve the path explicitly (rather than via `load_default_identities`)
+        // so the chosen file is logged at startup. The precedence is
+        // env `PICK_IDENTITIES_FILE` > a cwd `identities.json` > the settings
+        // dir; preferring cwd is a launch-from-unexpected-directory foot-gun, so
+        // making the resolved path auditable is deliberate (#317 finding #8).
+        let identities_path = pentest_core::identity::identities_file_path();
+        tracing::info!(
+            "Resolved test-identities file path: {}",
+            identities_path.display()
+        );
+        let loaded_identities =
+            match pentest_core::identity::load_identities_from_file(&identities_path) {
+                Ok(loaded) => {
+                    if !loaded.store.is_empty() {
+                        tracing::info!(
+                            "Loaded {} operator identit{} for differential-authz testing",
+                            loaded.store.len(),
+                            if loaded.store.len() == 1 { "y" } else { "ies" }
+                        );
+                    }
+                    loaded
+                }
+                Err(e) => {
+                    // A malformed identities file (bad JSON, unknown role, or a
+                    // non-anonymous identity with no credential) must NOT degrade
+                    // to zero identities: specialists would still run the
+                    // differential-authz prompts and report "no broken access
+                    // control" when nothing was actually tested. Refuse to start
+                    // (#317 review #3). A *missing* file is not an error -
+                    // `load_identities_from_file` returns empty for NotFound - so
+                    // only genuine corruption reaches this arm.
+                    return Err(format!(
+                        "refusing to start: identities file {} is unreadable or malformed: {e}. \
+                         Fix or remove it (a missing file is fine and means no test identities).",
+                        identities_path.display()
+                    ));
+                }
+            };
+
+        // Advertise the identity *references* (label/role/tenant only, no
+        // secrets) to the Red Team orchestrator via InstanceMetadata, the same
+        // mechanism as `host_interfaces` above (matrix#2274). The orchestrator
+        // reads this to pass identities to spawn_specialist (matrix#3354). The
+        // session material stays connector-side in the store below.
+        if let Some(value) =
+            pentest_core::identity::references_metadata_value(&loaded_identities.references)
+        {
+            sdk_config.metadata.insert(
+                pentest_core::identity::IDENTITIES_METADATA_KEY.to_string(),
+                value,
+            );
+        }
+
+        let identities = loaded_identities.store;
+
         // Build the PickConnector that implements BaseConnector
         let pick_connector = Arc::new(pick_connector::PickConnector {
             tools: self.tools.clone(),
@@ -986,6 +1046,7 @@ impl LiveViewConnector {
             // the health handler. Starts None → /health reports "starting" until set.
             runner: self.runner.clone(),
             matrix_api_url: self.derive_matrix_api_url(),
+            identities: Arc::new(identities),
         });
 
         // Create the ConnectorRunner — it manages connection lifecycle, auth,

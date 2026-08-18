@@ -403,6 +403,23 @@ mod target_validation {
         assert!(validate_target("192.168.1.0/24").is_ok());
         assert!(validate_target("::1").is_ok());
         assert!(validate_target("2001:db8::/32").is_ok());
+        // Supported IPv4 dash ranges (#3019).
+        assert!(validate_target("10.0.0.1-50").is_ok());
+        assert!(validate_target("10.0.0.1-10.0.5.20").is_ok());
+    }
+
+    // #3019: a dash range that cannot be scope-checked must be rejected at the
+    // input boundary rather than slipping through as a pseudo-hostname (which is
+    // how it behaved before a real range validator existed).
+    #[test]
+    fn test_reject_invalid_ranges() {
+        // Reversed bounds.
+        assert!(validate_target("10.0.0.50-1").is_err());
+        assert!(validate_target("10.0.0.5-10.0.0.1").is_err());
+        // Multi-octet cross-product (nmap-only expansion).
+        assert!(validate_target("10.0.0-1.1-254").is_err());
+        // Out-of-range last octet.
+        assert!(validate_target("10.0.0.1-300").is_err());
     }
 
     #[test]

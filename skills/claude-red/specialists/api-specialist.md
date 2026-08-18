@@ -128,27 +128,43 @@ Reference: OWASP API Security Top 10 (2023), specifically API2 and API8.
 Object-level and function-level authorization are the two highest-yield API
 bug classes per OWASP API Security Top 10.
 
+**The identity matrix.** The `identities` field of your context lists the
+operator-provided test identities — each a `label` (e.g. `unauth`, `user_a`,
+`user_b`, `admin`), a `role` (`anonymous` / `user` / `privileged`), and an
+optional `tenant`. You do **not** hold their credentials; the connector does.
+Reference an identity by `label` in your tool calls (`identity_ref: "user_b"`)
+and the connector injects its session locally. Never invent identities or
+credentials outside the matrix. The replays below use these labels rather than
+abstract "user A/B".
+
 - **BOLA (Broken Object Level Authorization, API1:2023).** For every endpoint
   that operates on a resource by ID (`GET /api/orders/12345`,
-  `DELETE /api/users/777`), test cross-tenant access:
-  - Authenticate as user A, capture the request.
-  - Replay as user B with no other change. Does B retrieve A's data?
+  `DELETE /api/users/777`), test cross-identity/cross-tenant access:
+  - As `user_a`, capture a request for an object `user_a` owns (baseline).
+  - Replay it as `user_b` with no other change — does `user_b` retrieve
+    `user_a`'s data? Swap tenant-scoped IDs across `tenant` values too.
   - Test sequential IDs (1, 2, 3) and UUIDs separately. UUIDs are not
     automatically safe — they only delay enumeration.
   - Test indirect references: filename, slug, account number, email.
 - **BFLA (Broken Function Level Authorization, API5:2023).** For every
   privileged endpoint (`POST /api/admin/users`, `DELETE /api/...`):
-  - Authenticate as a low-privilege user. Replay the request. Does it
-    succeed?
+  - Replay the request as a non-privileged identity (`user_a`, or `unauth`).
+    Does it succeed? A `401`/`403` confirms the control works — not a finding.
   - Try changing the HTTP method on existing routes — `GET /api/orders/123`
     works, does `DELETE /api/orders/123` quietly succeed?
-  - Try the admin path with the user token. Frameworks often gate by URL
-    pattern; if the gate is misconfigured, you escalate.
+  - Try the admin path with a non-privileged identity. Frameworks often gate by
+    URL pattern; if the gate is misconfigured, you escalate.
 - **Mass assignment (API6:2023).** Send extra fields the documentation does
   not list. Common bypasses: `role`, `is_admin`, `account_id`, `verified`,
   `email_verified`, `tier`, `discount_pct`. PATCH and PUT endpoints are
   worse than POST because they often accept partial updates that bypass
   validation logic.
+
+**Reduced-coverage degradation.** BOLA/BFLA differential testing needs at least
+two identities. If `identities` has fewer than two, you cannot diff across the
+matrix: fall back to unauth-vs-authed checks on privileged endpoints and state
+explicitly in your findings that authorization coverage was reduced for lack of
+a multi-identity matrix — do not silently skip Phase 3.
 
 For every authorization finding, capture both directions: the request that
 should have failed, and proof it succeeded. The Validator wants the diff.

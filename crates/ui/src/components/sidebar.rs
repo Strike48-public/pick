@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 use pentest_core::matrix::{ChatClient, ConversationInfo, MatrixChatClient};
 use std::sync::Arc;
 
+use super::app_layout::ConversationRefresh;
 use super::chat_panel::format_relative_time;
 use super::icons::{
     Bolt, FileText, Folder, House, MessageSquare, ScrollText, Settings, Terminal, Wrench, X,
@@ -108,7 +109,17 @@ pub fn Sidebar(
 
     let mut recent_convos: Signal<Vec<ConversationInfo>> = use_signal(Vec::new);
 
+    // Shared trigger bumped by the chat panel when conversations change. Reading
+    // it inside the effect subscribes us, so a bump re-runs the fetch below —
+    // without it, this list would load once and never update (the api_url/token
+    // deps are stable for the whole session).
+    let convo_refresh = use_context::<ConversationRefresh>();
+
     use_effect(move || {
+        // Subscribe to the refresh trigger. Read it first, before the early
+        // return, so the subscription is always registered even while we're
+        // still waiting on credentials.
+        let _refresh_tick = convo_refresh.0();
         let url = sig_api_url.read().clone();
         let token = sig_auth_token.read().clone();
         if url.is_empty() || token.is_empty() {

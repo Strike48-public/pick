@@ -441,16 +441,11 @@ mod tests {
         assert!(ds[5] == 5000); // capped
     }
 
-    #[test]
-    fn stall_timeout_exceeds_two_heartbeats() {
-        // The read-inactivity watchdog must be comfortably longer than the
-        // heartbeat interval: a healthy socket receives a phx_reply every
-        // HEARTBEAT_INTERVAL_SECS, so the watchdog must tolerate at least one
-        // missed reply without tripping. If someone lowers the stall timeout
-        // below ~2x the heartbeat, healthy connections would flap.
-        assert!(
-            READ_STALL_TIMEOUT_SECS >= 2 * HEARTBEAT_INTERVAL_SECS,
-            "stall timeout ({READ_STALL_TIMEOUT_SECS}s) must exceed 2x heartbeat ({HEARTBEAT_INTERVAL_SECS}s)"
-        );
-    }
+    // The read-inactivity watchdog must be comfortably longer than the heartbeat
+    // interval: a healthy socket receives a phx_reply every HEARTBEAT_INTERVAL_SECS,
+    // so the watchdog must tolerate at least one missed reply without tripping. If
+    // someone lowers the stall timeout below 2x the heartbeat, healthy connections
+    // would flap. Enforce it at COMPILE time (a const assert is stronger than a
+    // runtime test, and clippy rejects a runtime assert on constants).
+    const _: () = assert!(READ_STALL_TIMEOUT_SECS >= 2 * HEARTBEAT_INTERVAL_SECS);
 }

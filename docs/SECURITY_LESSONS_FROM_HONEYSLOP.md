@@ -676,34 +676,6 @@ gitleaks detect --verbose --source . --no-git
 
 ---
 
-## Action Items for Pick
-
-### Immediate (High Priority)
-
-- [ ] Audit all `unsafe` blocks (19 found) - document safety invariants
-- [ ] Review HTTP client usage - ensure TLS verification enabled
-- [ ] Check tool execution - verify `Command::new()` uses array args
-- [ ] Validate secret management - no hardcoded credentials
-- [ ] Review regex patterns - check for ReDoS potential
-
-### Short-term (Medium Priority)
-
-- [ ] Add cargo-audit to CI pipeline
-- [ ] Implement URL validation for SSRF prevention
-- [ ] Add security linting rules to Clippy config
-- [ ] Document safe FFI patterns for tool wrappers
-- [ ] Create security review checklist for PRs
-
-### Long-term (Low Priority)
-
-- [ ] Consider formal security audit
-- [ ] Implement fuzzing for parser code
-- [ ] Add security tests for tool execution paths
-- [ ] Create security threat model document
-- [ ] Establish responsible disclosure policy
-
----
-
 ## Testing Strategy
 
 ### Security Test Cases

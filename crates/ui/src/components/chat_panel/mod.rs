@@ -22,6 +22,7 @@ use pentest_core::terminal::TerminalLine;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::app_layout::ConversationRefresh;
 use super::button::{Button, ButtonSize, ButtonVariant};
 use agent_selector::ChatHeader;
 pub use agent_selector::{ChatHeaderActions, ChatHeaderCtx};
@@ -49,6 +50,16 @@ fn subscription_insecure_tls() -> bool {
                 .map(|v| truthy(&v))
                 .unwrap_or(false)
         })
+}
+
+/// Bump the shared conversation-refresh trigger so the sidebar re-fetches its
+/// recent-conversations list. `Signal` is `Copy`, so callers pass it by value
+/// (including from inside spawned tasks). Only the *change* matters, so we wrap
+/// on overflow rather than saturate. (Previously lived in the polling module,
+/// which the subscription rewrite removed; kept here since conversation-create
+/// sites still need to nudge the sidebar.)
+fn notify_conversations_changed(mut trigger: Signal<u64>) {
+    trigger.with_mut(|n| *n = n.wrapping_add(1));
 }
 
 /// Human-readable label for a non-terminal agent status, mirroring the labels
@@ -390,6 +401,11 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // sign-in (via the easy-mode overlay) rather than retrying the dead token
     // forever.
     let auth_fail_count = use_signal(|| 0u32);
+
+    // Shared sidebar-refresh trigger (provided by AppLayout). We bump it when a
+    // conversation is created or a turn completes so the sidebar's recent-
+    // conversations list re-fetches instead of staying frozen at its initial load.
+    let refresh_convos = use_context::<ConversationRefresh>().0;
 
     // Reset closing when panel becomes visible again
     if props.visible && closing() {
@@ -1135,6 +1151,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             agent_conversations
                                 .write()
                                 .insert(agent.id.clone(), id.clone());
+                            // New conversation exists — refresh the sidebar list.
+                            notify_conversations_changed(refresh_convos);
                             id
                         }
                         Err(e) => {
@@ -1420,6 +1438,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             .write()
                             .insert(validator_agent.id.clone(), id.clone());
                         conversation_id.set(Some(id.clone()));
+                        // New conversation exists — refresh the sidebar list.
+                        notify_conversations_changed(refresh_convos);
                         id
                     }
                     Err(e) => {
@@ -1564,6 +1584,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         agent_conversations
                             .write()
                             .insert(report_agent.id.clone(), id.clone());
+                        // New conversation exists — refresh the sidebar list.
+                        notify_conversations_changed(refresh_convos);
                         id
                     }
                     Err(e) => {
