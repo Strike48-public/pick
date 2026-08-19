@@ -32,12 +32,31 @@ pub const SUGGESTED_ACTIONS: &[(&str, &str)] = &[
 /// (`pentest_core::matrix::default_pentest_agent_input`); it only supplies the
 /// UI's session-derived tool names so the crux middleware and the Dioxus app
 /// share ONE implementation of the agent persona.
-pub fn default_pentest_agent_input(tenant_id: &str, connector_name: &str) -> CreateAgentInput {
+pub async fn default_pentest_agent_input(
+    tenant_id: &str,
+    connector_name: &str,
+) -> CreateAgentInput {
+    let active_subnets = active_subnet_cidrs().await;
     pentest_core::matrix::default_pentest_agent_input(
         tenant_id,
         connector_name,
         &crate::session::get_tool_names(),
+        &active_subnets,
     )
+}
+
+/// Best-effort enumeration of the connector's active IPv4 subnets as CIDR
+/// strings, for injection into the agent persona (#347). A failure degrades to
+/// an empty list — the persona then steers the agent to `target="auto"` rather
+/// than guessing a range.
+async fn active_subnet_cidrs() -> Vec<String> {
+    match pentest_tools::network_context::network_context().await {
+        Ok(subnets) => subnets.into_iter().map(|s| s.cidr).collect(),
+        Err(e) => {
+            tracing::warn!("could not enumerate host subnets for agent context: {e}");
+            Vec::new()
+        }
+    }
 }
 
 /// Suffix appended to the connector name to produce the Report Agent name.
