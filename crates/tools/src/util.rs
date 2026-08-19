@@ -56,9 +56,9 @@ pub fn param_u16_opt(params: &Value, key: &str) -> Option<u16> {
 /// Extract a `bool` parameter with a default value.
 ///
 /// Accepts real JSON booleans, plus the string forms LLM tool callers emit
-/// (`"true"`/`"false"`/`"yes"`/`"no"`/`"1"`/`"0"`, case-insensitive) and the
-/// integers `1`/`0` — mirroring the loose coercion `param_u64` does for numbers.
-/// Unparseable or missing values yield `default`.
+/// (`"true"`/`"false"`/`"yes"`/`"no"`/`"1"`/`"0"`, case-insensitive) and numbers
+/// (`1`, `1.0`, `0`, `0.0`; non-zero is true) — mirroring the loose coercion
+/// `param_u64` does for numbers. Unparseable or missing values yield `default`.
 pub fn param_bool(params: &Value, key: &str, default: bool) -> bool {
     match params.get(key) {
         Some(Value::Bool(b)) => *b,
@@ -67,9 +67,11 @@ pub fn param_bool(params: &Value, key: &str, default: bool) -> bool {
             "false" | "no" | "0" => false,
             _ => default,
         },
-        Some(Value::Number(n)) => match n.as_i64() {
-            Some(0) => false,
-            Some(_) => true,
+        // `as_f64` (not `as_i64`) so float-valued flags like `1.0` coerce the way
+        // `param_u64`/`param_u16_opt` handle numeric args — `as_i64` returns `None`
+        // for a JSON float, silently dropping it to `default`. LLM callers emit both.
+        Some(Value::Number(n)) => match n.as_f64() {
+            Some(f) => f != 0.0,
             None => default,
         },
         _ => default,
@@ -172,9 +174,26 @@ mod tests {
     }
 
     #[test]
+    fn param_bool_coerces_float_numbers() {
+        // JSON floats like `1.0` return `None` from `as_i64`, so the earlier
+        // int-only arm silently dropped them to the default. `as_f64` coerces
+        // them the way `param_u64` handles numeric args. Guards that regression.
+        assert!(param_bool(&json!({"append": 1.0}), "append", false));
+        assert!(param_bool(&json!({"append": 0.5}), "append", false));
+        assert!(param_bool(&json!({"append": 2.0}), "append", false));
+        assert!(!param_bool(&json!({"append": 0.0}), "append", true));
+        // Negative ints/floats are non-zero -> true.
+        assert!(param_bool(&json!({"append": -1}), "append", false));
+    }
+
+    #[test]
     fn param_bool_falls_back_to_default_when_missing_or_unparseable() {
         assert!(param_bool(&json!({}), "append", true));
         assert!(!param_bool(&json!({}), "append", false));
         assert!(param_bool(&json!({"append": "maybe"}), "append", true));
+        // Empty string and null are unrecognized -> default, not silent false.
+        assert!(param_bool(&json!({"append": ""}), "append", true));
+        assert!(param_bool(&json!({"append": null}), "append", true));
+        assert!(!param_bool(&json!({"append": null}), "append", false));
     }
 }
