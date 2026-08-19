@@ -565,9 +565,16 @@ fn all_tools_registered() {
     let caps = c.capabilities();
     let registered: Vec<&str> = caps.iter().map(|t| t.task_type_id.as_str()).collect();
 
-    for name in pentest_tools::tool_names() {
+    // Compare against the host-supported set, not every registered tool.
+    // `capabilities()` is built from `supported_schemas()` (platform + desktop
+    // OS gated, see #183), so asserting against all `tool_names()` would fail on
+    // hosts where some tools are filtered out - e.g. Linux-only tools
+    // (wifi_scan_detailed, autopwn_crack) on the macOS CI lane. Iterate
+    // `supported_names()`, which applies the same gating. See #360.
+    let registry = pentest_tools::create_tool_registry();
+    for name in registry.supported_names() {
         assert!(
-            registered.contains(&name.as_str()),
+            registered.contains(&name),
             "tool '{name}' not in capabilities: {registered:?}"
         );
     }
