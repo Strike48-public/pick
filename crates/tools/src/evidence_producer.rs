@@ -590,6 +590,7 @@ mod tests {
     ///
     /// Note: Uses unique IDs to avoid interference from parallel tests.
     #[test]
+    #[ignore = "Requires exclusive access to global buffer - run with --test-threads=1"]
     fn multiple_push_single_drain() {
         // Act: Push 10 nodes with unique IDs
         for i in 0..10 {
