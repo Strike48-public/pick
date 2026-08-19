@@ -26,6 +26,7 @@ pub mod read_file;
 pub mod registry; // Quick action registry for UI
 pub mod safety_check; // NEW: Network safety validation
 pub mod safety_check_tool; // NEW: Safety check tool wrapper
+pub mod scan_scope_hint; // Zero-host / degraded-scan scope hints (#347)
 pub mod scan_target; // Resolve auto/current/all target sentinels + out-of-subnet warning
 pub mod screenshot;
 pub mod service_banner;

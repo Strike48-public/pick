@@ -295,7 +295,25 @@ impl PentestTool for NmapTool {
             );
 
             // Parse nmap XML output
-            let data = parse_nmap_xml(&xml_output, &result.stderr)?;
+            let mut data = parse_nmap_xml(&xml_output, &result.stderr)?;
+
+            // #347: a zero-host sweep is far more often the wrong network than an
+            // empty one. Attach a scope hint naming the connector's real subnets
+            // (and any raw-socket degradation, #251) so the agent re-targets
+            // instead of reporting "nothing found".
+            if data.get("count").and_then(Value::as_u64) == Some(0) {
+                let active_subnets = crate::network_context::network_context()
+                    .await
+                    .unwrap_or_default();
+                let hint = crate::scan_scope_hint::zero_host_scope_hint(
+                    &target,
+                    &active_subnets,
+                    !unprivileged,
+                );
+                if let Some(obj) = data.as_object_mut() {
+                    obj.insert("scope_hint".to_string(), json!(hint));
+                }
+            }
 
             // Produce evidence nodes for the three-agent pipeline
             let evidence_nodes =

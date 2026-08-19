@@ -21,31 +21,14 @@ fn build_tool_configs(names: &[String]) -> serde_json::Value {
     serde_json::Value::Object(map)
 }
 
-/// Build the default CreateAgentInput for auto-creating a pentest-connector persona.
+/// Build the "tools available on THIS connector" preamble.
 ///
-/// `tenant_id` is the tenant/realm name (e.g. "non-prod") used to build the
-/// connector address pattern `{tenant}.{connector_name}.*` so the Matrix
-/// backend can match registered connector tools to this agent.
-///
-/// `connector_name` controls the gateway identity. Instances sharing the same
-/// name are round-robin'd; use a unique name (e.g. `pentest-connector-<hostname>`)
-/// to get a dedicated agent view.
-///
-/// `tool_names` are the registered tool names to auto-approve. Callers pass
-/// this explicitly (the Dioxus app sources it from its global session; the
-/// crux shell passes the tools it knows about) so this builder stays pure.
-/// Build the agent system message: the static red-team persona plus a dynamic
-/// preamble listing the tools THIS connector actually advertises. The persona
-/// documents tools like `nmap` / `execute_command` for the full desktop
-/// toolset, but a given connector (notably iOS — no fork/exec, no sandbox) only
-/// exposes a subset. Without being told, the agent reaches for tools it "knows"
-/// but that aren't advertised here, and those calls just fail (the observed
-/// "tried nmap / execute_command on iOS" behavior). Prepend the real list and
-/// tell it not to reach outside that set.
-fn system_message_with_available_tools(tool_names: &[String]) -> String {
-    if tool_names.is_empty() {
-        return RED_TEAM_SYSTEM_PROMPT.to_string();
-    }
+/// The persona documents the full desktop toolset (`nmap`, `execute_command`,
+/// …), but a given connector (notably iOS — no fork/exec, no sandbox) exposes
+/// only a subset. Listing the real set and telling the agent not to reach
+/// outside it prevents calls to tools this platform can't run (the observed
+/// "tried nmap / execute_command on iOS" behavior).
+fn available_tools_section(tool_names: &[String]) -> String {
     let mut names: Vec<&str> = tool_names.iter().map(String::as_str).collect();
     names.sort_unstable();
     format!(
@@ -58,17 +41,78 @@ fn system_message_with_available_tools(tool_names: &[String]) -> String {
          it — reach for a listed alternative (e.g. `port_scan`, `service_banner`, \
          `http_request`, `network_discover`) instead of calling the unavailable \
          one. System tools (document_*, *_guide, validate_*) are always \
-         available in addition to the above.\n\n\
-         ---\n\n{}",
+         available in addition to the above.",
         names.join(", "),
-        RED_TEAM_SYSTEM_PROMPT
     )
 }
 
+/// Render the live host-network-facts section injected at session start (#347).
+///
+/// Lists the connector's active subnets so the agent targets them directly
+/// instead of guessing a home range (the `192.168.1.0/24`-on-a-`10.0.x`
+/// failure). Empty input yields an empty string, so no section is emitted when
+/// the caller could not enumerate any subnet.
+fn host_network_facts_section(active_subnets: &[String]) -> String {
+    if active_subnets.is_empty() {
+        return String::new();
+    }
+    let list = active_subnets
+        .iter()
+        .map(|s| format!("- {s}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "# Host network facts (live, this connector)\n\n\
+         This connector is attached to the following active subnet(s). Use these \
+         as scan targets (or pass `target=\"auto\"` / `target=\"current\"`); do NOT \
+         invent other ranges:\n\n{list}"
+    )
+}
+
+/// Assemble the agent system message: optional live host-network facts (#347)
+/// and the connector's advertised tool list, each prepended to the shared
+/// red-team persona.
+///
+/// A given connector (notably iOS — no fork/exec, no sandbox) only exposes a
+/// subset of the toolset; without being told, the agent reaches for tools it
+/// "knows" but that aren't advertised, and those calls just fail. Either
+/// preamble is omitted when its input is empty; with neither, the bare persona
+/// is returned so pre-registration paths don't break.
+fn system_message_with_available_tools(tool_names: &[String], active_subnets: &[String]) -> String {
+    let mut sections: Vec<String> = Vec::new();
+    let facts = host_network_facts_section(active_subnets);
+    if !facts.is_empty() {
+        sections.push(facts);
+    }
+    if !tool_names.is_empty() {
+        sections.push(available_tools_section(tool_names));
+    }
+    if sections.is_empty() {
+        return RED_TEAM_SYSTEM_PROMPT.to_string();
+    }
+    sections.push(RED_TEAM_SYSTEM_PROMPT.to_string());
+    sections.join("\n\n---\n\n")
+}
+
+/// Build the default CreateAgentInput for auto-creating a pentest-connector persona.
+///
+/// `tenant_id` is the tenant/realm name (e.g. "non-prod") used to build the
+/// connector address pattern `{tenant}.{connector_name}.*` so the Matrix
+/// backend can match registered connector tools to this agent.
+///
+/// `connector_name` controls the gateway identity. Instances sharing the same
+/// name are round-robin'd; use a unique name (e.g. `pentest-connector-<hostname>`)
+/// to get a dedicated agent view.
+///
+/// `tool_names` are the registered tool names to auto-approve, and
+/// `active_subnets` are the connector's live subnet CIDRs injected into the
+/// persona (#347). Callers pass both explicitly (the Dioxus app sources them
+/// from its session / `network_context`) so this builder stays pure.
 pub fn default_pentest_agent_input(
     tenant_id: &str,
     connector_name: &str,
     tool_names: &[String],
+    active_subnets: &[String],
 ) -> CreateAgentInput {
     let connector_key = format!("{}.{}.*", tenant_id, connector_name);
     tracing::info!(
@@ -94,7 +138,10 @@ pub fn default_pentest_agent_input(
     CreateAgentInput {
         name: connector_name.to_string(),
         description: Some("Red team operational agent for penetration testing".to_string()),
-        system_message: Some(system_message_with_available_tools(tool_names)),
+        system_message: Some(system_message_with_available_tools(
+            tool_names,
+            active_subnets,
+        )),
         agent_greeting: Some("Ready for red team operations. What's the target?".to_string()),
         context: Some(serde_json::json!({
             "created_by": connector_name,
@@ -287,6 +334,18 @@ Detect everything that communicates on the target network. Use passive and activ
 - Service enumeration (port scanning, banner grabbing)
 - Wireless spectrum analysis (WiFi, BLE, Zigbee if applicable)
 - DNS reconnaissance and zone enumeration
+
+### Fact-First Targeting (mandatory)
+Before any CIDR or dash-range scan, target a network you have established as a
+fact, not one you assumed:
+- If a "Host network facts" section was injected at the top of this session, scan
+  those subnets. They are the connector's own live networks.
+- Otherwise pass `target="auto"` (or `target="current"`) so the scan resolves to
+  the connector's own subnets, or run a discovery tool first to learn them.
+- NEVER invent or default to a range such as `192.168.1.0/24`. A guessed range on
+  the wrong network is the single most common cause of a scan that finds nothing.
+- When a scan returns zero hosts, treat "I scanned the wrong network" as the first
+  hypothesis before "the network is empty", and re-target using the facts above.
 
 ### Phase 1: Surface Inflation
 Maximize the known attack surface:
@@ -645,7 +704,8 @@ mod tests {
 
     #[test]
     fn default_pentest_agent_input_is_pure_and_well_formed() {
-        let input = default_pentest_agent_input("non-prod", "pentest-connector", &["foo".into()]);
+        let input =
+            default_pentest_agent_input("non-prod", "pentest-connector", &["foo".into()], &[]);
 
         // Name matches the connector name.
         assert_eq!(input.name, "pentest-connector");
@@ -683,11 +743,14 @@ mod tests {
     fn system_message_lists_available_tools_and_gates_unavailable_ones() {
         // The connector's advertised tools get prepended so the agent doesn't
         // reach for tools this platform can't run (e.g. nmap on iOS).
-        let msg = system_message_with_available_tools(&[
-            "port_scan".into(),
-            "http_request".into(),
-            "network_discover".into(),
-        ]);
+        let msg = system_message_with_available_tools(
+            &[
+                "port_scan".into(),
+                "http_request".into(),
+                "network_discover".into(),
+            ],
+            &[],
+        );
         assert!(
             msg.contains("Tools available on THIS connector"),
             "should carry the availability preamble"
@@ -707,9 +770,62 @@ mod tests {
         );
         // Empty list -> bare persona (no preamble), so nothing breaks pre-registration.
         assert_eq!(
-            system_message_with_available_tools(&[]),
+            system_message_with_available_tools(&[], &[]),
             RED_TEAM_SYSTEM_PROMPT
         );
+    }
+
+    #[test]
+    fn system_message_injects_host_network_facts_when_present() {
+        // #347: the live subnets must be injected into the system message so the
+        // agent targets them instead of guessing a home range. Guard both the
+        // section header and every CIDR passed in.
+        let subnets = vec!["10.0.8.0/22".to_string(), "172.16.4.0/24".to_string()];
+        let msg = system_message_with_available_tools(&["port_scan".into()], &subnets);
+        assert!(
+            msg.contains("# Host network facts (live, this connector)"),
+            "should carry the injected host-network-facts section"
+        );
+        for cidr in &subnets {
+            assert!(msg.contains(cidr), "should list the active subnet {cidr}");
+        }
+        // The persona and the tool preamble still ride along.
+        assert!(msg.to_lowercase().contains("red team"));
+        assert!(msg.contains("Tools available on THIS connector"));
+    }
+
+    #[test]
+    fn system_message_omits_host_facts_when_no_subnets() {
+        // With no subnets enumerated, no facts section is emitted (the agent falls
+        // back to target="auto"/discovery per the prompt rule) — and an empty
+        // tools+subnets input still yields the bare persona.
+        let msg = system_message_with_available_tools(&["port_scan".into()], &[]);
+        assert!(
+            !msg.contains("# Host network facts (live, this connector)"),
+            "no facts section when no subnets are known"
+        );
+        assert_eq!(
+            system_message_with_available_tools(&[], &[]),
+            RED_TEAM_SYSTEM_PROMPT
+        );
+    }
+
+    #[test]
+    fn system_prompt_mandates_fact_first_targeting() {
+        // #347 AC: the persona must forbid guessing a range and steer to the
+        // injected facts / target="auto". If this regresses, the prompt rule that
+        // pairs with the injected facts is gone and the agent guesses again.
+        let sys = RED_TEAM_SYSTEM_PROMPT;
+        assert!(
+            sys.contains("Fact-First Targeting"),
+            "prompt should carry the fact-first targeting rule"
+        );
+        for needle in ["never invent", "192.168.1.0/24", "target=\"auto\""] {
+            assert!(
+                sys.to_lowercase().contains(&needle.to_lowercase()),
+                "fact-first rule should mention '{needle}'"
+            );
+        }
     }
 
     #[test]

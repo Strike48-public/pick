@@ -745,7 +745,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         // format, safety-verdict rubric, etc.); without pushing it here
                         // an agent created on an older build stays frozen on the old
                         // prompt forever (create sets it; update must too).
-                        let fresh_input = default_pentest_agent_input(&tenant_id, &connector_name);
+                        let fresh_input =
+                            default_pentest_agent_input(&tenant_id, &connector_name).await;
                         let update_input = UpdateAgentInput {
                             id: agent.id.clone(),
                             tools: fresh_input.tools,
@@ -791,7 +792,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             connector_name
                         );
                         match client
-                            .create_agent(default_pentest_agent_input(&tenant_id, &connector_name))
+                            .create_agent(
+                                default_pentest_agent_input(&tenant_id, &connector_name).await,
+                            )
                             .await
                         {
                             Ok(new_agent) => {
