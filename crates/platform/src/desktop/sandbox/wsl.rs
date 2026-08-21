@@ -596,8 +596,10 @@ impl WslExecutor {
         // Check for UTF-16LE BOM (0xFF 0xFE)
         if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
             let u16s: Vec<u16> = bytes[2..]
-                .chunks_exact(2)
-                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&chunk| u16::from_le_bytes(chunk))
                 .collect();
             return String::from_utf16_lossy(&u16s);
         }
@@ -607,13 +609,17 @@ impl WslExecutor {
         // wsl.exe error messages.
         if bytes.len() >= 2 && bytes.len().is_multiple_of(2) {
             let looks_utf16le = bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .take(32) // sample first 32 code units
                 .all(|chunk| chunk[1] == 0 && chunk[0] != 0);
             if looks_utf16le {
                 let u16s: Vec<u16> = bytes
-                    .chunks_exact(2)
-                    .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&chunk| u16::from_le_bytes(chunk))
                     .collect();
                 return String::from_utf16_lossy(&u16s);
             }
