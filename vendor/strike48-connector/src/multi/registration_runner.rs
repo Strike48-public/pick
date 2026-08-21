@@ -27,7 +27,7 @@ use rand::{Rng, thread_rng};
 use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
 use tokio::time::{MissedTickBehavior, interval};
 
-use crate::auth::OttProvider;
+use crate::auth::{CallbackNote, OttProvider};
 use crate::connector::{BaseConnector, ConnectorConfig, ConnectorHandle};
 use crate::error::{ConnectorError, Result};
 use crate::logger::Logger;
@@ -918,21 +918,59 @@ impl RegistrationRunner {
             );
             return None;
         }
-        if creds.matrix_api_url.is_empty() {
-            logger.error(
-                &format!(
-                    "registration {}: CredentialsIssued without matrix_api_url",
-                    self.key
-                ),
-                "",
-            );
-            return None;
-        }
+        // `creds.matrix_api_url` is advisory, not authoritative — see
+        // `OttProvider::resolve_register_base`. An empty server value is not
+        // fatal because the connector can derive its own callback base from the
+        // host it dialed, which is also the only source that can be correct
+        // per-tenant in a multi-tenant studio.
+        let (instance_id, connector_type, dialed_host, use_tls) = {
+            let cfg = self.config.read().await;
+            (
+                cfg.instance_id.clone(),
+                self.connector.connector_type().to_string(),
+                cfg.host.clone(),
+                cfg.use_tls,
+            )
+        };
 
-        let (instance_id, connector_type) = (
-            self.config.read().await.instance_id.clone(),
-            self.connector.connector_type().to_string(),
-        );
+        let api_base = match OttProvider::resolve_register_base_verbose(
+            std::env::var("STRIKE48_API_URL").ok().as_deref(),
+            Some(&dialed_host),
+            use_tls,
+            &creds.matrix_api_url,
+        ) {
+            Ok(Some((base, notes))) => {
+                for (level, msg) in notes {
+                    let msg = format!("registration {}: {msg}", self.key);
+                    match level {
+                        CallbackNote::Info => logger.info(&msg),
+                        CallbackNote::Warn => logger.warn(&msg),
+                    }
+                }
+                base
+            }
+            Ok(None) => {
+                logger.error(
+                    &format!(
+                        "registration {}: cannot resolve an OTT registration URL: \
+                         STRIKE48_API_URL unset, no dialed host, and the server supplied none",
+                        self.key
+                    ),
+                    "",
+                );
+                return None;
+            }
+            Err(e) => {
+                logger.error(
+                    &format!(
+                        "registration {}: cannot resolve an OTT registration URL",
+                        self.key
+                    ),
+                    &e.to_string(),
+                );
+                return None;
+            }
+        };
 
         let mut provider =
             OttProvider::new(Some(connector_type.clone()), Some(instance_id.clone()));
@@ -940,7 +978,7 @@ impl RegistrationRunner {
         match provider
             .register_public_key_with_ott_data(
                 &creds.ott,
-                &creds.matrix_api_url,
+                &api_base,
                 &creds.register_url,
                 &connector_type,
                 Some(&instance_id),

@@ -42,6 +42,8 @@ retained for the case where nothing but the server value is available.
 Derivation mirrors `pentest_core::connector_registration::derive_api_url` so
 both ends agree on the same host algebra.
 
+**Tracking:** vendored from Strike48/sdk-rs#65 (branch `fix/connector-owns-callback-origin`, 3 commits: resolve-callback-origin, enforce-on-all-three-paths 5c88578, proto clippy 5f03137). The enforcement now covers the single-connector path AND the multi-connector registration_runner / ws_multiplex paths.
+
 **Drop when:** the equivalent lands upstream in Strike48/sdk-rs and pick moves to
 that release.
 

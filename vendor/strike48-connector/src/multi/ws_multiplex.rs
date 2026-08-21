@@ -48,6 +48,7 @@ use std::time::{Duration, Instant};
 use rand::{Rng, thread_rng};
 use tokio::sync::{Mutex, RwLock, Semaphore, mpsc, oneshot};
 
+use crate::auth::CallbackNote;
 use crate::connector::{BaseConnector, ConnectorConfig};
 use crate::error::{ConnectorError, Result};
 use crate::logger::Logger;
@@ -1351,12 +1352,9 @@ async fn handle_credentials_issued(
         ));
         return;
     }
-    if creds.matrix_api_url.is_empty() {
-        logger.warn(&format!(
-            "ws multiplex handle {key}: CredentialsIssued without matrix_api_url",
-        ));
-        return;
-    }
+    // An empty `matrix_api_url` is no longer fatal: the connector derives its
+    // own callback base from the host it dialed (see
+    // `OttProvider::resolve_register_base`).
 
     // Bound each HTTP step. `connect_timeout_ms` is the single-attempt
     // budget; we allow 3× to cover the OTT request's connect+TLS+request+
@@ -1446,16 +1444,49 @@ async fn try_credential_exchange(
     creds: &proto::CredentialsIssued,
     logger: &Logger,
 ) -> std::result::Result<(), String> {
-    let (instance_id, connector_type) = (
-        config.read().await.instance_id.clone(),
-        connector.connector_type().to_string(),
-    );
+    let (instance_id, connector_type, dialed_host, use_tls) = {
+        let cfg = config.read().await;
+        (
+            cfg.instance_id.clone(),
+            connector.connector_type().to_string(),
+            cfg.host.clone(),
+            cfg.use_tls,
+        )
+    };
+
+    // The connector resolves its own callback base; `creds.matrix_api_url` is
+    // advisory. See `OttProvider::resolve_register_base`.
+    let api_base = match crate::auth::OttProvider::resolve_register_base_verbose(
+        std::env::var("STRIKE48_API_URL").ok().as_deref(),
+        Some(&dialed_host),
+        use_tls,
+        &creds.matrix_api_url,
+    ) {
+        Ok(Some((base, notes))) => {
+            for (level, msg) in notes {
+                let msg = format!("ws multiplex handle {key}: {msg}");
+                match level {
+                    CallbackNote::Info => logger.info(&msg),
+                    CallbackNote::Warn => logger.warn(&msg),
+                }
+            }
+            base
+        }
+        Ok(None) => {
+            return Err(
+                "cannot resolve an OTT registration URL: STRIKE48_API_URL unset, no dialed \
+                 host, and the server supplied none"
+                    .to_string(),
+            );
+        }
+        Err(e) => return Err(format!("cannot resolve an OTT registration URL: {e}")),
+    };
 
     let mut provider =
         crate::auth::OttProvider::new(Some(connector_type.clone()), Some(instance_id.clone()));
     let register_fut = provider.register_public_key_with_ott_data(
         &creds.ott,
-        &creds.matrix_api_url,
+        &api_base,
         &creds.register_url,
         &connector_type,
         Some(&instance_id),

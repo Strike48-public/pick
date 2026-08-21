@@ -1,4 +1,4 @@
-use crate::auth::OttProvider;
+use crate::auth::{CallbackNote, OttProvider};
 use crate::client::{ClientOptions, ConnectorClient, InvokeOptions};
 use crate::error::{ConnectorError, Result};
 use crate::logger::Logger;
@@ -2261,7 +2261,6 @@ impl ConnectorRunner {
             return;
         }
 
-        // [STRIKE48-PATCH connector-owns-callback-origin]
         // `creds.matrix_api_url` is advisory, not authoritative. In a
         // multi-tenant studio it is a single global fallback that cannot name
         // each tenant's host, and it degrades to a localhost placeholder when
@@ -2278,26 +2277,36 @@ impl ConnectorRunner {
         };
 
         let configured_api_url = std::env::var("STRIKE48_API_URL").ok();
-        let Some(api_base) = OttProvider::resolve_register_base(
+        let resolved = OttProvider::resolve_register_base_verbose(
             configured_api_url.as_deref(),
             Some(&dialed_host),
             use_tls,
             &creds.matrix_api_url,
-        ) else {
-            self.logger.error(
-                "Cannot resolve an OTT registration URL: STRIKE48_API_URL unset, no dialed host, \
-                 and the server supplied none",
-                "",
-            );
-            return;
+        );
+        let api_base = match resolved {
+            Ok(Some((base, notes))) => {
+                for (level, msg) in notes {
+                    match level {
+                        CallbackNote::Info => self.logger.info(&msg),
+                        CallbackNote::Warn => self.logger.warn(&msg),
+                    }
+                }
+                base
+            }
+            Ok(None) => {
+                self.logger.error(
+                    "Cannot resolve an OTT registration URL: STRIKE48_API_URL unset, no dialed \
+                     host, and the server supplied none",
+                    "",
+                );
+                return;
+            }
+            Err(e) => {
+                self.logger
+                    .error("Cannot resolve an OTT registration URL", &e.to_string());
+                return;
+            }
         };
-
-        if creds.matrix_api_url.trim().trim_end_matches('/') != api_base {
-            self.logger.debug(&format!(
-                "OTT callback base overridden: server advertised {:?}, using {:?}",
-                creds.matrix_api_url, api_base
-            ));
-        }
         let mut ott_provider = OttProvider::new(
             Some(self.connector.connector_type().to_string()),
             Some(instance_id.clone()),

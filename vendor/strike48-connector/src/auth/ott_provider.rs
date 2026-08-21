@@ -77,6 +77,18 @@ struct DirectConfig {
     auth_url: String,
 }
 
+/// Level at which a caller should emit a note from
+/// [`OttProvider::resolve_register_base_verbose`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallbackNote {
+    Info,
+    Warn,
+}
+
+/// Resolved OTT callback base plus pre-formatted diagnostics for the caller to
+/// emit through its own logger. `None` when no source yielded a base.
+pub(crate) type ResolvedCallbackBase = Option<(String, Vec<(CallbackNote, String)>)>;
+
 pub struct OttProvider {
     api_url: Option<String>,
     keys_dir: PathBuf,
@@ -193,8 +205,6 @@ impl OttProvider {
 
     /// Resolve the base URL this connector POSTs its OTT registration to.
     ///
-    /// [STRIKE48-PATCH connector-owns-callback-origin]
-    ///
     /// The connector — never the server — decides where its own credentials
     /// go. Precedence:
     ///
@@ -211,37 +221,133 @@ impl OttProvider {
     /// worse, points a credential exchange at an unrelated local listener.
     ///
     /// Returns `None` only when every source is empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `configured` is non-empty but is not a valid
+    /// HTTP(S) URL. The override is *authoritative* — it decides where
+    /// credentials go — so a typo must fail loudly here rather than surface
+    /// later as an opaque "relative URL without a base" from the HTTP client.
     pub(crate) fn resolve_register_base(
         configured: Option<&str>,
         dialed_host: Option<&str>,
         use_tls: bool,
         server_supplied: &str,
-    ) -> Option<String> {
+    ) -> Result<Option<String>> {
         let clean = |s: &str| {
             let t = s.trim().trim_end_matches('/');
             (!t.is_empty()).then(|| t.to_string())
         };
 
         if let Some(base) = configured.and_then(clean) {
-            return Some(base);
+            // Validate before trusting it: `parse_origin` accepts only
+            // http/https with a host, which is exactly what the caller needs to
+            // build `{base}{path}`.
+            if parse_origin(&base).is_none() {
+                return Err(ConnectorError::InvalidConfig(format!(
+                    "STRIKE48_API_URL is not a valid HTTP(S) URL: {base:?} \
+                     (expected e.g. \"https://studio.example.com\")"
+                )));
+            }
+            return Ok(Some(base));
         }
         if let Some(base) = dialed_host.and_then(|h| Self::derive_api_base(h, use_tls)) {
-            return Some(base);
+            return Ok(Some(base));
         }
-        clean(server_supplied)
+        Ok(clean(server_supplied))
+    }
+
+    /// [`Self::resolve_register_base`] plus the diagnostics every call site
+    /// wants to log, so the three OTT paths (single runner, gRPC multi-runner,
+    /// WS multiplex) cannot drift in what they resolve *or* what they report.
+    ///
+    /// Returns `Ok(None)` when no source yields a base. Notes are pre-formatted
+    /// messages the caller emits through its own logger (each has a different
+    /// prefix), paired with the level to emit them at.
+    pub(crate) fn resolve_register_base_verbose(
+        configured: Option<&str>,
+        dialed_host: Option<&str>,
+        use_tls: bool,
+        server_supplied: &str,
+    ) -> Result<ResolvedCallbackBase> {
+        let Some(base) =
+            Self::resolve_register_base(configured, dialed_host, use_tls, server_supplied)?
+        else {
+            return Ok(None);
+        };
+
+        let mut notes = Vec::new();
+
+        // Diverging from what the server asked for is worth surfacing at info,
+        // not debug: it is the whole behaviour change, and when the server
+        // advertised a localhost placeholder it is also a security-relevant
+        // redirect an operator should be able to see in normal logs.
+        let advertised = server_supplied.trim().trim_end_matches('/');
+        if !advertised.is_empty() && advertised != base {
+            notes.push((
+                CallbackNote::Info,
+                format!(
+                    "OTT callback base overridden: server advertised {advertised:?}, using {base:?}"
+                ),
+            ));
+        }
+
+        // The derivation assumes the HTTP API is co-located with the transport.
+        // A retained non-default port is where that is most likely wrong (gRPC
+        // on :50051, HTTP API on :443), and the operator cannot be rescued by
+        // the server value since the dialed host outranks it.
+        if configured.is_none_or(|c| c.trim().is_empty())
+            && let Some(host) = dialed_host
+            && let Some((_, kept_port)) = Self::derive_api_base_checked(host, use_tls)
+            && kept_port
+        {
+            notes.push((
+                CallbackNote::Warn,
+                format!(
+                    "OTT callback base {base:?} was derived from the dialed transport endpoint \
+                     and kept its non-default port. If this deployment serves the HTTP API on a \
+                     different port than the transport, set STRIKE48_API_URL explicitly."
+                ),
+            ));
+        }
+
+        Ok(Some((base, notes)))
     }
 
     /// Turn a connector host into its HTTP(S) API base.
     ///
     /// Accepts either a full connector URL (`wss://connectors-studio.example.com:443`)
-    /// or the bare `host:port` the client stores after [`crate::parse_url`].
+    /// or the bare `host:port` the client stores after [`crate::parse_url`]
+    /// (which always carries an explicit port — see `ParsedEndpoint::host_port`).
     /// Strips the transport scheme, drops a leading `connectors-` label, and
     /// removes the scheme's default port so the `Host` header stays clean for
     /// hostname-based gateway routing.
     ///
     /// An explicitly secure input (`wss://`/`https://`/`grpcs://`) is never
     /// downgraded by `use_tls: false`.
+    ///
+    /// # Assumption: the HTTP API is co-located with the transport
+    ///
+    /// A non-default port is **carried through**, because the common deployment
+    /// puts transport and HTTP API behind one ingress (`wss://host:443` →
+    /// `https://host`). Deployments that split them — gRPC on `:50051`, the HTTP
+    /// API on `:443` — derive an unreachable base; those must set
+    /// `STRIKE48_API_URL`. [`Self::derive_api_base_checked`] surfaces that case
+    /// so the caller can warn instead of failing silently.
+    ///
+    /// The `connectors-` strip encodes a **deployment naming convention** (a
+    /// `connectors-` ingress label fronting the same studio), not a general
+    /// rule. It mirrors pick's `derive_api_url` so both ends agree. A host whose
+    /// real name legitimately begins with `connectors-` is rewritten by it and
+    /// needs `STRIKE48_API_URL`.
     pub(crate) fn derive_api_base(host: &str, use_tls: bool) -> Option<String> {
+        Self::derive_api_base_checked(host, use_tls).map(|(base, _)| base)
+    }
+
+    /// [`Self::derive_api_base`], additionally reporting whether the derived
+    /// base kept a non-default port — the case where the co-location
+    /// assumption above is most likely to be wrong.
+    pub(crate) fn derive_api_base_checked(host: &str, use_tls: bool) -> Option<(String, bool)> {
         const SCHEMES: [&str; 6] = [
             "grpcs://", "grpc://", "https://", "http://", "wss://", "ws://",
         ];
@@ -262,13 +368,32 @@ impl OttProvider {
             }
         }
 
-        let bare = bare.split('/').next().unwrap_or(bare);
-        let bare = bare.strip_prefix("connectors-").unwrap_or(bare);
+        let authority = bare.split('/').next().unwrap_or(bare);
         let scheme = if use_tls || secure { "https" } else { "http" };
-        let default_port = if scheme == "https" { ":443" } else { ":80" };
-        let bare = bare.strip_suffix(default_port).unwrap_or(bare);
+        let default_port: u16 = if scheme == "https" { 443 } else { 80 };
 
-        (!bare.is_empty()).then(|| format!("{scheme}://{bare}"))
+        // Split IPv6-aware: a naive `strip_suffix(":443")` turns the bare
+        // literal `2001:db8::443` into `2001:db8:`.
+        let (host_only, port) = crate::transport::proxy::split_host_port(authority);
+        let host_only = host_only
+            .strip_prefix("connectors-")
+            .unwrap_or(&host_only)
+            .to_string();
+        if host_only.is_empty() {
+            return None;
+        }
+
+        // Re-bracket an IPv6 literal so the result is a parseable URL.
+        let host_part = if host_only.contains(':') && !host_only.starts_with('[') {
+            format!("[{host_only}]")
+        } else {
+            host_only
+        };
+
+        match port {
+            Some(p) if p != default_port => Some((format!("{scheme}://{host_part}:{p}"), true)),
+            _ => Some((format!("{scheme}://{host_part}"), false)),
+        }
     }
 
     /// Validate that a server-supplied registration URL points at the
@@ -284,23 +409,29 @@ impl OttProvider {
             Some(c) if !c.trim().is_empty() => c,
             _ => {
                 tracing::warn!(
-                    "STRIKE48_API_URL is not configured; skipping OTT register-URL \
-                     allowlist check (dev only). Set STRIKE48_API_URL in production \
-                     to enforce a same-origin policy on server-supplied register URLs."
+                    "STRIKE48_API_URL is not configured; skipping the OTT register-URL \
+                     allowlist check against it. The resolved callback base is still \
+                     enforced (see `enforce_same_origin`); set STRIKE48_API_URL to pin \
+                     the origin explicitly."
                 );
                 return Ok(());
             }
         };
+        Self::enforce_same_origin(target, configured, "STRIKE48_API_URL")
+    }
 
+    /// Refuse to POST credentials anywhere but `allowed`'s origin.
+    ///
+    /// `source` names where `allowed` came from, so the error tells an operator
+    /// which knob to turn (`STRIKE48_API_URL` vs. the resolved callback base).
+    pub(crate) fn enforce_same_origin(target: &str, allowed: &str, source: &str) -> Result<()> {
         let target_origin = parse_origin(target).ok_or_else(|| {
             ConnectorError::InvalidConfig(format!(
                 "OTT register URL is not a valid HTTP(S) URL: {target}"
             ))
         })?;
-        let allowed_origin = parse_origin(configured).ok_or_else(|| {
-            ConnectorError::InvalidConfig(format!(
-                "STRIKE48_API_URL is not a valid HTTP(S) URL: {configured}"
-            ))
+        let allowed_origin = parse_origin(allowed).ok_or_else(|| {
+            ConnectorError::InvalidConfig(format!("{source} is not a valid HTTP(S) URL: {allowed}"))
         })?;
 
         if target_origin == allowed_origin {
@@ -308,7 +439,7 @@ impl OttProvider {
         } else {
             Err(ConnectorError::InvalidConfig(format!(
                 "OTT register URL origin {target_origin:?} does not match \
-                 STRIKE48_API_URL origin {allowed_origin:?}; refusing to send \
+                 {source} origin {allowed_origin:?}; refusing to send \
                  credentials to an unapproved host"
             )))
         }
@@ -689,19 +820,34 @@ impl OttProvider {
             .get_or_create_keypair_for_connector(connector_type, instance_id)
             .await?;
 
-        // Build full URL
+        // Build full URL. `register_url` is documented as a *path*
+        // (connector_service.proto: "URL path for OTT registration"), but the
+        // server can send an absolute URL, in which case it names the host
+        // itself and `api_url` is bypassed entirely.
         let full_url = if register_url.starts_with("http") {
             register_url.to_string()
         } else {
             format!("{}{}", api_url.trim_end_matches('/'), register_url)
         };
 
-        // Defence-in-depth: the `matrix_api_url` and `register_url` come
-        // from a `CredentialsIssued` server message. If `STRIKE48_API_URL`
-        // is configured (it is in production deployments), refuse to dial
-        // any host that does not share its origin. Without the allowlist,
-        // a compromised or misconfigured server could send the connector
-        // its bearer token and public key to an attacker-controlled host.
+        // Defence-in-depth: `register_url` comes from a `CredentialsIssued`
+        // server message. A compromised or misconfigured server could name an
+        // attacker-controlled host and receive this connector's OTT and public
+        // key.
+        //
+        // The allowlist origin is `api_url` — the base the *caller* resolved
+        // (operator override → dialed host → server value; see
+        // `resolve_register_base`) — NOT `STRIKE48_API_URL` directly. That
+        // matters: the override is frequently unset now that the dialed host
+        // serves as the default, and gating on the env var alone would leave an
+        // absolute server-supplied `register_url` completely unchecked in the
+        // common configuration. Validating against the resolved base means the
+        // connector, not the server, decides the destination in every config.
+        //
+        // `STRIKE48_API_URL` is still consulted as a second, independent
+        // constraint when set, so an explicit operator allowlist keeps its
+        // meaning even if the resolved base came from elsewhere.
+        Self::enforce_same_origin(&full_url, api_url, "the resolved OTT callback base")?;
         let configured_api_url = std::env::var("STRIKE48_API_URL").ok();
         Self::validate_register_origin(&full_url, configured_api_url.as_deref())?;
 
@@ -1230,7 +1376,7 @@ mod tests {
             true,
             "http://localhost:4001",
         );
-        assert_eq!(got.unwrap(), "https://api.example.com");
+        assert_eq!(got.unwrap().unwrap(), "https://api.example.com");
     }
 
     #[test]
@@ -1244,7 +1390,7 @@ mod tests {
             true,
             "http://localhost:4001",
         );
-        assert_eq!(got.unwrap(), "https://tenant-a.example.com");
+        assert_eq!(got.unwrap().unwrap(), "https://tenant-a.example.com");
     }
 
     #[test]
@@ -1264,20 +1410,167 @@ mod tests {
             true,
             "https://global.example.com",
         );
-        assert_eq!(a.unwrap(), "https://tenant-a.example.com");
-        assert_eq!(b.unwrap(), "https://tenant-b.example.com");
+        assert_eq!(a.unwrap().unwrap(), "https://tenant-a.example.com");
+        assert_eq!(b.unwrap().unwrap(), "https://tenant-b.example.com");
     }
 
     #[test]
     fn resolve_register_base_falls_back_to_server_value() {
         let got =
             OttProvider::resolve_register_base(None, None, true, "https://studio.example.com/");
-        assert_eq!(got.unwrap(), "https://studio.example.com");
+        assert_eq!(got.unwrap().unwrap(), "https://studio.example.com");
+    }
+
+    #[test]
+    fn derive_api_base_handles_ipv6_literals() {
+        // A naive `strip_suffix(":443")` eats the last hextet of a bare IPv6
+        // literal, producing the unusable "https://2001:db8:".
+        assert_eq!(
+            OttProvider::derive_api_base("2001:db8::443", true).unwrap(),
+            "https://[2001:db8::443]"
+        );
+        assert_eq!(
+            OttProvider::derive_api_base("[2001:db8::1]:443", true).unwrap(),
+            "https://[2001:db8::1]"
+        );
+        assert_eq!(
+            OttProvider::derive_api_base("[2001:db8::1]:8443", true).unwrap(),
+            "https://[2001:db8::1]:8443"
+        );
+        // Whatever we produce must be a parseable HTTP(S) origin, since the
+        // caller builds `{base}{path}` and validates the result.
+        for host in [
+            "2001:db8::443",
+            "[2001:db8::1]:8443",
+            "studio.example.com:443",
+        ] {
+            let base = OttProvider::derive_api_base(host, true).unwrap();
+            assert!(
+                parse_origin(&base).is_some(),
+                "derived base {base:?} must be a valid HTTP(S) origin"
+            );
+        }
+    }
+
+    #[test]
+    fn derive_api_base_checked_flags_retained_non_default_port() {
+        // The co-location assumption (HTTP API on the transport's port) is most
+        // likely wrong when a non-default port survives — e.g. gRPC on :50051.
+        let (base, kept) = OttProvider::derive_api_base_checked("studio.example.com:50051", true)
+            .expect("derivation must succeed");
+        assert_eq!(base, "https://studio.example.com:50051");
+        assert!(kept, "a non-default port must be flagged to the caller");
+
+        let (base, kept) = OttProvider::derive_api_base_checked("studio.example.com:443", true)
+            .expect("derivation must succeed");
+        assert_eq!(base, "https://studio.example.com");
+        assert!(!kept, "the scheme's default port is not a divergence");
+    }
+
+    #[test]
+    fn resolve_register_base_rejects_malformed_override() {
+        // STRIKE48_API_URL is authoritative, so a typo must fail loudly here
+        // rather than surface later as a reqwest "relative URL without a base".
+        let err = OttProvider::resolve_register_base(
+            Some("studio.example.com"), // no scheme
+            Some("wss://tenant-a.example.com:443"),
+            true,
+            "",
+        )
+        .expect_err("a schemeless override must be rejected");
+        assert!(
+            err.to_string().contains("STRIKE48_API_URL"),
+            "error must name the offending knob, got: {err}"
+        );
+
+        OttProvider::resolve_register_base(Some("ftp://studio.example.com"), None, true, "")
+            .expect_err("a non-HTTP(S) override must be rejected");
+    }
+
+    #[test]
+    fn resolve_register_base_verbose_reports_override_and_port_risk() {
+        // Diverging from the server's advertised value is an info-level event.
+        let (base, notes) = OttProvider::resolve_register_base_verbose(
+            None,
+            Some("wss://tenant-a.example.com:443"),
+            true,
+            "http://localhost:4001",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(base, "https://tenant-a.example.com");
+        assert!(
+            notes.iter().any(|(l, m)| *l == CallbackNote::Info
+                && m.contains("localhost:4001")
+                && m.contains("tenant-a.example.com")),
+            "an override of the server value must be reported: {notes:?}"
+        );
+
+        // A derived base that kept a non-default port warns, since the server
+        // value can no longer rescue it.
+        let (_, notes) = OttProvider::resolve_register_base_verbose(
+            None,
+            Some("grpcs://studio.example.com:50051"),
+            true,
+            "",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            notes
+                .iter()
+                .any(|(l, m)| *l == CallbackNote::Warn && m.contains("STRIKE48_API_URL")),
+            "a retained non-default port must warn: {notes:?}"
+        );
+
+        // Agreeing with the server, on the default port, is silent.
+        let (_, notes) = OttProvider::resolve_register_base_verbose(
+            None,
+            Some("wss://studio.example.com:443"),
+            true,
+            "https://studio.example.com",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            notes.is_empty(),
+            "no divergence should be silent: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn enforce_same_origin_blocks_absolute_server_register_url() {
+        // The regression that matters: `register_url` is documented as a path,
+        // but an absolute one bypasses the resolved base entirely. It must be
+        // refused against the RESOLVED base, with no dependence on
+        // STRIKE48_API_URL being set.
+        let err = OttProvider::enforce_same_origin(
+            "http://evil.example.com/api/connectors/register-with-ott",
+            "https://tenant-a.example.com",
+            "the resolved OTT callback base",
+        )
+        .expect_err("a foreign absolute register URL must be refused");
+        assert!(
+            err.to_string().contains("refusing to send credentials"),
+            "got: {err}"
+        );
+
+        // Same origin still passes.
+        OttProvider::enforce_same_origin(
+            "https://tenant-a.example.com/api/connectors/register-with-ott",
+            "https://tenant-a.example.com",
+            "the resolved OTT callback base",
+        )
+        .expect("same origin must pass");
     }
 
     #[test]
     fn resolve_register_base_none_when_every_source_empty() {
-        assert!(OttProvider::resolve_register_base(Some("  "), Some(""), true, "").is_none());
+        assert!(
+            OttProvider::resolve_register_base(Some("  "), Some(""), true, "")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
