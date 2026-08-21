@@ -66,7 +66,7 @@ pub async fn execute_command_in_dir(
     timeout_duration: Duration,
     working_dir: Option<&Path>,
 ) -> Result<CommandResult> {
-    // If sandbox is disabled, execute directly
+    // If sandbox is disabled, execute on the host.
     if !is_sandbox_enabled() {
         // Redact args: a differential-authz identity run splices a credential
         // (`-H "Authorization: Bearer <token>"`, `-u user:pass`) into argv, so the
@@ -76,6 +76,35 @@ pub async fn execute_command_in_dir(
             cmd,
             pentest_core::provenance::redact(&format!("{args:?}"))
         );
+
+        // Parity with the sandbox path, which runs `bash -c "<cmd> <args>"`:
+        // when `cmd` is a full shell line (pipes, redirects, globs, or just a
+        // command with spaces — the shape the execute_command tool passes,
+        // e.g. `ps aux | head -n 11`), run it through a shell so those work.
+        // Without this, Native/DISABLE_SANDBOX execution does `Command::new`
+        // on the whole string and fails instantly with ENOENT ("no such
+        // binary"). Bare-binary callers (`which`, the `sh -c ...` probes) have
+        // no shell metacharacters in `cmd`, so they keep direct argv exec and
+        // their positional-parameter semantics.
+        if needs_shell(cmd) {
+            let full_cmd = if args.is_empty() {
+                cmd.to_string()
+            } else {
+                let escaped: Vec<String> = args.iter().map(|a| shell_escape(a)).collect();
+                format!("{} {}", cmd, escaped.join(" "))
+            };
+            #[cfg(windows)]
+            {
+                return execute_command_direct("cmd", &["/C", &full_cmd], timeout_duration, working_dir)
+                    .await;
+            }
+            #[cfg(not(windows))]
+            {
+                return execute_command_direct("sh", &["-c", &full_cmd], timeout_duration, working_dir)
+                    .await;
+            }
+        }
+
         return execute_command_direct(cmd, args, timeout_duration, working_dir).await;
     }
 
@@ -252,6 +281,22 @@ pub(crate) async fn execute_command_direct(
 
 /// Shell-escape a string for safe inclusion in a command.
 #[must_use]
+/// True when `cmd` is a shell line (not a bare executable name) and therefore
+/// must be run through a shell for pipes / redirects / globs / multiple words
+/// to work. Mirrors what the sandbox path gets for free by always running
+/// `bash -c`. A bare binary name (`nmap`, `which`, `sh`) has none of these and
+/// is left to direct argv exec so probe callers keep their positional semantics.
+fn needs_shell(cmd: &str) -> bool {
+    cmd.chars().any(|c| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '|' | '&' | ';' | '<' | '>' | '(' | ')' | '$' | '`' | '*' | '?' | '{' | '}'
+                    | '[' | ']' | '~' | '\\' | '"' | '\''
+            )
+    })
+}
+
 fn shell_escape(s: &str) -> String {
     if s.is_empty() {
         return "''".to_string();
@@ -271,6 +316,21 @@ fn shell_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn needs_shell_detects_shell_lines_but_not_bare_binaries() {
+        // Bare binaries / probe callers -> direct argv exec (no shell).
+        assert!(!needs_shell("nmap"));
+        assert!(!needs_shell("which"));
+        assert!(!needs_shell("sh"));
+        assert!(!needs_shell("execute_command"));
+        // Full shell lines the execute_command tool passes -> must shell-wrap.
+        assert!(needs_shell("ps aux --sort=-%cpu | head -n 11"));
+        assert!(needs_shell("ls -la"));
+        assert!(needs_shell("echo hi > out.txt"));
+        assert!(needs_shell("cat /etc/hosts | grep localhost"));
+        assert!(needs_shell("ls *.rs"));
+    }
 
     #[test]
     fn test_shell_escape() {
