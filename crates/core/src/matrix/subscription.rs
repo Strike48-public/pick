@@ -376,6 +376,12 @@ async fn connect_and_run(
 }
 
 /// Serialize `value` to a text frame and send it.
+// `WsError` is `tungstenite::Error` — a foreign type, 136 bytes, which trips
+// `clippy::result_large_err` (threshold 128) as of clippy 1.98. This function is
+// a one-line pass-through of the `Sink`'s own error, and all three callers only
+// log it; boxing would add an allocation on the error path and change the
+// signature purely to satisfy the lint. Allow it here instead.
+#[allow(clippy::result_large_err)]
 async fn send_json<S>(write: &mut S, value: &Value) -> Result<(), WsError>
 where
     S: Sink<WsMessage, Error = WsError> + Unpin,
