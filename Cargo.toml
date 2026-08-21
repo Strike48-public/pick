@@ -125,3 +125,7 @@ strip = true
 [patch.crates-io]
 dioxus-asset-resolver = { path = "vendor/dioxus-asset-resolver" }
 dioxus-liveview = { path = "vendor/dioxus-liveview" }
+# Vendored fork of strike48-connector 0.6.2 — see vendor/strike48-connector/PATCHES.md
+#   connector-owns-callback-origin — the connector, not the server, resolves the
+#   OTT registration host. Drop this once the fix ships in the SDK (Strike48/sdk-rs).
+strike48-connector = { path = "vendor/strike48-connector" }

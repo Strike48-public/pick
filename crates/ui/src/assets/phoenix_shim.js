@@ -65,6 +65,14 @@
 
       this._wsPath = urlObj.pathname;
       this._wsQuery = urlObj.search ? urlObj.search.substring(1) : ''; // Remove leading '?'
+      // The channel topic MUST carry the query string. Strike48's
+      // `app_ws_proxy_channel` recovers it by splitting the topic on '?'
+      // (`parse_path_and_query/1`) and ignores the join payload, so a
+      // path-only topic silently drops every query param — which for
+      // /ws/shell means dropping the auth token and getting a 401 back.
+      // The payload below is kept as well: harmless, and the right shape if
+      // the server ever reads it.
+      this._wsTopicPath = this._wsPath + (urlObj.search || '');
       console.log('[Strike48WsShim] LiveView WebSocket detected, path:', this._wsPath, 'query:', this._wsQuery);
       this._waitForStrike48AndConnect();
     }
@@ -127,7 +135,7 @@
 
     _joinChannel() {
       this._joinRef = String(++this._ref);
-      const topic = 'app_ws:' + this._wsPath;
+      const topic = 'app_ws:' + this._wsTopicPath;
       // Pass query string in payload so Strike48 can forward it to connector
       const payload = this._wsQuery ? { query_string: this._wsQuery } : {};
       const joinMsg = JSON.stringify([this._joinRef, String(++this._ref), topic, 'phx_join', payload]);
@@ -183,7 +191,7 @@
     send(data) {
       if (this.readyState !== SOCKET_STATES.open) return;
 
-      const topic = 'app_ws:' + this._wsPath;
+      const topic = 'app_ws:' + this._wsTopicPath;
       let framePayload;
 
       if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
