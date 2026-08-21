@@ -75,10 +75,30 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           provenance: false
           sbom: false
-          outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.REGISTRY_IMAGE) || '' }}
+          # Non-PR: push by digest, to be merged into a multi-arch manifest below.
+          # PR: nothing is published, so export a loadable single-arch image
+          # tarball instead and attach it to the run as an artifact (see
+          # "Upload image tarball" below). `type=docker` is single-platform
+          # only, which is satisfied here because each matrix leg builds one
+          # arch natively.
+          outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.REGISTRY_IMAGE) || format('type=docker,dest=/tmp/pick-{0}.tar', matrix.arch) }}
           cache-from: |
             type=registry,ref=${{ env.REGISTRY_IMAGE }}:buildcache-${{ matrix.arch }}
           cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}:buildcache-{1},mode=max,image-manifest=true,oci-mediatypes=true', env.REGISTRY_IMAGE, matrix.arch) || '' }}
+
+      # PR builds publish nothing, so the built image would otherwise be
+      # unreachable for reviewers. Attach it to the run so it can be pulled
+      # down and run locally:
+      #   gh run download <run-id> -n pick-image-amd64
+      #   docker load -i pick-amd64.tar
+      - name: Upload image tarball
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pick-image-${{ matrix.arch }}
+          path: /tmp/pick-${{ matrix.arch }}.tar
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Export digest
         if: github.event_name != 'pull_request'
