@@ -1,7 +1,8 @@
 # Strike48/pick patches — strike48-connector 0.6.2
 
-Vendored fork of the crates.io release. Every change is marked in-source with
-`[STRIKE48-PATCH <slug>]`; audit with `git grep -n STRIKE48-PATCH vendor/strike48-connector`.
+Vendored fork of the crates.io release. This fork mirrors an upstream PR branch rather than carrying local markers;
+changes are documented here and traced by diff, not marked in-source with
+the upstream branch, so the sources carry no in-tree `[STRIKE48-PATCH]` markers. Audit the delta by diffing against the tracked upstream — `git diff` this tree vs. crates.io `strike48-connector` 0.6.2, or vs. Strike48/sdk-rs#65 (`fix/connector-owns-callback-origin`), which this fork mirrors 1:1.
 
 Upstream: https://github.com/Strike48/sdk-rs
 

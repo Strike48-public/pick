@@ -254,7 +254,23 @@ impl OttProvider {
         if let Some(base) = dialed_host.and_then(|h| Self::derive_api_base(h, use_tls)) {
             return Ok(Some(base));
         }
-        Ok(clean(server_supplied))
+        // Last resort: the server-advertised value. Validate it through
+        // `parse_origin` exactly like the operator override above — otherwise a
+        // malformed or non-HTTP(S) `matrix_api_url` would flow into
+        // `enforce_same_origin` where, with no `STRIKE48_API_URL` set, it is
+        // only ever compared against itself (a trivial pass). Refusing here
+        // means an unusable server value fails loud instead of being POSTed to.
+        match clean(server_supplied) {
+            Some(base) => {
+                if parse_origin(&base).is_none() {
+                    return Err(ConnectorError::InvalidConfig(format!(
+                        "server-advertised matrix_api_url is not a valid HTTP(S) URL: {base:?}"
+                    )));
+                }
+                Ok(Some(base))
+            }
+            None => Ok(None),
+        }
     }
 
     /// [`Self::resolve_register_base`] plus the diagnostics every call site
@@ -311,7 +327,48 @@ impl OttProvider {
             ));
         }
 
+        // Provenance of the resolved base decides how loudly to flag it. The
+        // dialed-host path is the intended default and needs no warning; the
+        // two risky provenances do:
+        //   * base came straight from the server-advertised value (no override,
+        //     no derivable dialed host) — it is NOT pinned by STRIKE48_API_URL,
+        //     so the same-origin check downstream degrades to a self-compare.
+        //   * base resolves to a loopback origin — the server almost certainly
+        //     advertised a placeholder (matrix#3695 `localhost:4001`); POSTing
+        //     credentials there hits the connector's own host.
+        // These are emitted at Warn so they survive the SDK's default
+        // (warn-level) EnvFilter, unlike the Info override note above.
+        let from_override = configured.is_some_and(|c| !c.trim().is_empty());
+        let from_dialed = !from_override
+            && dialed_host.is_some_and(|h| Self::derive_api_base(h, use_tls).is_some());
+        let from_server = !from_override && !from_dialed;
+
+        if from_server {
+            notes.push((
+                CallbackNote::Warn,
+                format!(
+                    "OTT callback base {base:?} came from the server-advertised value and is                      NOT pinned by STRIKE48_API_URL; the destination is only self-validated.                      Set STRIKE48_API_URL to enforce an independent origin allowlist."
+                ),
+            ));
+        }
+
+        if parse_origin(&base).is_some_and(|(_, host, _)| Self::is_loopback_host(&host)) {
+            notes.push((
+                CallbackNote::Warn,
+                format!(
+                    "OTT callback base {base:?} is a loopback origin — the server likely                      advertised a placeholder. Credentials would be POSTed to this host;                      set STRIKE48_API_URL or fix the tenant's callback host."
+                ),
+            ));
+        }
+
         Ok(Some((base, notes)))
+    }
+
+    /// True when `host` is a loopback name/address (registration to it means the
+    /// server advertised a placeholder rather than a reachable tenant host).
+    fn is_loopback_host(host: &str) -> bool {
+        let h = host.trim().trim_start_matches('[').trim_end_matches(']');
+        h.eq_ignore_ascii_case("localhost") || h == "::1" || h.starts_with("127.")
     }
 
     /// Turn a connector host into its HTTP(S) API base.
@@ -538,6 +595,15 @@ impl OttProvider {
             .ok_or_else(|| ConnectorError::InvalidConfig("API URL not configured".to_string()))?;
 
         let register_url = format!("{api_url}/api/connectors/register-with-ott");
+
+        // Pre-approval parity with the post-approval path: `api_url` here comes
+        // from the staged OTT blob (`ott_data.api_url`) or `self.api_url`, so a
+        // tampered blob could redirect this token + public-key POST anywhere.
+        // Enforce the operator's `STRIKE48_API_URL` origin allowlist when set
+        // (a no-op warn when unset, since the OTT blob is operator-staged in the
+        // normal case — the env var is the defence-in-depth pin).
+        let configured_api_url = std::env::var("STRIKE48_API_URL").ok();
+        Self::validate_register_origin(&register_url, configured_api_url.as_deref())?;
 
         // Build payload with public key for private_key_jwt authentication
         let payload = serde_json::json!({
@@ -1419,6 +1485,63 @@ mod tests {
         let got =
             OttProvider::resolve_register_base(None, None, true, "https://studio.example.com/");
         assert_eq!(got.unwrap().unwrap(), "https://studio.example.com");
+    }
+
+    #[test]
+    fn resolve_register_base_rejects_malformed_server_value() {
+        // A non-HTTP(S) / unparseable server value must fail loud rather than
+        // flow into a downstream self-compare (review finding #1).
+        assert!(OttProvider::resolve_register_base(None, None, true, "not a url").is_err());
+        assert!(OttProvider::resolve_register_base(None, None, true, "ftp://x").is_err());
+    }
+
+    #[test]
+    fn verbose_warns_when_base_is_server_value_or_loopback() {
+        // Fell back to server value with no STRIKE48_API_URL pin -> Warn.
+        let (_base, notes) = OttProvider::resolve_register_base_verbose(
+            None,
+            None,
+            true,
+            "https://studio.example.com",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            notes.iter().any(|(sev, _)| *sev == CallbackNote::Warn),
+            "server-value provenance must warn"
+        );
+
+        // Loopback base (placeholder) -> Warn.
+        let (_b, notes2) =
+            OttProvider::resolve_register_base_verbose(None, None, true, "http://localhost:4001")
+                .unwrap()
+                .unwrap();
+        assert!(
+            notes2.iter().any(|(sev, _)| *sev == CallbackNote::Warn),
+            "loopback base must warn"
+        );
+
+        // Explicit override -> no warn (the pinned, intended case).
+        let (_c, notes3) = OttProvider::resolve_register_base_verbose(
+            Some("https://api.example.com"),
+            None,
+            true,
+            "https://studio.example.com",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            !notes3.iter().any(|(sev, _)| *sev == CallbackNote::Warn),
+            "explicit override must not warn"
+        );
+    }
+
+    #[test]
+    fn is_loopback_host_matches_placeholders() {
+        assert!(OttProvider::is_loopback_host("localhost"));
+        assert!(OttProvider::is_loopback_host("127.0.0.1"));
+        assert!(OttProvider::is_loopback_host("::1"));
+        assert!(!OttProvider::is_loopback_host("studio.example.com"));
     }
 
     #[test]

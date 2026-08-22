@@ -41,6 +41,16 @@ pub fn derive_api_url(host: &str, use_tls: bool) -> String {
     }
     let api_host = bare_host.strip_prefix("connectors-").unwrap_or(bare_host);
     let api_host = api_host.trim_end_matches('/');
+    // Strip the scheme's default port so the result matches the SDK's
+    // `derive_api_base` and does not carry `:443`/`:80` into Host-header-based
+    // gateway routing (review #5). IPv6 literals contain multiple colons — leave
+    // those untouched rather than mangle a hextet.
+    let api_host = if api_host.matches(':').count() > 1 {
+        api_host
+    } else {
+        let default_port = if scheme == "https" { ":443" } else { ":80" };
+        api_host.strip_suffix(default_port).unwrap_or(api_host)
+    };
     format!("{scheme}://{api_host}")
 }
 
@@ -105,10 +115,20 @@ mod tests {
     }
 
     #[test]
-    fn strips_connectors_label() {
+    fn strips_connectors_label_and_default_port() {
+        // Default :443 is stripped (review #5) so the form matches the SDK's
+        // derive_api_base and doesn't carry a port into Host-header routing.
         assert_eq!(
             derive_api_url("wss://connectors-studio.strike48.test:443", true),
-            "https://studio.strike48.test:443"
+            "https://studio.strike48.test"
+        );
+    }
+
+    #[test]
+    fn keeps_non_default_port() {
+        assert_eq!(
+            derive_api_url("wss://studio.strike48.test:8443", true),
+            "https://studio.strike48.test:8443"
         );
     }
 

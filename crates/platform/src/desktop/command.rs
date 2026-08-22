@@ -95,13 +95,23 @@ pub async fn execute_command_in_dir(
             };
             #[cfg(windows)]
             {
-                return execute_command_direct("cmd", &["/C", &full_cmd], timeout_duration, working_dir)
-                    .await;
+                return execute_command_direct(
+                    "cmd",
+                    &["/C", &full_cmd],
+                    timeout_duration,
+                    working_dir,
+                )
+                .await;
             }
             #[cfg(not(windows))]
             {
-                return execute_command_direct("sh", &["-c", &full_cmd], timeout_duration, working_dir)
-                    .await;
+                return execute_command_direct(
+                    "sh",
+                    &["-c", &full_cmd],
+                    timeout_duration,
+                    working_dir,
+                )
+                .await;
             }
         }
 
@@ -291,8 +301,24 @@ fn needs_shell(cmd: &str) -> bool {
         c.is_whitespace()
             || matches!(
                 c,
-                '|' | '&' | ';' | '<' | '>' | '(' | ')' | '$' | '`' | '*' | '?' | '{' | '}'
-                    | '[' | ']' | '~' | '\\' | '"' | '\''
+                '|' | '&'
+                    | ';'
+                    | '<'
+                    | '>'
+                    | '('
+                    | ')'
+                    | '$'
+                    | '`'
+                    | '*'
+                    | '?'
+                    | '{'
+                    | '}'
+                    | '['
+                    | ']'
+                    | '~'
+                    | '\\'
+                    | '"'
+                    | '\''
             )
     })
 }
