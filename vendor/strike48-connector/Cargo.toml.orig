@@ -1,0 +1,95 @@
+[package]
+name = "strike48-connector"
+description = "Rust SDK for the Strike48 Connector Framework"
+documentation = "https://docs.rs/strike48-connector"
+keywords = ["strike48", "connector", "grpc", "sdk"]
+categories = ["api-bindings", "network-programming"]
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "strike48_connector"
+path = "src/lib.rs"
+
+[dependencies]
+strike48-proto = { workspace = true }
+
+# gRPC and protobuf
+tonic = { workspace = true }
+tokio-stream = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+http = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+async-stream = { workspace = true }
+async-trait = { workspace = true }
+
+# WebSocket transport
+tokio-tungstenite = { workspace = true }
+native-tls = { workspace = true }
+hex = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+rand = { workspace = true }
+schemars = { workspace = true }
+regex = { workspace = true }
+hostname = { workspace = true }
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# JWT
+jsonwebtoken = { workspace = true }
+base64 = { workspace = true }
+
+# Cryptography (EC key generation)
+aws-lc-rs = { workspace = true }
+
+# OAuth / PKCE
+open = { workspace = true }
+urlencoding = { workspace = true }
+sha2 = { workspace = true }
+
+# TLS
+rustls = { workspace = true }
+rustls-pemfile = "2"
+webpki-roots = "1"
+
+tokio-rustls = { workspace = true }
+tower-service = { workspace = true }
+hyper-util = { workspace = true }
+metrics = "0.24.3"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+tempfile = "3"
+
+[build-dependencies]
+# Compiles server-side gRPC stubs for the in-process mock matrix
+# server used by `tests/common/mock_grpc_server.rs`. Production code
+# uses only client stubs from `strike48-proto`.
+tonic-build = { workspace = true }

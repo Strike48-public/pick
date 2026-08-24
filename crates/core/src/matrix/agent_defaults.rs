@@ -163,7 +163,17 @@ pub fn default_pentest_agent_input(
             },
             "mcp_servers": {},
             "connectors": connectors,
-            "workflow_tools": {}
+            "workflow_tools": {},
+            // Disable Alpaca's tool optimizer for this agent. Without this the
+            // optimizer auto-enables above 20 tools (we register ~115), hides
+            // every connector tool behind the find_tools/call_tool meta-flow,
+            // and pins only the doc/chart system tools. Models then refuse a
+            // direct "run execute_command" because the tool isn't in their
+            // visible set and they don't reliably self-search via find_tools —
+            // so no invoke ever reaches the connector. Our toolset is a curated
+            // 115 (not a sprawling MCP catalog) and target models have >=200k
+            // context, so sending them directly is the correct trade.
+            "tool_optimizer": { "enabled": false }
         })),
     }
 }
@@ -736,6 +746,18 @@ mod tests {
         assert!(
             tool_configs.contains_key("foo"),
             "tool_configs should contain the passed tool name 'foo'"
+        );
+
+        // The tool optimizer is explicitly disabled so our ~115 connector tools
+        // are sent to the model directly rather than hidden behind find_tools
+        // (which strands direct tool invocations — see the field comment above).
+        assert_eq!(
+            tools
+                .get("tool_optimizer")
+                .and_then(|o| o.get("enabled"))
+                .and_then(|e| e.as_bool()),
+            Some(false),
+            "tool_optimizer must be explicitly disabled"
         );
     }
 

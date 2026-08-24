@@ -9280,8 +9280,6 @@ checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
 [[package]]
 name = "strike48-connector"
 version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4242cc77f1846f17e7241502467f8059373d9a903519c4004e78a7e4e1a217dd"
 dependencies = [
  "async-stream",
  "async-trait",
