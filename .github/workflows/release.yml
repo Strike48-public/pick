@@ -52,7 +52,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev protobuf-compiler libpcap-dev libxdo-dev
 
+      # Desktop release binaries ship easy-mode-first: bake PICK_EASY_MODE and the
+      # studio PLG host at build time (via option_env!) so a distributed binary
+      # with no runtime .env boots into easy mode and auto-connects to studio,
+      # matching the Android build. Web and headless deliberately stay neutral
+      # (compiled easy_mode=false, host resolved from the runtime env).
       - name: Build
+        env:
+          PICK_EASY_MODE: "true"
+          STRIKE48_HOST: https://studio.strike48.com
         run: cargo build --locked --package pentest-desktop --release --features pentest-platform/desktop-pcap
 
       - name: Package
@@ -80,7 +88,11 @@ jobs:
           version: "27.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Easy-mode-first desktop build (see the Linux desktop job for rationale).
       - name: Build
+        env:
+          PICK_EASY_MODE: "true"
+          STRIKE48_HOST: https://studio.strike48.com
         run: cargo build --locked --package pentest-desktop --release
 
       - name: Sign Windows binary
@@ -130,7 +142,11 @@ jobs:
       - name: Install protobuf
         run: brew install protobuf
 
+      # Easy-mode-first desktop build (see the Linux desktop job for rationale).
       - name: Build
+        env:
+          PICK_EASY_MODE: "true"
+          STRIKE48_HOST: https://studio.strike48.com
         run: cargo build --locked --package pentest-desktop --release --target ${{ matrix.target }} --features pentest-platform/desktop-pcap
 
       - name: Import Apple certificate
@@ -366,7 +382,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler libpcap-dev
 
+      # Easy-mode-first: bake PICK_EASY_MODE so the served LiveView UI defaults to
+      # easy mode (resolve_easy_mode: persisted setting > build-time PICK_EASY_MODE
+      # > app default). This is the agent StrikeHub embeds (registry asset
+      # pentest-agent-{os}-{arch}), so the released StrikeHub connector matches a
+      # local easy-mode build. No STRIKE48_HOST is baked: under StrikeHub the host
+      # arrives over IPC, and standalone `pentest-agent connect <url>` supplies it.
       - name: Build
+        env:
+          PICK_EASY_MODE: "true"
         run: cargo build --locked --package pentest-headless --release --features pentest-platform/desktop-pcap
 
       - name: Package
@@ -394,7 +418,10 @@ jobs:
           version: "27.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Easy-mode-first headless build (see the Linux headless job for rationale).
       - name: Build
+        env:
+          PICK_EASY_MODE: "true"
         run: cargo build --locked --package pentest-headless --release
 
       - name: Sign Windows binary
@@ -444,7 +471,10 @@ jobs:
       - name: Install protobuf
         run: brew install protobuf
 
+      # Easy-mode-first headless build (see the Linux headless job for rationale).
       - name: Build
+        env:
+          PICK_EASY_MODE: "true"
         run: cargo build --locked --package pentest-headless --release --target ${{ matrix.target }} --features pentest-platform/desktop-pcap
 
       - name: Import Apple certificate
