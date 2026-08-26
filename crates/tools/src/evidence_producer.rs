@@ -584,7 +584,13 @@ pub fn evidence_from_default_creds(data: &Value, provenance: Provenance) -> Vec<
 /// or drop it while keeping the reproducible curl (in `provenance`) available to
 /// ground any finding the agent builds on top of this request.
 pub fn evidence_from_http_request(data: &Value, provenance: Provenance) -> Vec<EvidenceNode> {
-    let url = data["url"].as_str().unwrap_or("unknown");
+    // Redact secrets in the URL (query-string tokens like `?api_key=...`, HTTP
+    // userinfo `user:pass@`) BEFORE it lands in the node's title/description/
+    // target. These fields reach the published report, and the sibling
+    // provenance curl for this same URL is already redacted — without this the
+    // node fields would be strictly less protected than their own provenance
+    // (pick#52 / pick#317).
+    let url = pentest_core::provenance::redact(data["url"].as_str().unwrap_or("unknown"));
     let method = data["method"].as_str().unwrap_or("GET");
     let status = data["status"].as_u64().unwrap_or(0);
 
@@ -592,7 +598,7 @@ pub fn evidence_from_http_request(data: &Value, provenance: Provenance) -> Vec<E
         node_type: "http_response".to_string(),
         title: format!("HTTP {method} {status} {url}"),
         description: format!("HTTP {method} request to {url} returned status {status}."),
-        target: url.to_string(),
+        target: url.clone(),
         severity: Severity::Info,
         rationale:
             "Raw HTTP response captured for grounding; the Validator adjudicates whether it supports a finding."
@@ -1101,7 +1107,19 @@ mod tests {
             "total_tested": 2
         });
 
-        let nodes = evidence_from_default_creds(&data, test_provenance("sshpass+openssh"));
+        // Build the provenance the way default_creds's execute() does for a
+        // successful ssh login: one probe per attempt embedding the real
+        // password, scrubbed by exact value. Using a dummy `test_provenance`
+        // here (the old version of this test did) never exercises the real
+        // `sshpass -p '<pw>'` path, so it could not catch a password leaking
+        // through `effective_command`. Reverting the builder to plain
+        // `from_exact` turns this test red.
+        let probe = pentest_core::provenance::ProbeCommand::from_exact_redacting_secret(
+            "sshpass -p 's3cr3t' ssh -o StrictHostKeyChecking=no -p 22 admin@10.0.0.5 exit",
+            "s3cr3t",
+        );
+        let provenance = Provenance::multi_step("sshpass+openssh", "1.0", vec![probe], "");
+        let nodes = evidence_from_default_creds(&data, provenance);
 
         // Only the successful login is a finding; failed attempts are not.
         assert_eq!(nodes.len(), 1);
@@ -1112,11 +1130,41 @@ mod tests {
         assert_eq!(node.affected_target, "10.0.0.5:22");
         assert!(node.provenance.is_some());
 
-        // The plaintext password must never appear in any published node field.
+        // The plaintext password must never appear in ANY published byte of the
+        // node — including the attached provenance's `effective_command`.
         let serialized = serde_json::to_string(node).unwrap();
         assert!(
             !serialized.contains("s3cr3t"),
             "plaintext password leaked into evidence node: {serialized}"
+        );
+    }
+
+    #[test]
+    fn test_evidence_from_http_request_redacts_url_secret() {
+        // A query-string secret in the request URL must not survive into the
+        // node's published fields (title/description/target). The sibling
+        // provenance curl for the same URL is already redacted; this guards the
+        // node fields against being the weaker path (pick#52 / pick#317).
+        let data = json!({
+            "url": "http://target.example/api?api_key=SECRET123&x=1",
+            "method": "GET",
+            "status": 200
+        });
+
+        let nodes = evidence_from_http_request(&data, test_provenance("http_request"));
+        assert_eq!(nodes.len(), 1);
+        let node = &nodes[0];
+
+        for field in [&node.title, &node.description, &node.affected_target] {
+            assert!(
+                !field.contains("SECRET123"),
+                "url secret leaked into a published node field: {field}"
+            );
+        }
+        assert!(
+            node.title.contains("<REDACTED>"),
+            "url should be redacted in the node title: {}",
+            node.title
         );
     }
 
