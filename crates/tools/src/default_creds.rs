@@ -15,6 +15,31 @@ use crate::util::{param_str, param_u64};
 /// Default credentials testing tool
 pub struct DefaultCredsTool;
 
+/// Serialize the attempt log for the provenance `raw_response_excerpt` with
+/// every password masked.
+///
+/// The excerpt reaches the published report, and `truncate_excerpt`'s redaction
+/// pass does not catch JSON-quoted `"password":"..."` pairs (its secret regex
+/// expects `password:`, not `password":`), so a successful login would otherwise
+/// publish the plaintext credential in the evidence appendix (pick#52 /
+/// pick#317). Username and status are preserved so a reviewer still sees the
+/// attempt structure.
+fn masked_attempts_excerpt(attempts: &[Value]) -> String {
+    let masked: Vec<Value> = attempts
+        .iter()
+        .map(|a| {
+            let mut a = a.clone();
+            if let Some(obj) = a.as_object_mut() {
+                if obj.contains_key("password") {
+                    obj.insert("password".to_string(), json!("<redacted>"));
+                }
+            }
+            a
+        })
+        .collect();
+    serde_json::to_string(&masked).unwrap_or_default()
+}
+
 impl DefaultCredsTool {
     /// Common default credentials database
     fn get_default_credentials(service: &str) -> Vec<(&'static str, &'static str)> {
@@ -332,7 +357,7 @@ impl PentestTool for DefaultCredsTool {
                 })
                 .collect();
 
-            let raw_excerpt = serde_json::to_string(&attempts).unwrap_or_default();
+            let raw_excerpt = masked_attempts_excerpt(&attempts);
             let provenance = Provenance::multi_step(
                 match service.to_lowercase().as_str() {
                     "ssh" => "sshpass+openssh",
@@ -352,8 +377,44 @@ impl PentestTool for DefaultCredsTool {
                 "successful": successful,
                 "total_tested": credentials.len(),
             });
+            // Promote each successful default-cred login into the evidence
+            // graph (pick#52). Failed attempts produce no node, and the working
+            // password is withheld from every node field.
+            for node in
+                crate::evidence_producer::evidence_from_default_creds(&data, provenance.clone())
+            {
+                let _ = crate::evidence_producer::push_evidence(node);
+            }
+
             Ok((data, provenance))
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn masked_attempts_excerpt_hides_passwords_keeps_username_status() {
+        let attempts = vec![
+            json!({"username": "admin", "password": "s3cr3t", "status": "SUCCESS"}),
+            json!({"username": "root", "password": "hunter2", "status": "FAILED"}),
+        ];
+
+        let excerpt = masked_attempts_excerpt(&attempts);
+
+        assert!(
+            !excerpt.contains("s3cr3t"),
+            "plaintext password leaked into excerpt: {excerpt}"
+        );
+        assert!(
+            !excerpt.contains("hunter2"),
+            "plaintext password leaked into excerpt: {excerpt}"
+        );
+        assert!(excerpt.contains("admin"), "username should be preserved");
+        assert!(excerpt.contains("SUCCESS"), "status should be preserved");
+        assert!(excerpt.contains("<redacted>"), "password should be masked");
     }
 }

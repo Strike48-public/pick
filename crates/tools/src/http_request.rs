@@ -194,6 +194,15 @@ impl PentestTool for HttpRequestTool {
                 "body_truncated": truncated,
             });
 
+            // Promote the response as a grounding anchor (pick#52). http_request
+            // is a primitive, so this is a single Info node the Validator can
+            // drop; its value is carrying the reproducible curl in provenance.
+            for node in
+                crate::evidence_producer::evidence_from_http_request(&data, provenance.clone())
+            {
+                let _ = crate::evidence_producer::push_evidence(node);
+            }
+
             Ok((data, provenance))
         })
         .await
