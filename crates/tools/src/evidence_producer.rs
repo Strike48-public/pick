@@ -483,6 +483,14 @@ pub fn evidence_from_web_vuln_scan(
         return Vec::new();
     };
 
+    // Redact target-supplied secrets (userinfo in the scanned base URL, query
+    // tokens embedded in a finding's `details`) BEFORE they reach the node's
+    // published title/description/target. The sibling web_vuln_scan provenance
+    // curls for this scan are already redacted via `from_exact`; without this
+    // the node fields would be the weaker path — the same F1-class asymmetry
+    // fixed for http_request (pick#52 / pick#317).
+    let safe_target = pentest_core::provenance::redact(target);
+
     let generic = findings
         .iter()
         .map(|f| {
@@ -490,14 +498,14 @@ pub fn evidence_from_web_vuln_scan(
             let details = f["details"].as_str().unwrap_or("");
             let severity = severity_from_label(f["severity"].as_str().unwrap_or("INFO"));
 
-            let title = format!("{} on {}", finding_type, target);
+            let title = format!("{} on {}", finding_type, safe_target);
             let description = if details.is_empty() {
                 format!(
                     "Web vulnerability scan flagged {} on {}.",
-                    finding_type, target
+                    finding_type, safe_target
                 )
             } else {
-                details.to_string()
+                pentest_core::provenance::redact(details)
             };
 
             let mut metadata = vec![("finding_type".to_string(), finding_type.into())];
@@ -512,7 +520,7 @@ pub fn evidence_from_web_vuln_scan(
                 node_type: "web_vuln".to_string(),
                 title,
                 description,
-                target: target.to_string(),
+                target: safe_target.clone(),
                 severity,
                 rationale:
                     "Web-application finding surfaced by an automated scan; validate exploitability and impact before reporting."
@@ -1166,6 +1174,37 @@ mod tests {
             "url should be redacted in the node title: {}",
             node.title
         );
+    }
+
+    #[test]
+    fn test_evidence_from_web_vuln_scan_redacts_url_secret() {
+        // Same F1 class as http_request: a target-supplied secret (userinfo in
+        // the scanned base URL, or a query token embedded in a finding's
+        // `details`) must not survive unredacted into the node's published
+        // title/description/target. The sibling web_vuln_scan provenance curls
+        // are already redacted via `from_exact` (pick#52 / pick#317).
+        let data = json!({
+            "url": "http://target.example",
+            "findings": [
+                {"type": "ADMIN_PANEL_EXPOSED", "severity": "MEDIUM", "path": "/admin",
+                 "details": "Admin panel accessible at http://target.example/admin?api_key=SECRET123"}
+            ]
+        });
+
+        let nodes = evidence_from_web_vuln_scan(
+            &data,
+            "http://user:p3wd@target.example",
+            test_provenance("web_vuln_scan"),
+        );
+        assert_eq!(nodes.len(), 1);
+        let n = &nodes[0];
+
+        for field in [&n.title, &n.description, &n.affected_target] {
+            assert!(
+                !field.contains("SECRET123") && !field.contains("p3wd"),
+                "target-supplied secret leaked into a published node field: {field}"
+            );
+        }
     }
 
     #[test]
