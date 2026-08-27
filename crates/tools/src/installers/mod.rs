@@ -257,8 +257,7 @@ mod tests {
         // Webwright installs via pip/uv on the host and works natively,
         // so the catalog must still show an Install button when sandbox
         // is disabled.
-        let installer = get_installer("webwright")
-            .expect("webwright installer must be registered");
+        let installer = get_installer("webwright").expect("webwright installer must be registered");
         assert!(
             !installer.sandbox_required(),
             "webwright must not be sandbox-required"
