@@ -3,7 +3,7 @@
 
 use dioxus::prelude::*;
 use pentest_core::config::{BorderRadius, Density, ShellMode, Theme};
-use pentest_platform::{is_sandbox_enabled, WifiConnectionStatus};
+use pentest_platform::WifiConnectionStatus;
 use std::collections::HashSet;
 
 use super::icons::{ChevronDown, Download, Palette, Settings, Wifi};
@@ -251,6 +251,30 @@ pub fn SettingsPage(
         });
     };
 
+    // -------------------------------------------------------------------
+    // Sandbox state chip and "Install all recommended" gate — computed
+    // here (before `rsx!`) so `let` bindings are in regular Rust scope,
+    // not inside the macro where they'd need `{}` blocks and would be
+    // inaccessible from the button render below.
+    // -------------------------------------------------------------------
+    let sandbox_badge = if pentest_platform::is_sandbox_enabled() {
+        rsx! {
+            span { class: "sandbox-badge sandbox-enabled", "Sandboxed" }
+        }
+    } else {
+        rsx! {
+            span { class: "sandbox-badge sandbox-disabled", "Native (host)" }
+        }
+    };
+
+    let has_auto_installable = catalog_items()
+        .map(|items| {
+            items
+                .iter()
+                .any(|i| i.recommended && i.auto_installable && i.state != STATE_INSTALLED)
+        })
+        .unwrap_or(false);
+
     rsx! {
         style { {include_str!("css/settings_page.css")} }
 
@@ -330,35 +354,6 @@ pub fn SettingsPage(
                     }
                 }
             }
-
-            // Tools card
-            //
-            // Sandbox state: use the *effective* sandbox state from
-            // pentest_platform, which accounts for DISABLE_SANDBOX env var
-            // (the env always wins over the UI shell-mode toggle). Using
-            // the derived is_proot (sandbox_available && mode == Proot)
-            // would lie when DISABLE_SANDBOX=true disables it underneath.
-            let sb_enabled = is_sandbox_enabled();
-            let sandbox_badge = if sb_enabled {
-                rsx! {
-                    span { class: "sandbox-badge sandbox-enabled", "Sandboxed" }
-                }
-            } else {
-                rsx! {
-                    span { class: "sandbox-badge sandbox-disabled", "Native (host)" }
-                }
-            };
-
-            // Whether there is at least one recommended, auto-installable,
-            // not-yet-installed tool. When false the "Install all recommended"
-            // button is disabled to avoid a confusing no-op click.
-            let has_auto_installable = catalog_items()
-                .map(|items| {
-                    items
-                        .iter()
-                        .any(|i| i.recommended && i.auto_installable && i.state != STATE_INSTALLED)
-                })
-                .unwrap_or(false);
 
             div { class: "settings-card dashboard-card",
                 div { class: "settings-card-header",
