@@ -53,6 +53,9 @@ fn init_sandbox_from_env() {
 /// variable permanently disabled the sandbox — the env setting always wins.
 pub fn set_use_sandbox(use_sandbox: bool) {
     // Ensure the env has been read before we check DISABLED_BY_ENV.
+    // `init_sandbox_from_env` is backed by `std::sync::Once`, so after the
+    // first call this is a single atomic load — cheap enough for every
+    // UI-shell-mode toggle.
     init_sandbox_from_env();
 
     if DISABLED_BY_ENV.load(Ordering::SeqCst) {

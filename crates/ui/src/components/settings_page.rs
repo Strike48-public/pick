@@ -3,13 +3,19 @@
 
 use dioxus::prelude::*;
 use pentest_core::config::{BorderRadius, Density, ShellMode, Theme};
-use pentest_platform::WifiConnectionStatus;
+use pentest_platform::{is_sandbox_enabled, WifiConnectionStatus};
 use std::collections::HashSet;
 
 use super::icons::{ChevronDown, Download, Palette, Settings, Wifi};
 use super::tool_category::{category_icon, humanize_category};
 use crate::platform_helper;
 use pentest_core::seed::{SeedManager, SeedProgress, SeedTier};
+
+/// String value of [`InstallState::Installed`] as serialised into
+/// [`CatalogItem::state`]. Kept as a named constant so all call sites
+/// share one copy — if the display representation ever changes this
+/// stays in sync without silent breakage.
+const STATE_INSTALLED: &str = "installed";
 
 #[component]
 pub fn SettingsPage(
@@ -327,12 +333,13 @@ pub fn SettingsPage(
 
             // Tools card
             //
-            // Sandbox state: the sandbox is active when the shell mode is Proot
-            // AND a backend is actually available on this machine. When disabled
-            // we show a "Native" chip so the operator understands why some tools
-            // are not auto-installable.
-            let is_sandboxed = is_proot;
-            let sandbox_badge = if is_sandboxed {
+            // Sandbox state: use the *effective* sandbox state from
+            // pentest_platform, which accounts for DISABLE_SANDBOX env var
+            // (the env always wins over the UI shell-mode toggle). Using
+            // the derived is_proot (sandbox_available && mode == Proot)
+            // would lie when DISABLE_SANDBOX=true disables it underneath.
+            let sb_enabled = is_sandbox_enabled();
+            let sandbox_badge = if sb_enabled {
                 rsx! {
                     span { class: "sandbox-badge sandbox-enabled", "Sandboxed" }
                 }
@@ -349,7 +356,7 @@ pub fn SettingsPage(
                 .map(|items| {
                     items
                         .iter()
-                        .any(|i| i.recommended && i.auto_installable && i.state != "installed")
+                        .any(|i| i.recommended && i.auto_installable && i.state != STATE_INSTALLED)
                 })
                 .unwrap_or(false);
 
@@ -403,7 +410,7 @@ pub fn SettingsPage(
                                             .filter(|i| {
                                                 i.recommended
                                                     && i.auto_installable
-                                                    && i.state != "installed"
+                                                    && i.state != STATE_INSTALLED
                                             })
                                             .map(|i| i.estimated_secs)
                                             .sum::<u32>()
@@ -462,7 +469,7 @@ pub fn SettingsPage(
                                     .iter()
                                     .filter(|i| {
                                         i.category == category
-                                            && i.state != "installed"
+                                            && i.state != STATE_INSTALLED
                                             && i.auto_installable
                                     })
                                     .collect();
@@ -535,7 +542,7 @@ pub fn SettingsPage(
                                     for item in items.iter().filter(|i| i.category == category).cloned() {
                                         {
                                             let desc = item.description.clone();
-                                            if item.state == "installed" {
+                                            if item.state == STATE_INSTALLED {
                                                 let removing = uninstalling() == Some(item.binary_name.clone());
                                                 rsx! {
                                                     div { class: "tool-status-card installed",

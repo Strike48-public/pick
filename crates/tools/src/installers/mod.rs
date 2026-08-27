@@ -226,4 +226,42 @@ mod tests {
         deduped.dedup();
         assert_eq!(ids.len(), deduped.len(), "installer ids must be unique");
     }
+
+    #[test]
+    fn sandbox_required_default_is_true() {
+        // Every sandbox-only installer (bloodhound, zap, metasploit,
+        // certipy, netexec, kerbrute) must report sandbox_required() = true
+        // so the catalog hides their Install button when sandbox is off.
+        let reg = installer_registry();
+        let sandbox_only_ids = [
+            "bloodhound",
+            "zap",
+            "metasploit",
+            "certipy",
+            "netexec",
+            "kerbrute",
+        ];
+        for id in &sandbox_only_ids {
+            let installer = reg
+                .get(*id)
+                .unwrap_or_else(|| panic!("missing installer: {id}"));
+            assert!(
+                installer.sandbox_required(),
+                "{id} must be sandbox-required (default true)"
+            );
+        }
+    }
+
+    #[test]
+    fn webwright_is_not_sandbox_required() {
+        // Webwright installs via pip/uv on the host and works natively,
+        // so the catalog must still show an Install button when sandbox
+        // is disabled.
+        let installer = get_installer("webwright")
+            .expect("webwright installer must be registered");
+        assert!(
+            !installer.sandbox_required(),
+            "webwright must not be sandbox-required"
+        );
+    }
 }

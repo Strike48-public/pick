@@ -907,23 +907,28 @@ mod tests {
 
     #[test]
     fn catalog_item_maps_state_and_category_to_strings() {
+        // Use webwright — the one custom installer that is NOT sandbox-required
+        // and should therefore be auto-installable in any sandbox state.
         let entry = CatalogEntry {
-            binary_name: "nxc".into(),
-            display_name: "NetExec".into(),
-            description: "ad".into(),
-            category: ToolCategory::ActiveDirectory,
+            binary_name: "webwright".into(),
+            display_name: "Webwright".into(),
+            description: "browser automation".into(),
+            category: ToolCategory::Web,
             install_method: InstallMethod::Custom {
-                id: "netexec".into(),
+                id: "webwright".into(),
             },
             recommended: true,
-            used_by: vec!["netexec".into()],
+            used_by: vec!["webwright".into()],
             state: InstallState::Missing,
         };
         let item = CatalogItem::from(&entry);
-        assert_eq!(item.category, "active_directory");
+        assert_eq!(item.category, "web");
         assert_eq!(item.state, "missing");
-        assert!(item.auto_installable); // Custom installers are always auto-installable
-        assert_eq!(item.binary_name, "nxc");
+        assert!(
+            item.auto_installable,
+            "webwright must be auto-installable (not sandbox-required)"
+        );
+        assert_eq!(item.binary_name, "webwright");
     }
 
     #[test]
