@@ -72,6 +72,7 @@ fn verify_sha256(bytes: &[u8], expected: &str, arch: &str) -> SandboxResult<()> 
 }
 
 /// Proot executor for universal sandbox support
+#[derive(Debug, Clone)]
 pub struct ProotExecutor {
     config: SandboxConfig,
     proot_binary: PathBuf,

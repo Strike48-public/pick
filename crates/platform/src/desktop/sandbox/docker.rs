@@ -84,6 +84,7 @@ WORKDIR /root
 }
 
 /// Docker executor for container-based sandboxing
+#[derive(Debug, Clone)]
 pub struct DockerExecutor {
     config: SandboxConfig,
 }

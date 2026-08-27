@@ -269,6 +269,17 @@ impl PtyShell {
                     )
                     .await?
                     {
+                        manager
+                            .try_fallback_to(fallback)
+                            .await
+                            .map_err(|e| {
+                                tracing::error!(
+                                    "[PtyShell::spawn_sandboxed] failed to update sandbox manager to {fallback:?}: {e}"
+                                );
+                                Error::ToolExecution(format!(
+                                    "Sandboxed shell fell back to {fallback:?} but failed to update the sandbox manager: {e}"
+                                ))
+                            })?;
                         return Ok(shell);
                     }
                     // fallback unavailable: fall through to the hard error below.
@@ -310,6 +321,17 @@ impl PtyShell {
                     )
                     .await?
                     {
+                        manager
+                            .try_fallback_to(fallback)
+                            .await
+                            .map_err(|e| {
+                                tracing::error!(
+                                    "[PtyShell::spawn_sandboxed] failed to update sandbox manager to {fallback:?}: {e}"
+                                );
+                                Error::ToolExecution(format!(
+                                    "Sandboxed shell fell back to {fallback:?} but failed to update the sandbox manager: {e}"
+                                ))
+                            })?;
                         return Ok(shell);
                     }
                 }

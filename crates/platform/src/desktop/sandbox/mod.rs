@@ -17,7 +17,7 @@ pub mod wsl_install;
 use crate::traits::CommandResult;
 use config::{SandboxBackend, SandboxConfig, SandboxError, SandboxResult};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::OnceCell;
 
@@ -129,15 +129,22 @@ pub async fn get_sandbox_manager() -> SandboxResult<Arc<SandboxManager>> {
 /// Sandbox manager that orchestrates sandbox backend and rootfs
 pub struct SandboxManager {
     config: SandboxConfig,
-    backend: SandboxBackend,
     rootfs_manager: rootfs::RootfsManager,
-    bwrap_executor: Option<bwrap::BwrapExecutor>,
-    proot_executor: Option<proot::ProotExecutor>,
-    wsl_executor: Option<wsl::WslExecutor>,
-    docker_executor: Option<docker::DockerExecutor>,
+    state: Mutex<ManagerState>,
+}
+
+#[derive(Debug)]
+struct ManagerState {
+    backend: SandboxBackend,
 }
 
 impl SandboxManager {
+    fn lock_state(&self) -> SandboxResult<MutexGuard<'_, ManagerState>> {
+        self.state.lock().map_err(|e| {
+            SandboxError::RootfsSetupFailed(format!("Sandbox manager state lock poisoned: {e}"))
+        })
+    }
+
     /// Create a new sandbox manager with auto-detected backend
     pub async fn new(config: SandboxConfig) -> SandboxResult<Self> {
         let backend = Self::detect_backend(&config).await?;
@@ -146,39 +153,12 @@ impl SandboxManager {
 
         let rootfs_manager = rootfs::RootfsManager::new(config.clone());
 
-        let bwrap_executor = if backend == SandboxBackend::Bwrap {
-            Some(bwrap::BwrapExecutor::new(config.clone()))
-        } else {
-            None
-        };
-
-        let proot_executor = if backend == SandboxBackend::Proot {
-            let proot_path = proot::ProotExecutor::ensure_proot(&config).await?;
-            Some(proot::ProotExecutor::new(config.clone(), proot_path))
-        } else {
-            None
-        };
-
-        let wsl_executor = if backend == SandboxBackend::Wsl {
-            Some(wsl::WslExecutor::new(config.clone()))
-        } else {
-            None
-        };
-
-        let docker_executor = if backend == SandboxBackend::Docker {
-            Some(docker::DockerExecutor::new(config.clone()))
-        } else {
-            None
-        };
+        let state = Mutex::new(ManagerState { backend });
 
         Ok(Self {
             config,
-            backend,
             rootfs_manager,
-            bwrap_executor,
-            proot_executor,
-            wsl_executor,
-            docker_executor,
+            state,
         })
     }
 
@@ -292,50 +272,47 @@ impl SandboxManager {
 
     /// Get the current backend type
     pub fn backend(&self) -> SandboxBackend {
-        self.backend
+        self.lock_state()
+            .map(|s| s.backend)
+            .unwrap_or(SandboxBackend::Bwrap)
+    }
+
+    /// Attempt to switch the sandbox backend at runtime.
+    ///
+    /// This is called when the interactive PTY shell falls back from the
+    /// originally selected backend (e.g. bwrap) to its namespace sibling
+    /// (e.g. proot) after an EACCES spawn failure. Swapping here keeps the
+    /// global manager in sync with the backend the shell is actually using,
+    /// so non-interactive `execute_command` dispatch agrees with the
+    /// interactive session.
+    ///
+    /// The swap is best-effort: if the caller is already on `new_backend`,
+    /// this returns `Ok(())` immediately. Otherwise it updates the stored
+    /// backend. If the update fails (e.g. lock poisoned), the manager is left
+    /// on the original backend and the error is returned.
+    pub async fn try_fallback_to(&self, new_backend: SandboxBackend) -> SandboxResult<()> {
+        let mut state = self.lock_state()?;
+        if state.backend == new_backend {
+            return Ok(());
+        }
+        state.backend = new_backend;
+        Ok(())
     }
 
     /// Ensure the sandbox environment is fully set up
     pub async fn ensure_ready(&self) -> SandboxResult<()> {
-        // Docker manages its own image lifecycle — skip rootfs checks
-        if self.backend == SandboxBackend::Docker {
-            if let Some(docker) = &self.docker_executor {
-                tracing::info!("[SandboxManager::ensure_ready] Calling docker.ensure_image()...");
-                match docker.ensure_image().await {
-                    Ok(()) => {
-                        tracing::info!("[SandboxManager::ensure_ready] ensure_image() succeeded")
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "[SandboxManager::ensure_ready] ensure_image() FAILED: {}",
-                            e
-                        );
-                        return Err(e);
-                    }
-                }
-                tracing::info!("[SandboxManager::ensure_ready] Docker image ready");
-            }
-            return Ok(());
-        }
+        let backend = self.lock_state()?.backend;
 
-        // WSL manages its own distro lifecycle — skip rootfs checks
-        if self.backend == SandboxBackend::Wsl {
-            if let Some(wsl) = &self.wsl_executor {
-                tracing::info!("[SandboxManager::ensure_ready] Calling wsl.ensure_distro()...");
-                match wsl.ensure_distro().await {
-                    Ok(()) => {
-                        tracing::info!("[SandboxManager::ensure_ready] ensure_distro() succeeded")
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "[SandboxManager::ensure_ready] ensure_distro() FAILED: {}",
-                            e
-                        );
-                        return Err(e);
-                    }
-                }
-                // Safety net: ensure the host-side marker exists even if ensure_distro()
-                // is modified later and forgets to write it.
+        match backend {
+            SandboxBackend::Docker => {
+                let docker = docker::DockerExecutor::new(self.config.clone());
+                docker.ensure_image().await?;
+                tracing::info!("[SandboxManager::ensure_ready] Docker image ready");
+                Ok(())
+            }
+            SandboxBackend::Wsl => {
+                let wsl = wsl::WslExecutor::new(self.config.clone());
+                wsl.ensure_distro().await?;
                 let marker_path = self.config.data_dir.join(".wsl-ready");
                 if !marker_path.exists() {
                     let distro_name = self.config.wsl_distro_name();
@@ -345,66 +322,68 @@ impl SandboxManager {
                             marker_path.display()
                         ),
                         Err(e) => tracing::warn!(
-                            "[SandboxManager::ensure_ready] Failed to write WSL ready marker: {}",
-                            e
+                            "[SandboxManager::ensure_ready] Failed to write WSL ready marker: {e}"
                         ),
                     }
                 }
                 tracing::info!("[SandboxManager::ensure_ready] WSL distro ready");
+                Ok(())
             }
-            return Ok(());
-        }
+            _ => {
+                if !self.is_ready() {
+                    tracing::warn!(
+                        "[SandboxManager::ensure_ready] Rootfs not ready, downloading now..."
+                    );
+                    self.rootfs_manager.ensure_rootfs().await?;
+                    tracing::info!("[SandboxManager::ensure_ready] Rootfs setup complete");
+                } else {
+                    tracing::debug!("[SandboxManager::ensure_ready] Rootfs already ready");
+                }
 
-        if !self.is_ready() {
-            tracing::warn!("[SandboxManager::ensure_ready] Rootfs not ready, downloading now...");
-            self.rootfs_manager.ensure_rootfs().await?;
-            tracing::info!("[SandboxManager::ensure_ready] Rootfs setup complete");
-        } else {
-            tracing::debug!("[SandboxManager::ensure_ready] Rootfs already ready");
-        }
-
-        // The Arch bootstrap packs the rootfs ROOT dir as mode 0555, and pacman
-        // provisioning (arch-chroot/bwrap running the `filesystem` package) can
-        // re-assert that mode. But bwrap must create mount points (/proc, /dev,
-        // /tmp) directly inside the bind root at spawn, and pacman must write
-        // `.rootfs_version` / its DB there — a read-only root makes every command
-        // fail with EPERM. Restore owner-write on the root each time we're about
-        // to run, since provisioning may have reset it (bwrap only; WSL/Docker
-        // manage their own filesystems and returned above).
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let root = self.config.rootfs_dir();
-            if let Ok(meta) = std::fs::metadata(&root) {
-                let mode = meta.permissions().mode();
-                if mode & 0o200 == 0 {
-                    let mut perms = meta.permissions();
-                    perms.set_mode(mode | 0o700);
-                    if let Err(e) = std::fs::set_permissions(&root, perms) {
-                        tracing::warn!(
-                            "[SandboxManager::ensure_ready] could not make rootfs root writable: {e}"
-                        );
+                // The Arch bootstrap packs the rootfs ROOT dir as mode 0555, and pacman
+                // provisioning (arch-chroot/bwrap running the `filesystem` package) can
+                // re-assert that mode. But bwrap must create mount points (/proc, /dev,
+                // /tmp) directly inside the bind root at spawn, and pacman must write
+                // `.rootfs_version` / its DB there — a read-only root makes every command
+                // fail with EPERM. Restore owner-write on the root each time we're about
+                // to run, since provisioning may have reset it (bwrap only; WSL/Docker
+                // manage their own filesystems and returned above).
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let root = self.config.rootfs_dir();
+                    if let Ok(meta) = std::fs::metadata(&root) {
+                        let mode = meta.permissions().mode();
+                        if mode & 0o200 == 0 {
+                            let mut perms = meta.permissions();
+                            perms.set_mode(mode | 0o700);
+                            if let Err(e) = std::fs::set_permissions(&root, perms) {
+                                tracing::warn!(
+                                    "[SandboxManager::ensure_ready] could not make rootfs root writable: {e}"
+                                );
+                            }
+                        }
                     }
                 }
+
+                // Clear a stale pacman lock left by a previously-killed run (a scan whose
+                // pacman was interrupted by a timeout/crash leaves `/var/lib/pacman/db.lck`
+                // behind, which wedges EVERY later `pacman` with "unable to lock database"
+                // until it's removed). pacman itself never auto-clears it. The interactive
+                // PTY shell already does this; do it here too so the command-execution path
+                // (execute_command -> tools) self-heals. Safe because SandboxManager runs
+                // one command at a time and provisioning is serialized by SETUP_LOCK.
+                let stale_lock = self.config.rootfs_dir().join("var/lib/pacman/db.lck");
+                if stale_lock.exists() {
+                    tracing::warn!(
+                        "[SandboxManager::ensure_ready] Removing stale pacman lock {}",
+                        stale_lock.display()
+                    );
+                    let _ = std::fs::remove_file(&stale_lock);
+                }
+                Ok(())
             }
         }
-
-        // Clear a stale pacman lock left by a previously-killed run (a scan whose
-        // pacman was interrupted by a timeout/crash leaves `/var/lib/pacman/db.lck`
-        // behind, which wedges EVERY later `pacman` with "unable to lock database"
-        // until it's removed). pacman itself never auto-clears it. The interactive
-        // PTY shell already does this; do it here too so the command-execution path
-        // (execute_command -> tools) self-heals. Safe because SandboxManager runs
-        // one command at a time and provisioning is serialized by SETUP_LOCK.
-        let stale_lock = self.config.rootfs_dir().join("var/lib/pacman/db.lck");
-        if stale_lock.exists() {
-            tracing::warn!(
-                "[SandboxManager::ensure_ready] Removing stale pacman lock {}",
-                stale_lock.display()
-            );
-            let _ = std::fs::remove_file(&stale_lock);
-        }
-        Ok(())
     }
 
     /// Execute a command in the sandbox
@@ -421,37 +400,28 @@ impl SandboxManager {
         self.ensure_ready().await?;
         tracing::debug!(
             "[SandboxManager::execute] Rootfs ready, executing command with backend: {}",
-            self.backend
+            self.backend()
         );
 
-        match self.backend {
+        let backend = self.lock_state()?.backend;
+
+        match backend {
             SandboxBackend::Bwrap => {
-                self.bwrap_executor
-                    .as_ref()
-                    .expect("bwrap executor not initialized")
-                    .execute(cmd, timeout, working_dir)
-                    .await
+                let executor = bwrap::BwrapExecutor::new(self.config.clone());
+                executor.execute(cmd, timeout, working_dir).await
             }
             SandboxBackend::Proot => {
-                self.proot_executor
-                    .as_ref()
-                    .expect("proot executor not initialized")
-                    .execute(cmd, timeout, working_dir)
-                    .await
+                let proot_path = proot::ProotExecutor::get_proot_path(&self.config).await?;
+                let executor = proot::ProotExecutor::new(self.config.clone(), proot_path);
+                executor.execute(cmd, timeout, working_dir).await
             }
             SandboxBackend::Wsl => {
-                self.wsl_executor
-                    .as_ref()
-                    .expect("wsl executor not initialized")
-                    .execute(cmd, timeout, working_dir)
-                    .await
+                let executor = wsl::WslExecutor::new(self.config.clone());
+                executor.execute(cmd, timeout, working_dir).await
             }
             SandboxBackend::Docker => {
-                self.docker_executor
-                    .as_ref()
-                    .expect("docker executor not initialized")
-                    .execute(cmd, timeout, working_dir)
-                    .await
+                let executor = docker::DockerExecutor::new(self.config.clone());
+                executor.execute(cmd, timeout, working_dir).await
             }
         }
     }
@@ -509,5 +479,43 @@ mod tests {
         // "Proot" shell mode does not change this — the shell's symmetric EACCES
         // fallback covers a backend that is chosen but can't spawn.
         assert_eq!(preferred_backend_for(false), None);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires available sandbox backend; run with --ignored"]
+    async fn try_fallback_to_switches_backend() {
+        let config = SandboxConfig::default();
+        let manager = SandboxManager::new(config)
+            .await
+            .expect("detect_backend should succeed in test");
+
+        let initial = manager.backend();
+        let fallback = if initial == SandboxBackend::Bwrap {
+            SandboxBackend::Proot
+        } else {
+            SandboxBackend::Bwrap
+        };
+
+        manager
+            .try_fallback_to(fallback)
+            .await
+            .expect("try_fallback_to should succeed");
+        assert_eq!(manager.backend(), fallback);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires available sandbox backend; run with --ignored"]
+    async fn try_fallback_to_is_idempotent_when_already_on_backend() {
+        let config = SandboxConfig::default();
+        let manager = SandboxManager::new(config)
+            .await
+            .expect("detect_backend should succeed in test");
+
+        let current = manager.backend();
+        manager
+            .try_fallback_to(current)
+            .await
+            .expect("idempotent fallback should succeed");
+        assert_eq!(manager.backend(), current);
     }
 }

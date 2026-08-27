@@ -134,6 +134,7 @@ echo "WSL distro setup complete"
 }
 
 /// WSL2 executor for Windows
+#[derive(Debug, Clone)]
 pub struct WslExecutor {
     config: SandboxConfig,
 }
