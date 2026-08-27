@@ -326,10 +326,38 @@ pub fn SettingsPage(
             }
 
             // Tools card
+            //
+            // Sandbox state: the sandbox is active when the shell mode is Proot
+            // AND a backend is actually available on this machine. When disabled
+            // we show a "Native" chip so the operator understands why some tools
+            // are not auto-installable.
+            let is_sandboxed = is_proot;
+            let sandbox_badge = if is_sandboxed {
+                rsx! {
+                    span { class: "sandbox-badge sandbox-enabled", "Sandboxed" }
+                }
+            } else {
+                rsx! {
+                    span { class: "sandbox-badge sandbox-disabled", "Native (host)" }
+                }
+            };
+
+            // Whether there is at least one recommended, auto-installable,
+            // not-yet-installed tool. When false the "Install all recommended"
+            // button is disabled to avoid a confusing no-op click.
+            let has_auto_installable = catalog_items()
+                .map(|items| {
+                    items
+                        .iter()
+                        .any(|i| i.recommended && i.auto_installable && i.state != "installed")
+                })
+                .unwrap_or(false);
+
             div { class: "settings-card dashboard-card",
                 div { class: "settings-card-header",
                     span { class: "settings-card-icon", Download { size: 16 } }
                     h2 { "Tools" }
+                    {sandbox_badge}
                 }
                 div { class: "settings-card-body",
                     if let Some(ref err) = install_error() {
@@ -364,7 +392,7 @@ pub fn SettingsPage(
                     } else {
                         button {
                             class: "sidebar-download-btn",
-                            disabled: installing().is_some(),
+                            disabled: installing().is_some() || !has_auto_installable,
                             onclick: move |_| {
                                 // Estimate the bulk install as the sum of the
                                 // pending recommended, auto-installable entries.

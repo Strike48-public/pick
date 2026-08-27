@@ -19,7 +19,16 @@ use tokio::time::timeout;
 /// Can be disabled via DISABLE_SANDBOX=true environment variable.
 static USE_SANDBOX: AtomicBool = AtomicBool::new(true);
 
-/// Initialize sandbox state from environment on first access
+/// Whether the sandbox was *permanently* disabled by the `DISABLE_SANDBOX`
+/// environment variable. When `true`, [`set_use_sandbox`] becomes a no-op so
+/// the env setting cannot be overridden by the UI shell-mode toggle.
+static DISABLED_BY_ENV: AtomicBool = AtomicBool::new(false);
+
+/// Initialize sandbox state from environment on first access.
+///
+/// If `DISABLE_SANDBOX=true` (or `=1`) is set, both `USE_SANDBOX` and
+/// `DISABLED_BY_ENV` are set so that later [`set_use_sandbox`] calls are
+/// silently ignored.
 fn init_sandbox_from_env() {
     use std::sync::Once;
     static INIT: Once = Once::new();
@@ -28,7 +37,10 @@ fn init_sandbox_from_env() {
         if let Ok(val) = std::env::var("DISABLE_SANDBOX") {
             if val.to_lowercase() == "true" || val == "1" {
                 USE_SANDBOX.store(false, Ordering::SeqCst);
-                tracing::info!("Sandbox disabled via DISABLE_SANDBOX environment variable");
+                DISABLED_BY_ENV.store(true, Ordering::SeqCst);
+                tracing::info!(
+                    "Sandbox disabled via DISABLE_SANDBOX environment variable; UI toggle will be ignored"
+                );
             }
         }
     });
@@ -36,7 +48,22 @@ fn init_sandbox_from_env() {
 
 /// Set whether to use sandbox for command execution.
 /// Call this based on the user's ShellMode setting.
+///
+/// This is a **no-op** (with a warning) when the `DISABLE_SANDBOX` environment
+/// variable permanently disabled the sandbox — the env setting always wins.
 pub fn set_use_sandbox(use_sandbox: bool) {
+    // Ensure the env has been read before we check DISABLED_BY_ENV.
+    init_sandbox_from_env();
+
+    if DISABLED_BY_ENV.load(Ordering::SeqCst) {
+        if use_sandbox {
+            tracing::warn!(
+                "Ignoring set_use_sandbox(true): sandbox was disabled via DISABLE_SANDBOX env var"
+            );
+        }
+        return;
+    }
+
     USE_SANDBOX.store(use_sandbox, Ordering::SeqCst);
     tracing::info!(
         "Sandbox execution: {}",
@@ -47,6 +74,13 @@ pub fn set_use_sandbox(use_sandbox: bool) {
 /// Check if sandbox is enabled
 pub fn is_sandbox_enabled() -> bool {
     init_sandbox_from_env();
+
+    // When the env disabled the sandbox, always return false regardless of
+    // what the UI may have subsequently tried to set.
+    if DISABLED_BY_ENV.load(Ordering::SeqCst) {
+        return false;
+    }
+
     USE_SANDBOX.load(Ordering::SeqCst)
 }
 

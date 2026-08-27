@@ -116,7 +116,21 @@ impl CatalogEntry {
             // operator installs packages themselves.
             InstallMethod::Pacman => sandbox_enabled(),
             InstallMethod::AptHost => !sandbox_enabled(),
-            InstallMethod::Custom { .. } => true,
+            InstallMethod::Custom { id } => {
+                // A custom installer is auto-installable when either:
+                //   - the sandbox is enabled (it can run pacman inside), OR
+                //   - the installer itself works natively (e.g. pip/uv).
+                // Sandbox-required installers (bloodhound, zap, metasploit,
+                // certipy, netexec, kerbrute) are NOT auto-installable when
+                // the sandbox is disabled => the UI shows manual instructions
+                // instead of an "Install" button that would fail.
+                if sandbox_enabled() {
+                    return true;
+                }
+                get_installer(id)
+                    .map(|i| !i.sandbox_required())
+                    .unwrap_or(false)
+            }
         }
     }
 

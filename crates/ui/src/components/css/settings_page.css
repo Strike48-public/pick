@@ -1105,3 +1105,25 @@
     font-size: 11px;
     text-align: center;
 }
+
+/* Sandbox state badge in the Tools card header */
+.settings-page .sandbox-badge {
+    margin-left: auto;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    line-height: 1.4;
+}
+
+.settings-page .sandbox-enabled {
+    background-color: var(--success-bg, #1a3a2a);
+    color: var(--success, #4ade80);
+}
+
+.settings-page .sandbox-disabled {
+    background-color: var(--warning-bg, #3a2a1a);
+    color: var(--warning, #fbbf24);
+}
