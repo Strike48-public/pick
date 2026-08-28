@@ -952,7 +952,7 @@ build-syscall-compat:
     echo "Done! syscall_compat shims built in android-jniLibs/"
 
 # Termux package versions
-proot_version := "5.1.107.91"
+proot_version := "5.1.107.92"
 talloc_version := "2.4.3"
 busybox_version := "1.38.0-1"
 shmem_version := "0.7"
