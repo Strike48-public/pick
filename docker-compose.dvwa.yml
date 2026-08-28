@@ -25,7 +25,6 @@ services:
     # named in matrix#3207 is not anonymously pullable — pull is "denied".) amd64-only,
     # so it runs under emulation on arm64 hosts — fine for a demo target.
     image: docker.io/vulnerables/web-dvwa:latest
-    container_name: pick-demo-dvwa
     restart: unless-stopped
     networks:
       - scan-net
@@ -51,7 +50,6 @@ services:
       # HOME is /root (see the creds volume mount below).
       dockerfile: Dockerfile.scratch
     image: ghcr.io/strike48-public/pick:demo
-    container_name: pick-demo-connector
     restart: unless-stopped
     depends_on:
       dvwa:
