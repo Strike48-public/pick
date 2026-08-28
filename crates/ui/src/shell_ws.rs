@@ -104,6 +104,11 @@ async fn handle_socket(
         }
     };
 
+    // bwrap<->proot fallback (and the SandboxBackend accessors that report it)
+    // are a desktop-only concept: mobile PtyShell backends use proot
+    // unconditionally with no sibling fallback, and SandboxBackend itself is
+    // gated behind the desktop feature. Surface the notice on desktop only.
+    #[cfg(feature = "desktop")]
     if let Some(backend) = pty.effective_backend() {
         if let Some(primary) = pty.primary_backend() {
             if primary != backend {
