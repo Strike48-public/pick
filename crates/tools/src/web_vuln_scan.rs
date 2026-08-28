@@ -369,6 +369,16 @@ impl PentestTool for WebVulnScanTool {
                     "low": low,
                 },
             });
+            // Promote each finding into the evidence graph so the Validator /
+            // Report Agent can adjudicate and ground it (pick#52).
+            for node in crate::evidence_producer::evidence_from_web_vuln_scan(
+                &data,
+                base_url,
+                provenance.clone(),
+            ) {
+                let _ = crate::evidence_producer::push_evidence(node);
+            }
+
             Ok((data, provenance))
         })
         .await

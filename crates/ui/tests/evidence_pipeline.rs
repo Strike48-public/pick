@@ -28,7 +28,10 @@ use pentest_core::orchestrator::{
 };
 use pentest_core::provenance::{ProbeCommand, Provenance};
 use pentest_core::tools::{PentestTool, ToolContext, ToolOutcome};
-use pentest_tools::evidence_producer::{evidence_from_nmap, push_evidence};
+use pentest_tools::evidence_producer::{
+    evidence_from_default_creds, evidence_from_http_request, evidence_from_nmap,
+    evidence_from_web_vuln_scan, push_evidence,
+};
 use pentest_tools::ExecuteCommandTool;
 use pentest_ui::session;
 use serde_json::{json, Value};
@@ -414,6 +417,127 @@ async fn failed_tool_is_flagged_and_ungrounded_finding_cannot_reach_report() {
         }
         other => panic!("gate must fail closed on an ungrounded finding, got {other:?}"),
     }
+
+    session::clear_evidence();
+}
+
+/// pick#52 coverage promotion: the three web wrappers (`web_vuln_scan`,
+/// `default_creds`, `http_request`) build a full `Provenance` today but never
+/// promoted it into the evidence graph, so their findings could never reach a
+/// report. This exercises the exact builders their `execute()` tails now call,
+/// proving each one's evidence travels tool-buffer -> graph -> gate -> manifest,
+/// the same production path the nmap test above guards.
+#[test]
+fn web_wrapper_findings_reach_the_report_after_validation() {
+    let _guard = serial();
+    session::clear_evidence();
+
+    let mut node_ids = Vec::new();
+
+    // web_vuln_scan: one node per finding.
+    let wvs_data = json!({
+        "url": "http://10.0.0.1",
+        "findings": [
+            {"type": "ADMIN_PANEL_EXPOSED", "severity": "MEDIUM", "path": "/admin",
+             "status_code": 200, "details": "Admin panel accessible at http://10.0.0.1/admin"},
+            {"type": "NO_HTTPS_REDIRECT", "severity": "MEDIUM",
+             "details": "Site does not redirect HTTP to HTTPS"}
+        ]
+    });
+    let wvs_prov = Provenance::new(
+        "web_vuln_scan",
+        "0.6",
+        ProbeCommand::from_exact("curl -sI http://10.0.0.1/admin"),
+        "[{\"type\":\"ADMIN_PANEL_EXPOSED\"}]",
+    );
+    for node in evidence_from_web_vuln_scan(&wvs_data, "http://10.0.0.1", wvs_prov) {
+        node_ids.push(node.id.clone());
+        push_evidence(node).expect("tool buffer should accept the web_vuln_scan finding");
+    }
+
+    // default_creds: one node per successful login (the failed attempt yields none).
+    let dc_data = json!({
+        "host": "10.0.0.1",
+        "port": 22,
+        "service": "ssh",
+        "attempts": [
+            {"username": "root", "password": "<redacted>", "status": "FAILED"},
+            {"username": "admin", "password": "<redacted>", "status": "SUCCESS"}
+        ],
+        "successful": 1,
+        "total_tested": 2
+    });
+    let dc_prov = Provenance::new(
+        "sshpass+openssh",
+        "0.6",
+        ProbeCommand::from_exact("sshpass -p '<redacted>' ssh admin@10.0.0.1 exit"),
+        "[{\"username\":\"admin\",\"password\":\"<redacted>\",\"status\":\"SUCCESS\"}]",
+    );
+    for node in evidence_from_default_creds(&dc_data, dc_prov) {
+        node_ids.push(node.id.clone());
+        push_evidence(node).expect("tool buffer should accept the default_creds finding");
+    }
+
+    // http_request: one Info node per response.
+    let hr_data = json!({
+        "url": "http://10.0.0.1/login",
+        "method": "GET",
+        "status": 200,
+        "ok": true,
+        "headers": {"server": "nginx"},
+        "body": "hi",
+        "body_bytes": 2,
+        "body_truncated": false
+    });
+    let hr_prov = Provenance::new(
+        "http_request",
+        "0.6",
+        ProbeCommand::from_exact("curl -sS -k -X GET http://10.0.0.1/login"),
+        "hi",
+    );
+    for node in evidence_from_http_request(&hr_data, hr_prov) {
+        node_ids.push(node.id.clone());
+        push_evidence(node).expect("tool buffer should accept the http_request node");
+    }
+
+    assert_eq!(
+        node_ids.len(),
+        4,
+        "2 web_vuln + 1 default_creds + 1 http_request"
+    );
+
+    // Drain into the graph and confirm the gate sees every node as pending.
+    let forwarded = session::drain_tool_evidence_into_graph();
+    assert_eq!(forwarded, 4, "all four nodes should reach the graph");
+
+    let snapshot = session::evidence_snapshot();
+    match gate_for_report(&snapshot, engagement()) {
+        Err(GateError::PendingNodes { pending_ids }) => {
+            for id in &node_ids {
+                assert!(
+                    pending_ids.contains(id),
+                    "node {id} must block the gate before validation"
+                );
+            }
+        }
+        other => panic!("expected PendingNodes before validation, got {other:?}"),
+    }
+
+    // Validator confirms all; the gate then accepts and every finding lands.
+    let verdicts =
+        parse_validator_verdicts(&confirm_all(&node_ids)).expect("verdict reply should parse");
+    let apply = session::apply_validator_verdicts(&verdicts);
+    assert_eq!(apply.applied, 4);
+    assert!(apply.is_fully_adjudicated());
+
+    let snapshot = session::evidence_snapshot();
+    let manifest = gate_for_report(&snapshot, engagement())
+        .expect("gate should accept a fully-adjudicated graph");
+    assert_eq!(
+        manifest.findings.len(),
+        4,
+        "every web-wrapper finding must reach the report manifest"
+    );
 
     session::clear_evidence();
 }

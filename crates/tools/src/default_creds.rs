@@ -15,6 +15,67 @@ use crate::util::{param_str, param_u64};
 /// Default credentials testing tool
 pub struct DefaultCredsTool;
 
+/// Copy the attempt log with every password masked.
+///
+/// The attempt log leaves this tool in two report-/wire-bound places: the
+/// provenance `raw_response_excerpt`, and the returned `ToolResult.data`, which
+/// the connector serializes whole onto the Matrix wire (`pick_connector.rs`
+/// `ToolCompleted`). `truncate_excerpt`'s redaction pass does not catch
+/// JSON-quoted `"password":"..."` pairs (its secret regex expects `password:`,
+/// not `password":`), so a successful login would otherwise publish the
+/// plaintext credential. Username and status are preserved so a reviewer still
+/// sees the attempt structure (pick#52 / pick#317).
+fn mask_attempts(attempts: &[Value]) -> Vec<Value> {
+    attempts
+        .iter()
+        .map(|a| {
+            let mut a = a.clone();
+            if let Some(obj) = a.as_object_mut() {
+                if obj.contains_key("password") {
+                    obj.insert("password".to_string(), json!("<redacted>"));
+                }
+            }
+            a
+        })
+        .collect()
+}
+
+/// Build one report-safe [`ProbeCommand`] per attempted credential.
+///
+/// The probe records the *structure* of each auth attempt so a reviewer can
+/// reproduce it, but the password is scrubbed by exact value via
+/// [`ProbeCommand::from_exact_redacting_secret`] before it can reach the
+/// published `effective_command`. This matters most for the ssh
+/// `sshpass -p '<pw>'` shape, which no `redact()` regex matches (only
+/// `-u user:pass` / `--password` are caught) — see pick#52 / pick#317.
+fn default_cred_probes(
+    service: &str,
+    credentials: &[(&str, &str)],
+    host: &str,
+    port: u16,
+) -> Vec<ProbeCommand> {
+    let template = match service.to_lowercase().as_str() {
+        "ssh" => |u: &str, p: &str, h: &str, port: u16| {
+            format!("sshpass -p '{p}' ssh -o StrictHostKeyChecking=no -p {port} {u}@{h} exit")
+        },
+        "ftp" => |u: &str, p: &str, h: &str, port: u16| {
+            format!("curl --connect-timeout 5 -u {u}:{p} ftp://{h}:{port}/")
+        },
+        _ => |u: &str, p: &str, h: &str, port: u16| {
+            format!("curl -s -o /dev/null -w '%{{http_code}}' -u {u}:{p} http://{h}:{port}/")
+        },
+    };
+
+    credentials
+        .iter()
+        .map(|(u, p)| {
+            let full = template(u, p, host, port);
+            ProbeCommand::from_exact_redacting_secret(full, p)
+                .with_description("default credential probe")
+        })
+        .collect()
+}
+
 impl DefaultCredsTool {
     /// Common default credentials database
     fn get_default_credentials(service: &str) -> Vec<(&'static str, &'static str)> {
@@ -303,36 +364,17 @@ impl PentestTool for DefaultCredsTool {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
 
-            // Provenance: emit one ProbeCommand per credential pair we
-            // tried. `from_exact` runs `redact()` on each command, so the
-            // `effective_command` will never contain the raw password in a
-            // published report. This is the critical property: a reviewer
-            // can see which *structure* of auth attempt we made, but the
-            // secrets stay out of the published bytes.
-            let probe_command_template = match service.to_lowercase().as_str() {
-                "ssh" => |u: &str, p: &str, h: &str, port: u16| {
-                    format!(
-                        "sshpass -p '{p}' ssh -o StrictHostKeyChecking=no -p {port} {u}@{h} exit"
-                    )
-                },
-                "ftp" => |u: &str, p: &str, h: &str, port: u16| {
-                    format!("curl --connect-timeout 5 -u {u}:{p} ftp://{h}:{port}/")
-                },
-                _ => |u: &str, p: &str, h: &str, port: u16| {
-                    format!("curl -s -o /dev/null -w '%{{http_code}}' -u {u}:{p} http://{h}:{port}/")
-                },
-            };
+            // One report-safe probe per attempted credential. The password is
+            // scrubbed by exact value inside `default_cred_probes`, so it can't
+            // reach the published `effective_command` (pick#52 / pick#317).
+            let probes = default_cred_probes(service, &credentials, &host, port);
 
-            let probes: Vec<ProbeCommand> = credentials
-                .iter()
-                .map(|(u, p)| {
-                    let full = probe_command_template(u, p, &host, port);
-                    ProbeCommand::from_exact(full)
-                        .with_description("default credential probe")
-                })
-                .collect();
-
-            let raw_excerpt = serde_json::to_string(&attempts).unwrap_or_default();
+            // Mask passwords once, then reuse the masked log for BOTH sinks: the
+            // provenance excerpt and the returned `data` (which the connector
+            // serializes whole onto the Matrix wire). The plaintext `attempts`
+            // never leaves this function (pick#52 / pick#317 — F4).
+            let masked_attempts = mask_attempts(&attempts);
+            let raw_excerpt = serde_json::to_string(&masked_attempts).unwrap_or_default();
             let provenance = Provenance::multi_step(
                 match service.to_lowercase().as_str() {
                     "ssh" => "sshpass+openssh",
@@ -348,12 +390,86 @@ impl PentestTool for DefaultCredsTool {
                 "host": host,
                 "port": port,
                 "service": service,
-                "attempts": attempts,
+                "attempts": masked_attempts,
                 "successful": successful,
                 "total_tested": credentials.len(),
             });
+            // Promote each successful default-cred login into the evidence
+            // graph (pick#52). Failed attempts produce no node, and the working
+            // password is withheld from every node field.
+            for node in
+                crate::evidence_producer::evidence_from_default_creds(&data, provenance.clone())
+            {
+                let _ = crate::evidence_producer::push_evidence(node);
+            }
+
             Ok((data, provenance))
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mask_attempts_hides_passwords_keeps_username_status() {
+        let attempts = vec![
+            json!({"username": "admin", "password": "s3cr3t", "status": "SUCCESS"}),
+            json!({"username": "root", "password": "hunter2", "status": "FAILED"}),
+        ];
+
+        // Serialize the masked log the same way both wire-bound sinks do (the
+        // provenance excerpt and the returned `data`).
+        let masked = serde_json::to_string(&mask_attempts(&attempts)).unwrap();
+
+        assert!(
+            !masked.contains("s3cr3t"),
+            "plaintext password leaked after masking: {masked}"
+        );
+        assert!(
+            !masked.contains("hunter2"),
+            "plaintext password leaked after masking: {masked}"
+        );
+        assert!(masked.contains("admin"), "username should be preserved");
+        assert!(masked.contains("SUCCESS"), "status should be preserved");
+        assert!(masked.contains("<redacted>"), "password should be masked");
+    }
+
+    #[test]
+    fn default_cred_probes_scrub_password_from_effective_command() {
+        // Guards the production probe builder (F2). The ssh `sshpass -p '<pw>'`
+        // shape is matched by NONE of redact()'s regexes, so the builder must
+        // scrub the password by exact value; reverting it to `from_exact` turns
+        // this red (pick#52 / pick#317).
+        let ssh = default_cred_probes(
+            "ssh",
+            &[("pi", "raspberry"), ("root", "toor")],
+            "10.0.0.5",
+            22,
+        );
+        assert_eq!(ssh.len(), 2);
+        for pc in &ssh {
+            assert!(
+                !pc.effective_command.contains("raspberry")
+                    && !pc.effective_command.contains("toor"),
+                "ssh default password leaked into effective_command: {}",
+                pc.effective_command
+            );
+            assert!(
+                pc.effective_command.contains("<REDACTED>"),
+                "password position should be redacted: {}",
+                pc.effective_command
+            );
+        }
+
+        // The HTTP fallback (`-u user:pass`) must scrub too.
+        let http = default_cred_probes("http", &[("admin", "s3cr3t")], "10.0.0.5", 80);
+        assert!(
+            !http[0].effective_command.contains("s3cr3t"),
+            "http default password leaked: {}",
+            http[0].effective_command
+        );
     }
 }

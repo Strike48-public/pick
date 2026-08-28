@@ -402,6 +402,224 @@ pub fn evidence_from_whatweb(
     nodes
 }
 
+/// A tool-agnostic finding, normalized into the shape an [`EvidenceNode`]
+/// needs. Wrappers map their own result JSON into these and hand them to
+/// [`evidence_from_generic`], which owns the node construction the
+/// tool-specific builders would otherwise each duplicate.
+pub struct GenericFinding {
+    /// Node type tag, e.g. `"web_vuln"`, `"default_credentials"`.
+    pub node_type: String,
+    /// Short human-readable finding title.
+    pub title: String,
+    /// Fuller description of what was observed.
+    pub description: String,
+    /// The affected target (host, `host:port`, or URL).
+    pub target: String,
+    /// Severity assessed by the producing tool.
+    pub severity: Severity,
+    /// Why this warrants validation / attention.
+    pub rationale: String,
+    /// Structured extras copied into the node's metadata map. Callers MUST
+    /// NOT place secrets here — node metadata can reach a published report.
+    pub metadata: Vec<(String, Value)>,
+}
+
+/// Build evidence nodes from normalized findings, attaching the same
+/// `provenance` to each.
+///
+/// This is the shared core behind the per-tool `evidence_from_*` builders: it
+/// owns the `EvidenceNode::new` + `with_provenance` + metadata boilerplate so
+/// each tool builder only has to map its own result shape into
+/// [`GenericFinding`]s (pick#52 coverage promotion).
+pub fn evidence_from_generic(
+    findings: Vec<GenericFinding>,
+    provenance: Provenance,
+) -> Vec<EvidenceNode> {
+    findings
+        .into_iter()
+        .map(|f| {
+            let mut node = EvidenceNode::new(
+                Uuid::new_v4().to_string(),
+                f.node_type,
+                f.title,
+                f.description,
+                f.target,
+                f.severity,
+                f.rationale,
+            )
+            .with_provenance(provenance.clone());
+            for (k, v) in f.metadata {
+                node.metadata.insert(k, v);
+            }
+            node
+        })
+        .collect()
+}
+
+/// Map a tool's uppercase severity label (`CRITICAL`/`HIGH`/`MEDIUM`/`LOW`)
+/// to a [`Severity`]. Anything unrecognized (including `INFO`) becomes
+/// [`Severity::Info`], the safe low-signal default.
+fn severity_from_label(label: &str) -> Severity {
+    match label.to_ascii_uppercase().as_str() {
+        "CRITICAL" => Severity::Critical,
+        "HIGH" => Severity::High,
+        "MEDIUM" => Severity::Medium,
+        "LOW" => Severity::Low,
+        _ => Severity::Info,
+    }
+}
+
+/// Create evidence nodes from `web_vuln_scan` results.
+///
+/// Emits one node per entry in `data["findings"]`, carrying the finding's
+/// `type` in the title and its `details` as the description. The tool's
+/// per-finding `severity` label drives the node severity.
+pub fn evidence_from_web_vuln_scan(
+    data: &Value,
+    target: &str,
+    provenance: Provenance,
+) -> Vec<EvidenceNode> {
+    let Some(findings) = data["findings"].as_array() else {
+        return Vec::new();
+    };
+
+    // Redact target-supplied secrets (userinfo in the scanned base URL, query
+    // tokens embedded in a finding's `details`) BEFORE they reach the node's
+    // published title/description/target. The sibling web_vuln_scan provenance
+    // curls for this scan are already redacted via `from_exact`; without this
+    // the node fields would be the weaker path — the same F1-class asymmetry
+    // fixed for http_request (pick#52 / pick#317).
+    let safe_target = pentest_core::provenance::redact(target);
+
+    let generic = findings
+        .iter()
+        .map(|f| {
+            let finding_type = f["type"].as_str().unwrap_or("WEB_FINDING");
+            let details = f["details"].as_str().unwrap_or("");
+            let severity = severity_from_label(f["severity"].as_str().unwrap_or("INFO"));
+
+            let title = format!("{} on {}", finding_type, safe_target);
+            let description = if details.is_empty() {
+                format!(
+                    "Web vulnerability scan flagged {} on {}.",
+                    finding_type, safe_target
+                )
+            } else {
+                pentest_core::provenance::redact(details)
+            };
+
+            let mut metadata = vec![("finding_type".to_string(), finding_type.into())];
+            if let Some(path) = f["path"].as_str() {
+                metadata.push(("path".to_string(), path.into()));
+            }
+            if let Some(code) = f["status_code"].as_u64() {
+                metadata.push(("status_code".to_string(), code.into()));
+            }
+
+            GenericFinding {
+                node_type: "web_vuln".to_string(),
+                title,
+                description,
+                target: safe_target.clone(),
+                severity,
+                rationale:
+                    "Web-application finding surfaced by an automated scan; validate exploitability and impact before reporting."
+                        .to_string(),
+                metadata,
+            }
+        })
+        .collect();
+
+    evidence_from_generic(generic, provenance)
+}
+
+/// Create evidence nodes from `default_creds` results.
+///
+/// Emits one node per **successful** login (`status == "SUCCESS"`); failed and
+/// errored attempts are not findings. The affected target is `host:port`.
+///
+/// # Security
+/// The attempted password is never copied into the node (title, description, or
+/// metadata). A successful default credential is a High-severity finding that
+/// reaches the customer report; the working secret must stay out of the
+/// published bytes (pick#52 / pick#317). The reproducible probe lives in the
+/// already-redacted `provenance.probe_commands`.
+pub fn evidence_from_default_creds(data: &Value, provenance: Provenance) -> Vec<EvidenceNode> {
+    let host = data["host"].as_str().unwrap_or("unknown");
+    let port = data["port"].as_u64().unwrap_or(0);
+    let service = data["service"].as_str().unwrap_or("unknown");
+    let target = format!("{host}:{port}");
+
+    let Some(attempts) = data["attempts"].as_array() else {
+        return Vec::new();
+    };
+
+    let generic = attempts
+        .iter()
+        .filter(|a| a["status"].as_str() == Some("SUCCESS"))
+        .map(|a| {
+            let username = a["username"].as_str().unwrap_or("unknown");
+            GenericFinding {
+                node_type: "default_credentials".to_string(),
+                title: format!("Default credentials accepted: {username} on {target} ({service})"),
+                description: format!(
+                    "A default/weak credential for user '{username}' was accepted by the \
+                     {service} service on {target}. The password value is withheld from this \
+                     report; see the redacted probe command for the reproduction structure."
+                ),
+                target: target.clone(),
+                severity: Severity::High,
+                rationale:
+                    "Accepting default credentials grants unauthorized access; rotate the credential and disable defaults."
+                        .to_string(),
+                metadata: vec![
+                    ("username".to_string(), username.into()),
+                    ("service".to_string(), service.into()),
+                    ("port".to_string(), port.into()),
+                ],
+            }
+        })
+        .collect();
+
+    evidence_from_generic(generic, provenance)
+}
+
+/// Create an evidence node from a single `http_request` response.
+///
+/// http_request is a primitive the agent calls frequently, not a
+/// finding-producer, so this emits exactly one Info-severity node capturing the
+/// response line (method, status, final URL). Info lets the Validator downgrade
+/// or drop it while keeping the reproducible curl (in `provenance`) available to
+/// ground any finding the agent builds on top of this request.
+pub fn evidence_from_http_request(data: &Value, provenance: Provenance) -> Vec<EvidenceNode> {
+    // Redact secrets in the URL (query-string tokens like `?api_key=...`, HTTP
+    // userinfo `user:pass@`) BEFORE it lands in the node's title/description/
+    // target. These fields reach the published report, and the sibling
+    // provenance curl for this same URL is already redacted — without this the
+    // node fields would be strictly less protected than their own provenance
+    // (pick#52 / pick#317).
+    let url = pentest_core::provenance::redact(data["url"].as_str().unwrap_or("unknown"));
+    let method = data["method"].as_str().unwrap_or("GET");
+    let status = data["status"].as_u64().unwrap_or(0);
+
+    let finding = GenericFinding {
+        node_type: "http_response".to_string(),
+        title: format!("HTTP {method} {status} {url}"),
+        description: format!("HTTP {method} request to {url} returned status {status}."),
+        target: url.clone(),
+        severity: Severity::Info,
+        rationale:
+            "Raw HTTP response captured for grounding; the Validator adjudicates whether it supports a finding."
+                .to_string(),
+        metadata: vec![
+            ("method".to_string(), method.into()),
+            ("status_code".to_string(), status.into()),
+        ],
+    };
+
+    evidence_from_generic(vec![finding], provenance)
+}
+
 /// Assess severity of an open port based on port number and service.
 fn assess_port_severity(port: u64, service: &str) -> Severity {
     // Sensitive/high-risk ports
@@ -835,5 +1053,182 @@ mod tests {
         assert!(contains_vulnerable_version("OpenSSH_5.3"));
         assert!(!contains_vulnerable_version("Apache/2.4.52"));
         assert!(!contains_vulnerable_version("nginx/1.21.1"));
+    }
+
+    fn test_provenance(tool: &str) -> Provenance {
+        Provenance::new(
+            tool.to_string(),
+            "1.0".to_string(),
+            pentest_core::provenance::ProbeCommand::from_exact("echo test"),
+            "test output",
+        )
+    }
+
+    #[test]
+    fn test_evidence_from_web_vuln_scan_one_node_per_finding() {
+        let data = json!({
+            "url": "http://target.example",
+            "findings": [
+                {
+                    "type": "ADMIN_PANEL_EXPOSED",
+                    "severity": "MEDIUM",
+                    "path": "/admin",
+                    "status_code": 200,
+                    "details": "Admin panel accessible at http://target.example/admin"
+                },
+                {
+                    "type": "INFORMATION_DISCLOSURE",
+                    "severity": "HIGH",
+                    "path": "/.env",
+                    "status_code": 200,
+                    "details": "Sensitive file exposed"
+                }
+            ]
+        });
+
+        let nodes = evidence_from_web_vuln_scan(
+            &data,
+            "http://target.example",
+            test_provenance("web_vuln_scan"),
+        );
+
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].node_type, "web_vuln");
+        assert_eq!(nodes[0].current_severity(), Severity::Medium);
+        assert!(nodes[0].title.contains("ADMIN_PANEL_EXPOSED"));
+        assert_eq!(nodes[0].affected_target, "http://target.example");
+        assert!(nodes[0].provenance.is_some());
+        assert_eq!(nodes[1].current_severity(), Severity::High);
+    }
+
+    #[test]
+    fn test_evidence_from_default_creds_only_successful_and_no_password() {
+        let data = json!({
+            "host": "10.0.0.5",
+            "port": 22,
+            "service": "ssh",
+            "attempts": [
+                {"username": "root", "password": "hunter2", "status": "FAILED"},
+                {"username": "admin", "password": "s3cr3t", "status": "SUCCESS"}
+            ],
+            "successful": 1,
+            "total_tested": 2
+        });
+
+        // Build the provenance the way default_creds's execute() does for a
+        // successful ssh login: one probe per attempt embedding the real
+        // password, scrubbed by exact value. Using a dummy `test_provenance`
+        // here (the old version of this test did) never exercises the real
+        // `sshpass -p '<pw>'` path, so it could not catch a password leaking
+        // through `effective_command`. Reverting the builder to plain
+        // `from_exact` turns this test red.
+        let probe = pentest_core::provenance::ProbeCommand::from_exact_redacting_secret(
+            "sshpass -p 's3cr3t' ssh -o StrictHostKeyChecking=no -p 22 admin@10.0.0.5 exit",
+            "s3cr3t",
+        );
+        let provenance = Provenance::multi_step("sshpass+openssh", "1.0", vec![probe], "");
+        let nodes = evidence_from_default_creds(&data, provenance);
+
+        // Only the successful login is a finding; failed attempts are not.
+        assert_eq!(nodes.len(), 1);
+        let node = &nodes[0];
+        assert_eq!(node.node_type, "default_credentials");
+        assert_eq!(node.current_severity(), Severity::High);
+        assert!(node.title.contains("admin"));
+        assert_eq!(node.affected_target, "10.0.0.5:22");
+        assert!(node.provenance.is_some());
+
+        // The plaintext password must never appear in ANY published byte of the
+        // node — including the attached provenance's `effective_command`.
+        let serialized = serde_json::to_string(node).unwrap();
+        assert!(
+            !serialized.contains("s3cr3t"),
+            "plaintext password leaked into evidence node: {serialized}"
+        );
+    }
+
+    #[test]
+    fn test_evidence_from_http_request_redacts_url_secret() {
+        // A query-string secret in the request URL must not survive into the
+        // node's published fields (title/description/target). The sibling
+        // provenance curl for the same URL is already redacted; this guards the
+        // node fields against being the weaker path (pick#52 / pick#317).
+        let data = json!({
+            "url": "http://target.example/api?api_key=SECRET123&x=1",
+            "method": "GET",
+            "status": 200
+        });
+
+        let nodes = evidence_from_http_request(&data, test_provenance("http_request"));
+        assert_eq!(nodes.len(), 1);
+        let node = &nodes[0];
+
+        for field in [&node.title, &node.description, &node.affected_target] {
+            assert!(
+                !field.contains("SECRET123"),
+                "url secret leaked into a published node field: {field}"
+            );
+        }
+        assert!(
+            node.title.contains("<REDACTED>"),
+            "url should be redacted in the node title: {}",
+            node.title
+        );
+    }
+
+    #[test]
+    fn test_evidence_from_web_vuln_scan_redacts_url_secret() {
+        // Same F1 class as http_request: a target-supplied secret (userinfo in
+        // the scanned base URL, or a query token embedded in a finding's
+        // `details`) must not survive unredacted into the node's published
+        // title/description/target. The sibling web_vuln_scan provenance curls
+        // are already redacted via `from_exact` (pick#52 / pick#317).
+        let data = json!({
+            "url": "http://target.example",
+            "findings": [
+                {"type": "ADMIN_PANEL_EXPOSED", "severity": "MEDIUM", "path": "/admin",
+                 "details": "Admin panel accessible at http://target.example/admin?api_key=SECRET123"}
+            ]
+        });
+
+        let nodes = evidence_from_web_vuln_scan(
+            &data,
+            "http://user:p3wd@target.example",
+            test_provenance("web_vuln_scan"),
+        );
+        assert_eq!(nodes.len(), 1);
+        let n = &nodes[0];
+
+        for field in [&n.title, &n.description, &n.affected_target] {
+            assert!(
+                !field.contains("SECRET123") && !field.contains("p3wd"),
+                "target-supplied secret leaked into a published node field: {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_evidence_from_http_request_one_info_node() {
+        let data = json!({
+            "url": "http://target.example/login",
+            "method": "GET",
+            "status": 200,
+            "ok": true,
+            "headers": {"server": "nginx"},
+            "body": "hello",
+            "body_bytes": 5,
+            "body_truncated": false
+        });
+
+        let nodes = evidence_from_http_request(&data, test_provenance("http_request"));
+
+        assert_eq!(nodes.len(), 1);
+        let node = &nodes[0];
+        assert_eq!(node.node_type, "http_response");
+        assert_eq!(node.current_severity(), Severity::Info);
+        assert!(node.title.contains("200"));
+        assert!(node.title.contains("GET"));
+        assert_eq!(node.affected_target, "http://target.example/login");
+        assert!(node.provenance.is_some());
     }
 }
