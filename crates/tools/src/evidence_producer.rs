@@ -667,8 +667,11 @@ fn open_port_finding(host: &str, port: u64, service: &str) -> GenericFinding {
 pub fn evidence_from_port_scan(data: &Value, provenance: Provenance) -> Vec<EvidenceNode> {
     let mut findings: Vec<GenericFinding> = Vec::new();
 
-    // Multi-host shape: each host carries only its already-open ports.
+    // The two shapes are mutually exclusive (port_scan emits one or the other),
+    // so a multi-host `hosts` payload is handled to the exclusion of the flat
+    // `ports` branch — a malformed payload carrying both keys never double-emits.
     if let Some(hosts) = data["hosts"].as_array() {
+        // Multi-host shape: each host carries only its already-open ports.
         for h in hosts {
             let host = h["host"].as_str().unwrap_or("unknown");
             if let Some(open_ports) = h["open_ports"].as_array() {
@@ -679,10 +682,8 @@ pub fn evidence_from_port_scan(data: &Value, provenance: Provenance) -> Vec<Evid
                 }
             }
         }
-    }
-
-    // Single-host shape: a flat port list where each entry carries an `open` flag.
-    if let Some(ports) = data["ports"].as_array() {
+    } else if let Some(ports) = data["ports"].as_array() {
+        // Single-host shape: a flat port list where each entry carries an `open` flag.
         let host = data["host"].as_str().unwrap_or("unknown");
         for p in ports {
             if p["open"].as_bool() != Some(true) {

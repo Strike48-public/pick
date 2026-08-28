@@ -176,11 +176,16 @@ impl PentestTool for ExecuteCommandTool {
             // Promote the run into the evidence graph so findings the agent
             // builds on the output can be grounded (pick#52). One Info node per
             // run; raw stdout/stderr stay out of the node (see
-            // evidence_from_execute_command).
-            for node in
-                crate::evidence_producer::evidence_from_execute_command(&data, provenance.clone())
-            {
-                let _ = crate::evidence_producer::push_evidence(node);
+            // evidence_from_execute_command). Gate on `is_ran_probe` so a failed
+            // or timed-out run — a #184 Failed outcome — never produces grounding
+            // evidence, matching how the outcome itself is classified below.
+            if is_ran_probe(&data) {
+                for node in crate::evidence_producer::evidence_from_execute_command(
+                    &data,
+                    provenance.clone(),
+                ) {
+                    let _ = crate::evidence_producer::push_evidence(node);
+                }
             }
 
             Ok((data, provenance))
@@ -292,26 +297,34 @@ fn classify_command_outcome(result: ToolResult) -> ToolResult {
         return result;
     }
 
-    let timed_out = result.data.get("timed_out").and_then(Value::as_bool) == Some(true);
-    let exit_code = result.data.get("exit_code").and_then(Value::as_i64);
-    let stdout_empty = result
-        .data
+    if is_ran_probe(&result.data) {
+        result
+    } else {
+        result.with_outcome(ToolOutcome::Failed)
+    }
+}
+
+/// Whether a completed subprocess counts as a genuine *ran probe* (vs a #184
+/// Failed outcome), decided from its captured `data`.
+///
+/// Shared by [`classify_command_outcome`] and the evidence-promotion gate so the
+/// two can never diverge: a run that is not a ran probe produces neither a
+/// [`ToolOutcome::Ran`] outcome nor grounding evidence. A run is NOT a ran probe
+/// when it timed out, its exit status is unreadable (fail closed — the tool body
+/// always writes `exit_code`, so `None` means an unexpected shape), or it exited
+/// nonzero with no stdout. A nonzero exit that still produced stdout stays a ran
+/// probe (grep/diff/test use nonzero as signal), as does a zero exit with empty
+/// stdout (a truthful empty result).
+fn is_ran_probe(data: &Value) -> bool {
+    let timed_out = data.get("timed_out").and_then(Value::as_bool) == Some(true);
+    let exit_code = data.get("exit_code").and_then(Value::as_i64);
+    let stdout_empty = data
         .get("stdout")
         .and_then(Value::as_str)
         .map(str::is_empty)
         .unwrap_or(true);
 
-    // Fail closed: a run whose exit status we cannot read is not a trustworthy
-    // completed probe. The tool body always writes `exit_code`, so `None` here
-    // means an unexpected data shape — treat it as Failed, never assume success.
-    let failed =
-        timed_out || exit_code.is_none() || (exit_code.is_some_and(|c| c != 0) && stdout_empty);
-
-    if failed {
-        result.with_outcome(ToolOutcome::Failed)
-    } else {
-        result
-    }
+    !(timed_out || exit_code.is_none() || (exit_code.is_some_and(|c| c != 0) && stdout_empty))
 }
 
 /// What `build_identity_injection` produced: the argv fragment to splice in,
@@ -638,6 +651,31 @@ mod tests {
         let r = classify_command_outcome(ran(1, "line-of-real-output\n", false));
         assert_eq!(r.outcome, ToolOutcome::Ran);
         assert!(r.success);
+    }
+
+    #[test]
+    fn is_ran_probe_gates_evidence_promotion_like_outcome_classification() {
+        // The evidence-promotion gate MUST agree with outcome classification: a
+        // failed/timed-out/unreadable run produces neither a Ran outcome nor a
+        // grounding evidence node. This is the shared predicate behind both.
+        assert!(is_ran_probe(
+            &json!({"exit_code": 0, "stdout": "", "timed_out": false})
+        ));
+        assert!(is_ran_probe(
+            &json!({"exit_code": 1, "stdout": "real output", "timed_out": false})
+        ));
+        assert!(
+            !is_ran_probe(&json!({"exit_code": 1, "stdout": "", "timed_out": false})),
+            "nonzero exit with no stdout is a failed probe -> no evidence"
+        );
+        assert!(
+            !is_ran_probe(&json!({"exit_code": 0, "stdout": "x", "timed_out": true})),
+            "a timed-out run is a failed probe -> no evidence"
+        );
+        assert!(
+            !is_ran_probe(&json!({"stdout": "x", "timed_out": false})),
+            "an unreadable exit status fails closed -> no evidence"
+        );
     }
 
     #[test]
