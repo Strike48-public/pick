@@ -15,6 +15,8 @@ use std::path::Path;
 pub struct PtyShell {
     pair: portable_pty::PtyPair,
     child: Box<dyn portable_pty::Child + Send + Sync>,
+    primary_backend: Option<SandboxBackend>,
+    effective_backend: Option<SandboxBackend>,
 }
 
 /// Return true if a `portable_pty` spawn error was caused by `EACCES`
@@ -65,6 +67,17 @@ fn fallback_backend_for(backend: SandboxBackend, err: &anyhow::Error) -> Option<
 }
 
 impl PtyShell {
+    /// Return the sandbox backend that was actually used to spawn this shell,
+    /// if any. `None` for native (non-sandboxed) shells.
+    pub fn effective_backend(&self) -> Option<SandboxBackend> {
+        self.effective_backend
+    }
+
+    /// Return the sandbox backend that was selected before any fallback, if any.
+    pub fn primary_backend(&self) -> Option<SandboxBackend> {
+        self.primary_backend
+    }
+
     /// Spawn a new interactive shell using the system default program.
     /// If `cwd` is provided, the shell will start in that directory.
     /// When `shell_mode` is `Proot`, spawns inside a sandboxed BlackArch rootfs
@@ -107,7 +120,12 @@ impl PtyShell {
             .spawn_command(cmd)
             .map_err(|e| Error::ToolExecution(format!("Failed to spawn shell: {e}")))?;
 
-        Ok(Self { pair, child })
+        Ok(Self {
+            pair,
+            child,
+            primary_backend: None,
+            effective_backend: None,
+        })
     }
 
     /// Spawn a sandboxed interactive shell using bwrap, proot, or WSL.
@@ -308,7 +326,12 @@ impl PtyShell {
 
         tracing::info!("Sandboxed shell spawned successfully");
 
-        Ok(Self { pair, child })
+        Ok(Self {
+            pair,
+            child,
+            primary_backend: Some(backend),
+            effective_backend: Some(backend),
+        })
     }
 
     /// Window during which a sandbox child that exits is treated as an
@@ -428,6 +451,8 @@ impl PtyShell {
         Ok(Some(Self {
             pair: retry_pair,
             child,
+            primary_backend: Some(backend),
+            effective_backend: Some(fallback),
         }))
     }
 
@@ -885,6 +910,18 @@ mod tests {
         );
         assert_eq!(namespace_sibling(SandboxBackend::Wsl), None);
         assert_eq!(namespace_sibling(SandboxBackend::Docker), None);
+    }
+
+    #[test]
+    fn native_shell_has_no_backend() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let shell = rt.block_on(async {
+            PtyShell::spawn(80, 24, None, None, ShellMode::Native)
+                .await
+                .expect("native shell should spawn in test")
+        });
+        assert!(shell.primary_backend().is_none());
+        assert!(shell.effective_backend().is_none());
     }
 
     /// Build a SandboxConfig pointing at a temporary directory with a fake
@@ -1494,6 +1531,12 @@ mod tests {
     /// namespace (VM/container), bwrap spawns but dies with "setting up uid map:
     /// Permission denied", and the shell must transparently fall back to proot
     /// (or vice versa) rather than hand back a dead PTY.
+    ///
+    /// When a fallback occurs, the operator should see a terminal notice like
+    /// "Sandbox backend: proot (fell back from bwrap)" in the global terminal
+    /// log. Manual verification: run this test on a host where the primary
+    /// backend fails (e.g. nested user namespace) and confirm the notice appears
+    /// in the terminal log view.
     ///
     /// Ignored: needs a provisioned rootfs and at least one working backend.
     #[tokio::test]

@@ -103,6 +103,24 @@ async fn handle_socket(
             return;
         }
     };
+
+    // bwrap<->proot fallback (and the SandboxBackend accessors that report it)
+    // are a desktop-only concept: mobile PtyShell backends use proot
+    // unconditionally with no sibling fallback, and SandboxBackend itself is
+    // gated behind the desktop feature. Surface the notice on desktop only.
+    #[cfg(feature = "desktop")]
+    if let Some(backend) = pty.effective_backend() {
+        if let Some(primary) = pty.primary_backend() {
+            if primary != backend {
+                crate::liveview_server::push_terminal_line(
+                    pentest_core::terminal::TerminalLine::info(format!(
+                        "Sandbox backend: {backend} (fell back from {primary})"
+                    )),
+                );
+            }
+        }
+    }
+
     tracing::info!("[shell_ws] PtyShell::spawn returned OK; wiring reader/writer");
 
     let reader = match pty.try_clone_reader() {
