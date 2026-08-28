@@ -2,8 +2,10 @@
 
 use async_trait::async_trait;
 use pentest_core::error::Result;
+use pentest_core::provenance::{truncate_excerpt, ProbeCommand, Provenance};
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
+    execute_timed_with_provenance, ParamType, PentestTool, Platform, ToolContext, ToolParam,
+    ToolResult, ToolSchema,
 };
 use pentest_core::validation::{validate_port_spec, validate_target};
 use pentest_platform::{get_platform, HostReachability, NetworkOps, ScanConfig};
@@ -55,6 +57,34 @@ fn collect_hosts(params: &Value) -> std::result::Result<Vec<String>, pentest_cor
         ));
     }
     Ok(out)
+}
+
+/// Compact, human-reproducible target descriptor for the synthesized nmap
+/// provenance command. Reads the ORIGINAL params (a CIDR stays a CIDR) so a wide
+/// subnet scan does not expand into a multi-kilobyte host list in the report.
+/// `collect_hosts` has already validated these targets before we reach here, and
+/// they are IPs/hostnames/CIDRs — not secret-bearing — so no redaction is needed.
+fn scan_target_spec(params: &Value) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut push = |s: &str| {
+        if !s.is_empty() {
+            parts.push(s.to_string());
+        }
+    };
+    if let Some(h) = params.get("host").and_then(|v| v.as_str()) {
+        push(h);
+    }
+    if let Some(arr) = params.get("hosts").and_then(|v| v.as_array()) {
+        for v in arr {
+            if let Some(h) = v.as_str() {
+                push(h);
+            }
+        }
+    }
+    if let Some(cidr) = params.get("subnet").and_then(|v| v.as_str()) {
+        push(cidr);
+    }
+    parts.join(" ")
 }
 
 /// Expand an IPv4 CIDR (e.g. "10.10.0.0/24") into its usable host addresses.
@@ -187,7 +217,7 @@ impl PentestTool for PortScanTool {
     }
 
     async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
-        execute_timed(|| async {
+        execute_timed_with_provenance(|| async {
             // Gather targets from host / hosts[] / subnet (CIDR).
             let hosts = collect_hosts(&params)?;
 
@@ -210,6 +240,10 @@ impl PentestTool for PortScanTool {
                     "No valid ports specified".into(),
                 ));
             }
+
+            // Compact target descriptor for the synthesized provenance command,
+            // captured before the scan (a CIDR stays a CIDR, not 254 hosts).
+            let target_spec = scan_target_spec(&params);
 
             // Scan each host concurrently, but cap the number of hosts in flight
             // so a /22 subnet doesn't open thousands of sockets at once (each
@@ -238,11 +272,13 @@ impl PentestTool for PortScanTool {
             });
             let results = futures::future::join_all(futures).await;
 
-            // Single-host callers get the flat legacy shape (full per-port list
-            // under `ports`) for backward compatibility.
-            if single_host {
-                return match results.into_iter().next().unwrap() {
-                    Ok(r) => Ok(json!({
+            // Build the agent-facing data payload; its shape depends on whether
+            // one host or many were scanned.
+            let data = if single_host {
+                // Single-host callers get the flat legacy shape (full per-port
+                // list under `ports`) for backward compatibility.
+                match results.into_iter().next().unwrap() {
+                    Ok(r) => json!({
                         "host": r.host,
                         "ports": r.ports,
                         "open_count": r.open_count,
@@ -259,65 +295,91 @@ impl PentestTool for PortScanTool {
                         // timed out -> down OR silently firewalled). See host_state_note.
                         "reachability": r.reachability,
                         "host_state_note": host_state_note(r.reachability),
-                    })),
+                    }),
                     Err((host, e)) => {
-                        Err(pentest_core::error::Error::Network(format!("{host}: {e}")))
+                        return Err(pentest_core::error::Error::Network(format!("{host}: {e}")))
                     }
-                };
+                }
+            } else {
+                // Multi-host: emit ONLY hosts that have open ports, and for those
+                // only the open ports (as {port, service}). A full 254-host ×
+                // all-ports dump is ~100k+ tokens and gets truncated by the platform
+                // summarizer — useless to the agent. This keeps the payload tiny and
+                // directly feeds the batched service_banner step.
+                let mut host_entries: Vec<Value> = Vec::new();
+                let mut hosts_scanned = 0usize;
+                // Hosts that no probe ever reached (every port Unreachable, none open).
+                // Aggregated as a COUNT, not a per-host list: on a 254-host subnet a
+                // mesh/routing failure can make hundreds unreachable, and listing each
+                // would blow the token budget the tiny-payload design exists to protect.
+                // The count lets the agent distinguish "scanned the subnet, nothing was
+                // open" from "couldn't reach most of the subnet" (#306).
+                let mut hosts_unreachable = 0usize;
+                let mut errors: Vec<Value> = Vec::new();
+                for r in results {
+                    match r {
+                        Ok(scan) => {
+                            hosts_scanned += 1;
+                            if scan.open_count == 0 {
+                                // Distinguish "reachable, nothing open" from "never
+                                // reached": a host is unreachable when every scanned
+                                // port failed to reach it.
+                                if scan.unreachable_count > 0
+                                    && scan.unreachable_count == scan.ports.len()
+                                {
+                                    hosts_unreachable += 1;
+                                }
+                                continue;
+                            }
+                            let open: Vec<Value> = scan
+                                .ports
+                                .iter()
+                                .filter(|p| p.open)
+                                .map(|p| json!({ "port": p.port, "service": p.service }))
+                                .collect();
+                            host_entries.push(json!({
+                                "host": scan.host,
+                                "open_ports": open,
+                                "open_count": scan.open_count,
+                            }));
+                        }
+                        Err((host, e)) => {
+                            errors.push(json!({ "host": host, "error": e.to_string() }))
+                        }
+                    }
+                }
+                json!({
+                    "hosts": host_entries,
+                    "hosts_scanned": hosts_scanned,
+                    "hosts_with_open_ports": host_entries.len(),
+                    "hosts_unreachable": hosts_unreachable,
+                    "errors": errors,
+                })
+            };
+
+            // port_scan is a native TCP-connect scanner with no real command
+            // line; attach a synthesized nmap-equivalent probe so the finding is
+            // reproducible, then promote each open port into the evidence graph
+            // (pick#52 coverage). The excerpt is the tool's own JSON payload — no
+            // secret-bearing input reaches it (targets are IPs/hostnames/CIDRs).
+            let provenance = Provenance::new(
+                "port_scan",
+                env!("CARGO_PKG_VERSION"),
+                ProbeCommand::from_exact(format!(
+                    "nmap -Pn -sT -p {ports_str} --open {target_spec}"
+                ))
+                .with_description(
+                    "equivalent nmap invocation; port_scan runs a native TCP-connect scanner",
+                ),
+                truncate_excerpt(&serde_json::to_string(&data).unwrap_or_default()),
+            );
+
+            for node in crate::evidence_producer::evidence_from_port_scan(&data, provenance.clone())
+            {
+                let _ = crate::evidence_producer::push_evidence(node);
             }
 
-            // Multi-host: emit ONLY hosts that have open ports, and for those
-            // only the open ports (as {port, service}). A full 254-host ×
-            // all-ports dump is ~100k+ tokens and gets truncated by the platform
-            // summarizer — useless to the agent. This keeps the payload tiny and
-            // directly feeds the batched service_banner step.
-            let mut host_entries: Vec<Value> = Vec::new();
-            let mut hosts_scanned = 0usize;
-            // Hosts that no probe ever reached (every port Unreachable, none open).
-            // Aggregated as a COUNT, not a per-host list: on a 254-host subnet a
-            // mesh/routing failure can make hundreds unreachable, and listing each
-            // would blow the token budget the tiny-payload design exists to protect.
-            // The count lets the agent distinguish "scanned the subnet, nothing was
-            // open" from "couldn't reach most of the subnet" (#306).
-            let mut hosts_unreachable = 0usize;
-            let mut errors: Vec<Value> = Vec::new();
-            for r in results {
-                match r {
-                    Ok(scan) => {
-                        hosts_scanned += 1;
-                        if scan.open_count == 0 {
-                            // Distinguish "reachable, nothing open" from "never
-                            // reached": a host is unreachable when every scanned
-                            // port failed to reach it.
-                            if scan.unreachable_count > 0
-                                && scan.unreachable_count == scan.ports.len()
-                            {
-                                hosts_unreachable += 1;
-                            }
-                            continue;
-                        }
-                        let open: Vec<Value> = scan
-                            .ports
-                            .iter()
-                            .filter(|p| p.open)
-                            .map(|p| json!({ "port": p.port, "service": p.service }))
-                            .collect();
-                        host_entries.push(json!({
-                            "host": scan.host,
-                            "open_ports": open,
-                            "open_count": scan.open_count,
-                        }));
-                    }
-                    Err((host, e)) => errors.push(json!({ "host": host, "error": e.to_string() })),
-                }
-            }
-            Ok(json!({
-                "hosts": host_entries,
-                "hosts_scanned": hosts_scanned,
-                "hosts_with_open_ports": host_entries.len(),
-                "hosts_unreachable": hosts_unreachable,
-                "errors": errors,
-            }))
+            Ok((data, provenance))
         })
         .await
     }
@@ -364,6 +426,20 @@ mod tests {
     fn collect_hosts_requires_a_target() {
         assert!(collect_hosts(&json!({})).is_err());
         assert!(collect_hosts(&json!({ "hosts": [] })).is_err());
+    }
+
+    #[test]
+    fn scan_target_spec_keeps_cidr_compact_and_joins_hosts() {
+        // A subnet stays a CIDR (not 254 expanded hosts) in the synthesized
+        // provenance command, and host + hosts[] are space-joined.
+        assert_eq!(
+            scan_target_spec(&json!({ "subnet": "10.10.0.0/24" })),
+            "10.10.0.0/24"
+        );
+        assert_eq!(
+            scan_target_spec(&json!({ "host": "10.0.0.1", "hosts": ["10.0.0.2"] })),
+            "10.0.0.1 10.0.0.2"
+        );
     }
 
     #[test]

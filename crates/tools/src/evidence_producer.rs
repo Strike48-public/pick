@@ -620,6 +620,146 @@ pub fn evidence_from_http_request(data: &Value, provenance: Provenance) -> Vec<E
     evidence_from_generic(vec![finding], provenance)
 }
 
+/// Build a single `open_port` finding, sharing the severity/rationale logic
+/// across both `port_scan` result shapes.
+fn open_port_finding(host: &str, port: u64, service: &str) -> GenericFinding {
+    let severity = assess_port_severity(port, service);
+    let sensitivity = if is_sensitive_port(port) {
+        "sensitive"
+    } else {
+        "network"
+    };
+    GenericFinding {
+        node_type: "open_port".to_string(),
+        title: format!("Port {port}/tcp open on {host} - {service}"),
+        description: format!(
+            "Port scan found TCP port {port} open on {host} (service '{service}')."
+        ),
+        target: host.to_string(),
+        severity,
+        rationale: format!(
+            "Port {port} is commonly associated with {service}. Open {sensitivity} ports \
+             should be validated for necessity and exposure."
+        ),
+        metadata: vec![
+            ("port".to_string(), port.into()),
+            ("protocol".to_string(), "tcp".into()),
+            ("service".to_string(), service.into()),
+        ],
+    }
+}
+
+/// Create evidence nodes from `port_scan` results.
+///
+/// `port_scan` is a native TCP-connect scanner (no external binary), so the
+/// caller attaches a *synthesized* nmap-equivalent probe as provenance rather
+/// than a literal command. This builder promotes every open port into an
+/// `open_port` node, handling both result shapes the tool emits:
+/// * single-host (legacy flat shape):
+///   `{ "host", "ports": [{ "port", "service", "open" }] }`
+/// * multi-host:
+///   `{ "hosts": [{ "host", "open_ports": [{ "port", "service" }] }] }`
+///
+/// Only open ports become nodes. The published fields are validated
+/// IPs/hostnames, port numbers, and platform-derived service names — there is no
+/// user-supplied secret to redact here (contrast the URL-bearing web wrappers,
+/// which carry userinfo/query tokens).
+pub fn evidence_from_port_scan(data: &Value, provenance: Provenance) -> Vec<EvidenceNode> {
+    let mut findings: Vec<GenericFinding> = Vec::new();
+
+    // Multi-host shape: each host carries only its already-open ports.
+    if let Some(hosts) = data["hosts"].as_array() {
+        for h in hosts {
+            let host = h["host"].as_str().unwrap_or("unknown");
+            if let Some(open_ports) = h["open_ports"].as_array() {
+                for p in open_ports {
+                    let port = p["port"].as_u64().unwrap_or(0);
+                    let service = p["service"].as_str().unwrap_or("unknown");
+                    findings.push(open_port_finding(host, port, service));
+                }
+            }
+        }
+    }
+
+    // Single-host shape: a flat port list where each entry carries an `open` flag.
+    if let Some(ports) = data["ports"].as_array() {
+        let host = data["host"].as_str().unwrap_or("unknown");
+        for p in ports {
+            if p["open"].as_bool() != Some(true) {
+                continue; // Only open ports are findings.
+            }
+            let port = p["port"].as_u64().unwrap_or(0);
+            let service = p["service"].as_str().unwrap_or("unknown");
+            findings.push(open_port_finding(host, port, service));
+        }
+    }
+
+    evidence_from_generic(findings, provenance)
+}
+
+/// Create an evidence node from a completed `execute_command` run.
+///
+/// Like `http_request`, `execute_command` is a primitive the agent calls
+/// constantly, not a finding-producer, so this emits exactly one Info-severity
+/// node recording that a command ran and its exit status. Info lets the
+/// Validator downgrade or drop it while keeping the reproducible probe (in
+/// `provenance`) available to ground any finding the agent builds on the output.
+///
+/// # Security
+/// The node's command string is read from
+/// `provenance.probe_commands[0].effective_command`, which is already
+/// secret-scrubbed by value (identity injection, pick#317). Raw `stdout`/
+/// `stderr` are deliberately NOT copied into any node field: command output is
+/// arbitrary and may contain secrets the value-scrubber never saw, so it stays
+/// out of the published node (it remains in the provenance excerpt, which the
+/// report pipeline adjudicates). This keeps the node fields no less protected
+/// than their own provenance — the F1-class asymmetry guarded across pick#52.
+pub fn evidence_from_execute_command(data: &Value, provenance: Provenance) -> Vec<EvidenceNode> {
+    let command = provenance
+        .probe_commands
+        .first()
+        .map(|p| p.effective_command.as_str())
+        .unwrap_or("(command unavailable)");
+    let exit_code = data["exit_code"].as_i64();
+    let timed_out = data["timed_out"].as_bool().unwrap_or(false);
+
+    let status = if timed_out {
+        "a timeout".to_string()
+    } else {
+        match exit_code {
+            Some(c) => format!("exit code {c}"),
+            None => "an unknown exit status".to_string(),
+        }
+    };
+
+    let mut metadata: Vec<(String, Value)> = Vec::new();
+    if let Some(c) = exit_code {
+        metadata.push(("exit_code".to_string(), c.into()));
+    }
+    metadata.push(("timed_out".to_string(), timed_out.into()));
+    if let Some(d) = data["duration_ms"].as_u64() {
+        metadata.push(("duration_ms".to_string(), d.into()));
+    }
+
+    let finding = GenericFinding {
+        node_type: "command_execution".to_string(),
+        title: format!("Command executed: {command}"),
+        description: format!(
+            "Shell command '{command}' completed with {status}. Captured output is withheld \
+             from this node; the reproducible probe and output excerpt live in the attached \
+             provenance for grounding."
+        ),
+        target: command.to_string(),
+        severity: Severity::Info,
+        rationale:
+            "Raw command execution captured for grounding; the Validator adjudicates whether it supports a finding."
+                .to_string(),
+        metadata,
+    };
+
+    evidence_from_generic(vec![finding], provenance)
+}
+
 /// Assess severity of an open port based on port number and service.
 fn assess_port_severity(port: u64, service: &str) -> Severity {
     // Sensitive/high-risk ports
@@ -1230,5 +1370,149 @@ mod tests {
         assert!(node.title.contains("GET"));
         assert_eq!(node.affected_target, "http://target.example/login");
         assert!(node.provenance.is_some());
+    }
+
+    #[test]
+    fn test_evidence_from_port_scan_single_host_open_ports_only() {
+        // Single-host (flat) shape: only ports with `open == true` become nodes.
+        let data = json!({
+            "host": "10.0.0.5",
+            "ports": [
+                {"port": 22, "service": "ssh", "open": true},
+                {"port": 80, "service": "http", "open": true},
+                {"port": 3306, "service": "mysql", "open": false},
+            ],
+            "open_count": 2,
+        });
+
+        let nodes = evidence_from_port_scan(&data, test_provenance("port_scan"));
+
+        // Two open ports -> two nodes; the closed port is not a finding.
+        assert_eq!(nodes.len(), 2);
+        for node in &nodes {
+            assert_eq!(node.node_type, "open_port");
+            assert_eq!(node.affected_target, "10.0.0.5");
+            assert!(node.provenance.is_some());
+            assert_eq!(
+                node.metadata.get("protocol").and_then(|v| v.as_str()),
+                Some("tcp")
+            );
+        }
+        // 22/ssh is an administrative port -> Medium; 80/http -> Low.
+        assert_eq!(nodes[0].current_severity(), Severity::Medium);
+        assert_eq!(
+            nodes[0].metadata.get("port").and_then(|v| v.as_u64()),
+            Some(22)
+        );
+        assert_eq!(nodes[1].current_severity(), Severity::Low);
+        assert!(nodes
+            .iter()
+            .all(|n| n.metadata.get("port").and_then(|v| v.as_u64()) != Some(3306)));
+    }
+
+    #[test]
+    fn test_evidence_from_port_scan_multi_host_shape() {
+        // Multi-host shape: each host lists only its already-open ports.
+        let data = json!({
+            "hosts": [
+                {"host": "10.0.0.5", "open_ports": [{"port": 445, "service": "microsoft-ds"}], "open_count": 1},
+                {"host": "10.0.0.6", "open_ports": [{"port": 443, "service": "https"}], "open_count": 1},
+            ],
+            "hosts_scanned": 2,
+            "hosts_with_open_ports": 2,
+        });
+
+        let nodes = evidence_from_port_scan(&data, test_provenance("port_scan"));
+
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].affected_target, "10.0.0.5");
+        assert_eq!(
+            nodes[0].metadata.get("port").and_then(|v| v.as_u64()),
+            Some(445)
+        );
+        // 445 is a sensitive port -> High.
+        assert_eq!(nodes[0].current_severity(), Severity::High);
+        assert_eq!(nodes[1].affected_target, "10.0.0.6");
+        assert_eq!(nodes[1].current_severity(), Severity::Low);
+    }
+
+    /// Build provenance the way `execute_command`'s `build_run_output` does:
+    /// a single `shell` probe whose `effective_command` is the (already-redacted)
+    /// command line.
+    fn execute_command_provenance(command: &str) -> Provenance {
+        Provenance::new(
+            "shell".to_string(),
+            "1.0".to_string(),
+            pentest_core::provenance::ProbeCommand::from_exact(command),
+            "",
+        )
+    }
+
+    #[test]
+    fn test_evidence_from_execute_command_info_node_no_output_leak() {
+        // SECURITY GUARD: raw stdout/stderr are arbitrary and may hold secrets
+        // the value-scrubber never saw, so they must NEVER be copied into a
+        // published node field. Only the (already-redacted) effective_command,
+        // exit status, and timing reach the node. Copying `data["stdout"]` into
+        // any node field turns this test red.
+        let data = json!({
+            "stdout": "db_password=TOPSECRET_OUTPUT_VALUE\nrows: 3",
+            "stderr": "",
+            "exit_code": 0,
+            "timed_out": false,
+            "duration_ms": 42,
+        });
+
+        let nodes =
+            evidence_from_execute_command(&data, execute_command_provenance("psql -c 'select 1'"));
+
+        assert_eq!(nodes.len(), 1);
+        let node = &nodes[0];
+        assert_eq!(node.node_type, "command_execution");
+        assert_eq!(node.current_severity(), Severity::Info);
+        assert!(node.title.contains("psql -c 'select 1'"));
+        assert_eq!(
+            node.metadata.get("exit_code").and_then(|v| v.as_i64()),
+            Some(0)
+        );
+        assert!(node.provenance.is_some());
+
+        // The command output must not survive into ANY published byte of the node.
+        let serialized = serde_json::to_string(node).unwrap();
+        assert!(
+            !serialized.contains("TOPSECRET_OUTPUT_VALUE"),
+            "command output leaked into evidence node: {serialized}"
+        );
+    }
+
+    #[test]
+    fn test_evidence_from_execute_command_uses_redacted_effective_command() {
+        // The node's command string must come from the provenance's
+        // already-redacted `effective_command`, never an independent (weaker)
+        // path. Here an injected bearer token is scrubbed by value in provenance;
+        // the node must inherit that redaction, so the raw token never appears.
+        let probe = pentest_core::provenance::ProbeCommand::from_exact_redacting_secret(
+            "curl -H 'Authorization: Bearer SEKRET_TOKEN' http://target.example",
+            "SEKRET_TOKEN",
+        );
+        let provenance = Provenance::multi_step("shell", "1.0", vec![probe], "");
+
+        let data = json!({
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "timed_out": false,
+            "duration_ms": 5,
+        });
+
+        let nodes = evidence_from_execute_command(&data, provenance);
+        assert_eq!(nodes.len(), 1);
+        let node = &nodes[0];
+
+        let serialized = serde_json::to_string(node).unwrap();
+        assert!(
+            !serialized.contains("SEKRET_TOKEN"),
+            "injected token leaked into evidence node: {serialized}"
+        );
     }
 }

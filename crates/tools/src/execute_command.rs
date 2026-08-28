@@ -171,7 +171,19 @@ impl PentestTool for ExecuteCommandTool {
             };
 
             let full_command = format_full_command(command, &args);
-            Ok(build_run_output(full_command, result, &applied_identity))
+            let (data, provenance) = build_run_output(full_command, result, &applied_identity);
+
+            // Promote the run into the evidence graph so findings the agent
+            // builds on the output can be grounded (pick#52). One Info node per
+            // run; raw stdout/stderr stay out of the node (see
+            // evidence_from_execute_command).
+            for node in
+                crate::evidence_producer::evidence_from_execute_command(&data, provenance.clone())
+            {
+                let _ = crate::evidence_producer::push_evidence(node);
+            }
+
+            Ok((data, provenance))
         })
         .await?;
 
