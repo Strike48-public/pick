@@ -1,8 +1,15 @@
 # Pick Tool Catalog
 
-Complete reference of all penetration testing tools available in Pick.
+Complete reference of the penetration testing tools registered by Pick.
 
-**Total tools:** 100+ (native + external integrations)
+**Total tools:** 115 registered in a default build, plus `traffic_capture` when
+packet capture (libpcap/Npcap) is available and `inject_test_evidence` in
+dev/test builds. This catalog is the exact set returned by
+`create_tool_registry()` and is verified against it in CI by the
+`tools_doc_sync` integration test (`crates/tools/tests/tools_doc_sync_test.rs`),
+so it cannot silently drift. Each row's name is the exact string the tool
+reports from `name()` - the string an operator or the model invokes. See
+[Totals](#totals) for the ground-truth command.
 
 ---
 
@@ -13,10 +20,12 @@ Complete reference of all penetration testing tools available in Pick.
 - [Web Vulnerability Scanning](#web-vulnerability-scanning)
 - [Credential Testing](#credential-testing)
 - [Enumeration](#enumeration)
+- [Active Directory](#active-directory)
 - [Exploitation](#exploitation)
 - [Post-Exploitation](#post-exploitation)
 - [Evidence & Reporting](#evidence--reporting)
 - [Specialized Tools](#specialized-tools)
+- [Totals](#totals)
 
 ---
 
@@ -42,7 +51,7 @@ Complete reference of all penetration testing tools available in Pick.
 | `network_discover` | Native | mDNS service discovery (Bonjour, Avahi) | No |
 | `ssdp_discover` | Native | UPnP device discovery via SSDP | No |
 | `netdiscover` | External | Active/passive ARP reconnaissance | Yes |
-| `arpscan` | External | ARP scanning and fingerprinting | Yes |
+| `arp_scan` | External | ARP scanning and fingerprinting | Yes |
 | `arping` | External | Send ARP REQUEST packets | Yes |
 
 ### Service Enumeration
@@ -70,9 +79,7 @@ Complete reference of all penetration testing tools available in Pick.
 | `autopwn_plan` | Native | Generate attack plan for WiFi target | Yes |
 | `autopwn_capture` | Native | Capture WPA handshakes | Yes |
 | `autopwn_crack` | Native | Crack captured handshakes | Yes |
-| `autopwn_orchestrator` | Native | Full automated WiFi attack workflow | Yes |
-| `autopwn_network_plan` | Native | Network-wide attack planning | Yes |
-| `aircrackng` | External | WEP/WPA/WPA2 cracking suite | Yes |
+| `aircrack-ng` | External | WEP/WPA/WPA2 cracking suite | Yes |
 | `bettercap` | External | Man-in-the-middle attack framework | Yes |
 | `responder` | External | LLMNR/NBT-NS/MDNS poisoning | Yes |
 
@@ -85,6 +92,7 @@ Complete reference of all penetration testing tools available in Pick.
 | Tool | Type | Description | Requires Root |
 |------|------|-------------|---------------|
 | `web_vuln_scan` | Native | Generic web vulnerability scanner | No |
+| `http_request` | Native | Direct HTTP/HTTPS request (all platforms, including iOS) | No |
 | `nikto` | External | Web server vulnerability scanner | No |
 | `nikto_ng` | External | Next-generation Nikto | No |
 | `sqlmap` | External | Automatic SQL injection exploitation | No |
@@ -95,6 +103,14 @@ Complete reference of all penetration testing tools available in Pick.
 | `joomscan` | External | Joomla vulnerability scanner | No |
 | `droopescan` | External | Drupal/Joomla/Moodle scanner | No |
 | `wafw00f` | External | Web application firewall detection | No |
+| `zap` | External | OWASP ZAP headless DAST engine | No |
+| `burpsuite` | External | Burp Suite manual proxy (informational integration) | No |
+
+### Automated Toolchains
+
+| Tool | Type | Description | Requires Root |
+|------|------|-------------|---------------|
+| `autopwn_webapp` | Native | Automated web-application attack toolchain (orchestrates web tools) | No |
 
 ### Content Discovery
 
@@ -130,12 +146,11 @@ Complete reference of all penetration testing tools available in Pick.
 
 ## Credential Testing
 
-### Credential Harvesting
+### Default Credentials
 
 | Tool | Type | Description | Requires Root |
 |------|------|-------------|---------------|
-| `credential_harvest` | Native | Extract credentials from memory/files | Yes (memory) |
-| `default_creds` | Native | Test default credentials | No |
+| `default_creds_test` | Native | Test default credentials | No |
 
 ### Password Cracking
 
@@ -189,7 +204,20 @@ Complete reference of all penetration testing tools available in Pick.
 
 | Tool | Type | Description | Requires Root |
 |------|------|-------------|---------------|
-| `ldapsearch` | External | LDAP search utility | No |
+| `ldapsearch_tool` | External | LDAP search utility | No |
+
+---
+
+## Active Directory
+
+### AD Enumeration & Attacks
+
+| Tool | Type | Description | Requires Root |
+|------|------|-------------|---------------|
+| `bloodhound` | External | AD attack-path data collection | No |
+| `netexec` | External | Network execution over SMB/WinRM/LDAP (nxc, successor to CrackMapExec) | No |
+| `certipy` | External | AD Certificate Services (ESC1-8) attacks | No |
+| `kerbrute` | External | Kerberos user enumeration and password spraying | No |
 
 ---
 
@@ -200,6 +228,7 @@ Complete reference of all penetration testing tools available in Pick.
 | Tool | Type | Description | Requires Root |
 |------|------|-------------|---------------|
 | `searchsploit` | External | Exploit-DB search | No |
+| `metasploit` | External | Metasploit batch runner (msfvenom + resource scripts) | No |
 
 ### Command Injection
 
@@ -215,12 +244,11 @@ Complete reference of all penetration testing tools available in Pick.
 
 | Tool | Type | Description | Requires Root |
 |------|------|-------------|---------------|
-| `lateral_movement` | Native | Automated lateral movement | Varies |
-| `impacket_psexec` | External | PsExec via Impacket | No |
-| `impacket_wmiexec` | External | WMI execution via Impacket | No |
-| `impacket_secretsdump` | External | Dump secrets via DCSync | No |
-| `impacket_getuserspns` | External | Kerberoasting via Impacket | No |
-| `evilwinrm` | External | WinRM shell | No |
+| `impacket-psexec` | External | PsExec via Impacket | No |
+| `impacket-wmiexec` | External | WMI execution via Impacket | No |
+| `impacket-secretsdump` | External | Dump secrets via DCSync | No |
+| `impacket-getuserspns` | External | Kerberoasting via Impacket | No |
+| `evil-winrm` | External | WinRM shell | No |
 | `crackmapexec` | External | Swiss army knife for pentesting networks | No |
 
 ### Privilege Escalation
@@ -238,15 +266,15 @@ Complete reference of all penetration testing tools available in Pick.
 | Tool | Type | Description | Requires Root |
 |------|------|-------------|---------------|
 | `screenshot` | Native | Screen capture (base64 PNG) | No |
-| `traffic_capture` | Native | Network packet capture (PCAP) | Yes |
-| `inject_test_evidence` | Native | Test tool for three-agent pipeline (dev/test only — requires the `inject-test-evidence` build feature; never registered in release, pick#184) | No |
+| `traffic_capture` | Native | Network packet capture (PCAP); registered only when packet capture (libpcap/Npcap) is available | Yes |
+| `inject_test_evidence` | Native | Test tool for the three-agent pipeline (dev/test only, requires the `inject-test-evidence` build feature; never registered in release, pick#184) | No |
 | `tshark` | External | Network protocol analyzer | Yes |
 
 ### Session Management
 
 | Tool | Type | Description | Requires Root |
 |------|------|-------------|---------------|
-| `session_export` | Native | Export session data | No |
+| `export_session` | Native | Export session data | No |
 | `begin_scan` | Native | Initialize scan session | No |
 
 ### File Operations
@@ -272,7 +300,7 @@ Complete reference of all penetration testing tools available in Pick.
 
 | Tool | Type | Description | Requires Root |
 |------|------|-------------|---------------|
-| `whois` | External | Domain WHOIS lookup | No |
+| `whois_tool` | External | Domain WHOIS lookup | No |
 | `theharvester` | External | OSINT and email harvesting | No |
 | `spiderfoot` | External | Automated OSINT intelligence gathering | No |
 | `recon_ng` | External | Full-featured reconnaissance framework | No |
@@ -312,6 +340,24 @@ Complete reference of all penetration testing tools available in Pick.
 |------|------|-------------|---------------|
 | `cve_lookup` | Native | CVE database lookup | No |
 
+### Data Transformation
+
+| Tool | Type | Description | Requires Root |
+|------|------|-------------|---------------|
+| `cyberchef` | Native | Data transformation and analysis (CyberChef operations) | No |
+
+### Network Safety
+
+| Tool | Type | Description | Requires Root |
+|------|------|-------------|---------------|
+| `safety_check` | Native | Operator-protection network safety validation | No |
+
+### Browser Automation
+
+| Tool | Type | Description | Requires Root |
+|------|------|-------------|---------------|
+| `webwright` | Native | AI-driven browser automation | No |
+
 ### Three-Agent Pipeline
 
 | Tool | Type | Description | Requires Root |
@@ -324,7 +370,7 @@ Complete reference of all penetration testing tools available in Pick.
 
 ### External Dependencies
 
-Most external tools require installation of BlackArch repository or manual installation:
+Most external tools require installation of the BlackArch repository or manual installation:
 
 ```bash
 # Install BlackArch repository (Arch Linux)
@@ -346,20 +392,26 @@ sudo pacman -S nmap masscan rustscan nikto sqlmap hydra
 
 ---
 
-## Tool Categories Summary
+## Totals
 
-| Category | Native | External | Total |
-|----------|--------|----------|-------|
-| Network Scanning | 4 | 7 | 11 |
-| WiFi Tools | 5 | 3 | 8 |
-| Web Vulnerability | 1 | 19 | 20 |
-| Credential Testing | 2 | 3 | 5 |
-| Enumeration | 1 | 16 | 17 |
-| Exploitation | 0 | 2 | 2 |
-| Post-Exploitation | 1 | 8 | 9 |
-| Evidence & Reporting | 6 | 1 | 7 |
-| Specialized | 4 | 11 | 15 |
-| **Total** | **24** | **70** | **94** |
+There is no hand-maintained total here on purpose: a fixed number drifts the
+moment a tool is added or removed. The catalog above is the authoritative list,
+and CI keeps it equal to the registry (see the header note).
+
+To reproduce the registered count for your build:
+
+```bash
+# Print the tools create_tool_registry() actually registers, and their count
+cargo test -p pentest-tools --test external_tools_test \
+  test_external_tools_registered -- --nocapture | grep -E '^\s+- '
+```
+
+The count varies by build: `traffic_capture` is added only when packet capture
+is available, and `inject_test_evidence` only in builds with the
+`inject-test-evidence` feature. The `#[cfg(test)]` fixtures in the codebase
+(`StubTool`, `UbiquitousTool`, `LinuxOnlyTool`, `NowhereTool`) are not tools and
+are never registered. A raw `grep` of `impl PentestTool` therefore over-counts
+the shipped catalog; the registry is the only correct source.
 
 ---
 
@@ -369,13 +421,15 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines on adding new tools.
 
 **Quick reference:**
 
-1. Create tool file in `crates/tools/src/`
-2. Implement `PentestTool` trait
-3. Add to `create_tool_registry()` in `lib.rs`
+1. Create the tool file in `crates/tools/src/`
+2. Implement the `PentestTool` trait
+3. Register it in `create_tool_registry()` in `crates/tools/src/lib.rs`
 4. Implement platform-specific functionality in `crates/platform/`
 5. Add tests
-6. Update this catalog
+6. Add a catalog row here using the exact string returned by the tool's
+   `name()`. The `tools_doc_sync` test fails if a registered tool has no row, or
+   a row names a tool that is not registered.
 
 ---
 
-**Last updated:** 2026-05-28
+**Last updated:** 2026-08-26
