@@ -114,9 +114,11 @@ pub fn create_tool_registry() -> ToolRegistry {
     // WiFi tools
     registry.register(WifiScanTool);
     registry.register(WifiScanDetailedTool);
+    registry.register(AutoPwnOrchestratorTool); // Hardware detection + strategy (autopwn_detect)
     registry.register(AutoPwnPlanTool);
     registry.register(AutoPwnCaptureTool);
     registry.register(AutoPwnCrackTool);
+    registry.register(AutoPwnNetworkPlanTool); // Network-mode attack planning
 
     // Vulnerability assessment
     registry.register(ServiceBannerTool);
