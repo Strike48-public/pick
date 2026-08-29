@@ -140,9 +140,9 @@ struct ManagerState {
 
 impl SandboxManager {
     fn lock_state(&self) -> SandboxResult<MutexGuard<'_, ManagerState>> {
-        self.state.lock().map_err(|e| {
-            SandboxError::RootfsSetupFailed(format!("Sandbox manager state lock poisoned: {e}"))
-        })
+        self.state
+            .lock()
+            .map_err(|e| SandboxError::StateLockPoisoned(e.to_string()))
     }
 
     /// Create a new sandbox manager with auto-detected backend
@@ -160,6 +160,24 @@ impl SandboxManager {
             rootfs_manager,
             state,
         })
+    }
+
+    /// Build a manager pinned to `backend` without running backend detection.
+    ///
+    /// `new()` goes through `detect_backend`, which probes/downloads real
+    /// backends and thus forces the fallback-propagation tests to be
+    /// `#[ignore]`d (no green signal on CI). The `try_fallback_to` / `backend`
+    /// logic is pure mutex-state mutation and does not depend on rootfs or a
+    /// real executor, so this constructor lets those tests run in CI.
+    #[cfg(test)]
+    fn with_backend_for_test(backend: SandboxBackend) -> Self {
+        let config = SandboxConfig::default();
+        let rootfs_manager = rootfs::RootfsManager::new(config.clone());
+        Self {
+            config,
+            rootfs_manager,
+            state: Mutex::new(ManagerState { backend }),
+        }
     }
 
     /// Detect the best available sandbox backend
@@ -270,11 +288,23 @@ impl SandboxManager {
         self.rootfs_manager.is_ready()
     }
 
-    /// Get the current backend type
+    /// Get the current backend type.
+    ///
+    /// Infallible for caller convenience (spawn dispatch, logging). The only
+    /// failure mode is a poisoned state lock, which is currently unreachable
+    /// (no critical section can panic). If it ever happens we log loudly and
+    /// fall back to `Bwrap` rather than fabricating it silently — the sibling
+    /// `execute()`/`ensure_ready()` propagate the same poison via `?`.
     pub fn backend(&self) -> SandboxBackend {
-        self.lock_state()
-            .map(|s| s.backend)
-            .unwrap_or(SandboxBackend::Bwrap)
+        match self.lock_state() {
+            Ok(state) => state.backend,
+            Err(e) => {
+                tracing::error!(
+                    "[SandboxManager::backend] state lock poisoned ({e}); defaulting to Bwrap"
+                );
+                SandboxBackend::Bwrap
+            }
+        }
     }
 
     /// Attempt to switch the sandbox backend at runtime.
@@ -290,7 +320,12 @@ impl SandboxManager {
     /// this returns `Ok(())` immediately. Otherwise it updates the stored
     /// backend. If the update fails (e.g. lock poisoned), the manager is left
     /// on the original backend and the error is returned.
-    pub async fn try_fallback_to(&self, new_backend: SandboxBackend) -> SandboxResult<()> {
+    ///
+    /// The caller is responsible for having verified that `new_backend` can
+    /// actually spawn (the PTY shell only calls this after a successful
+    /// fallback spawn); this method just records that decision globally and
+    /// performs no availability probe of its own.
+    pub fn try_fallback_to(&self, new_backend: SandboxBackend) -> SandboxResult<()> {
         let mut state = self.lock_state()?;
         if state.backend == new_backend {
             return Ok(());
@@ -398,12 +433,14 @@ impl SandboxManager {
             cmd
         );
         self.ensure_ready().await?;
-        tracing::debug!(
-            "[SandboxManager::execute] Rootfs ready, executing command with backend: {}",
-            self.backend()
-        );
 
+        // Read the backend once and dispatch on that snapshot, so a concurrent
+        // `try_fallback_to` cannot flip the value between the log line and the
+        // match arm.
         let backend = self.lock_state()?.backend;
+        tracing::debug!(
+            "[SandboxManager::execute] Rootfs ready, executing command with backend: {backend}"
+        );
 
         match backend {
             SandboxBackend::Bwrap => {
@@ -481,41 +518,29 @@ mod tests {
         assert_eq!(preferred_backend_for(false), None);
     }
 
-    #[tokio::test]
-    #[ignore = "requires available sandbox backend; run with --ignored"]
-    async fn try_fallback_to_switches_backend() {
-        let config = SandboxConfig::default();
-        let manager = SandboxManager::new(config)
-            .await
-            .expect("detect_backend should succeed in test");
-
-        let initial = manager.backend();
-        let fallback = if initial == SandboxBackend::Bwrap {
-            SandboxBackend::Proot
-        } else {
-            SandboxBackend::Bwrap
-        };
+    // #243 regression guard: the shell's EACCES fallback must propagate into
+    // the shared manager so `execute_command` dispatch agrees with the
+    // interactive session. These use the detection-free test constructor so the
+    // switch logic runs on CI (the `SandboxManager::new` variants would be
+    // `#[ignore]`d because they probe/download real backends).
+    #[test]
+    fn try_fallback_to_switches_backend() {
+        let manager = SandboxManager::with_backend_for_test(SandboxBackend::Bwrap);
+        assert_eq!(manager.backend(), SandboxBackend::Bwrap);
 
         manager
-            .try_fallback_to(fallback)
-            .await
+            .try_fallback_to(SandboxBackend::Proot)
             .expect("try_fallback_to should succeed");
-        assert_eq!(manager.backend(), fallback);
+        assert_eq!(manager.backend(), SandboxBackend::Proot);
     }
 
-    #[tokio::test]
-    #[ignore = "requires available sandbox backend; run with --ignored"]
-    async fn try_fallback_to_is_idempotent_when_already_on_backend() {
-        let config = SandboxConfig::default();
-        let manager = SandboxManager::new(config)
-            .await
-            .expect("detect_backend should succeed in test");
+    #[test]
+    fn try_fallback_to_is_idempotent_when_already_on_backend() {
+        let manager = SandboxManager::with_backend_for_test(SandboxBackend::Proot);
 
-        let current = manager.backend();
         manager
-            .try_fallback_to(current)
-            .await
+            .try_fallback_to(SandboxBackend::Proot)
             .expect("idempotent fallback should succeed");
-        assert_eq!(manager.backend(), current);
+        assert_eq!(manager.backend(), SandboxBackend::Proot);
     }
 }

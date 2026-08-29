@@ -18,7 +18,6 @@ use tokio::sync::OnceCell;
 static BWRAP_USABLE: OnceCell<bool> = OnceCell::const_new();
 
 /// Bubblewrap executor for Linux namespace-based sandboxing
-#[derive(Debug, Clone)]
 pub struct BwrapExecutor {
     config: SandboxConfig,
 }
