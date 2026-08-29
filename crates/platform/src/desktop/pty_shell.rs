@@ -269,6 +269,17 @@ impl PtyShell {
                     )
                     .await?
                     {
+                        // Best-effort global sync: the shell already spawned and
+                        // verified healthy on `fallback`, so a bookkeeping failure
+                        // here (only reachable on lock poison) must not tear it
+                        // down. Log and hand back the working shell; the worst case
+                        // is `execute_command` dispatching on the pre-fallback
+                        // backend, which the manager's own EACCES recovery covers.
+                        if let Err(e) = manager.try_fallback_to(fallback) {
+                            tracing::error!(
+                                "[PtyShell::spawn_sandboxed] shell fell back to {fallback:?} but failed to update the sandbox manager: {e}; continuing with the working shell"
+                            );
+                        }
                         return Ok(shell);
                     }
                     // fallback unavailable: fall through to the hard error below.
@@ -310,6 +321,17 @@ impl PtyShell {
                     )
                     .await?
                     {
+                        // Best-effort global sync: the shell already spawned and
+                        // verified healthy on `fallback`, so a bookkeeping failure
+                        // here (only reachable on lock poison) must not tear it
+                        // down. Log and hand back the working shell; the worst case
+                        // is `execute_command` dispatching on the pre-fallback
+                        // backend, which the manager's own EACCES recovery covers.
+                        if let Err(e) = manager.try_fallback_to(fallback) {
+                            tracing::error!(
+                                "[PtyShell::spawn_sandboxed] shell fell back to {fallback:?} but failed to update the sandbox manager: {e}; continuing with the working shell"
+                            );
+                        }
                         return Ok(shell);
                     }
                 }

@@ -35,6 +35,13 @@ pub enum SandboxError {
     /// WSL distro operation failed
     #[error("WSL distro error: {0}")]
     WslDistroError(String),
+
+    /// The sandbox manager's mutable state lock was poisoned by a panic in
+    /// another thread. Currently unreachable (no critical section panics);
+    /// surfaced instead of `unwrap()`ing so one thread's panic cannot take
+    /// down the whole process's ability to dispatch sandbox commands.
+    #[error("Sandbox manager state lock poisoned: {0}")]
+    StateLockPoisoned(String),
 }
 
 /// Result type for sandbox operations
