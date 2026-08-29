@@ -133,6 +133,13 @@ impl ToolInstaller for WebwrightInstaller {
         }
     }
 
+    fn sandbox_required(&self) -> bool {
+        // Webwright installs via pip/uv on the host, not via pacman inside
+        // the sandbox. The catalog must still show an "Install" button even
+        // when DISABLE_SANDBOX is set or the shell mode is Native.
+        false
+    }
+
     fn manual_instructions(&self) -> Option<String> {
         Some(format!(
             "pip install git+{WEBWRIGHT_GIT_URL}  (or: uv pip install --system git+{WEBWRIGHT_GIT_URL}), \

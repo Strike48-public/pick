@@ -11,6 +11,12 @@ use super::tool_category::{category_icon, humanize_category};
 use crate::platform_helper;
 use pentest_core::seed::{SeedManager, SeedProgress, SeedTier};
 
+/// String value of [`InstallState::Installed`] as serialised into
+/// [`CatalogItem::state`]. Kept as a named constant so all call sites
+/// share one copy — if the display representation ever changes this
+/// stays in sync without silent breakage.
+const STATE_INSTALLED: &str = "installed";
+
 #[component]
 pub fn SettingsPage(
     #[props(default = true)] show_connection: bool,
@@ -245,6 +251,30 @@ pub fn SettingsPage(
         });
     };
 
+    // -------------------------------------------------------------------
+    // Sandbox state chip and "Install all recommended" gate — computed
+    // here (before `rsx!`) so `let` bindings are in regular Rust scope,
+    // not inside the macro where they'd need `{}` blocks and would be
+    // inaccessible from the button render below.
+    // -------------------------------------------------------------------
+    let sandbox_badge = if pentest_platform::is_sandbox_enabled() {
+        rsx! {
+            span { class: "sandbox-badge sandbox-enabled", "Sandboxed" }
+        }
+    } else {
+        rsx! {
+            span { class: "sandbox-badge sandbox-disabled", "Native (host)" }
+        }
+    };
+
+    let has_auto_installable = catalog_items()
+        .map(|items| {
+            items
+                .iter()
+                .any(|i| i.recommended && i.auto_installable && i.state != STATE_INSTALLED)
+        })
+        .unwrap_or(false);
+
     rsx! {
         style { {include_str!("css/settings_page.css")} }
 
@@ -325,11 +355,11 @@ pub fn SettingsPage(
                 }
             }
 
-            // Tools card
             div { class: "settings-card dashboard-card",
                 div { class: "settings-card-header",
                     span { class: "settings-card-icon", Download { size: 16 } }
                     h2 { "Tools" }
+                    {sandbox_badge}
                 }
                 div { class: "settings-card-body",
                     if let Some(ref err) = install_error() {
@@ -364,7 +394,7 @@ pub fn SettingsPage(
                     } else {
                         button {
                             class: "sidebar-download-btn",
-                            disabled: installing().is_some(),
+                            disabled: installing().is_some() || !has_auto_installable,
                             onclick: move |_| {
                                 // Estimate the bulk install as the sum of the
                                 // pending recommended, auto-installable entries.
@@ -375,7 +405,7 @@ pub fn SettingsPage(
                                             .filter(|i| {
                                                 i.recommended
                                                     && i.auto_installable
-                                                    && i.state != "installed"
+                                                    && i.state != STATE_INSTALLED
                                             })
                                             .map(|i| i.estimated_secs)
                                             .sum::<u32>()
@@ -434,7 +464,7 @@ pub fn SettingsPage(
                                     .iter()
                                     .filter(|i| {
                                         i.category == category
-                                            && i.state != "installed"
+                                            && i.state != STATE_INSTALLED
                                             && i.auto_installable
                                     })
                                     .collect();
@@ -507,7 +537,7 @@ pub fn SettingsPage(
                                     for item in items.iter().filter(|i| i.category == category).cloned() {
                                         {
                                             let desc = item.description.clone();
-                                            if item.state == "installed" {
+                                            if item.state == STATE_INSTALLED {
                                                 let removing = uninstalling() == Some(item.binary_name.clone());
                                                 rsx! {
                                                     div { class: "tool-status-card installed",
