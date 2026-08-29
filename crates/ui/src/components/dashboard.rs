@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 use pentest_core::terminal::TerminalLine;
 use pentest_platform::WifiConnectionStatus;
 
-use super::icons::{Bolt, Info, MessageCircle, Network, Shield, Terminal, Wifi};
+use super::icons::{Bolt, Info, MessageCircle, Network, ScrollText, Shield, Terminal, Wifi};
 use crate::platform_helper;
 
 /// Connected home screen with status, quick actions, and recent activity.
@@ -142,6 +142,16 @@ pub fn Dashboard(
                             },
                             span { class: "action-card-icon", Bolt { size: 24 } }
                             span { class: "action-card-label", "AutoPwn" }
+                        }
+                        // Plan-only review gate: produces the phased attack plan via
+                        // autopwn_network_plan but executes nothing. No root/WiFi
+                        // preflight needed (the tool is Requires Root: No), unlike
+                        // the WiFi/AutoPwn tiles.
+                        div {
+                            class: "action-card",
+                            onclick: move |_| on_open_chat.call("Call the autopwn_network_plan tool to produce a phased attack plan for the current network (the discovery, scanning, and exploitation sequence it lays out). Present the complete plan for my review but do NOT execute any phase; this is plan-only, so run no scans or attacks. When the plan is ready, offer to launch AutoPwn as the follow-on if I want to execute it.".to_string()),
+                            span { class: "action-card-icon", ScrollText { size: 24 } }
+                            span { class: "action-card-label", "Network Attack Plan" }
                         }
                         div {
                             class: "action-card",
