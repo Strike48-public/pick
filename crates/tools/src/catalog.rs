@@ -1250,4 +1250,65 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn custom_installer_gating_respects_sandbox_state_when_disabled() {
+        // Regression guard for #244 Problem 2. With the sandbox disabled, a
+        // custom installer that can ONLY install inside the sandbox
+        // (bloodhound/zap/metasploit/certipy/netexec/kerbrute) must not be
+        // auto-installable, so the UI shows manual instructions instead of an
+        // "Install" button that fails per-tool. A custom installer that works
+        // natively (webwright, pip/uv on the host) stays auto-installable.
+        //
+        // Without this, reverting is_auto_installable()'s Custom branch to the
+        // old `Custom { .. } => true` leaves the whole suite green.
+        //
+        // The required CI test job runs with DISABLE_SANDBOX=true, so the
+        // sandbox-off branch is what actually executes there; set_use_sandbox
+        // is called anyway so the guard also holds when run locally.
+        pentest_platform::set_use_sandbox(false);
+
+        // Precondition: bloodhound is a registered, sandbox-required installer,
+        // so the negative assertion below exercises the sandbox_required gate
+        // rather than merely an unregistered id (which also yields false). Also
+        // fails loudly if the installer is ever renamed or its default flips.
+        assert!(
+            get_installer("bloodhound").is_some_and(|i| i.sandbox_required()),
+            "bloodhound must be a registered, sandbox-required installer"
+        );
+
+        let sandbox_only = CatalogEntry {
+            binary_name: "bloodhound-python".into(),
+            display_name: "BloodHound".into(),
+            description: "AD collection".into(),
+            category: ToolCategory::ActiveDirectory,
+            install_method: InstallMethod::Custom {
+                id: "bloodhound".into(),
+            },
+            recommended: true,
+            used_by: vec![],
+            state: InstallState::Missing,
+        };
+        assert!(
+            !sandbox_only.is_auto_installable(),
+            "a sandbox-required custom installer must NOT be auto-installable when the sandbox is off"
+        );
+
+        let native = CatalogEntry {
+            binary_name: "webwright".into(),
+            display_name: "Webwright".into(),
+            description: "browser automation".into(),
+            category: ToolCategory::Web,
+            install_method: InstallMethod::Custom {
+                id: "webwright".into(),
+            },
+            recommended: true,
+            used_by: vec![],
+            state: InstallState::Missing,
+        };
+        assert!(
+            native.is_auto_installable(),
+            "a natively-installing custom tool (webwright) must stay auto-installable when the sandbox is off"
+        );
+    }
 }
