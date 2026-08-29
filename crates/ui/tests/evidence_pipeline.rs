@@ -29,8 +29,8 @@ use pentest_core::orchestrator::{
 use pentest_core::provenance::{ProbeCommand, Provenance};
 use pentest_core::tools::{PentestTool, ToolContext, ToolOutcome};
 use pentest_tools::evidence_producer::{
-    evidence_from_default_creds, evidence_from_http_request, evidence_from_nmap,
-    evidence_from_web_vuln_scan, push_evidence,
+    evidence_from_default_creds, evidence_from_execute_command, evidence_from_http_request,
+    evidence_from_nmap, evidence_from_port_scan, evidence_from_web_vuln_scan, push_evidence,
 };
 use pentest_tools::ExecuteCommandTool;
 use pentest_ui::session;
@@ -537,6 +537,97 @@ fn web_wrapper_findings_reach_the_report_after_validation() {
         manifest.findings.len(),
         4,
         "every web-wrapper finding must reach the report manifest"
+    );
+
+    session::clear_evidence();
+}
+
+/// pick#52 PR2: extends the same production-path guard to `port_scan` and
+/// `execute_command`. `port_scan` (a native scanner) promotes each open port via
+/// a synthesized nmap-equivalent provenance; the `execute_command` primitive
+/// promotes one Info node per run. Both must travel tool-buffer -> graph -> gate
+/// -> manifest exactly like the nmap and web-wrapper cases above.
+#[test]
+fn port_scan_and_execute_command_findings_reach_the_report_after_validation() {
+    let _guard = serial();
+    session::clear_evidence();
+
+    let mut node_ids = Vec::new();
+
+    // port_scan (single-host shape): only the two open ports become nodes; the
+    // closed 3306 is not a finding.
+    let ps_data = json!({
+        "host": "10.0.0.1",
+        "ports": [
+            {"port": 22, "service": "ssh", "open": true},
+            {"port": 445, "service": "microsoft-ds", "open": true},
+            {"port": 3306, "service": "mysql", "open": false}
+        ],
+        "open_count": 2
+    });
+    let ps_prov = Provenance::new(
+        "port_scan",
+        "0.6",
+        ProbeCommand::from_exact("nmap -Pn -sT -p 22,445,3306 --open 10.0.0.1"),
+        "{\"open_count\":2}",
+    );
+    for node in evidence_from_port_scan(&ps_data, ps_prov) {
+        node_ids.push(node.id.clone());
+        push_evidence(node).expect("tool buffer should accept the port_scan finding");
+    }
+
+    // execute_command: one Info node per run.
+    let ec_data = json!({
+        "stdout": "uid=0(root)",
+        "stderr": "",
+        "exit_code": 0,
+        "timed_out": false,
+        "duration_ms": 12
+    });
+    let ec_prov = Provenance::new(
+        "shell",
+        "0.6",
+        ProbeCommand::from_exact("id"),
+        "uid=0(root)",
+    );
+    for node in evidence_from_execute_command(&ec_data, ec_prov) {
+        node_ids.push(node.id.clone());
+        push_evidence(node).expect("tool buffer should accept the execute_command node");
+    }
+
+    assert_eq!(node_ids.len(), 3, "2 open ports + 1 command_execution");
+
+    // Drain into the graph and confirm the gate sees every node as pending.
+    let forwarded = session::drain_tool_evidence_into_graph();
+    assert_eq!(forwarded, 3, "all three nodes should reach the graph");
+
+    let snapshot = session::evidence_snapshot();
+    match gate_for_report(&snapshot, engagement()) {
+        Err(GateError::PendingNodes { pending_ids }) => {
+            for id in &node_ids {
+                assert!(
+                    pending_ids.contains(id),
+                    "node {id} must block the gate before validation"
+                );
+            }
+        }
+        other => panic!("expected PendingNodes before validation, got {other:?}"),
+    }
+
+    // Validator confirms all; the gate then accepts and every finding lands.
+    let verdicts =
+        parse_validator_verdicts(&confirm_all(&node_ids)).expect("verdict reply should parse");
+    let apply = session::apply_validator_verdicts(&verdicts);
+    assert_eq!(apply.applied, 3);
+    assert!(apply.is_fully_adjudicated());
+
+    let snapshot = session::evidence_snapshot();
+    let manifest = gate_for_report(&snapshot, engagement())
+        .expect("gate should accept a fully-adjudicated graph");
+    assert_eq!(
+        manifest.findings.len(),
+        3,
+        "every port_scan + execute_command finding must reach the report manifest"
     );
 
     session::clear_evidence();
