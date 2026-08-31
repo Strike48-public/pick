@@ -76,9 +76,11 @@ reports from `name()` - the string an operator or the model invokes. See
 
 | Tool | Type | Description | Requires Root |
 |------|------|-------------|---------------|
+| `autopwn_detect` | Native | Detect available hardware and recommend the best autopwn strategy (WiFi vs Network) | No |
 | `autopwn_plan` | Native | Generate attack plan for WiFi target | Yes |
 | `autopwn_capture` | Native | Capture WPA handshakes | Yes |
 | `autopwn_crack` | Native | Crack captured handshakes | Yes |
+| `autopwn_network_plan` | Native | Plan a network-based penetration test attack sequence (discovery, scanning, exploitation) | No |
 | `aircrack-ng` | External | WEP/WPA/WPA2 cracking suite | Yes |
 | `bettercap` | External | Man-in-the-middle attack framework | Yes |
 | `responder` | External | LLMNR/NBT-NS/MDNS poisoning | Yes |
