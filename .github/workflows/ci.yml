@@ -45,6 +45,19 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Demo compose units (docker-compose.dvwa.yml) are pure YAML consumed by the
+  # init-dev demo:pick:* flows — nothing in CI validated them before (review
+  # Strike48-public/pick#418). `config -q` parses the file AND resolves every
+  # mandatory ${VAR:?} interpolation against the shipped example env, catching
+  # syntax drift and new required-variable gaps that would otherwise only fail
+  # at demo time, off-repo.
+  compose-lint:
+    name: Compose Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker compose --env-file .env.dvwa.example -f docker-compose.dvwa.yml config -q
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
