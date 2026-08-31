@@ -55,7 +55,8 @@ pub fn Dashboard(
                     }
                 }
 
-                // Quick actions grid — 2x2, each opens chat with a seeded prompt
+                // Quick actions grid — responsive tiles, each opens chat with a
+                // seeded prompt; ordered least- to most-autonomous (AutoPwn last).
                 div { class: "dashboard-section",
                     h3 { class: "dashboard-section-title", "Quick Actions" }
                     div { class: "action-grid",
