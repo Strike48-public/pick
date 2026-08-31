@@ -7,6 +7,14 @@ use pentest_platform::WifiConnectionStatus;
 use super::icons::{Bolt, Info, MessageCircle, Network, ScrollText, Shield, Terminal, Wifi};
 use crate::platform_helper;
 
+/// Seeded chat prompt for the "Network Attack Plan" quick action.
+///
+/// Plan-only review gate: instructs the agent to call `autopwn_network_plan`,
+/// present the phased plan for review, execute no phase, and offer AutoPwn as
+/// the follow-on. The plan-only invariant is load-bearing, so it is pinned by a
+/// unit test rather than left as an inline literal.
+const NETWORK_ATTACK_PLAN_PROMPT: &str = "Call the autopwn_network_plan tool to produce a phased attack plan for the current network (the discovery, scanning, and exploitation sequence it lays out). Present the complete plan for my review but do NOT execute any phase; this is plan-only, so run no scans or attacks. When the plan is ready, offer to launch AutoPwn as the follow-on if I want to execute it.";
+
 /// Connected home screen with status, quick actions, and recent activity.
 /// Settings (shell mode) and disconnect are now in the sidebar.
 #[component]
@@ -149,7 +157,7 @@ pub fn Dashboard(
                         // the WiFi/AutoPwn tiles.
                         div {
                             class: "action-card",
-                            onclick: move |_| on_open_chat.call("Call the autopwn_network_plan tool to produce a phased attack plan for the current network (the discovery, scanning, and exploitation sequence it lays out). Present the complete plan for my review but do NOT execute any phase; this is plan-only, so run no scans or attacks. When the plan is ready, offer to launch AutoPwn as the follow-on if I want to execute it.".to_string()),
+                            onclick: move |_| on_open_chat.call(NETWORK_ATTACK_PLAN_PROMPT.to_string()),
                             span { class: "action-card-icon", ScrollText { size: 24 } }
                             span { class: "action-card-label", "Network Attack Plan" }
                         }
@@ -206,5 +214,44 @@ pub fn Dashboard(
             }
         }
 
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NETWORK_ATTACK_PLAN_PROMPT;
+
+    #[test]
+    fn network_attack_plan_prompt_targets_the_planning_tool() {
+        assert!(
+            NETWORK_ATTACK_PLAN_PROMPT.contains("autopwn_network_plan"),
+            "prompt must invoke the autopwn_network_plan tool"
+        );
+    }
+
+    #[test]
+    fn network_attack_plan_prompt_is_plan_only() {
+        // The tile's whole point is a review gate that executes nothing; guard the
+        // do-not-execute wording so a future edit can't silently make it run phases.
+        assert!(
+            NETWORK_ATTACK_PLAN_PROMPT.contains("do NOT execute any phase"),
+            "prompt must forbid executing any phase"
+        );
+        assert!(
+            NETWORK_ATTACK_PLAN_PROMPT.contains("plan-only"),
+            "prompt must state it is plan-only"
+        );
+        assert!(
+            NETWORK_ATTACK_PLAN_PROMPT.contains("run no scans or attacks"),
+            "prompt must forbid running scans or attacks"
+        );
+    }
+
+    #[test]
+    fn network_attack_plan_prompt_offers_autopwn_follow_on() {
+        assert!(
+            NETWORK_ATTACK_PLAN_PROMPT.contains("AutoPwn"),
+            "prompt must offer AutoPwn as the follow-on"
+        );
     }
 }
