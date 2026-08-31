@@ -67,9 +67,21 @@ pub fn Dashboard(
                         }
                         div {
                             class: "action-card",
+                            onclick: move |_| on_open_chat.call("Perform a comprehensive network vulnerability assessment. Phase 1: Discover all hosts (ARP scan, mDNS, SSDP, WiFi). Phase 2: For each host, scan ports and grab service banners. Phase 3: Lookup CVEs for discovered services, test default credentials, scan for web vulnerabilities. Generate a detailed report with severity ratings and remediation recommendations.".to_string()),
+                            span { class: "action-card-icon", Shield { size: 24 } }
+                            span { class: "action-card-label", "Vuln Assessment" }
+                        }
+                        div {
+                            class: "action-card",
                             onclick: move |_| on_open_chat.call("Run a full network discovery — ARP, mDNS, and SSDP — and summarize what you find.".to_string()),
                             span { class: "action-card-icon", Network { size: 24 } }
                             span { class: "action-card-label", "Network Scan" }
+                        }
+                        div {
+                            class: "action-card",
+                            onclick: move |_| on_open_chat.call("Scan the local gateway for common open ports and identify running services.".to_string()),
+                            span { class: "action-card-icon", Shield { size: 24 } }
+                            span { class: "action-card-label", "Port Scan" }
                         }
                         div {
                             class: "action-card",
@@ -110,6 +122,29 @@ pub fn Dashboard(
                                 }
                             }
                         }
+                        // Plan-only review gate: produces the phased attack plan via
+                        // autopwn_network_plan but executes nothing. No root/WiFi
+                        // preflight needed (the tool is Requires Root: No), unlike
+                        // the WiFi/AutoPwn tiles.
+                        div {
+                            class: "action-card",
+                            onclick: move |_| on_open_chat.call(NETWORK_ATTACK_PLAN_PROMPT.to_string()),
+                            span { class: "action-card-icon", ScrollText { size: 24 } }
+                            span { class: "action-card-label", "Network Attack Plan" }
+                        }
+                        // No interactive shell on iOS (no PTY/proot in the iOS
+                        // sandbox), so hide the shell quick-action there.
+                        if !cfg!(target_os = "ios") {
+                            div {
+                                class: "action-card",
+                                onclick: move |_| on_open_shell.call(()),
+                                span { class: "action-card-icon", Terminal { size: 24 } }
+                                span { class: "action-card-label", "Shell" }
+                            }
+                        }
+                        // AutoPwn is the most autonomous / destructive action and is
+                        // still maturing, so it sits last and carries a BETA pill to
+                        // set expectations before an operator commits to a full run.
                         div {
                             class: "action-card",
                             onclick: move |_| {
@@ -150,38 +185,7 @@ pub fn Dashboard(
                             },
                             span { class: "action-card-icon", Bolt { size: 24 } }
                             span { class: "action-card-label", "AutoPwn" }
-                        }
-                        // Plan-only review gate: produces the phased attack plan via
-                        // autopwn_network_plan but executes nothing. No root/WiFi
-                        // preflight needed (the tool is Requires Root: No), unlike
-                        // the WiFi/AutoPwn tiles.
-                        div {
-                            class: "action-card",
-                            onclick: move |_| on_open_chat.call(NETWORK_ATTACK_PLAN_PROMPT.to_string()),
-                            span { class: "action-card-icon", ScrollText { size: 24 } }
-                            span { class: "action-card-label", "Network Attack Plan" }
-                        }
-                        div {
-                            class: "action-card",
-                            onclick: move |_| on_open_chat.call("Scan the local gateway for common open ports and identify running services.".to_string()),
-                            span { class: "action-card-icon", Shield { size: 24 } }
-                            span { class: "action-card-label", "Port Scan" }
-                        }
-                        div {
-                            class: "action-card",
-                            onclick: move |_| on_open_chat.call("Perform a comprehensive network vulnerability assessment. Phase 1: Discover all hosts (ARP scan, mDNS, SSDP, WiFi). Phase 2: For each host, scan ports and grab service banners. Phase 3: Lookup CVEs for discovered services, test default credentials, scan for web vulnerabilities. Generate a detailed report with severity ratings and remediation recommendations.".to_string()),
-                            span { class: "action-card-icon", Shield { size: 24 } }
-                            span { class: "action-card-label", "Vuln Assessment" }
-                        }
-                        // No interactive shell on iOS (no PTY/proot in the iOS
-                        // sandbox), so hide the shell quick-action there.
-                        if !cfg!(target_os = "ios") {
-                            div {
-                                class: "action-card",
-                                onclick: move |_| on_open_shell.call(()),
-                                span { class: "action-card-icon", Terminal { size: 24 } }
-                                span { class: "action-card-label", "Shell" }
-                            }
+                            span { class: "beta-badge", "BETA" }
                         }
                     }
                 }

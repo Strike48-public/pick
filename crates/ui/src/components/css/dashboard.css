@@ -372,3 +372,22 @@
     line-height: 1;
     cursor: help;
 }
+
+/* Beta pill for still-maturing actions (e.g. AutoPwn) */
+.beta-badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background-color: color-mix(in srgb, var(--primary) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--primary) 45%, transparent);
+    color: var(--primary);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    line-height: 1.2;
+    text-transform: uppercase;
+    pointer-events: none;
+}
