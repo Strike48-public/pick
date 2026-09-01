@@ -456,6 +456,59 @@ impl SeedManager {
             .await
     }
 
+    /// Ensure the seed base directory exists and resolve `dest` into a path that
+    /// is guaranteed to live under it. Returns an error if the destination would
+    /// escape the base directory (path-traversal / SSRF-write protection).
+    ///
+    /// Creating the base directory here — rather than assuming it already exists —
+    /// is what lets seeding work on a fresh install. `~/.pick/resources` is not
+    /// created anywhere else, so without this `canonicalize()` below failed with
+    /// ENOENT and every wordlist/resource download aborted at validation before a
+    /// single byte was fetched.
+    async fn resolve_destination(&self, dest: &Path) -> Result<PathBuf> {
+        // Create the base directory first so canonicalize() can resolve it.
+        fs::create_dir_all(&self.base_dir)
+            .await
+            .map_err(|e| Error::ToolExecution(format!("Failed to create base directory: {}", e)))?;
+
+        // Canonicalize resolves symlinks (e.g. a symlinked HOME) so the
+        // containment check below compares like-for-like.
+        let canonical_base = self.base_dir.canonicalize().map_err(|e| {
+            Error::ToolExecution(format!("Failed to validate base directory: {}", e))
+        })?;
+
+        // Reject any ".." components up front to prevent traversal.
+        if dest
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(Error::InvalidParams(format!(
+                "Security: Path traversal detected in destination: {}",
+                dest.display()
+            )));
+        }
+
+        // Resolve against the *canonical* base. Destinations built from the
+        // non-canonical `base_dir` (the common case — see `default_resources`)
+        // are rebased onto the canonical base so a symlinked HOME does not cause
+        // a spurious "outside base directory" rejection.
+        let resolved = match dest.strip_prefix(&self.base_dir) {
+            Ok(rel) => canonical_base.join(rel),
+            Err(_) if dest.is_absolute() => dest.to_path_buf(),
+            Err(_) => canonical_base.join(dest),
+        };
+
+        if !resolved.starts_with(&canonical_base) {
+            return Err(Error::InvalidParams(format!(
+                "Security: Resource destination {} is outside base directory {}",
+                resolved.display(),
+                canonical_base.display()
+            )));
+        }
+
+        Ok(resolved)
+    }
+
     /// Seed a single resource with force option
     async fn seed_resource_with_options<F>(
         &self,
@@ -478,39 +531,11 @@ impl SeedManager {
             return Ok(());
         }
 
-        // Validate path stays within base directory (path traversal prevention)
-        // Must validate BEFORE file exists to prevent TOCTOU attacks
-        let canonical_base = self.base_dir.canonicalize().map_err(|e| {
-            Error::ToolExecution(format!("Failed to validate base directory: {}", e))
-        })?;
-
-        // Normalize the destination path WITHOUT requiring it to exist
-        let normalized_dest = if resource.destination.is_absolute() {
-            resource.destination.clone()
-        } else {
-            self.base_dir.join(&resource.destination)
-        };
-
-        // Additional check: reject paths with ".." components to prevent traversal
-        if normalized_dest
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
-            return Err(Error::InvalidParams(format!(
-                "Security: Path traversal detected in destination: {}",
-                resource.destination.display()
-            )));
-        }
-
-        // Check that normalized path starts with base directory
-        // Use lexical comparison since dest doesn't exist yet
-        if !normalized_dest.starts_with(&canonical_base) {
-            return Err(Error::InvalidParams(format!(
-                "Security: Resource destination {} is outside base directory {}",
-                normalized_dest.display(),
-                canonical_base.display()
-            )));
-        }
+        // Validate the destination stays within the seed base directory (path
+        // traversal / SSRF-write protection). Must run BEFORE creating the file
+        // to prevent TOCTOU. This also creates the base directory if it does not
+        // exist yet, which is the common case on a fresh install.
+        self.resolve_destination(&resource.destination).await?;
 
         // Validate URL to prevent SSRF attacks
         Self::validate_seed_url(&resource.url)?;
@@ -779,6 +804,111 @@ mod tests {
             "Expected private IP or metadata error, got: {}",
             err_msg
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_destination_creates_missing_base_dir() {
+        // Regression: on a fresh install (native Kali or anywhere ~/.pick/resources
+        // does not yet exist), "Download wordlists" used to fail for every resource
+        // because canonicalize() errored with ENOENT on the missing base dir.
+        // resolve_destination must now create the base dir and succeed. Offline.
+        let base = std::env::temp_dir().join(format!("pick-seed-fix-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(!base.exists(), "precondition: base dir must not exist");
+
+        let manager = SeedManager {
+            base_dir: base.clone(),
+            resources: SeedManager::default_resources(&base),
+        };
+
+        let dest = base.join("wordlists/passwords/rockyou.txt");
+        let resolved = manager
+            .resolve_destination(&dest)
+            .await
+            .expect("resolve_destination must succeed on a fresh install");
+
+        assert!(
+            base.exists(),
+            "base dir must be created by resolve_destination"
+        );
+        let canonical_base = base.canonicalize().unwrap();
+        assert!(
+            resolved.starts_with(&canonical_base),
+            "resolved path {} must stay under base {}",
+            resolved.display(),
+            canonical_base.display()
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn resolve_destination_rejects_paths_outside_base() {
+        // The base-dir-creation fix must not weaken containment: a destination
+        // outside the base dir is still rejected.
+        let base = std::env::temp_dir().join(format!("pick-seed-escape-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+
+        let manager = SeedManager {
+            base_dir: base.clone(),
+            resources: Vec::new(),
+        };
+
+        // Absolute path outside the base dir.
+        let outside = std::env::temp_dir().join("pick-seed-outside.txt");
+        assert!(
+            manager.resolve_destination(&outside).await.is_err(),
+            "must reject a destination outside the base dir"
+        );
+
+        // Traversal via "..".
+        let traversal = base.join("../escape.txt");
+        assert!(
+            manager.resolve_destination(&traversal).await.is_err(),
+            "must reject a destination containing .."
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires network; end-to-end proof of the fresh-install wordlist download"]
+    async fn e2e_seed_real_wordlist_on_fresh_install() {
+        // End-to-end reproduction of the user flow: a fresh install where
+        // ~/.pick/resources has never existed, then "Download wordlists". Before
+        // the fix this failed at base-dir validation; it must now download a real
+        // wordlist to disk. Run with: cargo test -p pentest-core -- --ignored
+        let base = std::env::temp_dir().join(format!("pick-seed-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(!base.exists(), "precondition: base dir must not exist");
+
+        let dest = base.join("wordlists/passwords/common-10k.txt");
+        let resource = SeedResource {
+            name: "Common Passwords".to_string(),
+            resource_type: ResourceType::Wordlist,
+            tier: SeedTier::Basic,
+            url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10k-most-common.txt".to_string(),
+            size_mb: 1,
+            description: "Top 10k most common passwords".to_string(),
+            destination: dest.clone(),
+            required: true,
+        };
+        let manager = SeedManager {
+            base_dir: base.clone(),
+            resources: vec![resource.clone()],
+        };
+
+        manager
+            .seed_resource_with_options(&resource, true, |_| {})
+            .await
+            .expect("fresh-install wordlist download must succeed");
+
+        let bytes = std::fs::metadata(&dest)
+            .expect("wordlist file must exist after seeding")
+            .len();
+        assert!(bytes > 0, "downloaded wordlist must be non-empty");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     // Note: Full SSRF validation tests with DNS resolution are in url_validation module.
