@@ -563,6 +563,23 @@ jobs:
         run: |
           mkdir -p release
           find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.apk" \) -exec cp {} release/ \;
+
+          # Backward-compatible headless-agent asset names. Deployed StrikeHub
+          # versions fetch the agent as `pentest-agent-{os}-{arch}` (Pick's
+          # original asset name); v0.1.9 renamed the archive to `pick-agent-*`,
+          # which broke the connector download for already-installed clients
+          # (a field client on StrikeHub 0.1.20 could only run by pinning an
+          # older Pick). Publish BOTH names so already-deployed clients keep
+          # working without a StrikeHub upgrade; new StrikeHub builds consume
+          # `pick-agent-*` (see Strike48-public/strikehub#67). Aliases are copied
+          # before checksums are generated, so SHA256SUMS.txt covers them too.
+          # Remove once no supported StrikeHub fetches the old name.
+          for f in release/pick-agent-*; do
+            [ -e "$f" ] || continue
+            alias_name="$(basename "$f" | sed 's/^pick-agent-/pentest-agent-/')"
+            cp "$f" "release/${alias_name}"
+          done
+
           ls -la release/
 
       - name: Get version
@@ -611,6 +628,10 @@ jobs:
             | Windows | x86_64 | `pick-agent-windows-x86_64.zip` |
             | macOS | x86_64 | `pick-agent-darwin-x86_64.tar.gz` |
             | macOS | Apple Silicon | `pick-agent-darwin-aarch64.tar.gz` |
+
+            Each headless agent asset is also published under the legacy
+            `pentest-agent-{os}-{arch}` name for backward compatibility with
+            StrikeHub versions that fetch the original asset name.
 
             ### Checksums
 
