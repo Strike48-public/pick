@@ -107,6 +107,14 @@ services:
       # the container + the internal scan-net, not the in-container sandbox. (The
       # full sandbox lives in the prod Kali image built from Dockerfile.scratch.)
       DISABLE_SANDBOX: "${DISABLE_SANDBOX:-true}"
+      # Same-origin base for the OTT post-approval callback. The vendored SDK
+      # resolves the register URL as: STRIKE48_API_URL > derived-from-dialed-
+      # host > server-advertised. When the connector dials an insecure
+      # grpc:// fronting that 301-redirects http→https (envoy http-to-https),
+      # the dialed-host derivation yields http:// and the token exchange dies
+      # on the redirect's empty body. Pin the tenant API base to override.
+      # Unset = SDK's built-in resolution (behavior unchanged).
+      STRIKE48_API_URL: "${STRIKE48_API_URL:-}"
       # STRIKE48_TOKEN intentionally unset → Pick registers PENDING approval
       # (OTT flow). Operator approves in Studio → Gateways. The minted JWT is
       # persisted to HOME below so the approval survives restarts.
