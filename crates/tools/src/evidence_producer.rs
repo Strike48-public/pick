@@ -114,10 +114,13 @@ pub fn push_evidence(node: EvidenceNode) -> Result<(), BufferFullError> {
     let mut buffer = PENDING_EVIDENCE.write().unwrap();
 
     if buffer.len() >= MAX_EVIDENCE_NODES {
-        eprintln!(
-            "⚠️  Evidence buffer full ({} nodes). Dropping new evidence: {}",
-            MAX_EVIDENCE_NODES, node.title
-        );
+        // Deliberately logs no field of `node`. Nodes can originate from
+        // credential/secret-bearing tools (secretsdump, hydra, ...); even a
+        // "safe" field like `title` carries an account name, and this warning
+        // reaches operator logs. The actionable signal is "buffer full, drain
+        // more often", which needs no node detail. Keeps secrets out of logs by
+        // construction (rust/cleartext-logging).
+        eprintln!("Evidence buffer full ({MAX_EVIDENCE_NODES} nodes). Dropping new evidence node.");
         return Err(BufferFullError);
     }
 
