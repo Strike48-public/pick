@@ -836,6 +836,288 @@ fn contains_interesting_info(text: &str) -> bool {
         || text_lower.contains("python")
 }
 
+// ---------------------------------------------------------------------------
+// Post-exploitation evidence builders (pick#40).
+//
+// These map the JSON returned by the registered post-exploit tools into
+// evidence nodes for the report graph and the UI post-exploit view. Two rules,
+// enforced by the `*_withholds_secret` unit tests below:
+//
+//   1. No secret value (password, NTLM hash, Kerberos ticket, command output)
+//      is ever copied into a node field or metadata. `GenericFinding` metadata
+//      can reach a published report and the public `/s/:token` share link, so
+//      secrets are withheld by construction (Lens 10b), mirroring
+//      `evidence_from_default_creds`.
+//   2. Free-text tool lines that may embed a secret (linpeas findings) pass
+//      through `redact` before becoming a node description.
+//
+// The tool's own `ToolResult` data channel still carries the plaintext to the
+// operator; that path is unchanged. Only the evidence graph is secret-free.
+// ---------------------------------------------------------------------------
+
+/// Metadata key naming the post-exploit sub-category of a node, so the UI
+/// post-exploit view can group nodes without parsing titles.
+const POSTEXPLOIT_CATEGORY: &str = "postexploit_category";
+
+/// Cap on linpeas nodes emitted per run, so a noisy scan cannot flood the graph.
+const MAX_LINPEAS_NODES: usize = 25;
+
+/// Build a minimal, redacted provenance for a post-exploit tool. The raw
+/// response excerpt is deliberately empty: post-exploit output carries secrets
+/// (passwords, hashes, tickets, shell output) that the pattern-based
+/// `truncate_excerpt` redactor cannot reliably catch, so none is stored. The
+/// probe command's `effective_command` is redacted by `ProbeCommand::from_exact`.
+pub fn postexploit_provenance(tool: &str, probe_command: &str) -> Provenance {
+    Provenance::new(
+        tool,
+        env!("CARGO_PKG_VERSION"),
+        pentest_core::provenance::ProbeCommand::from_exact(probe_command),
+        "",
+    )
+}
+
+/// Build credential evidence from `hydra` results. One `"credential"` node per
+/// discovered login; the password is withheld from every node field.
+pub fn evidence_from_hydra(data: &Value, provenance: Provenance) -> Vec<EvidenceNode> {
+    let target = data["target"].as_str().unwrap_or("unknown");
+    let service = data["service"].as_str().unwrap_or("unknown");
+    let safe_target = pentest_core::provenance::redact(target);
+
+    let Some(creds) = data["credentials"].as_array() else {
+        return Vec::new();
+    };
+
+    let generic = creds
+        .iter()
+        .filter_map(|c| {
+            let username = c["username"].as_str()?;
+            Some(GenericFinding {
+                node_type: "credential".to_string(),
+                title: format!(
+                    "Valid credential for '{username}' on {safe_target} ({service})"
+                ),
+                description: format!(
+                    "hydra found a working credential for user '{username}' on the {service} \
+                     service at {safe_target}. The password is withheld from this report."
+                ),
+                target: safe_target.clone(),
+                severity: Severity::High,
+                rationale:
+                    "A working credential grants authenticated access; rotate it and investigate exposure."
+                        .to_string(),
+                metadata: vec![
+                    ("username".to_string(), username.into()),
+                    ("service".to_string(), service.into()),
+                    ("origin_tool".to_string(), "hydra".into()),
+                    (POSTEXPLOIT_CATEGORY.to_string(), "credential".into()),
+                    ("secret_withheld".to_string(), true.into()),
+                ],
+            })
+        })
+        .collect();
+
+    evidence_from_generic(generic, provenance)
+}
+
+/// Build credential evidence from `john` results. One `"credential"` node per
+/// cracked hash; the plaintext password is withheld from every node field.
+pub fn evidence_from_john(data: &Value, provenance: Provenance) -> Vec<EvidenceNode> {
+    let hash_file = data["hash_file"].as_str().unwrap_or("unknown");
+    let safe_hash_file = pentest_core::provenance::redact(hash_file);
+
+    let Some(cracked) = data["cracked"].as_array() else {
+        return Vec::new();
+    };
+
+    let generic = cracked
+        .iter()
+        .filter_map(|c| {
+            let username = c["username"].as_str()?;
+            Some(GenericFinding {
+                node_type: "credential".to_string(),
+                title: format!("Cracked password for '{username}'"),
+                description: format!(
+                    "john cracked the password hash for user '{username}' (from \
+                     {safe_hash_file}). The plaintext password is withheld from this report."
+                ),
+                target: username.to_string(),
+                severity: Severity::High,
+                rationale:
+                    "A cracked password means the hash was weak; rotate the credential and strengthen the policy."
+                        .to_string(),
+                metadata: vec![
+                    ("username".to_string(), username.into()),
+                    ("hash_file".to_string(), safe_hash_file.clone().into()),
+                    ("origin_tool".to_string(), "john".into()),
+                    (POSTEXPLOIT_CATEGORY.to_string(), "credential".into()),
+                    ("secret_withheld".to_string(), true.into()),
+                ],
+            })
+        })
+        .collect();
+
+    evidence_from_generic(generic, provenance)
+}
+
+/// Build credential evidence from `impacket-secretsdump` results. One
+/// `"credential"` node per extracted account; LM/NT hashes are withheld from
+/// every node field.
+pub fn evidence_from_secretsdump(data: &Value, provenance: Provenance) -> Vec<EvidenceNode> {
+    let target = data["target"].as_str().unwrap_or("unknown");
+    let safe_target = pentest_core::provenance::redact(target);
+
+    let Some(creds) = data["credentials"].as_array() else {
+        return Vec::new();
+    };
+
+    let generic = creds
+        .iter()
+        .filter_map(|c| {
+            let username = c["username"].as_str()?;
+            let kind = c["type"].as_str().unwrap_or("user");
+            Some(GenericFinding {
+                node_type: "credential".to_string(),
+                title: format!(
+                    "Extracted credential material for '{username}' on {safe_target}"
+                ),
+                description: format!(
+                    "impacket-secretsdump extracted NTLM credential material for the {kind} \
+                     account '{username}' from {safe_target}. The LM/NT hashes are withheld from \
+                     this report; their presence enables pass-the-hash."
+                ),
+                target: safe_target.clone(),
+                severity: Severity::Critical,
+                rationale:
+                    "Extracted NTLM hashes enable pass-the-hash and offline cracking; treat as a full credential compromise."
+                        .to_string(),
+                metadata: vec![
+                    ("username".to_string(), username.into()),
+                    ("account_kind".to_string(), kind.into()),
+                    ("hash_type".to_string(), "NTLM".into()),
+                    ("origin_tool".to_string(), "impacket-secretsdump".into()),
+                    (POSTEXPLOIT_CATEGORY.to_string(), "credential".into()),
+                    ("secret_withheld".to_string(), true.into()),
+                ],
+            })
+        })
+        .collect();
+
+    evidence_from_generic(generic, provenance)
+}
+
+/// Build evidence from `impacket-getuserspns` (Kerberoasting) results. Emits a
+/// single `"credential"` node summarizing the roastable accounts; the TGS-REP
+/// ticket hashes are withheld from every node field.
+pub fn evidence_from_getuserspns(data: &Value, provenance: Provenance) -> Vec<EvidenceNode> {
+    let target = data["target"].as_str().unwrap_or("unknown");
+    let safe_target = pentest_core::provenance::redact(target);
+    let count = data["count"].as_u64().unwrap_or(0);
+
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let generic = vec![GenericFinding {
+        node_type: "credential".to_string(),
+        title: format!("{count} Kerberoastable account(s) on {safe_target}"),
+        description: format!(
+            "impacket-getuserspns retrieved {count} TGS-REP ticket(s) for service accounts on \
+             {safe_target}. The crackable ticket hashes are withheld from this report; each is an \
+             offline-crackable credential."
+        ),
+        target: safe_target,
+        severity: Severity::High,
+        rationale:
+            "Kerberoastable service-account tickets can be cracked offline to recover plaintext passwords; enforce strong SPN-account passwords."
+                .to_string(),
+        metadata: vec![
+            ("ticket_count".to_string(), count.into()),
+            ("origin_tool".to_string(), "impacket-getuserspns".into()),
+            (POSTEXPLOIT_CATEGORY.to_string(), "kerberoast".into()),
+            ("secret_withheld".to_string(), true.into()),
+        ],
+    }];
+
+    evidence_from_generic(generic, provenance)
+}
+
+/// Build privilege-escalation finding evidence from `linpeas` results. One
+/// `"finding"` node per high-priority finding, capped at [`MAX_LINPEAS_NODES`].
+/// Each line passes through `redact` because linpeas output can embed a secret
+/// (e.g. a password found in a world-readable file).
+pub fn evidence_from_linpeas(data: &Value, provenance: Provenance) -> Vec<EvidenceNode> {
+    let Some(findings) = data["high_priority_findings"].as_array() else {
+        return Vec::new();
+    };
+
+    let generic = findings
+        .iter()
+        .filter_map(|f| f.as_str())
+        .take(MAX_LINPEAS_NODES)
+        .map(|line| {
+            let safe_line = pentest_core::provenance::redact(line);
+            GenericFinding {
+                node_type: "finding".to_string(),
+                title: "Privilege-escalation vector (linpeas)".to_string(),
+                description: safe_line,
+                target: "localhost".to_string(),
+                severity: Severity::High,
+                rationale:
+                    "linpeas flagged a likely local privilege-escalation path; validate exploitability before reporting."
+                        .to_string(),
+                metadata: vec![
+                    ("origin_tool".to_string(), "linpeas".into()),
+                    (POSTEXPLOIT_CATEGORY.to_string(), "privesc".into()),
+                    ("priority".to_string(), "high".into()),
+                ],
+            }
+        })
+        .collect();
+
+    evidence_from_generic(generic, provenance)
+}
+
+/// Build lateral-movement finding evidence from a remote-execution tool
+/// (`impacket-psexec`, `impacket-wmiexec`, `evil-winrm`). Emits a single
+/// `"finding"` node only when execution succeeded; the command output is
+/// withheld from every node field.
+pub fn evidence_from_lateral_exec(
+    data: &Value,
+    technique: &str,
+    provenance: Provenance,
+) -> Vec<EvidenceNode> {
+    if !data["success"].as_bool().unwrap_or(false) {
+        return Vec::new();
+    }
+    let target = data["target"]
+        .as_str()
+        .or_else(|| data["host"].as_str())
+        .unwrap_or("unknown");
+    let safe_target = pentest_core::provenance::redact(target);
+
+    let generic = vec![GenericFinding {
+        node_type: "finding".to_string(),
+        title: format!("Remote code execution on {safe_target} via {technique}"),
+        description: format!(
+            "{technique} executed a command successfully on {safe_target}, confirming lateral \
+             movement. The command output is withheld from this report."
+        ),
+        target: safe_target,
+        severity: Severity::Critical,
+        rationale:
+            "Confirmed remote code execution establishes a foothold on the target; scope the blast radius and validate authorization."
+                .to_string(),
+        metadata: vec![
+            ("technique".to_string(), technique.into()),
+            ("origin_tool".to_string(), technique.into()),
+            (POSTEXPLOIT_CATEGORY.to_string(), "lateral_movement".into()),
+            ("success".to_string(), true.into()),
+        ],
+    }];
+
+    evidence_from_generic(generic, provenance)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1514,6 +1796,146 @@ mod tests {
         assert!(
             !serialized.contains("SEKRET_TOKEN"),
             "injected token leaked into evidence node: {serialized}"
+        );
+    }
+
+    // ---- Post-exploit builders (pick#40) ----
+
+    fn postexploit_prov() -> Provenance {
+        Provenance::new(
+            "test-tool",
+            "0.0.0",
+            pentest_core::provenance::ProbeCommand::from_exact("test command"),
+            "",
+        )
+    }
+
+    /// A node must never carry a secret in any serialized field or metadata:
+    /// nodes reach a published report and the public share link.
+    fn assert_no_secret(nodes: &[EvidenceNode], secret: &str) {
+        for n in nodes {
+            let s = serde_json::to_string(n).expect("node serializes");
+            assert!(
+                !s.contains(secret),
+                "secret leaked into serialized node: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn hydra_emits_credential_node_and_withholds_password() {
+        let data = json!({
+            "target": "10.0.0.5",
+            "service": "ssh",
+            "credentials": [{"username": "admin", "password": "hunter2"}],
+            "count": 1,
+            "success": true,
+        });
+        let nodes = evidence_from_hydra(&data, postexploit_prov());
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node_type, "credential");
+        assert!(nodes[0].title.contains("admin"));
+        assert_no_secret(&nodes, "hunter2");
+    }
+
+    #[test]
+    fn hydra_no_credentials_emits_nothing() {
+        let data = json!({"target": "10.0.0.5", "service": "ssh", "credentials": [], "count": 0});
+        assert!(evidence_from_hydra(&data, postexploit_prov()).is_empty());
+    }
+
+    #[test]
+    fn john_emits_credential_node_and_withholds_password() {
+        let data = json!({
+            "hash_file": "/tmp/hashes.txt",
+            "cracked": [{"username": "root", "password": "s3cr3t!"}],
+            "count": 1,
+        });
+        let nodes = evidence_from_john(&data, postexploit_prov());
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node_type, "credential");
+        assert!(nodes[0].title.contains("root"));
+        assert_no_secret(&nodes, "s3cr3t!");
+    }
+
+    #[test]
+    fn secretsdump_emits_credential_node_and_withholds_hashes() {
+        let data = json!({
+            "target": "dc01.corp.local",
+            "credentials": [{
+                "username": "Administrator",
+                "rid": "500",
+                "lm_hash": "aad3b435b51404eeaad3b435b51404ee",
+                "nt_hash": "31d6cfe0d16ae931b73c59d7e0c089c0",
+                "type": "user",
+            }],
+            "total_count": 1,
+        });
+        let nodes = evidence_from_secretsdump(&data, postexploit_prov());
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node_type, "credential");
+        assert!(matches!(nodes[0].current_severity(), Severity::Critical));
+        assert_no_secret(&nodes, "31d6cfe0d16ae931b73c59d7e0c089c0");
+        assert_no_secret(&nodes, "aad3b435b51404eeaad3b435b51404ee");
+    }
+
+    #[test]
+    fn getuserspns_summarizes_and_withholds_tickets() {
+        let ticket = "$krb5tgs$23$*svc_sql$CORP.LOCAL$ROASTHASHMATERIAL";
+        let data = json!({"target": "dc01.corp.local", "tickets": [ticket], "count": 1});
+        let nodes = evidence_from_getuserspns(&data, postexploit_prov());
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node_type, "credential");
+        assert_no_secret(&nodes, "ROASTHASHMATERIAL");
+    }
+
+    #[test]
+    fn getuserspns_zero_count_emits_nothing() {
+        let data = json!({"target": "dc01", "tickets": [], "count": 0});
+        assert!(evidence_from_getuserspns(&data, postexploit_prov()).is_empty());
+    }
+
+    #[test]
+    fn linpeas_emits_redacted_finding_nodes() {
+        let data = json!({
+            "high_priority_findings": ["[!] /etc/shadow is world-readable"],
+            "findings": [],
+            "high_priority_count": 1,
+            "total_findings": 0,
+        });
+        let nodes = evidence_from_linpeas(&data, postexploit_prov());
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node_type, "finding");
+    }
+
+    #[test]
+    fn linpeas_redacts_secret_in_finding_line() {
+        // A high-priority line can embed a secret (e.g. creds in a URL). The
+        // builder must pass it through `redact` before it becomes a node field.
+        // Neutering that redact call turns this test red.
+        let data = json!({
+            "high_priority_findings":
+                ["[!] leaked creds https://admin:SuperSecret123@10.0.0.1/api"],
+            "findings": [],
+            "high_priority_count": 1,
+            "total_findings": 0,
+        });
+        let nodes = evidence_from_linpeas(&data, postexploit_prov());
+        assert_eq!(nodes.len(), 1);
+        assert_no_secret(&nodes, "SuperSecret123");
+    }
+
+    #[test]
+    fn lateral_exec_emits_only_on_success_and_withholds_output() {
+        let ok = json!({"target": "10.0.0.9", "success": true, "output": "SECRETSHELLOUTPUT"});
+        let nodes = evidence_from_lateral_exec(&ok, "impacket-psexec", postexploit_prov());
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node_type, "finding");
+        assert_no_secret(&nodes, "SECRETSHELLOUTPUT");
+
+        let fail = json!({"target": "10.0.0.9", "success": false, "output": "denied"});
+        assert!(
+            evidence_from_lateral_exec(&fail, "impacket-psexec", postexploit_prov()).is_empty()
         );
     }
 }
