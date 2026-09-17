@@ -84,6 +84,10 @@ pub struct PentestConnector {
     task_types: Vec<TaskTypeSchema>,
     tool_event_tx: broadcast::Sender<ToolEvent>,
     workspace_path: Option<PathBuf>,
+    /// Per-engagement tool-execution budget envelope (agent hardening C3).
+    /// Defaults to the Balanced capacity; confident callers can replace it
+    /// with [`SessionBudget::default_for`] before the engagement starts.
+    budget: crate::budget::SessionBudget,
 }
 
 /// Build `TaskTypeSchema` entries from the tool registry so the backend
@@ -154,7 +158,20 @@ impl PentestConnector {
             task_types,
             tool_event_tx,
             workspace_path,
+            budget: crate::budget::SessionBudget::default(),
         }
+    }
+
+    /// Replace the default session budget (e.g. tuned to the engagement's
+    /// aggression level before the scan starts).
+    pub fn with_budget(mut self, budget: crate::budget::SessionBudget) -> Self {
+        self.budget = budget;
+        self
+    }
+
+    /// Reset the budget envelope (fresh engagement).
+    pub async fn reset_budget(&self) {
+        self.budget.reset().await;
     }
 
     /// Get the tool registry
@@ -185,6 +202,10 @@ impl BaseConnector for PentestConnector {
         let tools = self.tools.clone();
         let event_tx = self.tool_event_tx.clone();
         let workspace_path = self.workspace_path.clone();
+        // Budget envelope (agent hardening C3): refuse tool calls once the
+        // per-engagement cap is hit so a runaway/stuck agent can't burn the
+        // remaining budget on dead ends.
+        let budget = self.budget.clone();
 
         Box::pin(async move {
             tracing::debug!("Raw execute request: {}", request);
@@ -219,6 +240,26 @@ impl BaseConnector for PentestConnector {
                 .unwrap_or_else(|| request.clone());
 
             let name = tool_name.to_string();
+
+            // --- Session budget check (agent hardening C3) ---
+            // App requests bypass (they don't consume tool budget).
+            match budget.check().await {
+                crate::budget::BudgetCheck::Exhausted => {
+                    let (used, max) = budget.usage().await;
+                    return Ok(serde_json::json!({
+                        "success": false,
+                        "error": format!("session budget exhausted ({used}/{max}); wind down and produce the report")
+                    }));
+                }
+                crate::budget::BudgetCheck::StallWarning => {
+                    tracing::warn!(
+                        tool = %name,
+                        "session stall detected: consecutive no-progress tool calls; agent may be stuck"
+                    );
+                    budget.mark_stall_warned().await;
+                }
+                crate::budget::BudgetCheck::Ok => {}
+            }
             tracing::debug!(tool = %name, "Dispatching tool request");
 
             // Broadcast start event with params
@@ -270,6 +311,16 @@ impl BaseConnector for PentestConnector {
                             "sanitized tool output before returning to agent"
                         );
                     }
+                    // Budget: a successful run that produced no new evidence
+                    // feeds the stall counter; evidence-bearing runs reset it.
+                    let made_progress = result.provenance.is_some()
+                        || !result.data.is_null()
+                        || result.success;
+                    if tool_name == "begin_scan" && success {
+                        budget.reset().await;
+                    } else {
+                        budget.record(made_progress).await;
+                    }
                     let _ = event_tx.send(ToolEvent::Completed {
                         tool_name: name,
                         duration_ms,
@@ -279,6 +330,9 @@ impl BaseConnector for PentestConnector {
                     Ok(result_value)
                 }
                 Err(e) => {
+                    // A failed/skipped run made no progress — feed the stall
+                    // detector so a loop of failing probes gets flagged.
+                    budget.record(false).await;
                     let _ = event_tx.send(ToolEvent::Failed {
                         tool_name: name,
                         error: e.to_string(),

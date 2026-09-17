@@ -56,6 +56,10 @@ pub(crate) struct PickConnector {
     /// gitignored identities file at construction and cloned into each tool
     /// context. Empty when no identities file is present.
     pub identities: Arc<pentest_core::identity::IdentityStore>,
+    /// Per-engagement tool-execution budget envelope (agent hardening C3).
+    /// Enforced in [`PickConnector::execute_with_context`]; reset on
+    /// `begin_scan`. Defaults to the configured aggression level's envelope.
+    pub budget: pentest_core::budget::SessionBudget,
 }
 
 impl PickConnector {
@@ -252,6 +256,33 @@ impl BaseConnector for PickConnector {
                     .cloned()
                     .unwrap_or(request.clone());
 
+                // --- Session budget check (agent hardening C3) ---
+                match self.budget.check().await {
+                    pentest_core::budget::BudgetCheck::Exhausted => {
+                        let (used, max) = self.budget.usage().await;
+                        tracing::warn!(
+                            tool = tool_name.as_str(),
+                            used,
+                            max,
+                            "session budget exhausted; refusing tool call"
+                        );
+                        return Ok(serde_json::json!({
+                            "success": false,
+                            "error": format!(
+                                "session budget exhausted ({used}/{max}); wind down and produce the report"
+                            )
+                        }));
+                    }
+                    pentest_core::budget::BudgetCheck::StallWarning => {
+                        tracing::warn!(
+                            tool = tool_name.as_str(),
+                            "session stall detected: consecutive no-progress tool calls; agent may be stuck"
+                        );
+                        self.budget.mark_stall_warned().await;
+                    }
+                    pentest_core::budget::BudgetCheck::Ok => {}
+                }
+
                 self.send_event(ConnectorEvent::ToolStarted {
                     tool_name: tool_name.clone(),
                     params: params.clone(),
@@ -327,6 +358,18 @@ impl BaseConnector for PickConnector {
                         pentest_core::tools::ToolResult::error(e.to_string())
                     }
                 };
+
+                // Budget bookkeeping (agent hardening C3): `/begin_scan` starts
+                // a fresh engagement envelope; everything else records against
+                // it (evidence/flag-bearing runs count as progress).
+                if tool_name == "begin_scan" && result.success {
+                    self.budget.reset().await;
+                } else {
+                    let made_progress = result.provenance.is_some()
+                        || !result.data.is_null()
+                        || result.success;
+                    self.budget.record(made_progress).await;
+                }
 
                 // A successful `begin_scan` marks the start of a fresh
                 // engagement. Clear any evidence left over from a previous scan
@@ -689,6 +732,7 @@ mod tests {
             runner: Arc::new(RwLock::new(None)),
             matrix_api_url: String::new(),
             identities: Arc::new(pentest_core::identity::IdentityStore::new()),
+            budget: pentest_core::budget::SessionBudget::default(),
         }
     }
 
