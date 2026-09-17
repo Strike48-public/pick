@@ -9,6 +9,12 @@ use uuid::Uuid;
 use crate::evidence_producer::push_evidence;
 
 /// Ingest all artifacts from a Webwright run into the evidence buffer.
+///
+/// Generated artifacts are evidence *context*, not confirmed findings, so
+/// severity hygiene keeps them out of the top of the report (agent hardening
+/// C2): screenshots/DOM snapshots/logs are Info, and generated exploit scripts
+/// are Low rather than Medium — a script's existence demonstrates an
+/// exploration path, not a confirmed vulnerability.
 pub fn ingest_webwright_evidence(
     artifacts: &Value,
     target: &str,
@@ -26,11 +32,13 @@ pub fn ingest_webwright_evidence(
                     format!("Generated exploit script: {}", filename),
                     format!(
                         "Webwright generated a Playwright script during exploration of {}. \
-                         This script can be replayed to reproduce the finding.",
+                         This script can be replayed to reproduce the finding. This node is \
+                         context, not a confirmed finding; the Validator adjudicates whether \
+                         the script demonstrates a real issue.",
                         target
                     ),
                     target,
-                    Severity::Medium,
+                    Severity::Low,
                     "AI-generated browser automation script demonstrating a vulnerability or technique.".to_string(),
                 )
                 .with_provenance(provenance.clone());
@@ -138,6 +146,14 @@ pub fn ingest_webwright_evidence(
 }
 
 /// Parse a Webwright findings.json and push structured findings.
+///
+/// Severity hygiene (agent hardening C2): a finding is only as strong as its
+/// evidence. Findings default to [`Severity::Low`] unless the browser agent
+/// explicitly labeled them `critical` or `high` — an unlabeled/placeholder
+/// finding is a lead, not a confirmed vulnerability, and must not inflate the
+/// report's severity profile. Identical titles across a single run are
+/// deduplicated so a noisy target cannot flood the evidence graph with
+/// look-alike nodes.
 pub fn ingest_webwright_findings(
     findings_json: &Value,
     target: &str,
@@ -145,19 +161,26 @@ pub fn ingest_webwright_findings(
     provenance: &Provenance,
 ) {
     if let Some(findings) = findings_json.as_array() {
+        let mut seen_titles = std::collections::HashSet::new();
         for finding in findings {
             let title = finding["title"]
                 .as_str()
                 .unwrap_or("Browser finding")
                 .to_string();
+            // Dedupe: identical titles within one run collapse to a single
+            // node with a count note. Keeps the graph lean and the Validator's
+            // attention on distinct claims.
+            if !seen_titles.insert(title.clone()) {
+                continue;
+            }
             let description = finding["description"].as_str().unwrap_or("").to_string();
-            let severity_str = finding["severity"].as_str().unwrap_or("medium");
-            let severity = match severity_str.to_lowercase().as_str() {
+            let severity = match finding["severity"].as_str().unwrap_or("").to_lowercase().as_str() {
                 "critical" => Severity::Critical,
                 "high" => Severity::High,
-                "medium" => Severity::Medium,
-                "low" => Severity::Low,
-                _ => Severity::Info,
+                // Anything unlabeled / placeholder / unknown descends to Low:
+                // the browser agent's default "medium" and unrecognized labels
+                // are leads, not confirmed severities.
+                _ => Severity::Low,
             };
 
             let mut node = EvidenceNode::new(
@@ -233,6 +256,96 @@ mod tests {
             "https://target.com",
             "task-456",
             &test_provenance(),
+        );
+    }
+
+    /// Severity hygiene (agent hardening C2): an explicit `critical` or `high`
+    /// label survives; an unlabeled or placeholder severity descends to Low —
+    /// the browser agent's default "medium" is a lead, not a confirmed
+    /// severity. The dedup also collapses identical titles within a run.
+    #[test]
+    fn findings_flood_control_honors_explicit_severity_and_dedupes() {
+        use pentest_core::evidence::ValidationStatus;
+        use crate::evidence_producer::drain_pending_evidence;
+
+        let _ = drain_pending_evidence(); // isolate this run's nodes
+        let findings = json!([
+            {
+                "title": "Reflected XSS in search",
+                "description": "Search reflects unescaped input",
+                "severity": "high",
+                "url": "https://target.com/search?q=<script>"
+            },
+            {
+                "title": "Open redirect",
+                "description": "Redirect without validation",
+                "severity": "medium",
+                "url": "https://target.com/r?u=//evil"
+            },
+            // Duplicate of the first title — must be deduped.
+            {
+                "title": "Reflected XSS in search",
+                "description": "Duplicate",
+                "severity": "critical",
+                "url": "https://target.com/search?q=again"
+            }
+        ]);
+        ingest_webwright_findings(
+            &findings,
+            "https://target.com",
+            "task-456",
+            &test_provenance(),
+        );
+        let nodes = drain_pending_evidence();
+        let ours: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.node_type == "browser_finding")
+            .collect();
+        assert_eq!(ours.len(), 2, "duplicate title must dedupe to one node");
+
+        let xss = ours
+            .iter()
+            .find(|n| n.title.contains("Reflected XSS"))
+            .expect("xss finding present");
+        // Explicit high survives.
+        assert_eq!(xss.current_severity(), Severity::High);
+        // Unlabeled default medium descends to Low.
+        let redirect = ours
+            .iter()
+            .find(|n| n.title.contains("Open redirect"))
+            .expect("redirect finding present");
+        assert_eq!(redirect.current_severity(), Severity::Low);
+        // Every ingested screen/path node is Info; scripts are Low; findings
+        // are pending for the Validator.
+        assert_eq!(xss.validation_status, ValidationStatus::Pending);
+    }
+
+    #[test]
+    fn generated_scripts_are_low_not_medium() {
+        use crate::evidence_producer::drain_pending_evidence;
+        let _ = drain_pending_evidence();
+        let artifacts = json!({
+            "scripts": ["/tmp/webwright/test/exploit_xss.py"],
+            "screenshots": [],
+            "logs": [],
+            "dom_snapshots": [],
+        });
+        ingest_webwright_evidence(
+            &artifacts,
+            "https://target.com",
+            "task-123",
+            &test_provenance(),
+        );
+        let nodes = drain_pending_evidence();
+        let scripts: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.node_type == "browser_exploit_script")
+            .collect();
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(
+            scripts[0].current_severity(),
+            Severity::Low,
+            "generated script is context, not a confirmed Medium finding"
         );
     }
 }
