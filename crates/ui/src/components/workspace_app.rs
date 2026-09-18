@@ -554,6 +554,17 @@ pub fn WorkspaceApp() -> Element {
                 conversation_mailbox,
                 on_logout: move |_| {},
                 on_easy_mode_change: on_easy_mode_change,
+                // Persist through the authoritative settings signal (same
+                // shape as the expert toggle) so the telemetry opt-out
+                // survives the next signal-based save (#373).
+                on_telemetry_change: move |v: bool| {
+                    let mut s = settings.write();
+                    s.telemetry_enabled = v;
+                    let _ = save_settings(&s);
+                    // Apply immediately: off disables the Sentry client (no
+                    // events/sessions), on re-inits. No relaunch needed.
+                    pentest_core::telemetry::set_enabled(v);
+                },
                 on_sign_in: move |_| {},
                 on_chat_event: move |_ev| {},
                 current_host: matrix_api_url.read().clone(),

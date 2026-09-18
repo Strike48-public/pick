@@ -1296,6 +1296,19 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                     conversation_mailbox,
                                     on_logout: on_logout,
                                     on_easy_mode_change: on_easy_mode_change,
+                                    // Persist through the authoritative settings
+                                    // signal (same handler shape as the expert
+                                    // toggle below) so the opt-out survives the
+                                    // next signal-based save (#373).
+                                    on_telemetry_change: move |v: bool| {
+                                        let mut s = settings.write();
+                                        s.telemetry_enabled = v;
+                                        let _ = save_settings(&s);
+                                        // Apply immediately: off disables the
+                                        // Sentry client (no events/sessions),
+                                        // on re-inits. No relaunch needed.
+                                        pentest_core::telemetry::set_enabled(v);
+                                    },
                                     on_sign_in: move |_| d1(AuthEvent::SignInRequested),
                                     on_chat_event: move |ev| d2(ev),
                                     current_host: config.read().host.clone(),
