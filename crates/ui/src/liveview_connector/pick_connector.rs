@@ -363,11 +363,14 @@ impl BaseConnector for PickConnector {
                 // a fresh engagement envelope; everything else records against
                 // it (evidence/flag-bearing runs count as progress).
                 if tool_name == "begin_scan" && result.success {
-                    self.budget.reset().await;
+                    // Agent-reachable reset: bounded so a stuck/injected agent
+                    // cannot restart its own envelope at will (review #452, V1).
+                    // Once the reset budget is spent this counts the begin_scan
+                    // as a normal execution instead.
+                    self.budget.reset_for_new_scan().await;
                 } else {
-                    let made_progress = result.provenance.is_some()
-                        || !result.data.is_null()
-                        || result.success;
+                    let made_progress =
+                        result.provenance.is_some() || !result.data.is_null() || result.success;
                     self.budget.record(made_progress).await;
                 }
 
@@ -897,6 +900,59 @@ mod tests {
         assert!(
             result.get("_sanitization").is_none(),
             "benign output must not be flagged: {result}"
+        );
+    }
+
+    /// Production-path enforcement guard for the C3 budget (#452, Foundation 8):
+    /// `execute_with_context` is the connector the SDK runner actually drives, so
+    /// the envelope must refuse tool calls there once the cap is hit. Sets the
+    /// cap to one execution and asserts the second call returns the wind-down
+    /// payload the agent receives. Removing the budget check in
+    /// `execute_with_context` turns this red.
+    #[tokio::test]
+    async fn execute_with_context_refuses_once_budget_exhausted() {
+        pentest_platform::set_use_sandbox(false);
+
+        let mut connector = test_connector();
+        connector.budget =
+            pentest_core::budget::SessionBudget::new(pentest_core::budget::BudgetConfig {
+                max_executions: 1,
+                stall_threshold: 8,
+                max_resets: pentest_core::budget::DEFAULT_MAX_RESETS,
+            });
+        let ctx: HashMap<String, String> = HashMap::new();
+        let request = || {
+            json!({
+                "tool": "execute_command",
+                "parameters": { "command": "echo", "args": ["hi"] }
+            })
+        };
+
+        // First call consumes the single budget unit and runs.
+        let first = connector
+            .execute_with_context(request(), None, &ctx)
+            .await
+            .expect("first execute_with_context failed");
+        assert_eq!(
+            first["success"],
+            json!(true),
+            "first call should run: {first}"
+        );
+
+        // Second call must be refused with the budget-exhausted payload.
+        let second = connector
+            .execute_with_context(request(), None, &ctx)
+            .await
+            .expect("second execute_with_context failed");
+        assert_eq!(
+            second["success"],
+            json!(false),
+            "second call must be refused once the budget is exhausted: {second}"
+        );
+        let error = second["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("budget exhausted") && error.contains("1/1"),
+            "expected the budget-exhausted refusal payload, got: {second}"
         );
     }
 }
