@@ -992,7 +992,7 @@ fetch-proot:
     #!/usr/bin/env bash
     set -euo pipefail
     TMP=$(mktemp -d)
-    trap "rm -rf $TMP" EXIT
+    trap 'rm -rf "$TMP"' EXIT
 
     # Materialize the checksum manifest (pkg_checksums above; #397/#372) and
     # verify every download against it so a replaced/superseded pinned .deb
@@ -1059,7 +1059,7 @@ fetch-proot:
         # launcher stub, while the real ~870KB applet multiplexer lives at
         # usr/lib/libbusybox.so.<ver>. Ship the REAL binary as libbusybox.so
         # (the proot layer runs it directly via applet symlinks).
-        bb_src=$(ls ./data/data/com.termux/files/usr/lib/libbusybox.so.* 2>/dev/null | grep -v '\.so$' | head -1)
+        bb_src=$(set -- ./data/data/com.termux/files/usr/lib/libbusybox.so.* 2>/dev/null; [ -f "$1" ] && echo "$1")
         if [ -z "$bb_src" ]; then
             echo "ERROR: real busybox lib not found in package" >&2
             exit 1
@@ -1262,7 +1262,7 @@ restty-bundle:
     #!/usr/bin/env bash
     set -euo pipefail
     TMP=$(mktemp -d)
-    trap "rm -rf $TMP" EXIT
+    trap 'rm -rf "$TMP"' EXIT
 
     echo "Downloading restty from npm..."
     cd "$TMP"

@@ -188,6 +188,22 @@ pub async fn execute_command_in_dir_redacted(
         format!("{} {}", cmd, escaped_args.join(" "))
     };
 
+    // Loggable command: REDACT first, THEN shell-escape (pick#335 review V5).
+    // Redacting the already-escaped `full_cmd` by verbatim substring misses
+    // secrets containing ', \ or $ — shell_escape rewrites them via `'\''`
+    // splicing, so the raw secret no longer appears in the escaped string.
+    // Escaping the redacted arguments instead keeps the log faithful to what
+    // actually runs while guaranteeing the secret never survives. `full_cmd`
+    // itself (with the secret) is still what reaches the subprocess — see the
+    // process-table residual note below.
+    let redacted_args = pentest_core::provenance::redact_args(args, known_secret);
+    let loggable_full_cmd = if args.is_empty() {
+        cmd.to_string()
+    } else {
+        let escaped_redacted: Vec<String> = redacted_args.iter().map(|a| shell_escape(a)).collect();
+        format!("{} {}", cmd, escaped_redacted.join(" "))
+    };
+
     // Redact args/full_cmd before logging: on a differential-authz identity run
     // these carry the injected credential, and any log sink (journald/Quickwit)
     // would otherwise capture it in plaintext (#317 review HIGH, pick#335).
@@ -209,8 +225,8 @@ pub async fn execute_command_in_dir_redacted(
     tracing::info!(
         "[execute_command] cmd={:?} args={:?} full_cmd={}",
         cmd,
-        pentest_core::provenance::redact_args(args, known_secret),
-        pentest_core::provenance::redact_arg(&full_cmd, known_secret)
+        redacted_args,
+        loggable_full_cmd
     );
 
     // Try sandboxed execution. The sandbox is enabled, so the operator expects

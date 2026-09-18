@@ -101,6 +101,15 @@ pub struct WorkspacePagesProps {
     /// Callback when the user toggles easy mode.
     #[props(default)]
     on_easy_mode_change: EventHandler<bool>,
+    /// Whether anonymous usage telemetry (Sentry) is currently enabled.
+    /// Wired through so the expert-mode Settings toggle persists via the
+    /// authoritative settings signal instead of being a silent no-op (#373
+    /// review, pick#458).
+    #[props(default = true)]
+    telemetry_enabled: bool,
+    /// Callback when the user toggles telemetry.
+    #[props(default)]
+    on_telemetry_change: EventHandler<bool>,
 }
 
 /// Routes between Dashboard, Tools, Files, Shell, Logs, and Settings.
@@ -234,6 +243,8 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
                     },
                     easy_mode_on: props.easy_mode_on,
                     on_easy_mode_change: move |v: bool| props.on_easy_mode_change.call(v),
+                    telemetry_enabled: props.telemetry_enabled,
+                    on_telemetry_change: move |v: bool| props.on_telemetry_change.call(v),
                 }
             }
 
@@ -560,7 +571,11 @@ pub fn WorkspaceApp() -> Element {
                 on_telemetry_change: move |v: bool| {
                     let mut s = settings.write();
                     s.telemetry_enabled = v;
-                    let _ = save_settings(&s);
+                    if let Err(e) = save_settings(&s) {
+                        // Silent persistence failure on a privacy toggle is an
+                        // audit gap (pick#458 review V8).
+                        tracing::warn!("[WorkspaceApp] failed to persist telemetry opt-out: {}", e);
+                    }
                     // Apply immediately: off disables the Sentry client (no
                     // events/sessions), on re-inits. No relaunch needed.
                     pentest_core::telemetry::set_enabled(v);
@@ -742,6 +757,23 @@ pub fn WorkspaceApp() -> Element {
                         },
                         easy_mode_on: easy_mode(),
                         on_easy_mode_change: on_easy_mode_change,
+                        telemetry_enabled: settings.read().telemetry_enabled,
+                        on_telemetry_change: move |v: bool| {
+                            let mut s = settings.write();
+                            s.telemetry_enabled = v;
+                            if let Err(e) = save_settings(&s) {
+                                // Silent persistence failure on a privacy toggle is
+                                // an audit gap (pick#458 review V8): the operator
+                                // believes telemetry is off after relaunch it isn't.
+                                tracing::warn!(
+                                    "[WorkspaceApp] failed to persist telemetry opt-out: {}",
+                                    e
+                                );
+                            }
+                            // Apply immediately: off disables the Sentry client (no
+                            // events/sessions), on re-inits. No relaunch needed.
+                            pentest_core::telemetry::set_enabled(v);
+                        },
                     }
                 }
             }
