@@ -906,6 +906,18 @@ impl ConnectorRunner {
         Arc::clone(&self.oidc_config)
     }
 
+    /// Whether the runner currently holds a connector JWT.
+    ///
+    /// The SDK writes `auth_token` into its config after the startup OTT
+    /// exchange, and again after the post-approval `credentials_issued`
+    /// round-trip. Frontends poll this to distinguish "transport up,
+    /// authorization pending" from "registered and usable" so the UI does not
+    /// flip to a non-functional dashboard while admin approval is outstanding
+    /// (Strike48-public/pick#292).
+    pub async fn has_auth_token(&self) -> bool {
+        !self.config.read().await.auth_token.is_empty()
+    }
+
     /// Clear all cached credentials (session token, OTT provider state, and saved
     /// credentials file).  Used when the server signals that the connector's identity
     /// is no longer valid (admin de-registration, rejection, forced reconnect).

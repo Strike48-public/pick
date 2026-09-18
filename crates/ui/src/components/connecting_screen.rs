@@ -2,6 +2,8 @@
 
 use dioxus::prelude::*;
 
+use crate::components::icons::Shield;
+
 /// Steps shown in the connecting screen UI.
 /// Mirrors the enum in liveview_connector but lives in the shared UI crate
 /// so any frontend can render it.
@@ -40,7 +42,7 @@ pub fn ConnectingScreen(
         ConnectingStep::SigningIn => "Signing in to Strike48...",
         ConnectingStep::Connecting => "Opening connection...",
         ConnectingStep::Registering => "Registering connector...",
-        ConnectingStep::WaitingForApproval => "Awaiting approval",
+        ConnectingStep::WaitingForApproval => "Pending approval",
         ConnectingStep::ExchangingToken => "Exchanging credentials...",
         ConnectingStep::Finalizing => "Finalizing session...",
     };
@@ -86,12 +88,18 @@ pub fn ConnectingScreen(
 
             // Status text
             if step == ConnectingStep::WaitingForApproval {
-                div { class: "approval-instruction",
-                    "{status_text}"
-                }
-                div {
-                    class: "connecting-hint",
-                    "Open the Strike48 web UI and accept this connector."
+                div { class: "approval-callout",
+                    div { class: "approval-callout-icon",
+                        Shield { size: 28 }
+                    }
+                    div { class: "approval-callout-body",
+                        div { class: "approval-callout-title",
+                            "{status_text}"
+                        }
+                        div { class: "approval-callout-hint",
+                            "Open the Strike48 web UI and approve this connector to continue."
+                        }
+                    }
                 }
             } else if step == ConnectingStep::SigningIn {
                 // Sign-in opened the browser (desktop) or native OAuth sheet
