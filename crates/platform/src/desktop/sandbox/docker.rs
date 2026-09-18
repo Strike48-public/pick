@@ -195,11 +195,16 @@ impl DockerExecutor {
     }
 
     /// Execute a command inside a Docker container
+    ///
+    /// `known_secret` is accepted for signature parity with the other executors
+    /// (the bwrap executor redacts its inner-command log line with it, pick#335);
+    /// this executor does not log the inner command, so it is unused here.
     pub async fn execute(
         &self,
         cmd: &str,
         timeout: Duration,
         working_dir: Option<&Path>,
+        _known_secret: Option<&str>,
     ) -> SandboxResult<CommandResult> {
         let start = Instant::now();
 

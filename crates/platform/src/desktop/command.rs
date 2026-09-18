@@ -103,15 +103,39 @@ pub async fn execute_command_in_dir(
     timeout_duration: Duration,
     working_dir: Option<&Path>,
 ) -> Result<CommandResult> {
+    execute_command_in_dir_redacted(cmd, args, timeout_duration, working_dir, None).await
+}
+
+/// Execute a command, scrubbing `known_secret` from every log line.
+///
+/// On a differential-authz identity run the caller splices an injected
+/// credential into `args`; it passes the exact value here so the log sites
+/// below redact it BY VALUE (immune to exotic header shapes the pattern
+/// redactor misses, pick#335) while non-secret arguments stay visible.
+///
+/// Execution itself is identical to [`execute_command_in_dir`] — the secret
+/// still reaches the subprocess via argv (see the process-table note at the
+/// sandbox-path log site); only the logging is secret-aware.
+pub async fn execute_command_in_dir_redacted(
+    cmd: &str,
+    args: &[&str],
+    timeout_duration: Duration,
+    working_dir: Option<&Path>,
+    known_secret: Option<&str>,
+) -> Result<CommandResult> {
     // If sandbox is disabled, execute on the host.
     if !is_sandbox_enabled() {
-        // Redact args: a differential-authz identity run splices a credential
-        // (`-H "Authorization: Bearer <token>"`, `-u user:pass`) into argv, so the
-        // raw args can carry a secret. Log the redacted form (#317 review HIGH).
+        // Structured per-argument redaction: a differential-authz identity run
+        // splices a credential (`-H "Authorization: Bearer <token>"`,
+        // `-u user:pass`) into argv, so the raw args can carry a secret. Each
+        // argument is redacted individually (known secret by value, then the
+        // pattern redactor as defense in depth) so non-secret args stay fully
+        // visible — not blanket arg-dropping (#317 review HIGH, pick#335).
+        let redacted_args = pentest_core::provenance::redact_args(args, known_secret);
         tracing::debug!(
-            "Sandbox disabled, executing directly: {} {}",
+            "Sandbox disabled, executing directly: {} {:?}",
             cmd,
-            pentest_core::provenance::redact(&format!("{args:?}"))
+            redacted_args
         );
 
         // Parity with the sandbox path, which runs `bash -c "<cmd> <args>"`:
@@ -166,16 +190,27 @@ pub async fn execute_command_in_dir(
 
     // Redact args/full_cmd before logging: on a differential-authz identity run
     // these carry the injected credential, and any log sink (journald/Quickwit)
-    // would otherwise capture it in plaintext (#317 review HIGH). `cmd` is just
-    // the binary name. NOTE: passing a secret as an argv element also exposes it
-    // in the process table (`ps` / `/proc/<pid>/cmdline`) for the lifetime of the
-    // child — inherent to header-via-argv; `curl -H @file` avoids it. Tracked for
-    // the differential-authz feature rollout (gated on matrix#3354).
+    // would otherwise capture it in plaintext (#317 review HIGH, pick#335).
+    // Structured redaction (`redact_args`): the KNOWN injected secret is scrubbed
+    // by value first (immune to exotic shapes like `X-Api-Id: ab12cd` that no
+    // regex catches), then the pattern redactor runs as defense in depth.
+    // Non-secret arguments stay fully visible for debuggability.
+    //
+    // PROCESS-TABLE RESIDUAL (pick#335, documented honestly): the secret still
+    // reaches the subprocess via ARGV, so it is visible in `ps` /
+    // `/proc/<pid>/cmdline` — on the host for the host-direct path above, and
+    // (inside the `bash -c <full_cmd>` wrapper) for the sandboxed path below —
+    // for the lifetime of the child. Removing it from argv needs per-binary
+    // indirection (`curl -H @file` / `--config` from a sandbox-private path);
+    // passing it via env/stdin is not possible here because the sandbox
+    // executors hand one shell string to `bash -c` and the target binary's
+    // header flag is argv-only. Tracked for the differential-authz rollout
+    // (gated on matrix#3354).
     tracing::info!(
-        "[execute_command] cmd={:?} args={} full_cmd={}",
+        "[execute_command] cmd={:?} args={:?} full_cmd={}",
         cmd,
-        pentest_core::provenance::redact(&format!("{args:?}")),
-        pentest_core::provenance::redact(&full_cmd)
+        pentest_core::provenance::redact_args(args, known_secret),
+        pentest_core::provenance::redact_arg(&full_cmd, known_secret)
     );
 
     // Try sandboxed execution. The sandbox is enabled, so the operator expects
@@ -200,7 +235,7 @@ pub async fn execute_command_in_dir(
             tracing::info!("[execute_command] Sandbox manager obtained, backend={}, is_ready={}, executing: {}",
                 manager.backend(), manager.is_ready(), cmd);
             match manager
-                .execute(&full_cmd, timeout_duration, working_dir)
+                .execute(&full_cmd, timeout_duration, working_dir, known_secret)
                 .await
             {
                 Ok(result) => SandboxAttempt::Executed(result),
@@ -468,40 +503,77 @@ mod tests {
         assert!(out.timed_out);
     }
 
-    // ── Log redaction for differential-authz identity runs (#317 review HIGH) ──
+    // ── Log redaction for differential-authz identity runs (#317 review HIGH, #335) ──
     //
     // execute_command / execute_command_in_dir log `args` and `full_cmd` at
     // info/debug. On an identity run those carry an injected credential, so both
-    // sites now redact via `pentest_core::provenance::redact` before logging.
-    // This test guards that `redact` actually strips a credential from the exact
-    // string shapes the log statements build (`format!("{args:?}")` and the
-    // shell-escaped `full_cmd`) — i.e. the redactor is effective on this input,
-    // not that the call sites invoke it (that wiring is verified by reading the
-    // two `tracing!` calls above; asserting on emitted log lines would need a
-    // tracing-capture harness this crate doesn't set up).
+    // sites redact through the structured helpers
+    // (`pentest_core::provenance::redact_args` / `redact_arg`): the known
+    // injected secret is scrubbed by value, then the pattern redactor runs as
+    // defense in depth, and non-secret args stay visible. These tests guard
+    // that the helpers are effective on the exact string shapes the log
+    // statements build (the argv slice and the shell-escaped `full_cmd`) —
+    // i.e. the redactor works on this input, not that the call sites invoke it
+    // (that wiring is verified by reading the `tracing!` calls above; asserting
+    // on emitted log lines would need a tracing-capture harness this crate
+    // doesn't set up).
     #[test]
     fn injected_credential_is_redacted_before_logging() {
         let secret = "sk-super-secret-token-abcdef1234567890";
-        let args = vec![
+        let args = [
             "-H",
             "Authorization: Bearer sk-super-secret-token-abcdef1234567890",
             "https://target.example",
         ];
 
-        // The `args={:?}` form the log line builds.
-        let logged_args = pentest_core::provenance::redact(&format!("{args:?}"));
+        // The per-arg form the log line now builds.
+        let logged_args = pentest_core::provenance::redact_args(&args, Some(secret));
+        let joined = logged_args.join(" ");
         assert!(
-            !logged_args.contains(secret),
-            "credential must be redacted from logged args: {logged_args}"
+            !joined.contains(secret),
+            "credential must be redacted from logged args: {joined}"
         );
+        // Structured redaction: non-secret args survive as discrete items.
+        assert_eq!(logged_args.len(), args.len());
+        assert_eq!(logged_args[0], "-H");
+        assert_eq!(logged_args[2], "https://target.example");
 
         // The `full_cmd` form (shell-escaped join, as built above).
         let escaped: Vec<String> = args.iter().map(|a| shell_escape(a)).collect();
         let full_cmd = format!("curl {}", escaped.join(" "));
-        let logged_full = pentest_core::provenance::redact(&full_cmd);
+        let logged_full = pentest_core::provenance::redact_arg(&full_cmd, Some(secret));
         assert!(
             !logged_full.contains(secret),
             "credential must be redacted from logged full_cmd: {logged_full}"
+        );
+    }
+
+    #[test]
+    fn exotic_shape_credential_is_redacted_when_secret_is_known() {
+        // pick#335 residual from the #317 review: a short, non-hex, oddly-named
+        // header value slips past every redact() regex. With the secret threaded
+        // into the platform layer, redact_arg/redact_args scrub it by value.
+        let secret = "X-Api-Id: ab12cd";
+        let args = ["-H", secret, "https://target.example"];
+
+        // Precondition: pattern redaction alone misses this shape.
+        assert!(
+            pentest_core::provenance::redact(&format!("{args:?}")).contains("ab12cd"),
+            "precondition: shape is not caught by pattern redaction"
+        );
+
+        let logged = pentest_core::provenance::redact_args(&args, Some(secret)).join(" ");
+        assert!(
+            !logged.contains("ab12cd"),
+            "exotic-shape credential leaked into logged args: {logged}"
+        );
+
+        let escaped: Vec<String> = args.iter().map(|a| shell_escape(a)).collect();
+        let full_cmd = format!("curl {}", escaped.join(" "));
+        let logged_full = pentest_core::provenance::redact_arg(&full_cmd, Some(secret));
+        assert!(
+            !logged_full.contains("ab12cd"),
+            "exotic-shape credential leaked into logged full_cmd: {logged_full}"
         );
     }
 }

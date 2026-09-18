@@ -132,6 +132,34 @@ pub trait CommandExec: Send + Sync {
         self.execute_command(cmd, args, timeout).await
     }
 
+    /// Execute a command, scrubbing `known_secret` from log output.
+    ///
+    /// When the caller injected a credential into `args` (differential-authz
+    /// identity run, pick#314), it passes the exact secret here so the platform
+    /// layer can redact it from every `tracing` line BY VALUE — closing the
+    /// exotic-shape gap where a header value no regex catches
+    /// (`X-Api-Id: ab12cd`) would otherwise reach journald/Quickwit verbatim
+    /// (pick#335). Non-secret arguments stay visible for debuggability.
+    ///
+    /// `None` (or an empty secret) means ordinary execution: only the
+    /// pattern-based redactor applies.
+    ///
+    /// The default implementation ignores the secret and delegates to
+    /// [`CommandExec::execute_command_in_dir`] so platforms without
+    /// secret-aware logging keep working unchanged; the desktop
+    /// implementation overrides it.
+    async fn execute_command_with_secret(
+        &self,
+        cmd: &str,
+        args: &[&str],
+        timeout: Duration,
+        working_dir: Option<&std::path::Path>,
+        _known_secret: Option<&str>,
+    ) -> Result<CommandResult> {
+        self.execute_command_in_dir(cmd, args, timeout, working_dir)
+            .await
+    }
+
     /// Check if command execution is supported
     fn is_command_exec_supported(&self) -> bool {
         true
