@@ -912,8 +912,18 @@ impl LiveViewConnector {
         // Resolving it here — before the runner is constructed — is what makes the
         // tenant reach `build_register_request`. See `resolve_ott_tenant` for the
         // second defect this also closes (restart with a spent OTT).
-        if let Some(tenant_id) =
-            Self::resolve_ott_tenant(&self.config.connector_name, &self.config.instance_id).await
+        // Pass the SDK CONNECTOR_TYPE, NOT the persona connector_name (#386):
+        // the host mints the pre-approved OTT for `pentest-connector`, and
+        // register_with_ott below saves credentials under
+        // `{CONNECTOR_TYPE}_{instance_id}` — the file name the SDK runner's
+        // own initialize_auth (via BaseConnector::connector_type) looks up.
+        // A persona name here redeemed otherwise-valid tokens with the wrong
+        // connector_type and surfaced as a misleading "Invalid or expired OTT".
+        if let Some(tenant_id) = Self::resolve_ott_tenant(
+            pentest_core::config::CONNECTOR_TYPE,
+            &self.config.instance_id,
+        )
+        .await
         {
             if tenant_id != sdk_config.tenant_id {
                 tracing::info!(
@@ -1095,6 +1105,7 @@ impl LiveViewConnector {
         // `last_disconnect_reason` explain a stuck connector at a glance.
         let event_tx_clone = self.event_tx.clone();
         let runner_probe = runner.clone();
+        let shutdown_flag_probe = self.shutdown.clone();
         tokio::spawn(async move {
             // Give the runner time to connect and register
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -1135,7 +1146,54 @@ impl LiveViewConnector {
                         .unwrap_or_default(),
                 );
             }
-            let _ = event_tx_clone.send(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
+            // Gate the Registered transition on JWT presence (pick#292). The
+            // transport coming up only means the wss handshake succeeded; while
+            // admin approval is still pending the server has issued no JWT and
+            // the session is NOT usable. Flipping to Registered here used to
+            // send the desktop to an empty Dashboard with the approval wait
+            // buried. Instead: with a JWT, flip to Registered as before;
+            // without one, surface WaitingForApproval (the connecting screen's
+            // "Pending approval" callout) and keep polling until the SDK's
+            // post-approval `credentials_issued` round-trip lands the JWT in
+            // the runner's config. If the transport never came up, stay on
+            // Connecting — the SDK retries with backoff and the warn! above
+            // explains why.
+            match registration_outcome(runner_probe.has_auth_token().await, running, ever_connected)
+            {
+                Some(RegistrationOutcome::Registered) => {
+                    let _ = event_tx_clone
+                        .send(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
+                }
+                Some(RegistrationOutcome::AwaitingApproval) => {
+                    let _ = event_tx_clone.send(ConnectorEvent::StepChanged(
+                        ConnectingStep::WaitingForApproval,
+                    ));
+                    // Poll for JWT issuance via the shared bounded-wait helper.
+                    if wait_for_jwt_issued(&shutdown_flag_probe, &runner_probe).await {
+                        tracing::info!(
+                            "[Connector] JWT issued after approval; transitioning to Registered"
+                        );
+                        let _ = event_tx_clone
+                            .send(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
+                    }
+                }
+                None => {
+                    // Transport not established at the 3s probe. The SDK keeps
+                    // retrying with backoff, so enter the same bounded poll
+                    // loop as the awaiting-approval path: a transport that
+                    // comes up late (and a JWT that arrives with it) must still
+                    // reach Registered instead of leaving the UI stuck on
+                    // "Opening connection...".
+                    if wait_for_jwt_issued(&shutdown_flag_probe, &runner_probe).await {
+                        tracing::info!(
+                            "[Connector] transport established and JWT issued; \
+                             transitioning to Registered"
+                        );
+                        let _ = event_tx_clone
+                            .send(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
+                    }
+                }
+            }
         });
 
         // One-time startup summary. The SDK runner logs its registration/OTT/
@@ -1226,6 +1284,105 @@ async fn probe_host_reachable(host: &str) -> Result<(), String> {
             target,
             CONNECT_TIMEOUT.as_secs()
         )),
+    }
+}
+
+/// What the desktop UI should do now that the runner has had time to connect.
+///
+/// Factored out of the 3-second spawn in `connect_and_run` so the
+/// Registered-vs-Connecting decision is unit-testable (pick#292).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegistrationOutcome {
+    /// A connector JWT is present: the session is authorized and usable. Safe
+    /// to flip the UI to the connected Dashboard.
+    Registered,
+    /// Transport is up but the server issued no JWT yet: registration was
+    /// accepted but admin approval is still pending. The UI must stay on the
+    /// connecting screen with the "Pending approval" callout.
+    AwaitingApproval,
+}
+
+/// Decide the UI outcome from JWT presence and transport state.
+///
+/// Returns `None` while the transport has not established (the SDK keeps
+/// retrying with backoff; the UI stays on its current connecting state).
+/// Once the transport is up, JWT presence — not elapsed time — decides
+/// between `Registered` and `AwaitingApproval`.
+fn registration_outcome(
+    has_auth_token: bool,
+    running: bool,
+    ever_connected: bool,
+) -> Option<RegistrationOutcome> {
+    if !running || !ever_connected {
+        return None;
+    }
+    Some(if has_auth_token {
+        RegistrationOutcome::Registered
+    } else {
+        RegistrationOutcome::AwaitingApproval
+    })
+}
+
+/// Bounded wait for JWT issuance, shared by the awaiting-approval and
+/// transport-down arms of the post-registration poll (pick#464 review: the
+/// two loops were previously duplicated inline and could silently diverge).
+/// Polls every 2s; bounded by shutdown (mirrors `LiveViewConnector::shutdown`)
+/// and by the runner stopping, so the loop never outlives the connection it
+/// watches. Returns `true` when the JWT landed (caller emits `Registered`),
+/// `false` when shutdown or runner stop ended the wait first.
+async fn wait_for_jwt_issued(
+    shutdown: &AtomicBool,
+    runner: &strike48_connector::ConnectorRunner,
+) -> bool {
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        if shutdown.load(Ordering::SeqCst) {
+            return false;
+        }
+        let stats = runner.get_stats().await;
+        let running = stats
+            .get("running")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !running {
+            return false;
+        }
+        if runner.has_auth_token().await {
+            return true;
+        }
+    }
+}
+
+#[cfg(test)]
+mod registration_outcome_tests {
+    use super::*;
+
+    #[test]
+    fn jwt_present_transitions_to_registered() {
+        assert_eq!(
+            registration_outcome(true, true, true),
+            Some(RegistrationOutcome::Registered)
+        );
+    }
+
+    #[test]
+    fn transport_up_without_jwt_awaits_approval() {
+        assert_eq!(
+            registration_outcome(false, true, true),
+            Some(RegistrationOutcome::AwaitingApproval)
+        );
+    }
+
+    #[test]
+    fn transport_down_never_flips_to_registered() {
+        // Regression for pick#292: the 3s timer used to emit Registered
+        // unconditionally, even while the transport was still down.
+        assert_eq!(registration_outcome(true, false, true), None);
+        assert_eq!(registration_outcome(true, true, false), None);
+        assert_eq!(registration_outcome(true, false, false), None);
+        assert_eq!(registration_outcome(false, false, false), None);
+        assert_eq!(registration_outcome(false, true, false), None);
+        assert_eq!(registration_outcome(false, false, true), None);
     }
 }
 

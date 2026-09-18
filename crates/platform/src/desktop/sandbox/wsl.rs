@@ -492,11 +492,16 @@ impl WslExecutor {
     }
 
     /// Execute a command inside the WSL distro.
+    ///
+    /// `known_secret` is accepted for signature parity with the other executors
+    /// (the bwrap executor redacts its inner-command log line with it, pick#335);
+    /// this executor does not log the inner command, so it is unused here.
     pub async fn execute(
         &self,
         cmd: &str,
         timeout: Duration,
         working_dir: Option<&Path>,
+        _known_secret: Option<&str>,
     ) -> SandboxResult<CommandResult> {
         let distro_name = self.config.wsl_distro_name();
         let start = Instant::now();
@@ -776,7 +781,7 @@ mod tests {
         assert!(executor.is_distro_imported().await, "Distro not imported");
 
         let result = executor
-            .execute("echo HELLO_WSL", Duration::from_secs(10), None)
+            .execute("echo HELLO_WSL", Duration::from_secs(10), None, None)
             .await
             .expect("Execute failed");
 

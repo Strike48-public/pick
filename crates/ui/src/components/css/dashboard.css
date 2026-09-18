@@ -326,6 +326,17 @@
 
 /* --- Responsive overrides --- */
 
+/* Wide screens: the 4 quick-action tiles fan out to 4 columns instead of
+   stretching 2 across the full content width (#398). Safety Check stays
+   full-width — its `.safety-check-section .action-grid` rule is more
+   specific and wins over this one. */
+@media (min-width: 1200px) {
+    .action-grid {
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+    }
+}
+
 @media (max-width: 768px) {
     .dashboard {
         padding: 12px;

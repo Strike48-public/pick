@@ -952,19 +952,57 @@ build-syscall-compat:
     echo "Done! syscall_compat shims built in android-jniLibs/"
 
 # Termux package versions
+#
+# CAUTION (#397): packages.termux.dev is a *rolling* pool — it only serves the
+# latest build of each package. When Termux supersedes a pinned version the
+# download URL 404s and `fetch-proot` fails (this has broken the Android CI
+# lane twice: 5.1.107.91 -> .92 in #413, and earlier bumps). The sha256 pins
+# below catch silent in-place replacement of a pinned .deb; they do NOT fix
+# 404s. The durable fix is mirroring the .debs to an immutable location we
+# control (GitHub release assets, same pattern as #252) — until then, a 404
+# means: look up the current version in the pool index
+# (https://packages.termux.dev/apt/termux-main/pool/main/), bump the version
+# pin, download the new .deb, and refresh the checksum pin below.
 proot_version := "5.1.107.92"
 talloc_version := "2.4.3"
 busybox_version := "1.38.0-1"
 shmem_version := "0.7"
 termux_repo := "https://packages.termux.dev/apt/termux-main/pool/main"
 
+# sha256 pins for the exact .debs downloaded above, in `sha256sum -c` format
+# (filename must match the download name used in fetch-proot). Recompute with:
+#   curl -fsSL <url> | sha256sum
+# Verify on every download so a replaced/mismatched package fails loudly
+# instead of shipping different binaries in the APK (#372 integrity half).
+pkg_checksums := '''
+1f1c983509701f6826f568482c70673ee453a9ba38c9f5fa445a472d6b7524e9  proot_5.1.107.92_aarch64.deb
+70236632826c30ec0245082b633bbc7ef1e9fa5531bd51bd4f20231bfcdc999b  proot_5.1.107.92_x86_64.deb
+ac81ad623d74c209718b9f3acb2dd702cc8a88c431e820d212229910b4db29da  libtalloc_2.4.3_aarch64.deb
+7ca2eaae2e53b28228a01301bc410b62845403d6317c25b8e0a7f40681de0628  libtalloc_2.4.3_x86_64.deb
+1bb7f1d4c00cadd0e1117b6dd7110311b8bf749ef00b486e96cfdc11c98f8fd9  busybox_1.38.0-1_aarch64.deb
+519b57623dd076b4d6cf6d389ed976dd222410e3a0b9b9b58c14d8535b6eef48  busybox_1.38.0-1_x86_64.deb
+0da3a24d558b93c92bcf8d611e0826a99ff96e396b148e6cdf33b47c47c57ff6  libandroid-shmem_0.7_aarch64.deb
+ffa9e4c87467b158b148d0ff92dda796aa038276c2075af3269cdcdb06f25797  libandroid-shmem_0.7_x86_64.deb
+'''
+
 # Download Termux proot + dependencies for Android (x86_64 + arm64)
 # Uses official Termux packages which have proper --sysvipc support for pacman
+# Every download is sha256-verified against pkg_checksums (see note above; #397).
 fetch-proot:
     #!/usr/bin/env bash
     set -euo pipefail
     TMP=$(mktemp -d)
-    trap "rm -rf $TMP" EXIT
+    trap 'rm -rf "$TMP"' EXIT
+
+    # Materialize the checksum manifest (pkg_checksums above; #397/#372) and
+    # verify every download against it so a replaced/superseded pinned .deb
+    # fails loudly instead of silently shipping different binaries.
+    printf '%s' '{{pkg_checksums}}' > "$TMP/SHA256SUMS"
+    verify_sha() {
+        local f="$1"
+        grep -F " $f" "$TMP/SHA256SUMS" | (cd "$TMP" && sha256sum -c - >/dev/null) \
+            || { echo "ERROR: sha256 mismatch for $f - the pinned Termux .deb changed upstream; bump the version + checksum pins (see #397)" >&2; exit 1; }
+    }
 
     for arch in x86_64 aarch64; do
         echo "=== Downloading Termux packages for $arch ==="
@@ -980,10 +1018,11 @@ fetch-proot:
 
         # Download and extract proot
         echo "Downloading proot {{proot_version}}..."
-        curl -fSL --retry 3 "{{termux_repo}}/p/proot/proot_{{proot_version}}_${arch}.deb" -o "$TMP/proot_${arch}.deb"
+        curl -fSL --retry 3 "{{termux_repo}}/p/proot/proot_{{proot_version}}_${arch}.deb" -o "$TMP/proot_{{proot_version}}_${arch}.deb"
+        verify_sha "proot_{{proot_version}}_${arch}.deb"
         mkdir -p "$TMP/proot_${arch}"
         cd "$TMP/proot_${arch}"
-        ar x "../proot_${arch}.deb"
+        ar x "../proot_{{proot_version}}_${arch}.deb"
         tar xf data.tar.xz
 
         cp -f "./data/data/com.termux/files/usr/bin/proot"              "$dest/libproot.so"
@@ -993,10 +1032,11 @@ fetch-proot:
 
         # Download and extract libtalloc (proot dependency)
         echo "Downloading libtalloc {{talloc_version}}..."
-        curl -fSL --retry 3 "{{termux_repo}}/libt/libtalloc/libtalloc_{{talloc_version}}_${arch}.deb" -o "$TMP/talloc_${arch}.deb"
+        curl -fSL --retry 3 "{{termux_repo}}/libt/libtalloc/libtalloc_{{talloc_version}}_${arch}.deb" -o "$TMP/libtalloc_{{talloc_version}}_${arch}.deb"
+        verify_sha "libtalloc_{{talloc_version}}_${arch}.deb"
         mkdir -p "$TMP/talloc_${arch}"
         cd "$TMP/talloc_${arch}"
-        ar x "../talloc_${arch}.deb"
+        ar x "../libtalloc_{{talloc_version}}_${arch}.deb"
         tar xf data.tar.xz
 
         # Android only packages lib*.so files, so rename libtalloc.so.2 -> libtalloc.so
@@ -1009,16 +1049,17 @@ fetch-proot:
         # fails with "busybox binary not found". Packaged as lib*.so so the APK
         # ships it in jniLibs like proot.
         echo "Downloading busybox {{busybox_version}}..."
-        curl -fSL --retry 3 "{{termux_repo}}/b/busybox/busybox_{{busybox_version}}_${arch}.deb" -o "$TMP/busybox_${arch}.deb"
+        curl -fSL --retry 3 "{{termux_repo}}/b/busybox/busybox_{{busybox_version}}_${arch}.deb" -o "$TMP/busybox_{{busybox_version}}_${arch}.deb"
+        verify_sha "busybox_{{busybox_version}}_${arch}.deb"
         mkdir -p "$TMP/busybox_${arch}"
         cd "$TMP/busybox_${arch}"
-        ar x "../busybox_${arch}.deb"
+        ar x "../busybox_{{busybox_version}}_${arch}.deb"
         tar xf data.tar.xz
         # Modern Termux busybox is split: usr/bin/busybox is a tiny (~4KB)
         # launcher stub, while the real ~870KB applet multiplexer lives at
         # usr/lib/libbusybox.so.<ver>. Ship the REAL binary as libbusybox.so
         # (the proot layer runs it directly via applet symlinks).
-        bb_src=$(ls ./data/data/com.termux/files/usr/lib/libbusybox.so.* 2>/dev/null | grep -v '\.so$' | head -1)
+        bb_src=$(set -- ./data/data/com.termux/files/usr/lib/libbusybox.so.* 2>/dev/null; [ -f "$1" ] && echo "$1")
         if [ -z "$bb_src" ]; then
             echo "ERROR: real busybox lib not found in package" >&2
             exit 1
@@ -1031,10 +1072,11 @@ fetch-proot:
         # load with `library "libandroid-shmem.so" not found`. It is in proot's
         # ELF NEEDED list, so it must ship in jniLibs alongside libproot.so.
         echo "Downloading libandroid-shmem {{shmem_version}}..."
-        curl -fSL --retry 3 "{{termux_repo}}/liba/libandroid-shmem/libandroid-shmem_{{shmem_version}}_${arch}.deb" -o "$TMP/shmem_${arch}.deb"
+        curl -fSL --retry 3 "{{termux_repo}}/liba/libandroid-shmem/libandroid-shmem_{{shmem_version}}_${arch}.deb" -o "$TMP/libandroid-shmem_{{shmem_version}}_${arch}.deb"
+        verify_sha "libandroid-shmem_{{shmem_version}}_${arch}.deb"
         mkdir -p "$TMP/shmem_${arch}"
         cd "$TMP/shmem_${arch}"
-        ar x "../shmem_${arch}.deb"
+        ar x "../libandroid-shmem_{{shmem_version}}_${arch}.deb"
         tar xf data.tar.xz
         cp -f "./data/data/com.termux/files/usr/lib/libandroid-shmem.so" "$dest/libandroid-shmem.so"
         echo "  -> libandroid-shmem.so ($(wc -c < "$dest/libandroid-shmem.so") bytes)"
@@ -1220,7 +1262,7 @@ restty-bundle:
     #!/usr/bin/env bash
     set -euo pipefail
     TMP=$(mktemp -d)
-    trap "rm -rf $TMP" EXIT
+    trap 'rm -rf "$TMP"' EXIT
 
     echo "Downloading restty from npm..."
     cd "$TMP"

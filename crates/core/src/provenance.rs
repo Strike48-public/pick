@@ -231,6 +231,39 @@ pub fn redact_known_secret(text: &str, secret: &str) -> String {
     }
 }
 
+/// Redact a single argv element for logging.
+///
+/// This is the structured (per-argument) counterpart to formatting the whole
+/// argv into one string and pattern-scrubbing it: when the injected secret of a
+/// differential-authz identity run is *known* (pick#314/#317), it is scrubbed
+/// from this argument by exact substring FIRST, so an odd-shaped header value
+/// no regex catches (`X-Api-Id: ab12cd`) is still removed. The pattern-based
+/// [`redact`] then runs as defense in depth (user-supplied creds in the same
+/// argument, or a secret the caller did not know about). Arguments that carry
+/// neither the known secret nor a secret-shaped pattern are returned
+/// semantically unchanged, keeping them fully visible for debuggability —
+/// structured redaction, not blanket argument dropping (pick#335).
+#[must_use]
+pub fn redact_arg(arg: &str, known_secret: Option<&str>) -> String {
+    let value_scrubbed = match known_secret {
+        Some(secret) => redact_known_secret(arg, secret),
+        None => arg.to_string(),
+    };
+    redact(&value_scrubbed)
+}
+
+/// Redact an argument vector for logging, one element at a time.
+///
+/// Each argument is passed through [`redact_arg`] individually so non-secret
+/// arguments stay fully visible as discrete list items instead of being
+/// dropped or blurred into one scrubbed blob (pick#335).
+#[must_use]
+pub fn redact_args(args: &[&str], known_secret: Option<&str>) -> Vec<String> {
+    args.iter()
+        .map(|arg| redact_arg(arg, known_secret))
+        .collect()
+}
+
 /// Scrub likely secrets from an exact command so it is safe to publish.
 ///
 /// This runs at emit time so tool authors can't forget. It errs on the side
@@ -517,6 +550,80 @@ mod tests {
             "nothing to hide",
             "empty secret must be a no-op"
         );
+    }
+
+    // --- structured per-argument log redaction (pick#335) ------------------
+
+    #[test]
+    fn redact_arg_scrubs_known_secret_of_exotic_shape() {
+        // An injected header value that defeats every redact() regex must still
+        // be removed from the loggable argument when the secret is known.
+        let secret = "X-Api-Id: ab12cd";
+        let arg = "X-Api-Id: ab12cd";
+        assert!(
+            redact(arg).contains("ab12cd"),
+            "precondition: shape is not caught by pattern redaction"
+        );
+        let logged = redact_arg(arg, Some(secret));
+        assert!(!logged.contains("ab12cd"), "known secret leaked: {logged}");
+        assert!(logged.contains(REDACTION));
+    }
+
+    #[test]
+    fn redact_arg_keeps_non_secret_args_fully_visible() {
+        // Structured redaction must not blur or drop arguments that carry no
+        // secret — debuggability of the non-secret parts is the point.
+        let secret = "X-Api-Id: ab12cd";
+        let args = ["-sS", "-p-", "10.0.0.1"];
+        for arg in args {
+            assert_eq!(
+                redact_arg(arg, Some(secret)),
+                arg,
+                "non-secret arg must survive verbatim"
+            );
+        }
+    }
+
+    #[test]
+    fn redact_args_redacts_only_the_credential_bearing_element() {
+        let secret = "Cookie: sid=ab12cd";
+        let args = ["-H", secret, "https://target.example", "-k"];
+        let logged = redact_args(&args, Some(secret));
+        assert_eq!(
+            logged.len(),
+            args.len(),
+            "arg count preserved (no dropping)"
+        );
+        assert_eq!(logged[0], "-H", "flag name stays visible");
+        assert!(
+            !logged[1].contains("ab12cd"),
+            "secret arg scrubbed: {}",
+            logged[1]
+        );
+        assert_eq!(logged[2], "https://target.example");
+        assert_eq!(logged[3], "-k");
+    }
+
+    #[test]
+    fn redact_args_without_known_secret_still_pattern_redacts() {
+        // Defense in depth: when no injected secret is known (ordinary run),
+        // secret-SHAPED args still go through the pattern redactor. A standalone
+        // `user:pass` value is NOT caught (the `-u` regex needs the flag in the
+        // same string — exactly why by-value scrubbing matters for identity
+        // runs), so use a long-hex token shape the pattern redactor does catch.
+        let token = "a".repeat(40);
+        let logged = redact_args(&["--token", &token], None);
+        assert!(!logged[1].contains(&token), "pattern miss: {}", logged[1]);
+        assert!(logged[1].contains(REDACTION));
+    }
+
+    #[test]
+    fn redact_arg_none_and_empty_secret_behave_identically() {
+        // None (no identity) and an anonymous identity (empty secret) must not
+        // corrupt the argument — both fall back to pattern-only redaction.
+        let arg = "just an ordinary argument";
+        assert_eq!(redact_arg(arg, None), arg);
+        assert_eq!(redact_arg(arg, Some("")), arg);
     }
 
     #[test]

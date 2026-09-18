@@ -24,7 +24,12 @@ const RECV_TIMEOUT_MS: u64 = 250;
 /// device list.
 pub async fn discover_with_outcome(timeout_ms: u64) -> (Vec<SsdpDevice>, ProbeOutcome) {
     if timeout_ms == 0 {
-        return (Vec::new(), ProbeOutcome::Skipped("zero timeout".into()));
+        return (
+            Vec::new(),
+            ProbeOutcome::Skipped {
+                reason: "zero timeout".into(),
+            },
+        );
     }
     tokio::task::spawn_blocking(move || {
         let socket = match UdpSocket::bind("0.0.0.0:0") {
@@ -32,7 +37,9 @@ pub async fn discover_with_outcome(timeout_ms: u64) -> (Vec<SsdpDevice>, ProbeOu
             Err(e) => {
                 return (
                     Vec::new(),
-                    ProbeOutcome::Skipped(format!("bind failed: {e}")),
+                    ProbeOutcome::Skipped {
+                        reason: format!("bind failed: {e}"),
+                    },
                 )
             }
         };
@@ -40,7 +47,9 @@ pub async fn discover_with_outcome(timeout_ms: u64) -> (Vec<SsdpDevice>, ProbeOu
             // Without a read timeout the recv loop would block past the deadline.
             return (
                 Vec::new(),
-                ProbeOutcome::Skipped(format!("set_read_timeout failed: {e}")),
+                ProbeOutcome::Skipped {
+                    reason: format!("set_read_timeout failed: {e}"),
+                },
             );
         }
         let _ = socket.set_broadcast(true);
@@ -52,7 +61,9 @@ pub async fn discover_with_outcome(timeout_ms: u64) -> (Vec<SsdpDevice>, ProbeOu
         if let Err(e) = socket.send_to(search_request.as_bytes(), SSDP_MULTICAST_ADDR) {
             return (
                 Vec::new(),
-                ProbeOutcome::Skipped(format!("send failed: {e}")),
+                ProbeOutcome::Skipped {
+                    reason: format!("send failed: {e}"),
+                },
             );
         }
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
@@ -75,7 +86,9 @@ pub async fn discover_with_outcome(timeout_ms: u64) -> (Vec<SsdpDevice>, ProbeOu
     .unwrap_or_else(|_| {
         (
             Vec::new(),
-            ProbeOutcome::Skipped("probe task panicked".into()),
+            ProbeOutcome::Skipped {
+                reason: "probe task panicked".into(),
+            },
         )
     })
 }
@@ -165,7 +178,7 @@ mod tests {
         let (devices, outcome) = discover_with_outcome(0).await;
         assert!(devices.is_empty());
         assert!(
-            matches!(outcome, crate::common::probe::ProbeOutcome::Skipped(_)),
+            matches!(outcome, crate::common::probe::ProbeOutcome::Skipped { .. }),
             "a zero-timeout probe did not run; must be Skipped, not Ran"
         );
     }

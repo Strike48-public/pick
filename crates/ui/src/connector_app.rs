@@ -658,10 +658,11 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 new_config.tenant_id = env_uuid;
             }
         }
-        if let Some(canonical) = ConnectorConfig::read_credentials_tenant_id(
-            &new_config.connector_name,
-            &new_config.instance_id,
-        ) {
+        // The saved-credentials file is type-scoped ({CONNECTOR_TYPE}_{instance_id}),
+        // NOT persona-scoped (#386).
+        if let Some(canonical) =
+            ConnectorConfig::read_credentials_tenant_id(&new_config.instance_id)
+        {
             if canonical != new_config.tenant_id {
                 terminal_lines.write().push(TerminalLine::info(format!(
                     "Using tenant UUID {} from saved credentials (form value: {})",
@@ -681,8 +682,14 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             new_config.host
         )));
 
+        // Update the authoritative in-memory `settings` signal (not a detached
+        // peek().clone() copy). Other handlers persist by cloning this signal; if
+        // `last_config`/`auto_connect` only lived on disk, the next signal-based
+        // save_settings would clobber them back and a fresh user's saved endpoint
+        // would be wiped. See pick#223, pick#374 and the same pattern in
+        // `on_easy_mode_change`.
         if remember {
-            let mut s = settings.peek().clone();
+            let mut s = settings.write();
             s.last_config = Some(new_config.clone());
             s.auto_connect = true;
             let _ = save_settings(&s);
@@ -699,7 +706,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         // Clone identity fields before we consume `new_config` in the
         // spawned connector task — we still need them for the first-run
         // OTT self-heal poll below.
-        let connector_name_for_poll = new_config.connector_name.clone();
         let instance_id_for_poll = new_config.instance_id.clone();
         let initial_tenant_for_poll = new_config.tenant_id.clone();
 
@@ -754,40 +760,44 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             // the next launch, keeping the slug detour to at most one
             // reconnect. See pick#223.
             {
-                let connector_name = connector_name_for_poll;
                 let instance_id = instance_id_for_poll;
                 let initial_tenant = initial_tenant_for_poll;
                 spawn(async move {
                     for _ in 0..60 {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        let Some(canonical) = ConnectorConfig::read_credentials_tenant_id(
-                            &connector_name,
-                            &instance_id,
-                        ) else {
+                        let Some(canonical) =
+                            ConnectorConfig::read_credentials_tenant_id(&instance_id)
+                        else {
                             continue;
                         };
                         if canonical == initial_tenant {
                             return;
                         }
-                        let mut s = settings.peek().clone();
-                        let updated = match s.last_config.clone() {
-                            Some(mut c) => {
-                                if c.tenant_id == canonical {
-                                    return;
-                                }
-                                c.tenant_id = canonical.clone();
-                                Some(c)
-                            }
-                            None => None,
-                        };
-                        if let Some(c) = updated {
-                            s.last_config = Some(c);
-                            let _ = save_settings(&s);
-                            terminal_lines.write().push(TerminalLine::info(format!(
-                                "Saved canonical tenant UUID {} for next launch.",
-                                canonical
-                            )));
+                        // Read through and write back to the authoritative
+                        // `settings` signal (not a detached peek().clone() copy)
+                        // so the persisted tenant UUID survives later
+                        // signal-based saves. See pick#223, pick#374.
+                        if settings.peek().last_config.is_none() {
+                            return;
                         }
+                        {
+                            let mut s = settings.write();
+                            // Re-check under the guard: last_config may have been
+                            // replaced or cleared between the peek above and now,
+                            // or its tenant may already match (peek-then-write
+                            // window). Only stamp when it still differs.
+                            match s.last_config.as_mut() {
+                                Some(c) if c.tenant_id != canonical => {
+                                    c.tenant_id = canonical.clone();
+                                }
+                                _ => return,
+                            }
+                            let _ = save_settings(&s);
+                        }
+                        terminal_lines.write().push(TerminalLine::info(format!(
+                            "Saved canonical tenant UUID {} for next launch.",
+                            canonical
+                        )));
                         return;
                     }
                 });
@@ -918,7 +928,9 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                     match pentest_core::connector_registration::prepare_connector_registration(
                         &api_url,
                         &jwt,
-                        &base_config.connector_name,
+                        // The OTT is bound to the SDK connector type server-side; mint it
+                        // with the same type the later register-with-ott redeems (#386).
+                        pentest_core::config::CONNECTOR_TYPE,
                     )
                     .await
                     {
@@ -1095,10 +1107,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 &device_id,
                 &cfg_now.host,
             );
-            pentest_core::config::ConnectorConfig::clear_credentials(
-                &cfg_now.connector_name,
-                &scoped_instance_id,
-            );
+            pentest_core::config::ConnectorConfig::clear_credentials(&scoped_instance_id);
             crate::session::clear_matrix_token();
             crate::session::set_auth_token("");
             pentest_core::matrix::clear_browser_token_cache();
@@ -1299,6 +1308,19 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                     conversation_mailbox,
                                     on_logout: on_logout,
                                     on_easy_mode_change: on_easy_mode_change,
+                                    // Persist through the authoritative settings
+                                    // signal (same handler shape as the expert
+                                    // toggle below) so the opt-out survives the
+                                    // next signal-based save (#373).
+                                    on_telemetry_change: move |v: bool| {
+                                        let mut s = settings.write();
+                                        s.telemetry_enabled = v;
+                                        let _ = save_settings(&s);
+                                        // Apply immediately: off disables the
+                                        // Sentry client (no events/sessions),
+                                        // on re-inits. No relaunch needed.
+                                        pentest_core::telemetry::set_enabled(v);
+                                    },
                                     on_sign_in: move |_| d1(AuthEvent::SignInRequested),
                                     on_chat_event: move |ev| d2(ev),
                                     current_host: config.read().host.clone(),

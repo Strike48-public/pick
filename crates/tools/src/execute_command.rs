@@ -160,13 +160,34 @@ impl PentestTool for ExecuteCommandTool {
 
             let timeout = Duration::from_secs(timeout_seconds);
 
+            // Thread the injected secret down to the platform command layer so
+            // its tracing lines redact it BY VALUE (exotic header shapes defeat
+            // the regex-only redactor; pick#335). Anonymous identities inject an
+            // empty secret — pass None so nothing value-scrubs.
+            let injected_secret = applied_identity
+                .as_ref()
+                .map(|a| a.secret.as_str())
+                .filter(|s| !s.is_empty());
+
             let result = if let Some(ref workspace) = workspace_path {
                 platform
-                    .execute_command_in_dir(command, &args_refs, timeout, Some(workspace.as_path()))
+                    .execute_command_with_secret(
+                        command,
+                        &args_refs,
+                        timeout,
+                        Some(workspace.as_path()),
+                        injected_secret,
+                    )
                     .await?
             } else {
                 platform
-                    .execute_command(command, &args_refs, timeout)
+                    .execute_command_with_secret(
+                        command,
+                        &args_refs,
+                        timeout,
+                        None,
+                        injected_secret,
+                    )
                     .await?
             };
 
@@ -400,6 +421,22 @@ fn binary_basename(command: &str) -> &str {
 /// not one splice rule:
 /// * `curl` / `ffuf` take a separate `-H <value>` arg pair.
 /// * `wget` / `sqlmap` take a single joined `--header=<value>` arg.
+///
+/// # Process-table exposure (pick#335, documented honestly)
+///
+/// The returned fragment puts the credential in ARGV, so on an identity run the
+/// secret is visible in `ps` / `/proc/<pid>/cmdline` for the subprocess
+/// lifetime — to any local observer on the host-direct path, and inside the
+/// sandboxed path (both to the inner `bash -c` wrapper and to the target
+/// binary's own process). Passing the secret via env or stdin instead is not
+/// possible in the current code path: the sandbox executors hand one shell
+/// string to `bash -c`, and every flag above is argv-only. File indirection
+/// (`curl -H @file` / `--config`) would keep the secret out of argv, but the
+/// header file would have to live where the sandbox can see it — a
+/// workspace-hosted file would be readable by the agent itself, defeating
+/// pick#162's "the LLM never sees the credential" invariant. That design (a
+/// sandbox-private path plus guaranteed cleanup) is deferred; the log-side
+/// half of #335 is closed by value via `execute_command_with_secret`.
 fn header_flags_for(binary: &str, header: &str) -> Option<Vec<String>> {
     match binary {
         "curl" | "ffuf" => Some(vec!["-H".to_string(), header.to_string()]),
