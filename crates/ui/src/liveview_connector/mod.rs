@@ -912,8 +912,18 @@ impl LiveViewConnector {
         // Resolving it here — before the runner is constructed — is what makes the
         // tenant reach `build_register_request`. See `resolve_ott_tenant` for the
         // second defect this also closes (restart with a spent OTT).
-        if let Some(tenant_id) =
-            Self::resolve_ott_tenant(&self.config.connector_name, &self.config.instance_id).await
+        // Pass the SDK CONNECTOR_TYPE, NOT the persona connector_name (#386):
+        // the host mints the pre-approved OTT for `pentest-connector`, and
+        // register_with_ott below saves credentials under
+        // `{CONNECTOR_TYPE}_{instance_id}` — the file name the SDK runner's
+        // own initialize_auth (via BaseConnector::connector_type) looks up.
+        // A persona name here redeemed otherwise-valid tokens with the wrong
+        // connector_type and surfaced as a misleading "Invalid or expired OTT".
+        if let Some(tenant_id) = Self::resolve_ott_tenant(
+            pentest_core::config::CONNECTOR_TYPE,
+            &self.config.instance_id,
+        )
+        .await
         {
             if tenant_id != sdk_config.tenant_id {
                 tracing::info!(

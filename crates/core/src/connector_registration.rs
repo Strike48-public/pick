@@ -91,9 +91,13 @@ pub fn derive_api_url(host: &str, use_tls: bool) -> String {
 pub async fn prepare_connector_registration(
     api_url: &str,
     jwt: &str,
-    connector_name: &str,
+    connector_type: &str,
 ) -> Result<OttData> {
-    let ott = crate::matrix::pre_approve(api_url, jwt, connector_name).await?;
+    // The minted OTT is bound to `connector_type` server-side, so the SDK's
+    // later register-with-ott must send exactly this value. Pass the SDK type
+    // ([`crate::config::CONNECTOR_TYPE`]), never the persona `connector_name`
+    // (#386).
+    let ott = crate::matrix::pre_approve(api_url, jwt, connector_type).await?;
     let staged = crate::matrix::stage_ott_for_sdk(&ott)?;
     let staged = staged
         .to_str()

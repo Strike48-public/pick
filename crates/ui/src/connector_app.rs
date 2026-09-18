@@ -658,10 +658,11 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 new_config.tenant_id = env_uuid;
             }
         }
-        if let Some(canonical) = ConnectorConfig::read_credentials_tenant_id(
-            &new_config.connector_name,
-            &new_config.instance_id,
-        ) {
+        // The saved-credentials file is type-scoped ({CONNECTOR_TYPE}_{instance_id}),
+        // NOT persona-scoped (#386).
+        if let Some(canonical) =
+            ConnectorConfig::read_credentials_tenant_id(&new_config.instance_id)
+        {
             if canonical != new_config.tenant_id {
                 terminal_lines.write().push(TerminalLine::info(format!(
                     "Using tenant UUID {} from saved credentials (form value: {})",
@@ -699,7 +700,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         // Clone identity fields before we consume `new_config` in the
         // spawned connector task — we still need them for the first-run
         // OTT self-heal poll below.
-        let connector_name_for_poll = new_config.connector_name.clone();
         let instance_id_for_poll = new_config.instance_id.clone();
         let initial_tenant_for_poll = new_config.tenant_id.clone();
 
@@ -754,16 +754,14 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             // the next launch, keeping the slug detour to at most one
             // reconnect. See pick#223.
             {
-                let connector_name = connector_name_for_poll;
                 let instance_id = instance_id_for_poll;
                 let initial_tenant = initial_tenant_for_poll;
                 spawn(async move {
                     for _ in 0..60 {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        let Some(canonical) = ConnectorConfig::read_credentials_tenant_id(
-                            &connector_name,
-                            &instance_id,
-                        ) else {
+                        let Some(canonical) =
+                            ConnectorConfig::read_credentials_tenant_id(&instance_id)
+                        else {
                             continue;
                         };
                         if canonical == initial_tenant {
@@ -918,7 +916,9 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                     match pentest_core::connector_registration::prepare_connector_registration(
                         &api_url,
                         &jwt,
-                        &base_config.connector_name,
+                        // The OTT is bound to the SDK connector type server-side; mint it
+                        // with the same type the later register-with-ott redeems (#386).
+                        pentest_core::config::CONNECTOR_TYPE,
                     )
                     .await
                     {
@@ -1095,10 +1095,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 &device_id,
                 &cfg_now.host,
             );
-            pentest_core::config::ConnectorConfig::clear_credentials(
-                &cfg_now.connector_name,
-                &scoped_instance_id,
-            );
+            pentest_core::config::ConnectorConfig::clear_credentials(&scoped_instance_id);
             crate::session::clear_matrix_token();
             crate::session::set_auth_token("");
             pentest_core::matrix::clear_browser_token_cache();
