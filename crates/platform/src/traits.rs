@@ -1,5 +1,6 @@
 //! Platform trait definitions
 
+use crate::common::probe::ProbeOutcome;
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,36 @@ pub trait NetworkOps: Send + Sync {
 
     /// Discover mDNS services
     async fn mdns_discover(&self, service_type: &str, timeout_ms: u64) -> Result<Vec<MdnsService>>;
+
+    /// Like [`NetworkOps::ssdp_discover`] but also reports whether the probe
+    /// actually ran (#309).
+    ///
+    /// The default maps a backend error to `Err` and otherwise assumes the
+    /// probe ran — correct for implementations that surface socket failures as
+    /// errors. Implementations with best-effort paths that can return an empty
+    /// result without probing (blocked sandbox, unavailable socket) must
+    /// override this so "never looked" stays distinguishable from "nothing
+    /// there".
+    async fn ssdp_discover_with_outcome(
+        &self,
+        timeout_ms: u64,
+    ) -> Result<(Vec<SsdpDevice>, ProbeOutcome)> {
+        Ok((self.ssdp_discover(timeout_ms).await?, ProbeOutcome::Ran))
+    }
+
+    /// Like [`NetworkOps::mdns_discover`] but also reports whether the probe
+    /// actually ran (#309). See [`NetworkOps::ssdp_discover_with_outcome`] for
+    /// the default-override contract.
+    async fn mdns_discover_with_outcome(
+        &self,
+        service_type: &str,
+        timeout_ms: u64,
+    ) -> Result<(Vec<MdnsService>, ProbeOutcome)> {
+        Ok((
+            self.mdns_discover(service_type, timeout_ms).await?,
+            ProbeOutcome::Ran,
+        ))
+    }
 }
 
 /// System information trait
