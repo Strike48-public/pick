@@ -1,0 +1,13 @@
+# Code owners for pick.
+#
+# This file exists so the agent-hardening tripwire cannot be weakened without an
+# external eyeball: a PR that strips a C1-C3 control could otherwise also edit
+# the doctor or its workflow in the same change and still run green
+# (Strike48-public/pick#453, V8). These two paths require review from an owner
+# other than the change author.
+#
+# Owner is the security reviewer who requested the anchor; a maintainer can swap
+# this for a review team (e.g. an org team slug) once one is designated.
+
+/scripts/agent-hardening-doctor.py             @cchao-devo
+/.github/workflows/agent-hardening-doctor.yml  @cchao-devo
