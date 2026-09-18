@@ -74,8 +74,25 @@ impl NetworkOps for IosPlatform {
         network::ssdp_discover(timeout_ms).await
     }
 
+    async fn ssdp_discover_with_outcome(
+        &self,
+        timeout_ms: u64,
+    ) -> Result<(Vec<SsdpDevice>, crate::common::probe::ProbeOutcome)> {
+        // Shared best-effort implementation: a blocked socket degrades to an
+        // empty result, so the probe outcome must be carried through (#309).
+        network::ssdp_discover_with_outcome(timeout_ms).await
+    }
+
     async fn mdns_discover(&self, service_type: &str, timeout_ms: u64) -> Result<Vec<MdnsService>> {
         network::mdns_discover(service_type, timeout_ms).await
+    }
+
+    async fn mdns_discover_with_outcome(
+        &self,
+        service_type: &str,
+        timeout_ms: u64,
+    ) -> Result<(Vec<MdnsService>, crate::common::probe::ProbeOutcome)> {
+        network::mdns_discover_with_outcome(service_type, timeout_ms).await
     }
 }
 

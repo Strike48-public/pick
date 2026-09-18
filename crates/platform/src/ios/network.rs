@@ -26,6 +26,21 @@ pub async fn mdns_discover(service_type: &str, timeout_ms: u64) -> Result<Vec<Md
     crate::common::mdns::discover(service_type, timeout_ms).await
 }
 
+/// Discover SSDP/UPnP devices, also reporting whether the probe ran (#309).
+pub async fn ssdp_discover_with_outcome(
+    timeout_ms: u64,
+) -> Result<(Vec<SsdpDevice>, crate::common::probe::ProbeOutcome)> {
+    Ok(crate::common::ssdp::discover_with_outcome(timeout_ms).await)
+}
+
+/// Discover mDNS services, also reporting whether the probe ran (#309).
+pub async fn mdns_discover_with_outcome(
+    service_type: &str,
+    timeout_ms: u64,
+) -> Result<(Vec<MdnsService>, crate::common::probe::ProbeOutcome)> {
+    Ok(crate::common::mdns::discover_with_outcome(service_type, timeout_ms).await)
+}
+
 /// Read the kernel ARP cache via the BSD route socket `sysctl`.
 ///
 /// Returns `Ok(vec![])` (never `Err`) if the sysctl is unavailable or the
