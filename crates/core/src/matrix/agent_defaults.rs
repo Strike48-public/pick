@@ -5,6 +5,7 @@
 //! passed in explicitly rather than read from a UI session global, so it can
 //! be called from any context.
 
+use crate::config::CONNECTOR_TYPE;
 use crate::matrix::CreateAgentInput;
 
 /// Build a tool_configs JSON object that auto-approves every tool in `names`.
@@ -97,8 +98,11 @@ fn system_message_with_available_tools(tool_names: &[String], active_subnets: &[
 /// Build the default CreateAgentInput for auto-creating a pentest-connector persona.
 ///
 /// `tenant_id` is the tenant/realm name (e.g. "non-prod") used to build the
-/// connector address pattern `{tenant}.{connector_name}.*` so the Matrix
-/// backend can match registered connector tools to this agent.
+/// connector address pattern `{tenant}.{CONNECTOR_TYPE}.*` so the Matrix
+/// backend can match registered connector tools to this agent. The key uses
+/// the SDK wire type (#386), not the persona `connector_name`: the platform
+/// matches it against `RegisterConnectorRequest.connector_type`, which is
+/// always [`CONNECTOR_TYPE`].
 ///
 /// `connector_name` controls the gateway identity. Instances sharing the same
 /// name are round-robin'd; use a unique name (e.g. `pentest-connector-<hostname>`)
@@ -114,7 +118,11 @@ pub fn default_pentest_agent_input(
     tool_names: &[String],
     active_subnets: &[String],
 ) -> CreateAgentInput {
-    let connector_key = format!("{}.{}.*", tenant_id, connector_name);
+    // The connector key must be the SDK wire type (#386), not the persona
+    // `connector_name`: the platform matches it against the
+    // `RegisterConnectorRequest.connector_type` the connector registered with.
+    // `connector_name` stays for agent naming/logs only.
+    let connector_key = format!("{tenant_id}.{CONNECTOR_TYPE}.*");
     tracing::info!(
         "default_pentest_agent_input: tenant={}, connector_name={}, connector_key={}, tool_names({})={:?}",
         tenant_id,
@@ -714,11 +722,18 @@ mod tests {
 
     #[test]
     fn default_pentest_agent_input_is_pure_and_well_formed() {
-        let input =
-            default_pentest_agent_input("non-prod", "pentest-connector", &["foo".into()], &[]);
+        // Persona name deliberately differs from CONNECTOR_TYPE so the test
+        // proves the connector key uses the SDK wire type (#386), not the
+        // persona name.
+        let input = default_pentest_agent_input(
+            "non-prod",
+            "pentest-connector-web-app",
+            &["foo".into()],
+            &[],
+        );
 
         // Name matches the connector name.
-        assert_eq!(input.name, "pentest-connector");
+        assert_eq!(input.name, "pentest-connector-web-app");
 
         // System message mentions the red team (case-insensitive).
         let sys = input.system_message.as_deref().unwrap_or_default();
@@ -736,7 +751,7 @@ mod tests {
         let connector_key = "non-prod.pentest-connector.*";
         let connector = connectors
             .get(connector_key)
-            .expect("connector_key present");
+            .expect("connector_key present (built from CONNECTOR_TYPE, not the persona name)");
 
         // The passed tool name appears under the connector's tool_configs.
         let tool_configs = connector
