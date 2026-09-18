@@ -221,11 +221,16 @@ impl ProotExecutor {
     }
 
     /// Execute a command inside the proot sandbox
+    ///
+    /// `known_secret` is accepted for signature parity with the other executors
+    /// (the bwrap executor redacts its inner-command log line with it, pick#335);
+    /// this executor does not log the inner command, so it is unused here.
     pub async fn execute(
         &self,
         cmd: &str,
         timeout: Duration,
         working_dir: Option<&Path>,
+        _known_secret: Option<&str>,
     ) -> SandboxResult<CommandResult> {
         let rootfs = self.config.rootfs_dir();
         if !rootfs.join("bin").join("sh").exists() {

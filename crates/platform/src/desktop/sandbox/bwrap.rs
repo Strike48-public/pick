@@ -101,11 +101,16 @@ impl BwrapExecutor {
     }
 
     /// Execute a command inside the bwrap sandbox
+    ///
+    /// `known_secret` is a credential injected into `cmd` by a differential-authz
+    /// identity run (pick#314); it is used ONLY to redact the inner-command log
+    /// line below by value (pick#335). It does not affect execution.
     pub async fn execute(
         &self,
         cmd: &str,
         timeout: Duration,
         working_dir: Option<&Path>,
+        known_secret: Option<&str>,
     ) -> SandboxResult<CommandResult> {
         let rootfs = self.config.rootfs_dir();
         if !rootfs.join("bin").join("sh").exists() {
@@ -188,9 +193,14 @@ impl BwrapExecutor {
         bwrap_args.push("-c".to_string());
         bwrap_args.push(cmd.to_string());
 
+        // pick#335: this line used to log the raw inner command at info, which
+        // on an identity run carried the injected credential VERBATIM into every
+        // log sink (this site predates the redaction added to command.rs and was
+        // missed by it). Redact by value when the secret is known, then by
+        // pattern as defense in depth; non-secret structure stays visible.
         tracing::info!(
-            "[bwrap::execute] inner cmd passed to /bin/bash -c: {:?}",
-            cmd
+            "[bwrap::execute] inner cmd passed to /bin/bash -c (redacted): {:?}",
+            pentest_core::provenance::redact_arg(cmd, known_secret)
         );
 
         let mut command = Command::new("bwrap");
