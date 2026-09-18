@@ -1105,6 +1105,7 @@ impl LiveViewConnector {
         // `last_disconnect_reason` explain a stuck connector at a glance.
         let event_tx_clone = self.event_tx.clone();
         let runner_probe = runner.clone();
+        let shutdown_flag_probe = self.shutdown.clone();
         tokio::spawn(async move {
             // Give the runner time to connect and register
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -1145,7 +1146,90 @@ impl LiveViewConnector {
                         .unwrap_or_default(),
                 );
             }
-            let _ = event_tx_clone.send(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
+            // Gate the Registered transition on JWT presence (pick#292). The
+            // transport coming up only means the wss handshake succeeded; while
+            // admin approval is still pending the server has issued no JWT and
+            // the session is NOT usable. Flipping to Registered here used to
+            // send the desktop to an empty Dashboard with the approval wait
+            // buried. Instead: with a JWT, flip to Registered as before;
+            // without one, surface WaitingForApproval (the connecting screen's
+            // "Pending approval" callout) and keep polling until the SDK's
+            // post-approval `credentials_issued` round-trip lands the JWT in
+            // the runner's config. If the transport never came up, stay on
+            // Connecting — the SDK retries with backoff and the warn! above
+            // explains why.
+            match registration_outcome(runner_probe.has_auth_token().await, running, ever_connected)
+            {
+                Some(RegistrationOutcome::Registered) => {
+                    let _ = event_tx_clone
+                        .send(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
+                }
+                Some(RegistrationOutcome::AwaitingApproval) => {
+                    let _ = event_tx_clone.send(ConnectorEvent::StepChanged(
+                        ConnectingStep::WaitingForApproval,
+                    ));
+                    // Poll for JWT issuance. Bounded by shutdown (the local flag
+                    // mirrors LiveViewConnector::shutdown) and by the runner
+                    // stopping, so the loop never outlives the connection it
+                    // watches.
+                    loop {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                        if shutdown_flag_probe.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let stats = runner_probe.get_stats().await;
+                        let running = stats
+                            .get("running")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        if !running {
+                            break;
+                        }
+                        if runner_probe.has_auth_token().await {
+                            tracing::info!(
+                                "[Connector] JWT issued after approval; transitioning to Registered"
+                            );
+                            let _ = event_tx_clone
+                                .send(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
+                            break;
+                        }
+                    }
+                }
+                None => {
+                    // Transport not established at the 3s probe. The SDK keeps
+                    // retrying with backoff, so enter the same bounded poll
+                    // loop as the awaiting-approval path: a transport that
+                    // comes up late (and a JWT that arrives with it) must still
+                    // reach Registered instead of leaving the UI stuck on
+                    // "Opening connection...". Bounded by shutdown (the local
+                    // flag mirrors LiveViewConnector::shutdown) and by the
+                    // runner stopping, so the loop never outlives the
+                    // connection it watches.
+                    loop {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                        if shutdown_flag_probe.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let stats = runner_probe.get_stats().await;
+                        let running = stats
+                            .get("running")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        if !running {
+                            break;
+                        }
+                        if runner_probe.has_auth_token().await {
+                            tracing::info!(
+                                "[Connector] transport established and JWT issued; \
+                                 transitioning to Registered"
+                            );
+                            let _ = event_tx_clone
+                                .send(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
+                            break;
+                        }
+                    }
+                }
+            }
         });
 
         // One-time startup summary. The SDK runner logs its registration/OTT/
@@ -1236,6 +1320,75 @@ async fn probe_host_reachable(host: &str) -> Result<(), String> {
             target,
             CONNECT_TIMEOUT.as_secs()
         )),
+    }
+}
+
+/// What the desktop UI should do now that the runner has had time to connect.
+///
+/// Factored out of the 3-second spawn in `connect_and_run` so the
+/// Registered-vs-Connecting decision is unit-testable (pick#292).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegistrationOutcome {
+    /// A connector JWT is present: the session is authorized and usable. Safe
+    /// to flip the UI to the connected Dashboard.
+    Registered,
+    /// Transport is up but the server issued no JWT yet: registration was
+    /// accepted but admin approval is still pending. The UI must stay on the
+    /// connecting screen with the "Pending approval" callout.
+    AwaitingApproval,
+}
+
+/// Decide the UI outcome from JWT presence and transport state.
+///
+/// Returns `None` while the transport has not established (the SDK keeps
+/// retrying with backoff; the UI stays on its current connecting state).
+/// Once the transport is up, JWT presence — not elapsed time — decides
+/// between `Registered` and `AwaitingApproval`.
+fn registration_outcome(
+    has_auth_token: bool,
+    running: bool,
+    ever_connected: bool,
+) -> Option<RegistrationOutcome> {
+    if !running || !ever_connected {
+        return None;
+    }
+    Some(if has_auth_token {
+        RegistrationOutcome::Registered
+    } else {
+        RegistrationOutcome::AwaitingApproval
+    })
+}
+
+#[cfg(test)]
+mod registration_outcome_tests {
+    use super::*;
+
+    #[test]
+    fn jwt_present_transitions_to_registered() {
+        assert_eq!(
+            registration_outcome(true, true, true),
+            Some(RegistrationOutcome::Registered)
+        );
+    }
+
+    #[test]
+    fn transport_up_without_jwt_awaits_approval() {
+        assert_eq!(
+            registration_outcome(false, true, true),
+            Some(RegistrationOutcome::AwaitingApproval)
+        );
+    }
+
+    #[test]
+    fn transport_down_never_flips_to_registered() {
+        // Regression for pick#292: the 3s timer used to emit Registered
+        // unconditionally, even while the transport was still down.
+        assert_eq!(registration_outcome(true, false, true), None);
+        assert_eq!(registration_outcome(true, true, false), None);
+        assert_eq!(registration_outcome(true, false, false), None);
+        assert_eq!(registration_outcome(false, false, false), None);
+        assert_eq!(registration_outcome(false, true, false), None);
+        assert_eq!(registration_outcome(false, false, true), None);
     }
 }
 
