@@ -78,6 +78,14 @@ impl ToolEvent {
 /// Implements `BaseConnector` to route incoming requests to the tool registry
 /// or built-in file browser. Used directly in integration tests; production
 /// apps use `LiveViewConnector` from the UI crate instead.
+///
+/// TEST-ONLY: this connector must never be driven through the SDK's
+/// production registration paths. Its `connector_type()` returns the
+/// sentinel `"dioxus-pentest"` on purpose — a tripwire that would fail OTT
+/// redemption against StrikeHub's `pentest-connector` pre-approvals if this
+/// struct were ever wired into `register_with_ott`/`load_saved_credentials`.
+/// The shipping connectors (`PickConnector` in crates/ui and `ToolConnector`
+/// in this crate) return `config::CONNECTOR_TYPE` instead.
 pub struct PentestConnector {
     tools: Arc<RwLock<ToolRegistry>>,
     metadata: HashMap<String, String>,
@@ -169,6 +177,9 @@ impl PentestConnector {
 }
 
 impl BaseConnector for PentestConnector {
+    /// Test-only sentinel, NOT a valid production connector type (#386).
+    /// See the struct-level docs: production registration must go through
+    /// `PickConnector`/`ToolConnector`, which return `CONNECTOR_TYPE`.
     fn connector_type(&self) -> &str {
         "dioxus-pentest"
     }

@@ -110,8 +110,20 @@ impl PickConnector {
 }
 
 impl BaseConnector for PickConnector {
+    /// The SDK connector type, NOT the persona `connector_name` (#386).
+    ///
+    /// The SDK runner feeds this to every auth path: `OttProvider::new`,
+    /// `register_with_ott` (the pre-approved OTT redemption the server
+    /// validates against the type the host minted the token for), and
+    /// `load_saved_credentials` (the `{connector_type}_{instance_id}` file
+    /// name). It also lands verbatim in the WebSocket
+    /// `RegisterConnectorRequest.connector_type`. Returning the persona here
+    /// redeemed otherwise-valid OTTs with the wrong type and fragmented the
+    /// saved-credential file per persona. The persona identity keeps flowing
+    /// where it belongs: `with_agent_name` for tool contexts and the chat
+    /// panel's persona creation.
     fn connector_type(&self) -> &str {
-        &self.connector_name
+        pentest_core::config::CONNECTOR_TYPE
     }
 
     fn version(&self) -> &str {
@@ -682,7 +694,7 @@ mod tests {
             event_tx,
             ws_connections: Arc::new(DashMap::new()),
             matrix_client: Arc::new(RwLock::new(None)),
-            connector_name: "pentest-connector".to_string(),
+            connector_name: "pentest-connector-web-app".to_string(),
             instance_id: "test".to_string(),
             aggression_level: Arc::new(RwLock::new(AggressionLevel::default())),
             ipc_addr: Arc::new(RwLock::new(None)),
@@ -690,6 +702,21 @@ mod tests {
             matrix_api_url: String::new(),
             identities: Arc::new(pentest_core::identity::IdentityStore::new()),
         }
+    }
+
+    /// Regression guard for #386: `BaseConnector::connector_type()` — which
+    /// the SDK runner feeds to `register_with_ott`, `load_saved_credentials`,
+    /// and the `RegisterConnectorRequest` — must be the fixed SDK type, never
+    /// the persona `connector_name`. StrikeHub mints pre-approved OTTs for
+    /// `pentest-connector`; redeeming one with a persona name fails with a
+    /// misleading "Invalid or expired OTT". The fixture's `connector_name`
+    /// is deliberately a persona value to keep this honest.
+    #[test]
+    fn connector_type_is_sdk_type_not_persona_name() {
+        let connector = test_connector();
+        assert_eq!(connector.connector_type(), "pentest-connector");
+        assert_eq!(connector.connector_name, "pentest-connector-web-app");
+        assert_ne!(connector.connector_type(), connector.connector_name);
     }
 
     /// Regression guard: every `capabilities()` entry's `input_schema_json` must be
