@@ -104,9 +104,12 @@ fn system_message_with_available_tools(tool_names: &[String], active_subnets: &[
 /// matches it against `RegisterConnectorRequest.connector_type`, which is
 /// always [`CONNECTOR_TYPE`].
 ///
-/// `connector_name` controls the gateway identity. Instances sharing the same
-/// name are round-robin'd; use a unique name (e.g. `pentest-connector-<hostname>`)
-/// to get a dedicated agent view.
+/// The gateway/registration identity is the wire type ([`CONNECTOR_TYPE`], #386)
+/// plus the per-instance `instance_id`; `connector_name` is display/agent
+/// naming only. All pick instances in a tenant that register with the same
+/// connector type join one round-robin agent pool keyed by
+/// `{tenant}.{CONNECTOR_TYPE}.*` — a unique name does NOT give an instance a
+/// dedicated agent view or per-instance isolation.
 ///
 /// `tool_names` are the registered tool names to auto-approve, and
 /// `active_subnets` are the connector's live subnet CIDRs injected into the

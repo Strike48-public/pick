@@ -214,13 +214,18 @@ impl BwrapExecutor {
         match tokio::time::timeout(timeout, crate::desktop::wait_for_child_output(child)).await {
             Ok(result) => {
                 let (stdout, stderr, exit_code) = result?;
+                // Redact captured child output before logging (pick#335 review:
+                // on an identity run curl -v reflects the injected Authorization
+                // header into stderr, landing in the same sinks as argv logs).
+                let stdout_head = &stdout[..stdout.len().min(500)];
+                let stderr_head = &stderr[..stderr.len().min(500)];
                 tracing::info!(
                     "[bwrap::execute] exit_code={} stdout_len={} stderr_len={} stdout={:?} stderr={:?}",
                     exit_code,
                     stdout.len(),
                     stderr.len(),
-                    &stdout[..stdout.len().min(500)],
-                    &stderr[..stderr.len().min(500)],
+                    pentest_core::provenance::redact_arg(stdout_head, known_secret),
+                    pentest_core::provenance::redact_arg(stderr_head, known_secret),
                 );
                 Ok(CommandResult::success(
                     stdout,

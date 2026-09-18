@@ -1168,31 +1168,13 @@ impl LiveViewConnector {
                     let _ = event_tx_clone.send(ConnectorEvent::StepChanged(
                         ConnectingStep::WaitingForApproval,
                     ));
-                    // Poll for JWT issuance. Bounded by shutdown (the local flag
-                    // mirrors LiveViewConnector::shutdown) and by the runner
-                    // stopping, so the loop never outlives the connection it
-                    // watches.
-                    loop {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                        if shutdown_flag_probe.load(Ordering::SeqCst) {
-                            break;
-                        }
-                        let stats = runner_probe.get_stats().await;
-                        let running = stats
-                            .get("running")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-                        if !running {
-                            break;
-                        }
-                        if runner_probe.has_auth_token().await {
-                            tracing::info!(
-                                "[Connector] JWT issued after approval; transitioning to Registered"
-                            );
-                            let _ = event_tx_clone
-                                .send(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
-                            break;
-                        }
+                    // Poll for JWT issuance via the shared bounded-wait helper.
+                    if wait_for_jwt_issued(&shutdown_flag_probe, &runner_probe).await {
+                        tracing::info!(
+                            "[Connector] JWT issued after approval; transitioning to Registered"
+                        );
+                        let _ = event_tx_clone
+                            .send(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
                     }
                 }
                 None => {
@@ -1201,32 +1183,14 @@ impl LiveViewConnector {
                     // loop as the awaiting-approval path: a transport that
                     // comes up late (and a JWT that arrives with it) must still
                     // reach Registered instead of leaving the UI stuck on
-                    // "Opening connection...". Bounded by shutdown (the local
-                    // flag mirrors LiveViewConnector::shutdown) and by the
-                    // runner stopping, so the loop never outlives the
-                    // connection it watches.
-                    loop {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                        if shutdown_flag_probe.load(Ordering::SeqCst) {
-                            break;
-                        }
-                        let stats = runner_probe.get_stats().await;
-                        let running = stats
-                            .get("running")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-                        if !running {
-                            break;
-                        }
-                        if runner_probe.has_auth_token().await {
-                            tracing::info!(
-                                "[Connector] transport established and JWT issued; \
-                                 transitioning to Registered"
-                            );
-                            let _ = event_tx_clone
-                                .send(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
-                            break;
-                        }
+                    // "Opening connection...".
+                    if wait_for_jwt_issued(&shutdown_flag_probe, &runner_probe).await {
+                        tracing::info!(
+                            "[Connector] transport established and JWT issued; \
+                             transitioning to Registered"
+                        );
+                        let _ = event_tx_clone
+                            .send(ConnectorEvent::StatusChanged(ConnectorStatus::Registered));
                     }
                 }
             }
@@ -1357,6 +1321,36 @@ fn registration_outcome(
     } else {
         RegistrationOutcome::AwaitingApproval
     })
+}
+
+/// Bounded wait for JWT issuance, shared by the awaiting-approval and
+/// transport-down arms of the post-registration poll (pick#464 review: the
+/// two loops were previously duplicated inline and could silently diverge).
+/// Polls every 2s; bounded by shutdown (mirrors `LiveViewConnector::shutdown`)
+/// and by the runner stopping, so the loop never outlives the connection it
+/// watches. Returns `true` when the JWT landed (caller emits `Registered`),
+/// `false` when shutdown or runner stop ended the wait first.
+async fn wait_for_jwt_issued(
+    shutdown: &AtomicBool,
+    runner: &strike48_connector::ConnectorRunner,
+) -> bool {
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        if shutdown.load(Ordering::SeqCst) {
+            return false;
+        }
+        let stats = runner.get_stats().await;
+        let running = stats
+            .get("running")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !running {
+            return false;
+        }
+        if runner.has_auth_token().await {
+            return true;
+        }
+    }
 }
 
 #[cfg(test)]
