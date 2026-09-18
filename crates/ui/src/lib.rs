@@ -102,11 +102,28 @@ pub async fn run_event_loop(
                     api_url,
                 } => {
                     tracing::info!("Saving connector JWT to settings");
-                    let mut s = signals.settings.peek().clone();
-                    let mut c = signals.config.peek().clone();
-                    c.auth_token = auth_token.clone();
-                    s.last_config = Some(c);
-                    let _ = save_settings(&s);
+                    // Keep the in-memory config signal in sync too: other paths
+                    // persist via `last_config = Some(config.peek().clone())`, so
+                    // a stale config.auth_token would clobber the fresh JWT on
+                    // the next endpoint save.
+                    {
+                        let mut c = signals.config.write();
+                        c.auth_token = auth_token.clone();
+                    }
+                    let new_config = signals.config.peek().clone();
+                    // Persist through the authoritative `settings` signal (not a
+                    // detached peek().clone() copy) so a later signal-based
+                    // save_settings can't clobber the freshly minted JWT back
+                    // off disk. Same pattern as MatrixTokenObtained below.
+                    // See pick#374.
+                    {
+                        let mut s = signals.settings.write();
+                        match s.last_config.as_mut() {
+                            Some(lc) => lc.auth_token = auth_token,
+                            None => s.last_config = Some(new_config),
+                        }
+                        let _ = save_settings(&s);
+                    }
                     // Only set the API URL here — the auth_token is a connector JWT
                     // (for gRPC). The Matrix server requires a session-backed token
                     // for GraphQL (obtained via browser OAuth / MatrixTokenObtained).

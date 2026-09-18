@@ -681,8 +681,14 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             new_config.host
         )));
 
+        // Update the authoritative in-memory `settings` signal (not a detached
+        // peek().clone() copy). Other handlers persist by cloning this signal; if
+        // `last_config`/`auto_connect` only lived on disk, the next signal-based
+        // save_settings would clobber them back and a fresh user's saved endpoint
+        // would be wiped. See pick#223, pick#374 and the same pattern in
+        // `on_easy_mode_change`.
         if remember {
-            let mut s = settings.peek().clone();
+            let mut s = settings.write();
             s.last_config = Some(new_config.clone());
             s.auto_connect = true;
             let _ = save_settings(&s);
@@ -769,25 +775,31 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                         if canonical == initial_tenant {
                             return;
                         }
-                        let mut s = settings.peek().clone();
-                        let updated = match s.last_config.clone() {
-                            Some(mut c) => {
-                                if c.tenant_id == canonical {
-                                    return;
-                                }
-                                c.tenant_id = canonical.clone();
-                                Some(c)
-                            }
-                            None => None,
-                        };
-                        if let Some(c) = updated {
-                            s.last_config = Some(c);
-                            let _ = save_settings(&s);
-                            terminal_lines.write().push(TerminalLine::info(format!(
-                                "Saved canonical tenant UUID {} for next launch.",
-                                canonical
-                            )));
+                        // Read through and write back to the authoritative
+                        // `settings` signal (not a detached peek().clone() copy)
+                        // so the persisted tenant UUID survives later
+                        // signal-based saves. See pick#223, pick#374.
+                        if settings.peek().last_config.is_none() {
+                            return;
                         }
+                        {
+                            let mut s = settings.write();
+                            // Re-check under the guard: last_config may have been
+                            // replaced or cleared between the peek above and now,
+                            // or its tenant may already match (peek-then-write
+                            // window). Only stamp when it still differs.
+                            match s.last_config.as_mut() {
+                                Some(c) if c.tenant_id != canonical => {
+                                    c.tenant_id = canonical.clone();
+                                }
+                                _ => return,
+                            }
+                            let _ = save_settings(&s);
+                        }
+                        terminal_lines.write().push(TerminalLine::info(format!(
+                            "Saved canonical tenant UUID {} for next launch.",
+                            canonical
+                        )));
                         return;
                     }
                 });
