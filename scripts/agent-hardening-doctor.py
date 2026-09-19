@@ -20,7 +20,9 @@ C2 - Fail-closed gate + severity hygiene
   c2.1  gate_for_report must reject injection-flagged publishable
         findings (InjectionFlaggedNodes), closing the fail-open gap.
   c2.2  webwright findings must default to Low unless explicitly
-        critical/high (severity hygiene), and dedupe identical titles.
+        critical/high (severity hygiene), explicit info stays Info, and
+        same-title findings merge into the retained node (max severity,
+        accumulated descriptions/URLs).
 
 C3 - Session budget envelope + stall detector
   c3.1  a SessionBudget type must exist with check/record/reset.
@@ -117,9 +119,14 @@ CHECKS: list[dict] = [
     },
     {
         "id": "c2.2",
-        "desc": "webwright severity hygiene + dedupe",
+        "desc": "webwright severity hygiene + same-title merge",
         "files": ["crates/tools/src/webwright/evidence.rs"],
-        "file_patterns": [r"Severity::Low\b", r"seen_titles\b"],
+        "file_patterns": [
+            r"Severity::Low\b",
+            r"Severity::Info\b",
+            r"by_title\b",
+            r"severity_rank\b",
+        ],
         "anchored": [],
     },
     {
@@ -432,8 +439,10 @@ _FIXTURE_SANITIZE = 'pub const NEUTRALIZED: &str = "[neutralized-instruction]";\
 _FIXTURE_WEBWRIGHT = """\
 fn build_finding() {
     let severity = Severity::Low;
-    let mut seen_titles = std::collections::HashSet::new();
-    let _ = (severity, &mut seen_titles);
+    let info = Severity::Info;
+    fn severity_rank(s: Severity) -> u8 { 0 }
+    let mut by_title = std::collections::HashMap::new();
+    let _ = (severity, info, &mut by_title);
 }
 """
 
