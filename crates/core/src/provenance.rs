@@ -211,7 +211,10 @@ fn redact_regexes() -> &'static RedactRegexes {
     })
 }
 
-const REDACTION: &str = "<REDACTED>";
+/// Marker used by [`redact`] and [`redact_known_secret`]. Public so callers
+/// building additional pattern layers on top of `redact` (e.g. the linpeas
+/// free-text scrub) reuse the same marker instead of inventing their own.
+pub const REDACTION: &str = "<REDACTED>";
 
 /// Scrub a *known* secret value from `text` by exact substring, replacing it
 /// with the same [`REDACTION`] marker [`redact`] uses. An empty `secret` is a
