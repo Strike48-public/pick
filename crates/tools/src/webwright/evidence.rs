@@ -1,6 +1,6 @@
 //! Map Webwright artifacts to EvidenceNodes.
 
-use pentest_core::evidence::EvidenceNode;
+use pentest_core::evidence::{EvidenceNode, SeverityHistoryEntry};
 use pentest_core::export::Severity;
 use pentest_core::provenance::Provenance;
 use serde_json::Value;
@@ -151,42 +151,98 @@ pub fn ingest_webwright_evidence(
 /// evidence. Findings default to [`Severity::Low`] unless the browser agent
 /// explicitly labeled them `critical` or `high` — an unlabeled/placeholder
 /// finding is a lead, not a confirmed vulnerability, and must not inflate the
-/// report's severity profile. Identical titles across a single run are
-/// deduplicated so a noisy target cannot flood the evidence graph with
-/// look-alike nodes.
+/// report's severity profile (an explicit `info` label stays `Info` —
+/// context, not a Low finding). Identical titles across a single run are
+/// merged into the retained node (max severity wins; descriptions and URLs
+/// accumulate) so a noisy target cannot flood the evidence graph with
+/// look-alike nodes, and a distinct same-headline variant is not erased.
 pub fn ingest_webwright_findings(
     findings_json: &Value,
     target: &str,
     task_id: &str,
     provenance: &Provenance,
 ) {
+    // Severity rank for merge decisions (Severity deliberately does not
+    // derive Ord — ordering severity levels numerically is a policy choice,
+    // and this is the only place we need it).
+    fn severity_rank(s: Severity) -> u8 {
+        match s {
+            Severity::Critical => 4,
+            Severity::High => 3,
+            Severity::Medium => 2,
+            Severity::Low => 1,
+            Severity::Info => 0,
+        }
+    }
+
     if let Some(findings) = findings_json.as_array() {
-        let mut seen_titles = std::collections::HashSet::new();
+        // Dedupe: identical titles within one run merge into the retained
+        // node — max severity wins, descriptions and URLs accumulate — so a
+        // noisy target cannot flood the graph with look-alike nodes AND a
+        // genuinely distinct same-headline variant (different payload, URL,
+        // or severity) is not silently erased.
+        let mut merged: Vec<EvidenceNode> = Vec::new();
+        let mut by_title: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for finding in findings {
             let title = finding["title"]
                 .as_str()
                 .unwrap_or("Browser finding")
                 .to_string();
-            // Dedupe: identical titles within one run collapse to a single
-            // node with a count note. Keeps the graph lean and the Validator's
-            // attention on distinct claims.
-            if !seen_titles.insert(title.clone()) {
-                continue;
-            }
             let description = finding["description"].as_str().unwrap_or("").to_string();
             let severity = match finding["severity"].as_str().unwrap_or("").to_lowercase().as_str() {
                 "critical" => Severity::Critical,
                 "high" => Severity::High,
-                // Anything unlabeled / placeholder / unknown descends to Low:
-                // the browser agent's default "medium" and unrecognized labels
-                // are leads, not confirmed severities.
+                // An explicit informational label stays context, not a Low
+                // finding — only UNLABELED / placeholder / unknown labels
+                // descend to Low (leads, not confirmed severities).
+                "info" | "informational" => Severity::Info,
                 _ => Severity::Low,
             };
+            let url = finding.get("url").cloned();
+
+            if let Some(&idx) = by_title.get(&title) {
+                let kept = &mut merged[idx];
+                if severity_rank(severity) > severity_rank(kept.current_severity()) {
+                    // Append a history entry rather than using the validator
+                    // transition: the node stays Pending for the Validator;
+                    // this only records that a same-title duplicate carried a
+                    // stronger claim.
+                    kept.severity_history.push(SeverityHistoryEntry::new(
+                        severity,
+                        "same-title duplicate carried a stronger severity",
+                        "ingest_merge",
+                    ));
+                }
+                if !description.is_empty() && !kept.description.contains(&description) {
+                    if !kept.description.is_empty() {
+                        kept.description.push_str("\n\n");
+                    }
+                    kept.description.push_str(&description);
+                }
+                if let Some(url) = &url {
+                    let urls = kept
+                        .metadata
+                        .entry("finding_urls".to_string())
+                        .or_insert_with(|| Value::Array(Vec::new()));
+                    if let Some(arr) = urls.as_array_mut() {
+                        if !arr.contains(url) {
+                            arr.push(url.clone());
+                        }
+                    }
+                }
+                tracing::warn!(
+                    title = %title,
+                    url = url.as_ref().and_then(|v| v.as_str()).unwrap_or(""),
+                    "duplicate webwright finding title merged into retained node"
+                );
+                continue;
+            }
 
             let mut node = EvidenceNode::new(
                 Uuid::new_v4().to_string(),
                 "browser_finding",
-                title,
+                title.clone(),
                 description,
                 target,
                 severity,
@@ -195,14 +251,22 @@ pub fn ingest_webwright_findings(
             .with_provenance(provenance.clone());
 
             node.metadata.insert("task_id".to_string(), task_id.into());
-            if let Some(url) = finding.get("url") {
+            if let Some(url) = &url {
                 node.metadata.insert("finding_url".to_string(), url.clone());
+                node.metadata.insert(
+                    "finding_urls".to_string(),
+                    Value::Array(vec![url.clone()]),
+                );
             }
             if let Some(vuln_type) = finding["type"].as_str() {
                 node.metadata
                     .insert("vuln_type".to_string(), vuln_type.into());
             }
 
+            by_title.insert(title, merged.len());
+            merged.push(node);
+        }
+        for node in merged {
             let _ = push_evidence(node);
         }
     }
@@ -262,7 +326,10 @@ mod tests {
     /// Severity hygiene (agent hardening C2): an explicit `critical` or `high`
     /// label survives; an unlabeled or placeholder severity descends to Low —
     /// the browser agent's default "medium" is a lead, not a confirmed
-    /// severity. The dedup also collapses identical titles within a run.
+    /// severity; an explicit `info` label stays Info. Same-title findings
+    /// merge into the retained node: max severity wins, descriptions and
+    /// URLs accumulate — a duplicate carrying a stronger severity or a
+    /// different URL must not be silently erased.
     #[test]
     fn findings_flood_control_honors_explicit_severity_and_dedupes() {
         use pentest_core::evidence::ValidationStatus;
@@ -282,7 +349,9 @@ mod tests {
                 "severity": "medium",
                 "url": "https://target.com/r?u=//evil"
             },
-            // Duplicate of the first title — must be deduped.
+            // Duplicate of the first title — must merge into the retained
+            // node, not vanish: it carries a stronger severity and a
+            // different URL.
             {
                 "title": "Reflected XSS in search",
                 "description": "Duplicate",
@@ -301,14 +370,24 @@ mod tests {
             .iter()
             .filter(|n| n.node_type == "browser_finding")
             .collect();
-        assert_eq!(ours.len(), 2, "duplicate title must dedupe to one node");
+        assert_eq!(ours.len(), 2, "duplicate title must merge to one node");
 
         let xss = ours
             .iter()
             .find(|n| n.title.contains("Reflected XSS"))
             .expect("xss finding present");
-        // Explicit high survives.
-        assert_eq!(xss.current_severity(), Severity::High);
+        // Max severity wins across the merged duplicates (high + critical).
+        assert_eq!(xss.current_severity(), Severity::Critical);
+        // Both variants' URLs survive on the retained node.
+        let urls = xss
+            .metadata
+            .get("finding_urls")
+            .and_then(|u| u.as_array())
+            .expect("merged URLs array present");
+        assert_eq!(urls.len(), 2, "both duplicates' URLs must survive");
+        // Both variants' descriptions survive.
+        assert!(xss.description.contains("Search reflects unescaped input"));
+        assert!(xss.description.contains("Duplicate"));
         // Unlabeled default medium descends to Low.
         let redirect = ours
             .iter()
@@ -318,6 +397,35 @@ mod tests {
         // Every ingested screen/path node is Info; scripts are Low; findings
         // are pending for the Validator.
         assert_eq!(xss.validation_status, ValidationStatus::Pending);
+    }
+
+    /// An explicitly informational finding stays Info — context for the
+    /// report, not severity-inflated to Low by the hygiene fallback.
+    #[test]
+    fn explicit_info_stays_info() {
+        use crate::evidence_producer::drain_pending_evidence;
+
+        let _ = drain_pending_evidence();
+        let findings = json!([
+            {
+                "title": "Cookie without SameSite",
+                "description": "Informational observation",
+                "severity": "info",
+                "url": "https://target.com/"
+            }
+        ]);
+        ingest_webwright_findings(
+            &findings,
+            "https://target.com",
+            "task-457",
+            &test_provenance(),
+        );
+        let nodes = drain_pending_evidence();
+        let info = nodes
+            .iter()
+            .find(|n| n.title.contains("Cookie without SameSite"))
+            .expect("info finding present");
+        assert_eq!(info.current_severity(), Severity::Info);
     }
 
     #[test]
