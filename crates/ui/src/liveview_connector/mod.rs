@@ -1047,6 +1047,7 @@ impl LiveViewConnector {
             runner: self.runner.clone(),
             matrix_api_url: self.derive_matrix_api_url(),
             identities: Arc::new(identities),
+            budget: pentest_core::budget::SessionBudget::default_for(self.config.aggression_level),
         });
 
         // Create the ConnectorRunner — it manages connection lifecycle, auth,
