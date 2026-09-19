@@ -1,0 +1,33 @@
+name: Agent Hardening Doctor
+
+on:
+  # Run on every PR regardless of base branch — the in-flight agent-hardening
+  # stack (fix/pick/agent-hardening-c*) targets intermediate branches, not main,
+  # so a base filter would let the doctor never run on the very PRs that add and
+  # wire these controls (review #453).
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  hardening-doctor:
+    name: Agent hardening controls present
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # honeyslop-doctor adaptation (docs/AGENT_HARDENING_REVIEW.md C4): every
+      # PR re-verifies the agent-security controls (C1 seed sanitization,
+      # C2 fail-closed gate + severity hygiene, C3 budget envelope) are
+      # present and wired, so a "cleanup" PR cannot silently strip them.
+      - name: Run agent hardening doctor
+        run: python3 scripts/agent-hardening-doctor.py
+
+      # Guard the guard: prove the tripwire still trips on both evasion modes
+      # (commented-out call; production call deleted with a test remnant) so a
+      # PR cannot weaken the doctor in the same commit as a control strip.
+      - name: Self-test the hardening doctor
+        run: python3 scripts/agent-hardening-doctor.py --self-test
