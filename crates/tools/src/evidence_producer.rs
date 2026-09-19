@@ -4,10 +4,12 @@
 //! `ToolResult` with `Provenance`) and the evidence graph (which stores
 //! `EvidenceNode`s for the Validator and Report agents).
 
+use pentest_core::evidence::metadata_keys;
 use pentest_core::evidence::EvidenceNode;
 use pentest_core::export::Severity;
 use pentest_core::provenance::Provenance;
 use pentest_core::sanitize::{sanitize_tool_output, SanitizeReport};
+use regex::Regex;
 use serde_json::Value;
 use std::sync::LazyLock;
 use std::sync::RwLock;
@@ -653,7 +655,7 @@ pub fn evidence_from_default_creds(data: &Value, provenance: Provenance) -> Vec<
                     "Accepting default credentials grants unauthorized access; rotate the credential and disable defaults."
                         .to_string(),
                 metadata: vec![
-                    ("username".to_string(), username.into()),
+                    (metadata_keys::USERNAME.to_string(), username.into()),
                     ("service".to_string(), service.into()),
                     ("port".to_string(), port.into()),
                 ],
@@ -923,24 +925,80 @@ fn contains_interesting_info(text: &str) -> bool {
 // evidence nodes for the report graph and the UI post-exploit view. Two rules,
 // enforced by the `*_withholds_secret` unit tests below:
 //
-//   1. No secret value (password, NTLM hash, Kerberos ticket, command output)
-//      is ever copied into a node field or metadata. `GenericFinding` metadata
-//      can reach a published report and the public `/s/:token` share link, so
-//      secrets are withheld by construction (Lens 10b), mirroring
+//   1. Structured builders never copy a secret value (password, NTLM hash,
+//      Kerberos ticket, command output) into a node field or metadata —
+//      withheld by construction. `GenericFinding` metadata can reach a
+//      published report and the public `/s/:token` share link, mirroring
 //      `evidence_from_default_creds`.
-//   2. Free-text tool lines that may embed a secret (linpeas findings) pass
-//      through `redact` before becoming a node description.
+//   2. The linpeas free-text path is the one place a secret shape can ride
+//      in on tool output; those lines pass through `scrub_linpeas_line`
+//      (`redact` plus linpeas-specific patterns) before becoming a node
+//      description. That scrub is pattern-based and therefore best-effort —
+//      unlike the structured builders, it is not a hard guarantee.
 //
 // The tool's own `ToolResult` data channel still carries the plaintext to the
 // operator; that path is unchanged. Only the evidence graph is secret-free.
 // ---------------------------------------------------------------------------
 
 /// Metadata key naming the post-exploit sub-category of a node, so the UI
-/// post-exploit view can group nodes without parsing titles.
-const POSTEXPLOIT_CATEGORY: &str = "postexploit_category";
+/// post-exploit view can group nodes without parsing titles. Aliased from
+/// [`pentest_core::evidence::metadata_keys`] — the single source of truth
+/// shared with the UI side.
+const POSTEXPLOIT_CATEGORY: &str = pentest_core::evidence::metadata_keys::POSTEXPLOIT_CATEGORY;
 
 /// Cap on linpeas nodes emitted per run, so a noisy scan cannot flood the graph.
 const MAX_LINPEAS_NODES: usize = 25;
+
+/// Extra secret patterns for the linpeas free-text path, layered on top of
+/// the shared [`pentest_core::provenance::redact`] set. linpeas `[!]` lines
+/// are precisely "possible secrets found" lines, so this scrubs
+/// aggressively: over-redaction of a privilege-escalation hint is
+/// acceptable, a surviving credential on the published report or the public
+/// share link is not.
+struct LinpeasScrub {
+    /// Non-HTTP scheme userinfo (`mysql://root:pw@host`, `redis://:pw@host`) —
+    /// the shared `redact` only covers `https?://`.
+    scheme_userinfo: Regex,
+    /// A secret keyword followed by a bare value with no separator
+    /// (`Found password hunter2 in ...`), which the flag-shaped `redact`
+    /// patterns do not catch.
+    keyword_value: Regex,
+    /// 16-hex LM/NTLM-half hashes (the shared `long_hex` pattern starts at
+    /// 32 hex).
+    lm_hash: Regex,
+}
+
+static LINPEAS_SCRUB: LazyLock<LinpeasScrub> = LazyLock::new(|| LinpeasScrub {
+    scheme_userinfo: Regex::new(r"(\w+://)[^/\s:@]*:[^/\s:@]+(@)")
+        .expect("valid scheme userinfo regex"),
+    keyword_value: Regex::new(
+        r"(?i)\b(password|passwd|pwd|secret|token|credential)s?\b[ \t]*[:=]?[ \t]*\S+",
+    )
+    .expect("valid keyword value regex"),
+    lm_hash: Regex::new(r"\b[0-9a-fA-F]{16}\b").expect("valid lm hash regex"),
+});
+
+/// Scrub a linpeas finding line before it becomes a node description: the
+/// shared `redact` set first, then the linpeas-specific patterns. Best-effort
+/// by nature (pattern-based), so the structured post-exploit builders remain
+/// the by-construction guarantee; this narrows what can slip through.
+fn scrub_linpeas_line(line: &str) -> String {
+    let scrub = &*LINPEAS_SCRUB;
+    let marker = pentest_core::provenance::REDACTION;
+    let s = pentest_core::provenance::redact(line);
+    let s = scrub
+        .scheme_userinfo
+        .replace_all(&s, format!("${{1}}{marker}${{2}}").as_str())
+        .into_owned();
+    let s = scrub
+        .keyword_value
+        .replace_all(&s, format!("$1 {marker}").as_str())
+        .into_owned();
+    scrub
+        .lm_hash
+        .replace_all(&s, marker)
+        .into_owned()
+}
 
 /// Build a minimal, redacted provenance for a post-exploit tool. The raw
 /// response excerpt is deliberately empty: post-exploit output carries secrets
@@ -986,9 +1044,9 @@ pub fn evidence_from_hydra(data: &Value, provenance: Provenance) -> Vec<Evidence
                     "A working credential grants authenticated access; rotate it and investigate exposure."
                         .to_string(),
                 metadata: vec![
-                    ("username".to_string(), username.into()),
+                    (metadata_keys::USERNAME.to_string(), username.into()),
                     ("service".to_string(), service.into()),
-                    ("origin_tool".to_string(), "hydra".into()),
+                    (metadata_keys::ORIGIN_TOOL.to_string(), "hydra".into()),
                     (POSTEXPLOIT_CATEGORY.to_string(), "credential".into()),
                     ("secret_withheld".to_string(), true.into()),
                 ],
@@ -1026,9 +1084,9 @@ pub fn evidence_from_john(data: &Value, provenance: Provenance) -> Vec<EvidenceN
                     "A cracked password means the hash was weak; rotate the credential and strengthen the policy."
                         .to_string(),
                 metadata: vec![
-                    ("username".to_string(), username.into()),
+                    (metadata_keys::USERNAME.to_string(), username.into()),
                     ("hash_file".to_string(), safe_hash_file.clone().into()),
-                    ("origin_tool".to_string(), "john".into()),
+                    (metadata_keys::ORIGIN_TOOL.to_string(), "john".into()),
                     (POSTEXPLOIT_CATEGORY.to_string(), "credential".into()),
                     ("secret_withheld".to_string(), true.into()),
                 ],
@@ -1071,10 +1129,10 @@ pub fn evidence_from_secretsdump(data: &Value, provenance: Provenance) -> Vec<Ev
                     "Extracted NTLM hashes enable pass-the-hash and offline cracking; treat as a full credential compromise."
                         .to_string(),
                 metadata: vec![
-                    ("username".to_string(), username.into()),
+                    (metadata_keys::USERNAME.to_string(), username.into()),
                     ("account_kind".to_string(), kind.into()),
                     ("hash_type".to_string(), "NTLM".into()),
-                    ("origin_tool".to_string(), "impacket-secretsdump".into()),
+                    (metadata_keys::ORIGIN_TOOL.to_string(), "impacket-secretsdump".into()),
                     (POSTEXPLOIT_CATEGORY.to_string(), "credential".into()),
                     ("secret_withheld".to_string(), true.into()),
                 ],
@@ -1112,7 +1170,7 @@ pub fn evidence_from_getuserspns(data: &Value, provenance: Provenance) -> Vec<Ev
                 .to_string(),
         metadata: vec![
             ("ticket_count".to_string(), count.into()),
-            ("origin_tool".to_string(), "impacket-getuserspns".into()),
+            (metadata_keys::ORIGIN_TOOL.to_string(), "impacket-getuserspns".into()),
             (POSTEXPLOIT_CATEGORY.to_string(), "kerberoast".into()),
             ("secret_withheld".to_string(), true.into()),
         ],
@@ -1123,8 +1181,10 @@ pub fn evidence_from_getuserspns(data: &Value, provenance: Provenance) -> Vec<Ev
 
 /// Build privilege-escalation finding evidence from `linpeas` results. One
 /// `"finding"` node per high-priority finding, capped at [`MAX_LINPEAS_NODES`].
-/// Each line passes through `redact` because linpeas output can embed a secret
-/// (e.g. a password found in a world-readable file).
+/// Each line passes through [`scrub_linpeas_line`] because linpeas output can
+/// embed a secret (credentials in config files, URLs with embedded passwords,
+/// LM hashes) — best-effort pattern scrubbing, not a by-construction
+/// guarantee.
 pub fn evidence_from_linpeas(data: &Value, provenance: Provenance) -> Vec<EvidenceNode> {
     let Some(findings) = data["high_priority_findings"].as_array() else {
         return Vec::new();
@@ -1135,7 +1195,7 @@ pub fn evidence_from_linpeas(data: &Value, provenance: Provenance) -> Vec<Eviden
         .filter_map(|f| f.as_str())
         .take(MAX_LINPEAS_NODES)
         .map(|line| {
-            let safe_line = pentest_core::provenance::redact(line);
+            let safe_line = scrub_linpeas_line(line);
             GenericFinding {
                 node_type: "finding".to_string(),
                 title: "Privilege-escalation vector (linpeas)".to_string(),
@@ -1146,7 +1206,7 @@ pub fn evidence_from_linpeas(data: &Value, provenance: Provenance) -> Vec<Eviden
                     "linpeas flagged a likely local privilege-escalation path; validate exploitability before reporting."
                         .to_string(),
                 metadata: vec![
-                    ("origin_tool".to_string(), "linpeas".into()),
+                    (metadata_keys::ORIGIN_TOOL.to_string(), "linpeas".into()),
                     (POSTEXPLOIT_CATEGORY.to_string(), "privesc".into()),
                     ("priority".to_string(), "high".into()),
                 ],
@@ -1188,8 +1248,8 @@ pub fn evidence_from_lateral_exec(
             "Confirmed remote code execution establishes a foothold on the target; scope the blast radius and validate authorization."
                 .to_string(),
         metadata: vec![
-            ("technique".to_string(), technique.into()),
-            ("origin_tool".to_string(), technique.into()),
+            (metadata_keys::TECHNIQUE.to_string(), technique.into()),
+            (metadata_keys::ORIGIN_TOOL.to_string(), technique.into()),
             (POSTEXPLOIT_CATEGORY.to_string(), "lateral_movement".into()),
             ("success".to_string(), true.into()),
         ],
@@ -2109,6 +2169,42 @@ mod tests {
         let nodes = evidence_from_linpeas(&data, postexploit_prov());
         assert_eq!(nodes.len(), 1);
         assert_no_secret(&nodes, "SuperSecret123");
+    }
+
+    /// The linpeas scrub must catch the secret shapes a plain `redact` pass
+    /// lets through: non-HTTP scheme userinfo, keyword-adjacent bare values,
+    /// and 16-hex LM hashes. These are the realistic `[!]` line shapes, not
+    /// corner cases.
+    #[test]
+    fn linpeas_scrub_catches_non_http_and_bare_keyword_secrets() {
+        let data = json!({
+            "high_priority_findings": [
+                // Non-HTTP scheme userinfo (redact only covers https?://).
+                "[!] service creds mysql://root:MyP@ss123@10.0.0.1/prod",
+                // Scheme with empty user (redis style).
+                "[!] cache reachable redis://:r3disSecret@10.0.0.2",
+                // Keyword-adjacent value without separator.
+                "[!] Found password hunter2 in /tmp/creds.txt",
+                // 16-hex LM hash (shared long_hex starts at 32).
+                "[!] dumpsecrets cached hash 0123456789abcdef in registry",
+            ],
+            "findings": [],
+        });
+        let nodes = evidence_from_linpeas(&data, postexploit_prov());
+        assert_eq!(nodes.len(), 4);
+        for secret in ["MyP@ss123", "r3disSecret", "hunter2", "0123456789abcdef"] {
+            assert_no_secret(&nodes, secret);
+        }
+        // Benign structure survives so the operator keeps the finding's
+        // context (hosts, paths, keywords).
+        let joined: String = nodes
+            .iter()
+            .map(|n| n.description.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("10.0.0.1"));
+        assert!(joined.contains("/tmp/creds.txt"));
+        assert!(joined.to_lowercase().contains("password"));
     }
 
     #[test]
