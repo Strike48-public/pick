@@ -101,7 +101,8 @@ impl PentestTool for JohnTool {
                     .execute_command("john", &["--show", &hash_file], Duration::from_secs(10))
                     .await?;
 
-                return parse_john_show_output(&result.stdout, &hash_file);
+                let data = parse_john_show_output(&result.stdout, &hash_file)?;
+                return emit_john_evidence(data, &hash_file);
             }
 
             // Build john cracking command
@@ -167,10 +168,24 @@ impl PentestTool for JohnTool {
                 .execute_command("john", &["--show", &hash_file], Duration::from_secs(10))
                 .await?;
 
-            parse_john_show_output(&show_result.stdout, &hash_file)
+            let data = parse_john_show_output(&show_result.stdout, &hash_file)?;
+            emit_john_evidence(data, &hash_file)
         })
         .await
     }
+}
+
+/// Emit credential evidence for cracked hashes, then return the tool result.
+/// The plaintext passwords in `data` are never copied into evidence nodes.
+fn emit_john_evidence(data: Value, hash_file: &str) -> Result<Value> {
+    let prov = crate::evidence_producer::postexploit_provenance(
+        "john",
+        &format!("john --show {hash_file}"),
+    );
+    for node in crate::evidence_producer::evidence_from_john(&data, prov) {
+        let _ = crate::evidence_producer::push_evidence(node);
+    }
+    Ok(data)
 }
 
 /// Parse john --show output
