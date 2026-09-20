@@ -201,6 +201,15 @@ pub enum GateError {
     /// guardrail.
     #[error("{} finding(s) lack tool-output provenance and cannot be published (ungrounded): {}", .ids.len(), .ids.join(", "))]
     UngroundedFindings { ids: Vec<String> },
+
+    /// At least one publishable finding carried an injected-instruction marker
+    /// at ingestion (flagged by the evidence write path). Even though the
+    /// marker text itself is neutralized there, a node whose provenance shows
+    /// it originated from a target-influenced, marker-carrying source must not
+    /// be published as-is — the claim may have been authored under injection.
+    /// The gate fails closed so the operator decides (agent hardening C2).
+    #[error("{} finding(s) carried injected-instruction markers at ingestion and cannot be published without review: {}", .ids.len(), .ids.join(", "))]
+    InjectionFlaggedNodes { ids: Vec<String> },
 }
 
 /// Build a [`ValidatedFindingsManifest`] from the current evidence graph.
@@ -244,6 +253,32 @@ pub fn gate_for_report(
         .collect();
     if !ungrounded.is_empty() {
         return Err(GateError::UngroundedFindings { ids: ungrounded });
+    }
+
+    // Fail closed on nodes the evidence write path flagged for carrying
+    // injected-instruction markers (agent hardening C2). The marker text is
+    // neutralized at ingestion, but the flag means the finding's content was
+    // authored under target influence (e.g. a decoy page convincing the Red
+    // Team to record an instruction as a finding). Publishing such a node
+    // without review lets the injection shape the customer report, so the gate
+    // refuses and the operator adjudicates instead. This is the fail-closed
+    // complement to the neutralization vectors: ingestion defangs the text,
+    // the gate blocks the claim.
+    let injection_flagged: Vec<String> = nodes
+        .iter()
+        .filter(|n| {
+            n.is_publishable_finding()
+                && n.metadata
+                    .get("injection_suspected")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+        })
+        .map(|n| n.id.clone())
+        .collect();
+    if !injection_flagged.is_empty() {
+        return Err(GateError::InjectionFlaggedNodes {
+            ids: injection_flagged,
+        });
     }
 
     let findings: Vec<ManifestFinding> = nodes
@@ -798,6 +833,41 @@ mod tests {
     }
 
     // --- Fail-closed grounding gate (pick#184 Lever 3) --------------------
+
+    #[test]
+    fn gate_blocks_publishable_finding_flagged_for_injection() {
+        // A confirmed finding that the evidence write path flagged for carrying
+        // injected-instruction markers must not be published without operator
+        // review (agent hardening C2).
+        let mut n = confirmed_finding("inj", Severity::High);
+        n.metadata
+            .insert("injection_suspected".to_string(), serde_json::json!(true));
+        let err = gate_for_report(&[n], engagement()).unwrap_err();
+        match err {
+            GateError::InjectionFlaggedNodes { ids } => assert_eq!(ids, vec!["inj"]),
+            other => panic!("expected InjectionFlaggedNodes, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gate_allows_clean_flagged_metadata_absent() {
+        // Nodes without the ingestion flag pass the gate as before — the flag
+        // is opt-in evidence of target influence, not a blanket block.
+        let nodes = [confirmed_finding("a1", Severity::High), info_only("i1")];
+        let manifest = gate_for_report(&nodes, engagement()).expect("clean nodes pass");
+        assert_eq!(manifest.findings.len(), 1);
+    }
+
+    #[test]
+    fn gate_ignores_injection_flag_on_non_publishable_nodes() {
+        // InfoOnly context nodes may carry target noise; only publishable
+        // findings are blocked. A flagged Info node is appended, not refused.
+        let mut i = info_only("i1");
+        i.metadata
+            .insert("injection_suspected".to_string(), serde_json::json!(true));
+        let manifest = gate_for_report(&[i], engagement()).expect("info nodes never block");
+        assert!(manifest.context_nodes.iter().any(|f| f.id == "i1"));
+    }
 
     #[test]
     fn gate_rejects_publishable_finding_without_provenance() {
