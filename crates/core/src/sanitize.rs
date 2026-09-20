@@ -44,7 +44,7 @@ use std::sync::OnceLock;
 
 /// Inert token substituted for a neutralized injected-instruction marker.
 /// Chosen to read as obviously-scrubbed to both a human and the model.
-const NEUTRALIZED: &str = "[neutralized-instruction]";
+pub const NEUTRALIZED: &str = "[neutralized-instruction]";
 
 /// Outcome of sanitizing a single string of tool output.
 #[derive(Debug, Clone, PartialEq, Eq)]
