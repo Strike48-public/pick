@@ -994,10 +994,7 @@ fn scrub_linpeas_line(line: &str) -> String {
         .keyword_value
         .replace_all(&s, format!("$1 {marker}").as_str())
         .into_owned();
-    scrub
-        .lm_hash
-        .replace_all(&s, marker)
-        .into_owned()
+    scrub.lm_hash.replace_all(&s, marker).into_owned()
 }
 
 /// Build a minimal, redacted provenance for a post-exploit tool. The raw

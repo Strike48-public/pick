@@ -78,7 +78,9 @@ pub mod prelude {
         GateError, ManifestCounts, ManifestFinding, PendingEvidenceManifest, SeverityCounts,
         ValidatedFindingsManifest, Verdict, VerdictDecision, VerdictParseError,
     };
-    pub use crate::provenance::{redact, ProbeCommand, Provenance, REDACTION, RAW_RESPONSE_MAX_BYTES};
+    pub use crate::provenance::{
+        redact, ProbeCommand, Provenance, RAW_RESPONSE_MAX_BYTES, REDACTION,
+    };
     pub use crate::seed::{
         ProgressCallback, ResourceType, SeedManager, SeedProgress, SeedResource, SeedStatus,
         SeedSummary, SeedTier, TierSummary,
