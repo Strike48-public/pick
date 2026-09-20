@@ -100,10 +100,8 @@ pub fn push_evidence(node: EvidenceNode) -> Result<(), BufferFullError> {
     // at the agent boundary as an independent second layer.
     let report = sanitize_node_fields(&mut node);
     if report.injection_suspected {
-        node.metadata.insert(
-            "injection_suspected".to_string(),
-            Value::Bool(true),
-        );
+        node.metadata
+            .insert("injection_suspected".to_string(), Value::Bool(true));
         // Library crate: report through the tracing subscriber (structured
         // logs/OTEL), not stderr, so the signal is filterable and routable.
         tracing::warn!(
@@ -957,7 +955,8 @@ mod tests {
             node.title
         );
         assert!(
-            !node.title
+            !node
+                .title
                 .to_lowercase()
                 .contains("ignore previous instructions"),
             "injection marker must not survive into the graph: {}",
@@ -1029,7 +1028,9 @@ mod tests {
         let extras = node.metadata.get("webwright_extras").unwrap();
         let serialized = extras.to_string();
         assert!(
-            !serialized.to_lowercase().contains("ignore previous instructions"),
+            !serialized
+                .to_lowercase()
+                .contains("ignore previous instructions"),
             "nested injection marker must not survive into the graph: {serialized}"
         );
         assert!(serialized.contains("normal log line"));
