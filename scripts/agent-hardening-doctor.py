@@ -122,12 +122,23 @@ CHECKS: list[dict] = [
         "desc": "webwright severity hygiene + same-title merge",
         "files": ["crates/tools/src/webwright/evidence.rs"],
         "file_patterns": [
-            r"Severity::Low\b",
-            r"Severity::Info\b",
-            r"by_title\b",
-            r"severity_rank\b",
+            r"fn\s+ingest_webwright_findings\b",
         ],
-        "anchored": [],
+        "anchored": [
+            # Anchor inside ingest_webwright_findings's body: Severity::Info /
+            # Severity::Low also appear elsewhere in the file, so a whole-file
+            # match could stay green if the dedupe/merge was removed while
+            # severity mapping remained.
+            (
+                r"ingest_webwright_findings",
+                [
+                    r"Severity::Info\b",
+                    r"Severity::Low\b",
+                    r"by_title\b",
+                    r"severity_rank\b",
+                ],
+            ),
+        ],
     },
     {
         "id": "c3.1",
@@ -437,10 +448,10 @@ pub enum GateError {
 _FIXTURE_SANITIZE = 'pub const NEUTRALIZED: &str = "[neutralized-instruction]";\n'
 
 _FIXTURE_WEBWRIGHT = """\
-fn build_finding() {
+fn ingest_webwright_findings() {
+    fn severity_rank(s: Severity) -> u8 { 0 }
     let severity = Severity::Low;
     let info = Severity::Info;
-    fn severity_rank(s: Severity) -> u8 { 0 }
     let mut by_title = std::collections::HashMap::new();
     let _ = (severity, info, &mut by_title);
 }
