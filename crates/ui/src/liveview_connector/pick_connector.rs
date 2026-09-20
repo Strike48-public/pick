@@ -56,6 +56,10 @@ pub(crate) struct PickConnector {
     /// gitignored identities file at construction and cloned into each tool
     /// context. Empty when no identities file is present.
     pub identities: Arc<pentest_core::identity::IdentityStore>,
+    /// Per-engagement tool-execution budget envelope (agent hardening C3).
+    /// Enforced in [`PickConnector::execute_with_context`]; reset on
+    /// `begin_scan`. Defaults to the configured aggression level's envelope.
+    pub budget: pentest_core::budget::SessionBudget,
 }
 
 impl PickConnector {
@@ -264,6 +268,33 @@ impl BaseConnector for PickConnector {
                     .cloned()
                     .unwrap_or(request.clone());
 
+                // --- Session budget check (agent hardening C3) ---
+                match self.budget.check().await {
+                    pentest_core::budget::BudgetCheck::Exhausted => {
+                        let (used, max) = self.budget.usage().await;
+                        tracing::warn!(
+                            tool = tool_name.as_str(),
+                            used,
+                            max,
+                            "session budget exhausted; refusing tool call"
+                        );
+                        return Ok(serde_json::json!({
+                            "success": false,
+                            "error": format!(
+                                "session budget exhausted ({used}/{max}); wind down and produce the report"
+                            )
+                        }));
+                    }
+                    pentest_core::budget::BudgetCheck::StallWarning => {
+                        tracing::warn!(
+                            tool = tool_name.as_str(),
+                            "session stall detected: consecutive no-progress tool calls; agent may be stuck"
+                        );
+                        self.budget.mark_stall_warned().await;
+                    }
+                    pentest_core::budget::BudgetCheck::Ok => {}
+                }
+
                 self.send_event(ConnectorEvent::ToolStarted {
                     tool_name: tool_name.clone(),
                     params: params.clone(),
@@ -339,6 +370,21 @@ impl BaseConnector for PickConnector {
                         pentest_core::tools::ToolResult::error(e.to_string())
                     }
                 };
+
+                // Budget bookkeeping (agent hardening C3): `/begin_scan` starts
+                // a fresh engagement envelope; everything else records against
+                // it (evidence/flag-bearing runs count as progress).
+                if tool_name == "begin_scan" && result.success {
+                    // Agent-reachable reset: bounded so a stuck/injected agent
+                    // cannot restart its own envelope at will (review #452, V1).
+                    // Once the reset budget is spent this counts the begin_scan
+                    // as a normal execution instead.
+                    self.budget.reset_for_new_scan().await;
+                } else {
+                    let made_progress =
+                        result.provenance.is_some() || !result.data.is_null() || result.success;
+                    self.budget.record(made_progress).await;
+                }
 
                 // A successful `begin_scan` marks the start of a fresh
                 // engagement. Clear any evidence left over from a previous scan
@@ -701,6 +747,7 @@ mod tests {
             runner: Arc::new(RwLock::new(None)),
             matrix_api_url: String::new(),
             identities: Arc::new(pentest_core::identity::IdentityStore::new()),
+            budget: pentest_core::budget::SessionBudget::default(),
         }
     }
 
@@ -880,6 +927,59 @@ mod tests {
         assert!(
             result.get("_sanitization").is_none(),
             "benign output must not be flagged: {result}"
+        );
+    }
+
+    /// Production-path enforcement guard for the C3 budget (#452, Foundation 8):
+    /// `execute_with_context` is the connector the SDK runner actually drives, so
+    /// the envelope must refuse tool calls there once the cap is hit. Sets the
+    /// cap to one execution and asserts the second call returns the wind-down
+    /// payload the agent receives. Removing the budget check in
+    /// `execute_with_context` turns this red.
+    #[tokio::test]
+    async fn execute_with_context_refuses_once_budget_exhausted() {
+        pentest_platform::set_use_sandbox(false);
+
+        let mut connector = test_connector();
+        connector.budget =
+            pentest_core::budget::SessionBudget::new(pentest_core::budget::BudgetConfig {
+                max_executions: 1,
+                stall_threshold: 8,
+                max_resets: pentest_core::budget::DEFAULT_MAX_RESETS,
+            });
+        let ctx: HashMap<String, String> = HashMap::new();
+        let request = || {
+            json!({
+                "tool": "execute_command",
+                "parameters": { "command": "echo", "args": ["hi"] }
+            })
+        };
+
+        // First call consumes the single budget unit and runs.
+        let first = connector
+            .execute_with_context(request(), None, &ctx)
+            .await
+            .expect("first execute_with_context failed");
+        assert_eq!(
+            first["success"],
+            json!(true),
+            "first call should run: {first}"
+        );
+
+        // Second call must be refused with the budget-exhausted payload.
+        let second = connector
+            .execute_with_context(request(), None, &ctx)
+            .await
+            .expect("second execute_with_context failed");
+        assert_eq!(
+            second["success"],
+            json!(false),
+            "second call must be refused once the budget is exhausted: {second}"
+        );
+        let error = second["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("budget exhausted") && error.contains("1/1"),
+            "expected the budget-exhausted refusal payload, got: {second}"
         );
     }
 }
