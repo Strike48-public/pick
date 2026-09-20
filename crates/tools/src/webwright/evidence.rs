@@ -190,7 +190,12 @@ pub fn ingest_webwright_findings(
                 .unwrap_or("Browser finding")
                 .to_string();
             let description = finding["description"].as_str().unwrap_or("").to_string();
-            let severity = match finding["severity"].as_str().unwrap_or("").to_lowercase().as_str() {
+            let severity = match finding["severity"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .as_str()
+            {
                 "critical" => Severity::Critical,
                 "high" => Severity::High,
                 // An explicit informational label stays context, not a Low
@@ -253,10 +258,8 @@ pub fn ingest_webwright_findings(
             node.metadata.insert("task_id".to_string(), task_id.into());
             if let Some(url) = &url {
                 node.metadata.insert("finding_url".to_string(), url.clone());
-                node.metadata.insert(
-                    "finding_urls".to_string(),
-                    Value::Array(vec![url.clone()]),
-                );
+                node.metadata
+                    .insert("finding_urls".to_string(), Value::Array(vec![url.clone()]));
             }
             if let Some(vuln_type) = finding["type"].as_str() {
                 node.metadata
@@ -332,8 +335,8 @@ mod tests {
     /// different URL must not be silently erased.
     #[test]
     fn findings_flood_control_honors_explicit_severity_and_dedupes() {
-        use pentest_core::evidence::ValidationStatus;
         use crate::evidence_producer::drain_pending_evidence;
+        use pentest_core::evidence::ValidationStatus;
 
         let _ = drain_pending_evidence(); // isolate this run's nodes
         let findings = json!([
