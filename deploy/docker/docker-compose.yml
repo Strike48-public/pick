@@ -1,0 +1,62 @@
+# Pick connector: customer Docker Compose bundle.
+#
+# Runs the published multi-arch image (ghcr.io/strike48-public/pick) as a
+# single outbound-only container that registers with your Strike48 Studio.
+# Configure it through a .env file next to this compose file: copy
+# .env.example to .env and fill in the required values.
+#
+# This file enforces the required values (a missing one aborts `up` with a
+# message) and pins the security-relevant defaults. Optional knobs (proxy,
+# custom CA, pre-approval token, log level) reach the container from .env only
+# when you set them there. That matters: the connector treats an EMPTY
+# STRIKE48_REGISTRATION_TOKEN or MATRIX_TLS_CA_CERT as present, not absent, so
+# they must be left out rather than left blank.
+name: pick-connector
+
+services:
+  pick:
+    image: ghcr.io/strike48-public/pick:${PICK_IMAGE_TAG:-0.1.10}
+    container_name: pick-connector
+    restart: unless-stopped
+    # Everything in .env is passed through; keys listed under `environment:`
+    # below always win over .env.
+    env_file: .env
+    environment:
+      # Required. `${VAR:?...}` aborts `docker compose up` with the message when unset.
+      STRIKE48_HOST: "${STRIKE48_HOST:?set STRIKE48_HOST in .env, e.g. wss://studio.example.com}"
+      STRIKE48_API_URL: "${STRIKE48_API_URL:?set STRIKE48_API_URL in .env, e.g. https://studio.example.com/}"
+      STRIKE48_TENANT: "${STRIKE48_TENANT:?set STRIKE48_TENANT in .env to your tenant UUID}"
+      STRIKE48_INSTANCE_ID: "${STRIKE48_INSTANCE_ID:?set STRIKE48_INSTANCE_ID in .env to a stable id for this install}"
+      CONNECTOR_NAME: "${CONNECTOR_NAME:-pentest-connector}"
+      # Pinned. The image does not ship the in-container sandbox rootfs, and the
+      # container itself is the isolation boundary. Tools run directly in the
+      # Kali image.
+      DISABLE_SANDBOX: "true"
+      # Pinned. Certificate verification stays on. For a TLS-inspecting proxy or
+      # a private CA, set MATRIX_TLS_CA_CERT in .env instead (see .env.example).
+      MATRIX_TLS_INSECURE: "false"
+      # PENTEST_ALLOW_PRIVATE_IPS is deliberately NOT listed here. The
+      # connector only recognises "true" or "1" and warns on anything else,
+      # including "false", so it comes from .env only when you opt in there.
+      RUST_LOG: "${RUST_LOG:-info,strike48_connector=info}"
+    # Raw sockets for nmap and similar tools. The image runs as root, so these
+    # capabilities are effective on exec. There is deliberately no `ports:`
+    # mapping anywhere in this file: the connector never listens for inbound
+    # traffic.
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    volumes:
+      # The image's HOME is /root. The approval-minted credential lives in
+      # /root/.strike48/credentials and the device settings in
+      # /root/.config/pentest-connector. Persisting /root means an approval
+      # survives restarts, upgrades, and host reboots.
+      - pick-state:/root
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pick-state:

@@ -57,6 +57,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: docker compose --env-file .env.dvwa.example -f docker-compose.dvwa.yml config -q
+      # Customer bundle (deploy/docker, see docs/DOCKER_INSTALL.md). Same check.
+      # That compose file reads `env_file: .env` from its own directory, so run
+      # it there with the example copied into place, exactly as the guide tells
+      # a customer to. Catches a required ${VAR:?} the example stops satisfying.
+      - run: |
+          cd deploy/docker
+          cp .env.example .env
+          docker compose config -q
 
   clippy:
     name: Clippy
