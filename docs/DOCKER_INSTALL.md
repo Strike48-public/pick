@@ -148,9 +148,9 @@ is not approved yet and cannot run tools.
 
 ### 5. Approve in Studio
 
-Open your Studio and go to **Gateways**. The connector appears under the name
-`pentest-connector` with the instance id you set, in a pending state. Confirm the
-instance id matches the one in your `.env`, then approve it.
+Open your Studio and go to **Gateways**. The connector appears as a pending
+entry identified by the instance id you set in `.env`. Confirm the id matches,
+then approve it.
 
 ### 6. Confirm
 
