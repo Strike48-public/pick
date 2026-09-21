@@ -46,6 +46,7 @@ On the host that will run the connector:
 | Outbound HTTPS to Studio | 443 to your Studio hostname | `curl -sS -o /dev/null -w '%{http_code}\n' https://<your-studio-host>/` prints `302` or `200` |
 | Outbound HTTPS to authentication | 443 to your Strike48 authentication hostname | `curl -sS -o /dev/null -w '%{http_code}\n' https://<your-auth-host>/` prints a 2xx or 3xx code |
 | Outbound HTTPS to the image registry | 443 to `ghcr.io` and `pkg-containers.githubusercontent.com`, which serves the image layers | `docker pull ghcr.io/strike48-public/pick:0.1.10` |
+| Outbound HTTPS to GitHub releases, install time only | 443 to `github.com` and `release-assets.githubusercontent.com`, which the release download redirects to | the `curl` commands in step 1 succeed |
 | Disk | 3 GB free | `df -h /var/lib/docker` (the image is about 1.2 GB unpacked) |
 | Privileges | member of the `docker` group, or root | `docker ps` |
 | Architecture | linux/amd64 or linux/arm64 | `uname -m` |
@@ -75,15 +76,21 @@ There is no registry login. The image is public.
 ### 1. Get the bundle
 
 Two files: a compose file you do not edit and an environment template you copy.
+Both ship as assets of the release you are installing, so the bundle, this
+guide, and the image are pinned to the same version. `0.1.10` is the release
+approved for customer use.
 
 ```bash
+PICK_VERSION=0.1.10
 mkdir pick-connector && cd pick-connector
-curl -fsSLO https://raw.githubusercontent.com/Strike48-public/pick/main/deploy/docker/docker-compose.yml
-curl -fsSLO https://raw.githubusercontent.com/Strike48-public/pick/main/deploy/docker/.env.example
+curl -fsSL "https://github.com/Strike48-public/pick/releases/download/v${PICK_VERSION}/pick-docker-compose.yml" -o docker-compose.yml
+curl -fsSL "https://github.com/Strike48-public/pick/releases/download/v${PICK_VERSION}/pick-docker.env.example" -o .env.example
 ```
 
-If you prefer, clone the repository and work in `deploy/docker/`. The two files
-are identical either way.
+The compose file from a release defaults to that release's image tag, so you
+do not set the tag anywhere. The source of both files is
+[`deploy/docker/`](../deploy/docker/) in this repository; the release copy of
+the compose file differs only in that default.
 
 ### 2. Configure
 
@@ -188,7 +195,7 @@ is ignored.
 | `STRIKE48_TENANT` | yes | Your tenant UUID. |
 | `STRIKE48_INSTANCE_ID` | yes | Stable identity of this install. Approval is keyed to `CONNECTOR_NAME` plus this value. |
 | `CONNECTOR_NAME` | no | Gateway name shown in Studio. Default `pentest-connector`. Instances sharing a name are load-balanced as one gateway. |
-| `PICK_IMAGE_TAG` | no | Image tag. Default `0.1.10`, the release approved for customer use. |
+| `PICK_IMAGE_TAG` | no | Image tag. Defaults to the release the compose file was downloaded from. Leave it unset so bundle and image stay one set. |
 | `STRIKE48_REGISTRATION_TOKEN` | no | Pre-approval token. See [Pre-approval](#pre-approval-with-a-registration-token). Never leave it set to an empty value. |
 | `HTTPS_PROXY`, `NO_PROXY` | no | Standard proxy variables, HTTP CONNECT. Lowercase spellings work too. |
 | `MATRIX_TLS_CA_CERT` | no | Path inside the container to an extra CA certificate in PEM format. Added to the system roots. |
@@ -216,13 +223,19 @@ Restart:
 docker compose restart
 ```
 
-Upgrade to a newer approved release. Approval survives because the volume does:
+Upgrade to a newer approved release by fetching that release's compose file,
+which carries the new image tag as its default. Approval survives because the
+volume does:
 
 ```bash
-$EDITOR .env             # set PICK_IMAGE_TAG=<new tag>
+PICK_VERSION=<new version>
+curl -fsSL "https://github.com/Strike48-public/pick/releases/download/v${PICK_VERSION}/pick-docker-compose.yml" -o docker-compose.yml
 docker compose pull
 docker compose up -d
 ```
+
+Setting `PICK_IMAGE_TAG` in `.env` also works, but then the compose file and
+the image are no longer from the same release.
 
 Stop without losing the approval:
 

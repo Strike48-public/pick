@@ -15,6 +15,9 @@ name: pick-connector
 
 services:
   pick:
+    # The release workflow stamps this default to the release it ships with,
+    # so the compose file downloaded from a release pulls that release's image.
+    # In the repository the default is the release approved for customer use.
     image: ghcr.io/strike48-public/pick:${PICK_IMAGE_TAG:-0.1.10}
     container_name: pick-connector
     restart: unless-stopped
