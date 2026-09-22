@@ -122,20 +122,65 @@ impl Error {
     /// so a variant whose message already embeds its source's text (the
     /// `#[from]` variants, or a `format!("...: {e}")` message) does not
     /// print that text twice.
+    ///
+    /// The walk is structural rather than a plain `source()` loop: each
+    /// [`Error::with_source`] wraps the previous error in a `Caused`, and
+    /// thiserror's derived `source()` only exposes that wrapper's own
+    /// attachment, not the one nested inside it. Stacking `with_source` twice
+    /// would therefore drop the middle cause from a naive loop. Here the
+    /// classified [`Error::kind`] is rendered first, then every attached cause
+    /// in innermost-first order, each with its own `source()` chain.
     pub fn chain(&self) -> String {
         let mut rendered = String::new();
-        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(self);
-        while let Some(err) = current {
-            let segment = err.to_string();
-            if rendered.is_empty() {
-                rendered = segment;
-            } else if !rendered.ends_with(&segment) {
-                rendered.push_str(": ");
-                rendered.push_str(&segment);
-            }
-            current = err.source();
+        push_source_chain(&mut rendered, self.kind());
+        for source in self.attached_sources() {
+            push_source_chain(&mut rendered, source);
         }
         rendered
+    }
+
+    /// The attached causes, innermost attachment first.
+    ///
+    /// Each [`Error::with_source`] pushes a `Caused` wrapper around the current
+    /// error; this unwinds that stack so a doubly-attached cause is not lost.
+    fn attached_sources(&self) -> Vec<&(dyn std::error::Error + 'static)> {
+        let mut sources: Vec<&(dyn std::error::Error + 'static)> = Vec::new();
+        let mut current = self;
+        while let Error::Caused { error, source } = current {
+            sources.push(source.as_ref());
+            current = error;
+        }
+        sources.reverse();
+        sources
+    }
+}
+
+/// Render an error and its `source()` chain, outermost first, joined with
+/// `: `, skipping a segment that merely restates the text so far.
+///
+/// Public so a tool site holding a foreign error (not an [`Error`]) can render
+/// the same underlying cause detail — TLS, DNS, connection refused — that the
+/// boundary [`Error::chain`] produces, instead of a bare top-line
+/// `to_string()`.
+pub fn source_chain(err: &dyn std::error::Error) -> String {
+    let mut rendered = String::new();
+    push_source_chain(&mut rendered, err);
+    rendered
+}
+
+/// Append `err` and its `source()` chain to `rendered`, applying the same
+/// restatement-dedupe [`Error::chain`] uses.
+fn push_source_chain(rendered: &mut String, err: &dyn std::error::Error) {
+    let mut current: Option<&dyn std::error::Error> = Some(err);
+    while let Some(err) = current {
+        let segment = err.to_string();
+        if rendered.is_empty() {
+            rendered.push_str(&segment);
+        } else if !rendered.ends_with(&segment) {
+            rendered.push_str(": ");
+            rendered.push_str(&segment);
+        }
+        current = err.source();
     }
 }
 
@@ -226,5 +271,39 @@ mod tests {
 
         assert!(matches!(err.kind(), Error::Timeout(_)));
         assert!(!matches!(err, Error::Timeout(_)));
+    }
+
+    #[test]
+    fn chain_keeps_every_cause_when_sources_are_stacked() {
+        // Two `with_source` calls nest `Caused` twice. thiserror's derived
+        // `source()` only exposes the outer attachment, so a naive source loop
+        // renders "Timeout: nmap: second" and silently drops "first". The
+        // structural walk keeps every cause, innermost attachment first.
+        let err = Error::Timeout("nmap".into())
+            .with_source(io_error("first"))
+            .with_source(io_error("second"));
+
+        assert_eq!(err.chain(), "Timeout: nmap: first: second");
+    }
+
+    #[test]
+    fn source_chain_renders_a_foreign_error_and_its_causes() {
+        // A tool site holding a foreign error (not an `Error`) gets the same
+        // cause detail the boundary `chain()` produces.
+        #[derive(Debug)]
+        struct Outer(std::io::Error);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "connect failed")
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let err = Outer(io_error("connection refused"));
+        assert_eq!(source_chain(&err), "connect failed: connection refused");
     }
 }
