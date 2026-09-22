@@ -1,0 +1,103 @@
+name: Bug Report
+description: Report a problem with Pick
+title: "[Bug]: "
+labels: ["type/bug", "product/pick"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill out the sections
+        below as completely as possible.
+
+        Do not include customer or tenant names, secrets, credentials, real
+        Strike48 instance URLs, or internal hostnames anywhere in this report.
+        See CONTRIBUTING.md and SECURITY.md for details. If this is a security
+        vulnerability, do not file it here; report it privately per SECURITY.md.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: Describe what you observed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Step-by-step instructions to reproduce the behavior.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened instead?
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Pick version
+      description: Output of `pick --version`, or the release tag / commit SHA you built from.
+      placeholder: e.g. v0.1.10 or commit abc1234
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Desktop
+        - Web
+        - Mobile (Android)
+        - Mobile (iOS)
+        - Headless
+    validations:
+      required: true
+
+  - type: input
+    id: os-arch
+    attributes:
+      label: OS / architecture
+      description: Operating system, version, and CPU architecture.
+      placeholder: e.g. Ubuntu 24.04 x86_64, macOS 15 arm64
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: >-
+        Paste relevant log output. This is rendered as code automatically.
+        Redact any secrets, tokens, customer names, tenant names, or internal
+        hostnames before pasting.
+      render: shell
+
+  - type: checkboxes
+    id: pii-check
+    attributes:
+      label: PII / secrets check
+      options:
+        - label: >-
+            This report does not contain customer names, tenant names, secrets,
+            credentials, or internal hostnames.
+          required: true
