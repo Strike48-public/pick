@@ -160,7 +160,7 @@ impl NormalizedHost {
     }
 
     /// User-facing line describing what we resolved, e.g.
-    /// `Will connect as wss://discoball.strike48.engineering:443`.
+    /// `Will connect as wss://studio.example.com:443`.
     /// Returns `None` when the user typed everything explicitly.
     pub fn hint(&self) -> Option<String> {
         if self.was_inferred() {
@@ -1196,13 +1196,13 @@ mod tests {
 
     #[test]
     fn infers_wss_and_443_for_bare_host() {
-        let n = ConnectorConfig::normalize_host("discoball.strike48.engineering").unwrap();
-        assert_eq!(n.value, "wss://discoball.strike48.engineering:443");
+        let n = ConnectorConfig::normalize_host("studio.example.com").unwrap();
+        assert_eq!(n.value, "wss://studio.example.com:443");
         assert_eq!(n.inferred_scheme, Some("wss://"));
         assert_eq!(n.inferred_port, Some(443));
         assert_eq!(
             n.hint().as_deref(),
-            Some("Will connect as wss://discoball.strike48.engineering:443"),
+            Some("Will connect as wss://studio.example.com:443"),
         );
     }
 
@@ -1295,7 +1295,7 @@ mod tests {
 
     #[test]
     fn idempotent_when_reapplied() {
-        let first = ConnectorConfig::normalize_host("discoball.strike48.engineering").unwrap();
+        let first = ConnectorConfig::normalize_host("studio.example.com").unwrap();
         let second = ConnectorConfig::normalize_host(&first.value).unwrap();
         assert_eq!(first.value, second.value);
         assert!(!second.was_inferred(), "second pass should not re-infer");
