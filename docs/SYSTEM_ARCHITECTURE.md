@@ -96,7 +96,7 @@ Pick and StrikeKit form a comprehensive penetration testing platform with multip
 │              │ • Tool Orchestration    │                                │
 │              │ • Evidence Generation   │                                │
 │              │                         │                                │
-│              │ LICENSE: MIT            │                                │
+│              │ LICENSE: MPL-2.0        │                                │
 │              └─────────────────────────┘                                │
 │                          │                                               │
 └──────────────────────────┼───────────────────────────────────────────────┘
@@ -249,7 +249,7 @@ Pick and StrikeKit form a comprehensive penetration testing platform with multip
 - BlackArch repository enabled (3000+ pentesting tools)
 - Support for additional repositories (Kali, Parrot, custom)
 - Platform-specific implementations (desktop, android)
-- MIT license (tool execution)
+- MPL-2.0 license (tool execution)
 
 **Platform Support:**
 1. **Desktop:** Linux, macOS, Windows (via dioxus-desktop)
@@ -1639,7 +1639,7 @@ pub enum ApprovalStatus {
 | Component | Tech Stack |
 |-----------|-----------|
 | **StrikeKit (Prospector Studio)** | Rust, Dioxus 0.7, PostgreSQL, Qdrant (RAG), GraphQL API, Matrix protocol, Strike48 Connector SDK (SDK-RS), AGPL-3.0 |
-| **Pick** | Rust, Dioxus (multi-platform), BlackArch Linux (3000+ tools), proot/bwrap sandbox, Connector SDK client, MIT license |
+| **Pick** | Rust, Dioxus (multi-platform), BlackArch Linux (3000+ tools), proot/bwrap sandbox, Connector SDK client, MPL-2.0 license |
 | **StrikeHub** | Rust, Dioxus 0.6, Wry webview, Unix domain sockets (IPC), OIDC auth, MPL-2.0 |
 | **Integrations** | HTTP/REST APIs, XML/JSON parsers, Connector SDK for C2 |
 | **C2 Infrastructure** | Strike48 Connector SDK (SDK-RS), TLS + authentication, agent registration, task dispatch |

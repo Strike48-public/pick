@@ -20,7 +20,7 @@ edition = "2021"
 # pin a channel. CI intentionally floats on `dtolnay/rust-toolchain@stable`.
 rust-version = "1.92"
 authors = ["Strike48"]
-license = "MIT"
+license = "MPL-2.0"
 repository = "https://github.com/Strike48-public/pick"
 
 [workspace.dependencies]
