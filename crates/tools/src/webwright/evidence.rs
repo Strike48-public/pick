@@ -147,12 +147,11 @@ pub fn ingest_webwright_evidence(
 
 /// Parse a Webwright findings.json and push structured findings.
 ///
-/// Severity hygiene (agent hardening C2): a finding is only as strong as its
-/// evidence. Findings default to [`Severity::Low`] unless the browser agent
-/// explicitly labeled them `critical` or `high` — an unlabeled/placeholder
-/// finding is a lead, not a confirmed vulnerability, and must not inflate the
-/// report's severity profile (an explicit `info` label stays `Info` —
-/// context, not a Low finding). Identical titles across a single run are
+/// Severity hygiene (agent hardening C2): explicit agent labels — `critical`,
+/// `high`, `medium`, `low` — are honored verbatim, and an explicit `info` label
+/// stays Info. Only UNLABELED / placeholder / unknown labels descend to
+/// [`Severity::Low`]: an unlabeled finding is a lead, not a confirmed
+/// vulnerability, and must not inflate the report's severity profile. Identical titles across a single run are
 /// merged into the retained node (max severity wins; descriptions and URLs
 /// accumulate) so a noisy target cannot flood the evidence graph with
 /// look-alike nodes, and a distinct same-headline variant is not erased.
@@ -198,6 +197,8 @@ pub fn ingest_webwright_findings(
             {
                 "critical" => Severity::Critical,
                 "high" => Severity::High,
+                "medium" => Severity::Medium,
+                "low" => Severity::Low,
                 // An explicit informational label stays context, not a Low
                 // finding — only UNLABELED / placeholder / unknown labels
                 // descend to Low (leads, not confirmed severities).
@@ -326,9 +327,9 @@ mod tests {
         );
     }
 
-    /// Severity hygiene (agent hardening C2): an explicit `critical` or `high`
-    /// label survives; an unlabeled or placeholder severity descends to Low —
-    /// the browser agent's default "medium" is a lead, not a confirmed
+    /// Severity hygiene (agent hardening C2): explicit `critical` / `high` /
+    /// `medium` / `low` labels survive; an unlabeled or placeholder severity
+    /// descends to Low — an unlabeled finding is a lead, not a confirmed
     /// severity; an explicit `info` label stays Info. Same-title findings
     /// merge into the retained node: max severity wins, descriptions and
     /// URLs accumulate — a duplicate carrying a stronger severity or a
@@ -349,7 +350,6 @@ mod tests {
             {
                 "title": "Open redirect",
                 "description": "Redirect without validation",
-                "severity": "medium",
                 "url": "https://target.com/r?u=//evil"
             },
             // Duplicate of the first title — must merge into the retained
@@ -391,7 +391,7 @@ mod tests {
         // Both variants' descriptions survive.
         assert!(xss.description.contains("Search reflects unescaped input"));
         assert!(xss.description.contains("Duplicate"));
-        // Unlabeled default medium descends to Low.
+        // Unlabeled finding descends to Low (a lead, not a confirmed severity).
         let redirect = ours
             .iter()
             .find(|n| n.title.contains("Open redirect"))
