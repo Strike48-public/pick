@@ -4,7 +4,7 @@ This guide shows the **easiest ways** to run Pick with proper WiFi hardware acce
 
 ---
 
-## 🚀 The Easiest Way (Recommended)
+## The Easiest Way (Recommended)
 
 ### Option 1: Simple Shell Script
 
@@ -24,10 +24,10 @@ cp .env.example .env
 ```
 
 **What it does:**
-- ✅ Automatically uses sudo (required for WiFi)
-- ✅ Loads config from .env file
-- ✅ Logs output to ~/tmp/pentest.log
-- ✅ Shows colored status messages
+- Automatically uses sudo (required for WiFi)
+- Loads config from .env file
+- Logs output to ~/tmp/pentest.log
+- Shows colored status messages
 
 ---
 
@@ -56,7 +56,7 @@ just run-headless-dev
 
 ---
 
-## 📝 Your Current Command (Simplified)
+## Your Current Command (Simplified)
 
 ### Before (Complex):
 ```bash
@@ -99,7 +99,7 @@ pick
 
 ---
 
-## ⚙️ Configuration File (.env)
+## Configuration File (.env)
 
 Create `.env` from the example:
 
@@ -125,7 +125,7 @@ RUST_LOG=debug
 
 ---
 
-## 🔧 Advanced Usage
+## Advanced Usage
 
 ### Manual Control (If You Need It)
 
@@ -160,7 +160,7 @@ STRIKE48_TENANT=production just run-headless-dev
 
 ---
 
-## 🛠️ Troubleshooting
+## Troubleshooting
 
 ### "Operation not permitted" or WiFi tools don't work
 
@@ -225,21 +225,21 @@ rm ~/tmp/pentest.log
 
 ---
 
-## 📊 Comparison
+## Comparison
 
 ### Complexity Levels
 
 | Method | Complexity | Flexibility | Setup Time |
 |--------|-----------|-------------|------------|
-| `./run-pentest.sh` | ⭐ Simple | ⭐⭐ Medium | 1 minute |
-| `just run-headless-env` | ⭐⭐ Easy | ⭐⭐⭐ High | 1 minute |
-| Manual env vars | ⭐⭐⭐⭐ Complex | ⭐⭐⭐⭐⭐ Full | 0 minutes |
+| `./run-pentest.sh` | Simple | Medium | 1 minute |
+| `just run-headless-env` | Easy | High | 1 minute |
+| Manual env vars | Complex | Full | 0 minutes |
 
 **Recommendation**: Start with `./run-pentest.sh` or `just run-headless-env`
 
 ---
 
-## 🎯 Quick Reference Card
+## Quick Reference Card
 
 ```bash
 # ONE-TIME SETUP
@@ -264,7 +264,7 @@ Ctrl+C
 
 ---
 
-## 🔐 Why Sudo?
+## Why Sudo?
 
 **WiFi penetration testing requires direct hardware access:**
 - Monitor mode (airmon-ng)
@@ -279,7 +279,7 @@ See [docs/BWRAP_SUDO_EXPLAINED.md](docs/BWRAP_SUDO_EXPLAINED.md) for technical d
 
 ---
 
-## 📚 Next Steps
+## Next Steps
 
 1. **First run**: Use `./run-pentest.sh headless`
 2. **Configure**: Edit `.env` file with your Strike48 instance

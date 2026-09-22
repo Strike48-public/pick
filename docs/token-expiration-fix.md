@@ -53,10 +53,10 @@ if let Some(validated) = jwt_validator::validate_token(&token) {
 
 ### Benefits
 
-✅ **No manual intervention** - Expired tokens are cleared automatically
-✅ **Fallback to OTT** - Pick uses environment OTT when token is cleared
-✅ **Clock skew tolerance** - 30 second buffer prevents edge cases
-✅ **Logged** - Token clearing is logged for debugging
+**No manual intervention** - Expired tokens are cleared automatically
+**Fallback to OTT** - Pick uses environment OTT when token is cleared
+**Clock skew tolerance** - 30 second buffer prevents edge cases
+**Logged** - Token clearing is logged for debugging
 
 ### Testing
 
@@ -122,10 +122,10 @@ The 30-second buffer handles:
 
 ### Security Considerations
 
-✅ We don't validate signatures (not needed for expiration check)
-✅ We don't expose token contents in logs
-✅ We handle malformed tokens gracefully
-✅ We use constant-time operations (no timing attacks)
+We don't validate signatures (not needed for expiration check)
+We don't expose token contents in logs
+We handle malformed tokens gracefully
+We use constant-time operations (no timing attacks)
 
 ## Code Locations
 

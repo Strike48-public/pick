@@ -238,7 +238,7 @@ Pick is a native app that is both a UI and a connector - the same architecture p
 
 For WiFi scanning and pentesting features, we recommend using a dedicated external WiFi adapter. This prevents disconnection issues when your primary adapter enters monitor mode.
 
-### ⚠️ Important: Avoid Connection Loss
+### Important: Avoid Connection Loss
 
 If you're connected to the internet via WiFi and try to scan with your built-in adapter:
 1. Your adapter enters monitor mode

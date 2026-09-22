@@ -8,7 +8,7 @@
 
 **Total Unsafe Blocks:** 16  
 **Files with Unsafe:** 3  
-**Status:** ✅ **ALL DOCUMENTED** - All unsafe blocks have SAFETY comments
+**Status:** PASS **ALL DOCUMENTED** - All unsafe blocks have SAFETY comments
 
 **Overall Assessment:** The use of `unsafe` in Pick is **minimal, well-justified, and properly documented**. All unsafe blocks are:
 1. Limited to platform-specific FFI boundaries
@@ -69,7 +69,7 @@ unsafe {
 
 **Test Coverage:** Windows-specific, tested on Windows CI
 
-**Recommendation:** ✅ SAFE - Consider `libloading` crate in future for consistency
+**Recommendation:** PASS SAFE - Consider `libloading` crate in future for consistency
 
 ---
 
@@ -119,7 +119,7 @@ if ret != 0 {
 - Well-documented libc function
 - FDs not used if openpty fails
 
-**Recommendation:** ✅ SAFE - Proper libc FFI usage
+**Recommendation:** PASS SAFE - Proper libc FFI usage
 
 ---
 
@@ -152,7 +152,7 @@ unsafe { libc::ioctl(master, libc::TIOCSWINSZ, &ws) };
 - Standard POSIX ioctl
 - Failure is gracefully handled
 
-**Recommendation:** ✅ SAFE - Well-documented decision to ignore return value
+**Recommendation:** PASS SAFE - Well-documented decision to ignore return value
 
 ---
 
@@ -204,7 +204,7 @@ unsafe {
 - Error handling for fork failures
 - Documentation explains why `_exit` instead of `exit`
 
-**Recommendation:** ✅ SAFE - Classic Unix pattern, correctly implemented
+**Recommendation:** PASS SAFE - Classic Unix pattern, correctly implemented
 
 **Note:** Comments explicitly document why unsafe is required: "The closure is unsafe because it runs in the child process between fork() and exec()"
 
@@ -248,7 +248,7 @@ unsafe { libc::close(self.master_fd) };
 - Drop impl ensures cleanup
 - Standard POSIX operations
 
-**Recommendation:** ✅ SAFE - Correct low-level FD management
+**Recommendation:** PASS SAFE - Correct low-level FD management
 
 ---
 
@@ -283,7 +283,7 @@ let vm = unsafe { JavaVM::from_raw(vm_ptr as *mut jni::sys::JavaVM) }
 - Single initialization (OnceLock)
 - Standard Android/JNI pattern
 
-**Recommendation:** ✅ SAFE - Correct JNI initialization pattern
+**Recommendation:** PASS SAFE - Correct JNI initialization pattern
 
 ---
 
@@ -313,7 +313,7 @@ let context = unsafe { JObject::from_raw(context_ptr as jni::sys::jobject) };
 - Standard Android context access
 - Scope-limited lifetime
 
-**Recommendation:** ✅ SAFE - Standard Android JNI pattern
+**Recommendation:** PASS SAFE - Standard Android JNI pattern
 
 ---
 
@@ -350,7 +350,7 @@ pub fn jstring_to_string(env: &mut JNIEnv, obj: &JObject) -> String {
 
 **Improvement:** Consider runtime type check via JNI `IsInstanceOf`
 
-**Recommendation:** ⚠️ SAFE BUT IMPROVE - Add runtime type validation
+**Recommendation:** WARN SAFE BUT IMPROVE - Add runtime type validation
 
 **Proposed Enhancement:**
 ```rust
@@ -378,37 +378,37 @@ pub fn jstring_to_string(env: &mut JNIEnv, obj: &JObject) -> String {
 
 | # | File | Line | Purpose | Safety Comments | Risk | Status |
 |---|------|------|---------|----------------|------|--------|
-| 1 | desktop/capture.rs | 72 | LoadLibrary DLL check | None (trivial) | LOW | ✅ Safe |
-| 2 | android/pty_shell.rs | 78 | openpty() | ✅ Present | LOW | ✅ Safe |
-| 3 | android/pty_shell.rs | 107 | ioctl(TIOCSWINSZ) | ✅ Present | LOW | ✅ Safe |
-| 4 | android/pty_shell.rs | 245 | fork/exec (proot) | ✅ Present | LOW | ✅ Safe |
-| 5 | android/pty_shell.rs | 269 | close(slave) | ✅ Present | LOW | ✅ Safe |
-| 6 | android/pty_shell.rs | 392 | fork/exec (chroot) | ✅ Present | LOW | ✅ Safe |
-| 7 | android/pty_shell.rs | 427 | fork child setup | ✅ Present | LOW | ✅ Safe |
-| 8 | android/pty_shell.rs | 452 | ioctl(resize) | Inline | LOW | ✅ Safe |
-| 9 | android/pty_shell.rs | 469 | dup(master_fd) | Inline | LOW | ✅ Safe |
-| 10 | android/pty_shell.rs | 480 | from_raw_fd | Inline | LOW | ✅ Safe |
-| 11 | android/pty_shell.rs | 489 | dup(master_fd) | Inline | LOW | ✅ Safe |
-| 12 | android/pty_shell.rs | 500 | from_raw_fd | Inline | LOW | ✅ Safe |
-| 13 | android/pty_shell.rs | 521 | close(master_fd) | Inline | LOW | ✅ Safe |
-| 14 | android/jni_bridge.rs | 24 | JavaVM from_raw | ✅ Present | LOW | ✅ Safe |
-| 15 | android/jni_bridge.rs | 55 | JObject from_raw | ✅ Present | LOW | ✅ Safe |
-| 16 | android/jni_bridge.rs | 96 | JString transmute | ✅ Present | LOW | ⚠️ Improve |
+| 1 | desktop/capture.rs | 72 | LoadLibrary DLL check | None (trivial) | LOW | PASS Safe |
+| 2 | android/pty_shell.rs | 78 | openpty() | PASS Present | LOW | PASS Safe |
+| 3 | android/pty_shell.rs | 107 | ioctl(TIOCSWINSZ) | PASS Present | LOW | PASS Safe |
+| 4 | android/pty_shell.rs | 245 | fork/exec (proot) | PASS Present | LOW | PASS Safe |
+| 5 | android/pty_shell.rs | 269 | close(slave) | PASS Present | LOW | PASS Safe |
+| 6 | android/pty_shell.rs | 392 | fork/exec (chroot) | PASS Present | LOW | PASS Safe |
+| 7 | android/pty_shell.rs | 427 | fork child setup | PASS Present | LOW | PASS Safe |
+| 8 | android/pty_shell.rs | 452 | ioctl(resize) | Inline | LOW | PASS Safe |
+| 9 | android/pty_shell.rs | 469 | dup(master_fd) | Inline | LOW | PASS Safe |
+| 10 | android/pty_shell.rs | 480 | from_raw_fd | Inline | LOW | PASS Safe |
+| 11 | android/pty_shell.rs | 489 | dup(master_fd) | Inline | LOW | PASS Safe |
+| 12 | android/pty_shell.rs | 500 | from_raw_fd | Inline | LOW | PASS Safe |
+| 13 | android/pty_shell.rs | 521 | close(master_fd) | Inline | LOW | PASS Safe |
+| 14 | android/jni_bridge.rs | 24 | JavaVM from_raw | PASS Present | LOW | PASS Safe |
+| 15 | android/jni_bridge.rs | 55 | JObject from_raw | PASS Present | LOW | PASS Safe |
+| 16 | android/jni_bridge.rs | 96 | JString transmute | PASS Present | LOW | WARN Improve |
 
 ## Risk Assessment by Category
 
-### Memory Safety: ✅ LOW RISK
+### Memory Safety: PASS LOW RISK
 - All raw pointer operations are checked
 - No buffer overflows possible
 - Proper null checking
 - Ownership properly tracked
 
-### Concurrency Safety: ✅ LOW RISK
+### Concurrency Safety: PASS LOW RISK
 - JavaVM stored in OnceLock (thread-safe)
 - PTY operations single-threaded
 - No data races possible
 
-### FFI Safety: ✅ LOW RISK
+### FFI Safety: PASS LOW RISK
 - Standard POSIX/JNI APIs
 - Proper error handling
 - Documented contracts honored
@@ -418,7 +418,7 @@ pub fn jstring_to_string(env: &mut JNIEnv, obj: &JObject) -> String {
 ### Buffer Overflows (C/C++ FFI)
 **HoneySlop Lesson:** Validate sizes, use saturating arithmetic, add static assertions
 
-**Pick Status:** ✅ PASS
+**Pick Status:** PASS
 - No manual buffer operations
 - FD operations have OS-level validation
 - No size calculations that could overflow
@@ -426,7 +426,7 @@ pub fn jstring_to_string(env: &mut JNIEnv, obj: &JObject) -> String {
 ### Unsafe Code Best Practices
 **HoneySlop Lesson:** Document safety invariants, minimize scope, audit regularly
 
-**Pick Status:** ✅ PASS
+**Pick Status:** PASS
 - 15/16 blocks have SAFETY comments
 - All unsafe blocks are FFI boundary only
 - Zero unsafe in business logic
@@ -436,12 +436,12 @@ pub fn jstring_to_string(env: &mut JNIEnv, obj: &JObject) -> String {
 
 ### Immediate (High Priority)
 
-1. **✅ COMPLETE: Safety Comments**
+1. **PASS COMPLETE: Safety Comments**
    - All critical unsafe blocks documented
    - Only minor inline operations lack comments
    - Consider adding brief comments to inline operations
 
-2. **⚠️ IMPROVE: JString Transmute**
+2. **WARN IMPROVE: JString Transmute**
    - Add runtime type validation to `jstring_to_string()`
    - Use `IsInstanceOf` before transmute
    - Prevents crashes if caller violates contract
@@ -468,10 +468,10 @@ pub fn jstring_to_string(env: &mut JNIEnv, obj: &JObject) -> String {
 ## Test Coverage
 
 ### Current Coverage
-- ✅ PTY operations tested on Android
-- ✅ JNI bridge tested on Android
-- ✅ DLL loading tested on Windows CI
-- ❌ No specific unsafe block unit tests
+- PASS: PTY operations tested on Android
+- PASS: JNI bridge tested on Android
+- PASS: DLL loading tested on Windows CI
+- FAIL: No specific unsafe block unit tests
 
 ### Recommended Tests
 
@@ -510,11 +510,11 @@ mod unsafe_tests {
 
 Pick's use of `unsafe` is **exemplary**:
 
-1. ✅ **Minimal** - Only 16 unsafe blocks in entire codebase
-2. ✅ **Localized** - Only 3 files, all platform-specific FFI
-3. ✅ **Documented** - 15/16 have SAFETY comments
-4. ✅ **Justified** - All are necessary for FFI, no shortcuts
-5. ✅ **Zero in Core Logic** - No unsafe in business logic or tool execution
+1. PASS: **Minimal** - Only 16 unsafe blocks in entire codebase
+2. PASS: **Localized** - Only 3 files, all platform-specific FFI
+3. PASS: **Documented** - 15/16 have SAFETY comments
+4. PASS: **Justified** - All are necessary for FFI, no shortcuts
+5. PASS: **Zero in Core Logic** - No unsafe in business logic or tool execution
 
 ### Overall Risk: **LOW**
 

@@ -7,7 +7,7 @@
 
 ---
 
-> **⚠️ Vision / Roadmap — not current-state.** This document describes the aspirational
+> **Vision / Roadmap — not current-state.** This document describes the aspirational
 > Pick + StrikeKit ecosystem architecture, including integrations and components that are
 > planned but not yet implemented. For the authoritative description of what Pick actually
 > does today, see [ARCHITECTURE.md](../ARCHITECTURE.md) at the repository root.
@@ -1495,11 +1495,11 @@ pub enum ApprovalStatus {
 **Goal:** Demonstrate autonomous pentesting + integrations
 
 **Deliverables:**
-1. ✅ **Prospector Studio API:** Basic task graph generation, LLM integration
-2. ✅ **Pick:** Task graph execution, evidence generation, 5 tool integrations
-3. ✅ **StrikeKit:** Nessus XML import, Cobalt Strike log import, basic findings
-4. ✅ **Demo Flow:** Nessus → Prospector → Pick → StrikeKit (end-to-end)
-5. ✅ **XBOW:** 70%+ success on subset of benchmark
+1. **Prospector Studio API:** Basic task graph generation, LLM integration
+2. **Pick:** Task graph execution, evidence generation, 5 tool integrations
+3. **StrikeKit:** Nessus XML import, Cobalt Strike log import, basic findings
+4. **Demo Flow:** Nessus → Prospector → Pick → StrikeKit (end-to-end)
+5. **XBOW:** 70%+ success on subset of benchmark
 
 **Team:**
 - Month 1: 5-6 developers
@@ -1596,12 +1596,12 @@ pub enum ApprovalStatus {
 **Goal:** 85%+ XBOW success, feature parity with LuaN1ao/Shannon
 
 **Deliverables:**
-1. ✅ Multi-agent P-E-R architecture (Planner, Executor, Reflector)
-2. ✅ Browser automation (Playwright integration)
-3. ✅ RAG knowledge base (ExploitDB, PayloadsAllTheThings)
-4. ✅ Dynamic replanning (adapt to discoveries)
-5. ✅ Mythic agent mode (Pick as Mythic agent)
-6. ✅ Real-time Nessus/CS integration (API sync)
+1. Multi-agent P-E-R architecture (Planner, Executor, Reflector)
+2. Browser automation (Playwright integration)
+3. RAG knowledge base (ExploitDB, PayloadsAllTheThings)
+4. Dynamic replanning (adapt to discoveries)
+5. Mythic agent mode (Pick as Mythic agent)
+6. Real-time Nessus/CS integration (API sync)
 
 ---
 
@@ -1610,10 +1610,10 @@ pub enum ApprovalStatus {
 **Goal:** 90%+ XBOW success, public validation
 
 **Deliverables:**
-1. ✅ XBOW optimization (weekly testing, iteration)
-2. ✅ Cost optimization (model selection, caching)
-3. ✅ Speed optimization (parallel execution tuning)
-4. ✅ Public benchmark results, blog post, case studies
+1. XBOW optimization (weekly testing, iteration)
+2. Cost optimization (model selection, caching)
+3. Speed optimization (parallel execution tuning)
+4. Public benchmark results, blog post, case studies
 
 ---
 
@@ -1622,13 +1622,13 @@ pub enum ApprovalStatus {
 **Goal:** 5-10 enterprise pilots, full integration suite
 
 **Deliverables:**
-1. ✅ Metasploit RPC API integration
-2. ✅ Burp Suite REST API integration
-3. ✅ AWS Security Hub integration
-4. ✅ Azure/GCP cloud security integrations
-5. ✅ BloodHound Neo4j integration
-6. ✅ Splunk/ELK SIEM integration
-7. ✅ Comprehensive documentation
+1. Metasploit RPC API integration
+2. Burp Suite REST API integration
+3. AWS Security Hub integration
+4. Azure/GCP cloud security integrations
+5. BloodHound Neo4j integration
+6. Splunk/ELK SIEM integration
+7. Comprehensive documentation
 
 ---
 

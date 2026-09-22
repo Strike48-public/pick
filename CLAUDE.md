@@ -264,8 +264,8 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`
 ### Customer Data
 
 Customer/tenant names are PII. Never reference them in public artifacts:
-- ❌ "Fixed issue for <customer-name> deployment"
-- ✅ "Fixed deployment issue in production environment"
+- No: "Fixed issue for <customer-name> deployment"
+- Yes: "Fixed deployment issue in production environment"
 
 ---
 

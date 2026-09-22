@@ -15,20 +15,20 @@ cargo test --package pentest-ui cyberchef_sortable_tests
 The automated tests cover:
 
 ### Basic Operations (3 items: A, B, C)
-- ✅ Drag first to second (before/after)
-- ✅ Drag first to third (before/after)
-- ✅ Drag second to first (before/after)
-- ✅ Drag second to third (before/after)
-- ✅ Drag third to first (before/after)
-- ✅ Drag third to second (before/after)
-- ✅ Drag onto self (no-op cases)
+- Drag first to second (before/after)
+- Drag first to third (before/after)
+- Drag second to first (before/after)
+- Drag second to third (before/after)
+- Drag third to first (before/after)
+- Drag third to second (before/after)
+- Drag onto self (no-op cases)
 
 ### Edge Cases
-- ✅ Single item list
-- ✅ Two item swap
-- ✅ Longer lists (5+ items)
-- ✅ Moving forward multiple positions
-- ✅ Moving backward multiple positions
+- Single item list
+- Two item swap
+- Longer lists (5+ items)
+- Moving forward multiple positions
+- Moving backward multiple positions
 
 ## Manual Testing Checklist
 

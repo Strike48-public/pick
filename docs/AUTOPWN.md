@@ -225,7 +225,7 @@ For each target:
 
 ### Legal Warning
 
-**⚠️ CRITICAL: This tool is for authorized security testing only.**
+**CRITICAL: This tool is for authorized security testing only.**
 
 Unauthorized access to wireless networks is **illegal** in most jurisdictions and may result in:
 - Criminal charges
@@ -235,13 +235,13 @@ Unauthorized access to wireless networks is **illegal** in most jurisdictions an
 
 ### Authorized Use Cases
 
-✅ **Legal Uses**:
+**Legal Uses**:
 - Testing your own WiFi networks
 - Authorized penetration testing with written permission
 - Educational security research in controlled environments
 - Security audits with proper authorization
 
-❌ **Illegal Uses**:
+**Illegal Uses**:
 - Attacking networks you don't own or have permission to test
 - Unauthorized access to any wireless network
 - Using captured credentials without authorization

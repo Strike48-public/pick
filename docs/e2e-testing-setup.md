@@ -45,7 +45,7 @@ Run only CyberChef-specific tests.
 
 ## What Gets Tested
 
-### ✅ 21 Test Cases Covering:
+### 21 Test Cases Covering:
 
 **Basic Operations:**
 1. Display CyberChef page

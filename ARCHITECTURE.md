@@ -254,12 +254,12 @@ Benchmarks:      benches/ directory (Criterion)
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| **Linux** | ✅ Full | Desktop + headless, BlackArch tools |
-| **macOS** | ✅ Full | Desktop + headless, limited tool support |
-| **Android** | ⚠️ Beta | Mobile app, root detection, limited tools |
-| **iOS** | 🚧 Alpha | Mobile app, sandboxed, very limited tools |
-| **Web** | ✅ Full | Server-side execution, all tools available |
-| **Windows** | ⚠️ WSL | Via WSL2, native support in progress |
+| **Linux** | Full | Desktop + headless, BlackArch tools |
+| **macOS** | Full | Desktop + headless, limited tool support |
+| **Android** | Beta | Mobile app, root detection, limited tools |
+| **iOS** | Alpha | Mobile app, sandboxed, very limited tools |
+| **Web** | Full | Server-side execution, all tools available |
+| **Windows** | WSL | Via WSL2, native support in progress |
 
 ---
 
