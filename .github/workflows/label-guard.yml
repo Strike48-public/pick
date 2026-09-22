@@ -38,24 +38,3 @@ jobs:
             } else {
               await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body });
             }
-            if (context.payload.issue.state === 'closed') return;
-            const required = ['product/', 'type/', 'priority/', 'size/'];
-            const labels = context.payload.issue.labels.map(l => l.name);
-            const missing = required.filter(fam => !labels.some(l => l.startsWith(fam)));
-            const marker = '<!-- label-guard -->';
-            const body = marker + '\n### Label guard' + '\n\n' +
-              (missing.length
-                ? 'Missing required label families: ' + missing.map(m => '`' + m + '*`').join(', ') +
-                  '. See [.github/LABELS.md](./.github/LABELS.md) for the canonical schema. Priority and size ride on labels, not board fields.'
-                : 'All required label families present. Thank you.');
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner, repo: context.repo.repo,
-              issue_number: context.issue.number, per_page: 100 });
-            const existing = comments.find(c => c.body && c.body.includes(marker));
-            if (existing) {
-              if (existing.body.trim() !== body.trim()) {
-                await github.rest.issues.updateComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body });
-              }
-            } else {
-              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body });
-            }
