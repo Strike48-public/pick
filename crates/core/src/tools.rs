@@ -944,7 +944,12 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Execute a tool by name
+    /// Execute a tool by name.
+    ///
+    /// Runs inside its own `tool.registry` span so the tool's own run time is
+    /// separable from the connector hop around it (context build, evidence
+    /// drain, artifact upload) when reading the close events (pick#476).
+    #[tracing::instrument(name = "tool.registry", skip_all, fields(tool = %name))]
     pub async fn execute(
         &self,
         name: &str,

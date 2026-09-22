@@ -28,6 +28,7 @@ use strike48_connector::{
 };
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tracing::Instrument;
 
 use super::injections::inject_websocket_shim;
 use super::token_refresh;
@@ -225,196 +226,209 @@ impl BaseConnector for PickConnector {
         context: &'a HashMap<String, String>,
     ) -> Pin<Box<dyn std::future::Future<Output = strike48_connector::Result<Value>> + Send + 'a>>
     {
-        Box::pin(async move {
-            // Route: app requests (have "path", no "tool") vs tool requests
-            let is_app_request = request.get("path").is_some() && request.get("tool").is_none();
+        // Route: app requests (have "path", no "tool") vs tool requests
+        let is_app_request = request.get("path").is_some() && request.get("tool").is_none();
+        let tool_name = request
+            .get("tool")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        // Tool requests run under a correlation span so every line they emit,
+        // including the failure line, carries tool, request_id and
+        // tool_call_id (pick#476). App proxy requests are not instrumented.
+        let span = if is_app_request {
+            tracing::Span::none()
+        } else {
+            pentest_core::spans::tool_execution_span(&tool_name, &self.instance_id, context)
+        };
 
-            if is_app_request {
-                // App/HTTP proxy to LiveView
-                let page_request: AppPageRequest = serde_json::from_value(request.clone())
-                    .unwrap_or_else(|_| AppPageRequest::new("/"));
+        Box::pin(
+            async move {
+                if is_app_request {
+                    // App/HTTP proxy to LiveView
+                    let page_request: AppPageRequest = serde_json::from_value(request.clone())
+                        .unwrap_or_else(|_| AppPageRequest::new("/"));
 
-                let response = self.proxy_to_liveview(&page_request).await;
-                let response_json = serde_json::to_value(&response)
-                    .unwrap_or_else(|_| serde_json::json!({"error": "serialization failed"}));
-                Ok(response_json)
-            } else {
-                // Tool execution — run synchronously in this task.
-                // The SDK spawns execute_with_context in its own tokio task already,
-                // so we don't need to spawn again.
-                let tool_name = request
-                    .get("tool")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let params = request
-                    .get("parameters")
-                    .cloned()
-                    .unwrap_or(request.clone());
+                    let response = self.proxy_to_liveview(&page_request).await;
+                    let response_json = serde_json::to_value(&response)
+                        .unwrap_or_else(|_| serde_json::json!({"error": "serialization failed"}));
+                    Ok(response_json)
+                } else {
+                    // Tool execution — run synchronously in this task.
+                    // The SDK spawns execute_with_context in its own tokio task already,
+                    // so we don't need to spawn again.
+                    let params = request
+                        .get("parameters")
+                        .cloned()
+                        .unwrap_or(request.clone());
 
-                self.send_event(ConnectorEvent::ToolStarted {
-                    tool_name: tool_name.clone(),
-                    params: params.clone(),
-                });
+                    self.send_event(ConnectorEvent::ToolStarted {
+                        tool_name: tool_name.clone(),
+                        params: params.clone(),
+                    });
 
-                let start = std::time::Instant::now();
+                    let start = std::time::Instant::now();
 
-                // Build ToolContext
-                let mut ctx = match &self.workspace_path {
-                    Some(path) => {
-                        pentest_core::tools::ToolContext::default().with_workspace(path.clone())
-                    }
-                    None => pentest_core::tools::ToolContext::default(),
-                };
+                    // Build ToolContext
+                    let mut ctx = match &self.workspace_path {
+                        Some(path) => {
+                            pentest_core::tools::ToolContext::default().with_workspace(path.clone())
+                        }
+                        None => pentest_core::tools::ToolContext::default(),
+                    };
 
-                // Populate metadata (instance_id, request_id, tool_call_id)
-                // We don't have a request_id from the SDK's perspective here
-                // (the runner handles it), but we can extract from context.
-                let request_id = context.get("request_id").cloned().unwrap_or_default();
-                ctx.metadata
-                    .insert("instance_id".to_string(), self.instance_id.clone());
-                ctx.metadata
-                    .insert("request_id".to_string(), request_id.clone());
-                if let Some(tool_call_id) = context.get("tool_call_id") {
-                    if !tool_call_id.is_empty() {
-                        ctx.metadata
-                            .insert("tool_call_id".to_string(), tool_call_id.clone());
-                    }
-                }
-
-                // Forward session token
-                if let Some(token) = context.get("session_token") {
+                    // Populate metadata (instance_id, request_id, tool_call_id)
+                    // We don't have a request_id from the SDK's perspective here
+                    // (the runner handles it), but we can extract from context.
+                    let request_id = context.get("request_id").cloned().unwrap_or_default();
                     ctx.metadata
-                        .insert("session_token".to_string(), token.clone());
-                }
-
-                // Log context keys
-                tools::log_execute_request_context_pub(&request_id, &tool_name, context);
-
-                // Set aggression level and agent name
-                ctx = ctx.with_aggression_level(*self.aggression_level.read().await);
-                ctx = ctx.with_agent_name(self.connector_name.clone());
-
-                // Provide operator identities for differential-authz tools
-                // (pick#162). Loaded once at construction; cloned per call.
-                ctx = ctx.with_identities((*self.identities).clone());
-
-                // Create Matrix client if API URL is available
-                let api_url = self.derive_matrix_api_url();
-                if !api_url.is_empty() {
-                    let matrix_client =
-                        Arc::new(pentest_core::matrix::MatrixChatClient::new(&api_url));
-                    ctx = ctx.with_matrix_client(matrix_client);
-                }
-
-                let tools = self.tools.read().await;
-                let result = match tools.execute(&tool_name, params, &ctx).await {
-                    Ok(result) => {
-                        let duration_ms = start.elapsed().as_millis() as u64;
-                        self.send_event(ConnectorEvent::ToolCompleted {
-                            tool_name: tool_name.clone(),
-                            duration_ms,
-                            success: result.success,
-                            result: serde_json::to_value(&result).unwrap_or(Value::Null),
-                        });
-                        result
+                        .insert("instance_id".to_string(), self.instance_id.clone());
+                    ctx.metadata
+                        .insert("request_id".to_string(), request_id.clone());
+                    if let Some(tool_call_id) = context.get("tool_call_id") {
+                        if !tool_call_id.is_empty() {
+                            ctx.metadata
+                                .insert("tool_call_id".to_string(), tool_call_id.clone());
+                        }
                     }
-                    Err(e) => {
-                        self.send_event(ConnectorEvent::ToolFailed {
-                            tool_name: tool_name.clone(),
-                            error: e.to_string(),
-                        });
-                        pentest_core::tools::ToolResult::error(e.to_string())
+
+                    // Forward session token
+                    if let Some(token) = context.get("session_token") {
+                        ctx.metadata
+                            .insert("session_token".to_string(), token.clone());
                     }
-                };
 
-                // A successful `begin_scan` marks the start of a fresh
-                // engagement. Clear any evidence left over from a previous scan
-                // so it cannot bleed into this report (pick#172). `begin_scan`
-                // itself produces no findings, so nothing is lost by clearing
-                // here rather than draining first.
-                if tool_name == "begin_scan" && result.success {
-                    crate::session::clear_evidence();
-                    tracing::debug!("begin_scan: cleared evidence graph for new engagement");
-                }
+                    // Log context keys
+                    tools::log_execute_request_context_pub(&request_id, &tool_name, context);
 
-                // Bridge tool-produced evidence into the report graph (pick#172).
-                // Tools push findings into the process-global PENDING_EVIDENCE
-                // buffer as a side effect of execution; if we don't drain them
-                // here they never reach `gate_for_report` and the report comes
-                // out empty. This is the single production drain point shared by
-                // both the headless and desktop connectors.
-                let forwarded = crate::session::drain_tool_evidence_into_graph();
-                if forwarded > 0 {
-                    tracing::debug!(
-                        tool = tool_name.as_str(),
-                        forwarded,
-                        "forwarded tool evidence into report graph"
-                    );
-                }
+                    // Set aggression level and agent name
+                    ctx = ctx.with_aggression_level(*self.aggression_level.read().await);
+                    ctx = ctx.with_agent_name(self.connector_name.clone());
 
-                // Upload artifacts (webwright) if applicable
-                let upload_status = if result.success && tool_name == "webwright" {
-                    if let Some(engagement_id) = tools::extract_engagement_id_pub(context) {
-                        let runner_guard = self.runner.read().await;
-                        if let Some(ref runner) = *runner_guard {
-                            let session_token =
-                                context.get("session_token").cloned().unwrap_or_default();
-                            let artifacts =
-                                result.data.get("artifacts").cloned().unwrap_or_default();
-                            let ws_path = self
-                                .workspace_path
-                                .as_ref()
-                                .map(|p| p.to_string_lossy().to_string())
-                                .unwrap_or_default();
-                            Some(
-                                tools::upload_artifacts_via_runner(
-                                    runner,
-                                    &engagement_id,
-                                    &session_token,
-                                    &artifacts,
-                                    &ws_path,
+                    // Provide operator identities for differential-authz tools
+                    // (pick#162). Loaded once at construction; cloned per call.
+                    ctx = ctx.with_identities((*self.identities).clone());
+
+                    // Create Matrix client if API URL is available
+                    let api_url = self.derive_matrix_api_url();
+                    if !api_url.is_empty() {
+                        let matrix_client =
+                            Arc::new(pentest_core::matrix::MatrixChatClient::new(&api_url));
+                        ctx = ctx.with_matrix_client(matrix_client);
+                    }
+
+                    let tools = self.tools.read().await;
+                    let result = match tools.execute(&tool_name, params, &ctx).await {
+                        Ok(result) => {
+                            let duration_ms = start.elapsed().as_millis() as u64;
+                            self.send_event(ConnectorEvent::ToolCompleted {
+                                tool_name: tool_name.clone(),
+                                duration_ms,
+                                success: result.success,
+                                result: serde_json::to_value(&result).unwrap_or(Value::Null),
+                            });
+                            result
+                        }
+                        Err(e) => {
+                            self.send_event(ConnectorEvent::ToolFailed {
+                                tool_name: tool_name.clone(),
+                                error: e.to_string(),
+                            });
+                            pentest_core::tools::ToolResult::error(e.to_string())
+                        }
+                    };
+
+                    // A successful `begin_scan` marks the start of a fresh
+                    // engagement. Clear any evidence left over from a previous scan
+                    // so it cannot bleed into this report (pick#172). `begin_scan`
+                    // itself produces no findings, so nothing is lost by clearing
+                    // here rather than draining first.
+                    if tool_name == "begin_scan" && result.success {
+                        crate::session::clear_evidence();
+                        tracing::debug!("begin_scan: cleared evidence graph for new engagement");
+                    }
+
+                    // Bridge tool-produced evidence into the report graph (pick#172).
+                    // Tools push findings into the process-global PENDING_EVIDENCE
+                    // buffer as a side effect of execution; if we don't drain them
+                    // here they never reach `gate_for_report` and the report comes
+                    // out empty. This is the single production drain point shared by
+                    // both the headless and desktop connectors.
+                    let forwarded = crate::session::drain_tool_evidence_into_graph();
+                    if forwarded > 0 {
+                        tracing::debug!(
+                            tool = tool_name.as_str(),
+                            forwarded,
+                            "forwarded tool evidence into report graph"
+                        );
+                    }
+
+                    // Upload artifacts (webwright) if applicable
+                    let upload_status = if result.success && tool_name == "webwright" {
+                        if let Some(engagement_id) = tools::extract_engagement_id_pub(context) {
+                            let runner_guard = self.runner.read().await;
+                            if let Some(ref runner) = *runner_guard {
+                                let session_token =
+                                    context.get("session_token").cloned().unwrap_or_default();
+                                let artifacts =
+                                    result.data.get("artifacts").cloned().unwrap_or_default();
+                                let ws_path = self
+                                    .workspace_path
+                                    .as_ref()
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                Some(
+                                    tools::upload_artifacts_via_runner(
+                                        runner,
+                                        &engagement_id,
+                                        &session_token,
+                                        &artifacts,
+                                        &ws_path,
+                                    )
+                                    .await,
                                 )
-                                .await,
-                            )
+                            } else {
+                                tracing::warn!(
+                                    "[strikekit] runner not available for artifact upload"
+                                );
+                                None
+                            }
                         } else {
-                            tracing::warn!("[strikekit] runner not available for artifact upload");
                             None
                         }
                     } else {
                         None
+                    };
+
+                    // Serialize result, injecting upload status if present
+                    let mut result_json = serde_json::to_value(&result).unwrap_or(Value::Null);
+                    if let Some(status) = upload_status {
+                        tools::inject_upload_status_pub(&mut result_json, &status);
                     }
-                } else {
-                    None
-                };
 
-                // Serialize result, injecting upload status if present
-                let mut result_json = serde_json::to_value(&result).unwrap_or(Value::Null);
-                if let Some(status) = upload_status {
-                    tools::inject_upload_status_pub(&mut result_json, &status);
+                    // Sanitize target-controlled tool output before it re-enters any
+                    // LLM agent (#320). This is the production agent-facing choke
+                    // point (the SDK runner calls execute_with_context), so every
+                    // tool is covered here rather than per-tool. Scrubs secrets and
+                    // neutralizes injected instructions in `data`/`error` and the
+                    // provenance excerpt. Applied after upload-status injection so
+                    // that field is covered too.
+                    let scrub = pentest_core::sanitize::sanitize_agent_result(&mut result_json);
+                    if scrub.changed_anything() {
+                        tracing::info!(
+                            tool = tool_name.as_str(),
+                            injection_suspected = scrub.injection_suspected,
+                            secrets_redacted = scrub.secrets_redacted,
+                            markers_neutralized = scrub.markers_neutralized,
+                            "sanitized tool output before returning to agent"
+                        );
+                    }
+
+                    Ok(result_json)
                 }
-
-                // Sanitize target-controlled tool output before it re-enters any
-                // LLM agent (#320). This is the production agent-facing choke
-                // point (the SDK runner calls execute_with_context), so every
-                // tool is covered here rather than per-tool. Scrubs secrets and
-                // neutralizes injected instructions in `data`/`error` and the
-                // provenance excerpt. Applied after upload-status injection so
-                // that field is covered too.
-                let scrub = pentest_core::sanitize::sanitize_agent_result(&mut result_json);
-                if scrub.changed_anything() {
-                    tracing::info!(
-                        tool = tool_name.as_str(),
-                        injection_suspected = scrub.injection_suspected,
-                        secrets_redacted = scrub.secrets_redacted,
-                        markers_neutralized = scrub.markers_neutralized,
-                        "sanitized tool output before returning to agent"
-                    );
-                }
-
-                Ok(result_json)
             }
-        })
+            .instrument(span),
+        )
     }
 
     fn handle_ws_open(
