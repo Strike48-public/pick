@@ -320,11 +320,14 @@ impl BaseConnector for PickConnector {
                         result
                     }
                     Err(e) => {
+                        // Full cause chain: this is where the error leaves the
+                        // process, to the UI event and to Strike48.
+                        let error = e.chain();
                         self.send_event(ConnectorEvent::ToolFailed {
                             tool_name: tool_name.clone(),
-                            error: e.to_string(),
+                            error: error.clone(),
                         });
-                        pentest_core::tools::ToolResult::error(e.to_string())
+                        pentest_core::tools::ToolResult::error(error)
                     }
                 };
 

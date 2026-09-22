@@ -129,13 +129,13 @@ pub async fn pre_approve(api_url: &str, jwt: &str, connector_type: &str) -> Resu
         .json(&serde_json::json!({ "connector_type": connector_type }))
         .send()
         .await
-        .map_err(|e| Error::Matrix(format!("pre-approve request failed: {e}")))?;
+        .map_err(|e| Error::Matrix(format!("pre-approve request failed: {e}")).with_source(e))?;
 
     let status = resp.status();
     let body = resp
         .text()
         .await
-        .map_err(|e| Error::Matrix(format!("pre-approve body read failed: {e}")))?;
+        .map_err(|e| Error::Matrix(format!("pre-approve body read failed: {e}")).with_source(e))?;
 
     if !status.is_success() {
         return Err(Error::Matrix(format!(

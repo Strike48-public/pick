@@ -297,7 +297,8 @@ impl PentestTool for PortScanTool {
                         "host_state_note": host_state_note(r.reachability),
                     }),
                     Err((host, e)) => {
-                        return Err(pentest_core::error::Error::Network(format!("{host}: {e}")))
+                        return Err(pentest_core::error::Error::Network(format!("{host}: {e}"))
+                            .with_source(e))
                     }
                 }
             } else {

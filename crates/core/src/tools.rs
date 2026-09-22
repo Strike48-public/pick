@@ -659,7 +659,7 @@ where
             let duration_ms = start.elapsed().as_millis() as u64;
             Ok(ToolResult::success_with_duration(data, duration_ms))
         }
-        Err(e) => Ok(ToolResult::error(e.to_string())),
+        Err(e) => Ok(ToolResult::error(e.chain())),
     }
 }
 
@@ -678,7 +678,7 @@ where
             let duration_ms = start.elapsed().as_millis() as u64;
             Ok(ToolResult::success_with_duration(data, duration_ms).with_provenance(provenance))
         }
-        Err(e) => Ok(ToolResult::error(e.to_string())),
+        Err(e) => Ok(ToolResult::error(e.chain())),
     }
 }
 

@@ -281,7 +281,7 @@ impl BaseConnector for PentestConnector {
                 Err(e) => {
                     let _ = event_tx.send(ToolEvent::Failed {
                         tool_name: name,
-                        error: e.to_string(),
+                        error: e.chain(),
                     });
                     // The error string is connector-internal (not target output),
                     // but pass it through the same scrub so a secret echoed into
