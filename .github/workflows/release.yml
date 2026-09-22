@@ -591,6 +591,21 @@ jobs:
             echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Add Docker bundle
+        # The customer compose bundle (deploy/docker, docs/DOCKER_INSTALL.md)
+        # ships as release assets so the guide can fetch it from the same tag
+        # it pins the image to, instead of from an unpinned branch. The compose
+        # file's default image tag is stamped to this release, so bundle and
+        # image stay one consistent set without a manual bump before tagging.
+        # Copied before checksums are generated, so SHA256SUMS.txt covers both.
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sed "s/\${PICK_IMAGE_TAG:-[^}]*}/\${PICK_IMAGE_TAG:-${VERSION}}/" \
+            deploy/docker/docker-compose.yml > release/pick-docker-compose.yml
+          grep -qF "pick:\${PICK_IMAGE_TAG:-${VERSION}}" release/pick-docker-compose.yml
+          cp deploy/docker/.env.example release/pick-docker.env.example
+
       - name: Generate checksums
         working-directory: release
         run: |
@@ -632,6 +647,12 @@ jobs:
             Each headless agent asset is also published under the legacy
             `pentest-agent-{os}-{arch}` name for backward compatibility with
             StrikeHub versions that fetch the original asset name.
+
+            #### Docker bundle
+
+            `pick-docker-compose.yml` and `pick-docker.env.example` are the
+            customer compose bundle for this release; see
+            `docs/DOCKER_INSTALL.md`.
 
             ### Checksums
 
