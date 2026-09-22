@@ -869,4 +869,105 @@ mod tests {
             "benign output must not be flagged: {result}"
         );
     }
+
+    /// The LiveView hop is the connector the SDK runner drives in production,
+    /// so it must open the same `tool_execution` span as `ToolConnector`
+    /// (pick#476): every line the invocation emits and the close event that
+    /// carries its duration must show the platform ids, and `session_token`
+    /// must stay out. Drives the real `execute_with_context` with an unknown
+    /// tool so the registry fails fast and no binary is needed. Removing
+    /// `.instrument(span)` from the hop turns this red.
+    #[tokio::test]
+    async fn liveview_hop_lines_carry_correlation_ids() {
+        use std::io::Write;
+        use std::sync::Mutex;
+        use tracing_subscriber::fmt::MakeWriter;
+        use tracing_subscriber::prelude::*;
+
+        /// In-memory writer so the test can read back the formatted lines.
+        #[derive(Clone, Default)]
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+
+        struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
+
+        impl Write for CaptureWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .expect("capture poisoned")
+                    .extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> MakeWriter<'a> for Capture {
+            type Writer = CaptureWriter;
+
+            fn make_writer(&'a self) -> Self::Writer {
+                CaptureWriter(self.0.clone())
+            }
+        }
+
+        let buffer = Capture::default();
+        let subscriber =
+            tracing_subscriber::registry().with(pentest_core::logging::apply_span_policy(
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .with_writer(buffer.clone()),
+            ));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let connector = test_connector();
+        let ctx: HashMap<String, String> = [
+            ("request_id", "req-1"),
+            ("tool_call_id", "call-1"),
+            ("session_token", "secret-token-value"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+
+        let result = connector
+            .execute_with_context(
+                json!({"tool": "missing_tool", "parameters": {}}),
+                None,
+                &ctx,
+            )
+            .await
+            .expect("hop returns Ok(ToolResult) even when the tool fails");
+        assert_eq!(result["success"], false);
+
+        let output = String::from_utf8(buffer.0.lock().expect("buffer poisoned").clone())
+            .expect("utf8 log output");
+        // A pre-existing line from inside the hop inherits the span fields.
+        let ctx_line = output
+            .lines()
+            .find(|l| l.contains("[execreq-ctx]"))
+            .unwrap_or_else(|| panic!("no context line in {output:?}"));
+        for expected in [
+            "tool_execution{",
+            "tool=missing_tool",
+            "instance_id=test",
+            "request_id=req-1",
+            "tool_call_id=call-1",
+        ] {
+            assert!(
+                ctx_line.contains(expected),
+                "missing {expected} in {ctx_line}"
+            );
+        }
+        assert!(
+            output.lines().any(|l| {
+                l.contains("close")
+                    && l.contains("tool_execution{tool=missing_tool")
+                    && l.contains("time.busy=")
+            }),
+            "no tool_execution close event in {output:?}"
+        );
+        assert!(!output.contains("secret-token-value"), "{output}");
+    }
 }

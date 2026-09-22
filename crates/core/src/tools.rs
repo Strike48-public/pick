@@ -1217,6 +1217,34 @@ mod tool_outcome_tests {
         assert_eq!(r.outcome, ToolOutcome::Failed);
         assert!(!r.success);
     }
+
+    /// `ToolRegistry::execute` runs under its own `tool.registry` span so the
+    /// tool's run time can be read apart from the connector hop around it
+    /// (pick#476). Dropping the `#[tracing::instrument]` turns this red.
+    #[tokio::test]
+    async fn registry_execute_emits_its_own_close_event() {
+        use crate::logging::test_support::Capture;
+        use tracing_subscriber::{fmt, prelude::*};
+
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::registry().with(crate::logging::apply_span_policy(
+            fmt::layer().with_ansi(false).with_writer(capture.clone()),
+        ));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let registry = ToolRegistry::new();
+        registry
+            .execute("missing_tool", json!({}), &ToolContext::default())
+            .await
+            .expect_err("unknown tool must fail");
+
+        let output = capture.contents();
+        let close_line = output
+            .lines()
+            .find(|l| l.contains("close") && l.contains("tool.registry{tool=missing_tool}"))
+            .unwrap_or_else(|| panic!("no tool.registry close event in {output:?}"));
+        assert!(close_line.contains("time.busy="), "{close_line}");
+    }
 }
 
 #[cfg(test)]
