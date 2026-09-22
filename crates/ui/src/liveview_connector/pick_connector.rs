@@ -56,6 +56,10 @@ pub(crate) struct PickConnector {
     /// gitignored identities file at construction and cloned into each tool
     /// context. Empty when no identities file is present.
     pub identities: Arc<pentest_core::identity::IdentityStore>,
+    /// Per-engagement tool-execution budget envelope (agent hardening C3).
+    /// Enforced in [`PickConnector::execute_with_context`]; reset on
+    /// `begin_scan`. Defaults to the configured aggression level's envelope.
+    pub budget: pentest_core::budget::SessionBudget,
 }
 
 impl PickConnector {
@@ -110,8 +114,20 @@ impl PickConnector {
 }
 
 impl BaseConnector for PickConnector {
+    /// The SDK connector type, NOT the persona `connector_name` (#386).
+    ///
+    /// The SDK runner feeds this to every auth path: `OttProvider::new`,
+    /// `register_with_ott` (the pre-approved OTT redemption the server
+    /// validates against the type the host minted the token for), and
+    /// `load_saved_credentials` (the `{connector_type}_{instance_id}` file
+    /// name). It also lands verbatim in the WebSocket
+    /// `RegisterConnectorRequest.connector_type`. Returning the persona here
+    /// redeemed otherwise-valid OTTs with the wrong type and fragmented the
+    /// saved-credential file per persona. The persona identity keeps flowing
+    /// where it belongs: `with_agent_name` for tool contexts and the chat
+    /// panel's persona creation.
     fn connector_type(&self) -> &str {
-        &self.connector_name
+        pentest_core::config::CONNECTOR_TYPE
     }
 
     fn version(&self) -> &str {
@@ -252,6 +268,33 @@ impl BaseConnector for PickConnector {
                     .cloned()
                     .unwrap_or(request.clone());
 
+                // --- Session budget check (agent hardening C3) ---
+                match self.budget.check().await {
+                    pentest_core::budget::BudgetCheck::Exhausted => {
+                        let (used, max) = self.budget.usage().await;
+                        tracing::warn!(
+                            tool = tool_name.as_str(),
+                            used,
+                            max,
+                            "session budget exhausted; refusing tool call"
+                        );
+                        return Ok(serde_json::json!({
+                            "success": false,
+                            "error": format!(
+                                "session budget exhausted ({used}/{max}); wind down and produce the report"
+                            )
+                        }));
+                    }
+                    pentest_core::budget::BudgetCheck::StallWarning => {
+                        tracing::warn!(
+                            tool = tool_name.as_str(),
+                            "session stall detected: consecutive no-progress tool calls; agent may be stuck"
+                        );
+                        self.budget.mark_stall_warned().await;
+                    }
+                    pentest_core::budget::BudgetCheck::Ok => {}
+                }
+
                 self.send_event(ConnectorEvent::ToolStarted {
                     tool_name: tool_name.clone(),
                     params: params.clone(),
@@ -327,6 +370,21 @@ impl BaseConnector for PickConnector {
                         pentest_core::tools::ToolResult::error(e.to_string())
                     }
                 };
+
+                // Budget bookkeeping (agent hardening C3): `/begin_scan` starts
+                // a fresh engagement envelope; everything else records against
+                // it (evidence/flag-bearing runs count as progress).
+                if tool_name == "begin_scan" && result.success {
+                    // Agent-reachable reset: bounded so a stuck/injected agent
+                    // cannot restart its own envelope at will (review #452, V1).
+                    // Once the reset budget is spent this counts the begin_scan
+                    // as a normal execution instead.
+                    self.budget.reset_for_new_scan().await;
+                } else {
+                    let made_progress =
+                        result.provenance.is_some() || !result.data.is_null() || result.success;
+                    self.budget.record(made_progress).await;
+                }
 
                 // A successful `begin_scan` marks the start of a fresh
                 // engagement. Clear any evidence left over from a previous scan
@@ -682,14 +740,30 @@ mod tests {
             event_tx,
             ws_connections: Arc::new(DashMap::new()),
             matrix_client: Arc::new(RwLock::new(None)),
-            connector_name: "pentest-connector".to_string(),
+            connector_name: "pentest-connector-web-app".to_string(),
             instance_id: "test".to_string(),
             aggression_level: Arc::new(RwLock::new(AggressionLevel::default())),
             ipc_addr: Arc::new(RwLock::new(None)),
             runner: Arc::new(RwLock::new(None)),
             matrix_api_url: String::new(),
             identities: Arc::new(pentest_core::identity::IdentityStore::new()),
+            budget: pentest_core::budget::SessionBudget::default(),
         }
+    }
+
+    /// Regression guard for #386: `BaseConnector::connector_type()` — which
+    /// the SDK runner feeds to `register_with_ott`, `load_saved_credentials`,
+    /// and the `RegisterConnectorRequest` — must be the fixed SDK type, never
+    /// the persona `connector_name`. StrikeHub mints pre-approved OTTs for
+    /// `pentest-connector`; redeeming one with a persona name fails with a
+    /// misleading "Invalid or expired OTT". The fixture's `connector_name`
+    /// is deliberately a persona value to keep this honest.
+    #[test]
+    fn connector_type_is_sdk_type_not_persona_name() {
+        let connector = test_connector();
+        assert_eq!(connector.connector_type(), "pentest-connector");
+        assert_eq!(connector.connector_name, "pentest-connector-web-app");
+        assert_ne!(connector.connector_type(), connector.connector_name);
     }
 
     /// Regression guard: every `capabilities()` entry's `input_schema_json` must be
@@ -853,6 +927,59 @@ mod tests {
         assert!(
             result.get("_sanitization").is_none(),
             "benign output must not be flagged: {result}"
+        );
+    }
+
+    /// Production-path enforcement guard for the C3 budget (#452, Foundation 8):
+    /// `execute_with_context` is the connector the SDK runner actually drives, so
+    /// the envelope must refuse tool calls there once the cap is hit. Sets the
+    /// cap to one execution and asserts the second call returns the wind-down
+    /// payload the agent receives. Removing the budget check in
+    /// `execute_with_context` turns this red.
+    #[tokio::test]
+    async fn execute_with_context_refuses_once_budget_exhausted() {
+        pentest_platform::set_use_sandbox(false);
+
+        let mut connector = test_connector();
+        connector.budget =
+            pentest_core::budget::SessionBudget::new(pentest_core::budget::BudgetConfig {
+                max_executions: 1,
+                stall_threshold: 8,
+                max_resets: pentest_core::budget::DEFAULT_MAX_RESETS,
+            });
+        let ctx: HashMap<String, String> = HashMap::new();
+        let request = || {
+            json!({
+                "tool": "execute_command",
+                "parameters": { "command": "echo", "args": ["hi"] }
+            })
+        };
+
+        // First call consumes the single budget unit and runs.
+        let first = connector
+            .execute_with_context(request(), None, &ctx)
+            .await
+            .expect("first execute_with_context failed");
+        assert_eq!(
+            first["success"],
+            json!(true),
+            "first call should run: {first}"
+        );
+
+        // Second call must be refused with the budget-exhausted payload.
+        let second = connector
+            .execute_with_context(request(), None, &ctx)
+            .await
+            .expect("second execute_with_context failed");
+        assert_eq!(
+            second["success"],
+            json!(false),
+            "second call must be refused once the budget is exhausted: {second}"
+        );
+        let error = second["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("budget exhausted") && error.contains("1/1"),
+            "expected the budget-exhausted refusal payload, got: {second}"
         );
     }
 }

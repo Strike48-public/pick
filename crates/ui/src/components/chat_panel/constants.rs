@@ -1,5 +1,6 @@
 //! Constants, default agent config, and system prompt.
 
+use pentest_core::config::CONNECTOR_TYPE;
 use pentest_core::matrix::CreateAgentInput;
 
 pub const CHAT_MIN_WIDTH: i32 = 280;
@@ -84,7 +85,11 @@ pub const REPORT_AGENT_SUFFIX: &str = "-report";
 /// probe.
 pub fn default_report_agent_input(tenant_id: &str, connector_name: &str) -> CreateAgentInput {
     let report_name = format!("{}{}", connector_name, REPORT_AGENT_SUFFIX);
-    let connector_key = format!("{}.{}.*", tenant_id, connector_name);
+    // Connector key uses the SDK wire type (#386), not the persona
+    // `connector_name`: the platform matches it against the
+    // `RegisterConnectorRequest.connector_type` the connector registered with.
+    // `connector_name` stays for agent naming/created_by only.
+    let connector_key = format!("{tenant_id}.{CONNECTOR_TYPE}.*");
 
     // The Report Agent binds to the *Red Team* connector so it can read
     // the same evidence graph, but leaves scanner tools untouched by
@@ -260,7 +265,11 @@ pub const VALIDATOR_AGENT_SUFFIX: &str = "-validator";
 /// already-captured provenance.
 pub fn default_validator_agent_input(tenant_id: &str, connector_name: &str) -> CreateAgentInput {
     let validator_name = format!("{}{}", connector_name, VALIDATOR_AGENT_SUFFIX);
-    let connector_key = format!("{}.{}.*", tenant_id, connector_name);
+    // Connector key uses the SDK wire type (#386), not the persona
+    // `connector_name`: the platform matches it against the
+    // `RegisterConnectorRequest.connector_type` the connector registered with.
+    // `connector_name` stays for agent naming/created_by only.
+    let connector_key = format!("{tenant_id}.{CONNECTOR_TYPE}.*");
 
     // Manual consent mode: the Validator may re-run a targeted probe to
     // verify a thin finding, but every such call gets a human in the loop.
