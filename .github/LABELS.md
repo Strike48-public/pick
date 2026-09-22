@@ -35,3 +35,17 @@ Canonical labels for this repo. Every issue carries **exactly one** label from e
 2. **Epics** get `type/epic` + `size/XL`; never stack a second type on an epic. Track children as native sub-issues.
 3. **The label is the source of truth for priority.** If the issue body states a different priority than its label, the label wins - fix the body, not the label.
 4. Issues on [Project 42 (Strike Kit slice)](https://github.com/orgs/Strike48/projects/42) should be fully labeled at triage: product, type, priority, size, plus area/feature as applicable.
+## Global issue types (org standard - required)
+
+In addition to labels, every issue must carry a GitHub **issue type** (org-wide standard): `Bug`, `Feature`, `Compliance`, `Infrastructure`, `Spike`, `Initiative`, `Epic`, `Task`. The type is a coarse roll-up that mirrors the `type/*` label:
+
+| `type/*` label (source of truth) | Global issue type |
+|---|---|
+| `type/bug` | `Bug` |
+| `type/feature`, `type/enhancement` | `Feature` |
+| `type/epic` | `Epic` |
+| `type/research` | `Spike` |
+| `type/docs`, `type/chore`, `type/refactor`, `type/test`, `type/technical-debt` | `Task` |
+| initiative records (`[INIT]` in project-management) | `Initiative` |
+
+Labels remain mandatory: `product/*`, `priority/*`, `size/*`, `area/*`, `feature/*`, and `status/*` have no global-type equivalent. Set the type at filing time (issue templates do this automatically) and keep it in sync when the `type/*` label changes.
