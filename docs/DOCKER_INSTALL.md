@@ -57,6 +57,71 @@ its own. If your egress goes through an HTTP proxy or a TLS-inspecting
 appliance, read [Corporate proxy and private CA](#corporate-proxy-and-private-ca)
 before you start.
 
+### Network requirements for scanning
+
+The table above covers what the connector needs to reach Studio. Scanning has
+separate requirements, and they are all properties of the Docker host: the
+container reaches your targets through the host's network and resolves names
+through the host's DNS configuration. If the host cannot reach or resolve a
+target, neither can Pick. Check these on the host before you install.
+
+1. **The host is on the network you want to scan.** Connect it to the VLAN or
+   segment in scope, and confirm it can reach a known-live target:
+
+   ```bash
+   nc -vz -w3 <known-live-ip> <open-port>
+   ```
+
+2. **The host resolves your internal names.** On the default network, Docker's
+   embedded DNS server (`127.0.0.11` inside the container) forwards lookups to
+   the DNS servers configured on the host. With
+   [host networking](#enable-host-networking) the container uses the host's
+   resolver configuration directly. Either way, a host that points only at a
+   public resolver cannot resolve internal names, and scans of those names
+   fail. Confirm with an internal hostname:
+
+   ```bash
+   getent hosts <internal-hostname>
+   ```
+
+   If this fails, fix the host's DNS first (your DHCP, netplan, or
+   systemd-resolved configuration). If the host must keep a different
+   resolver, give the container your internal DNS servers in
+   `docker-compose.override.yml`:
+
+   ```yaml
+   services:
+     pick:
+       dns:
+         - <internal-dns-server-ip>
+       dns_search:
+         - <internal.example.com>
+   ```
+
+3. **Docker uses the network mode your scans need.** The default bridge network
+   is enough for TCP and UDP scans of routed hosts. mDNS, SSDP, ARP discovery,
+   packet capture, and Wi-Fi scanning need host networking on a Linux host. See
+   [Scanning your local network](#scanning-your-local-network-host-networking)
+   to choose.
+
+   | Scan type | Default bridge | Host networking (Linux) |
+   | --- | --- | --- |
+   | TCP/UDP port scans of routed hosts | yes, if the bridge subnet does not overlap your LAN | yes |
+   | ICMP ping sweeps | yes | yes |
+   | mDNS/Bonjour, SSDP/UPnP discovery | no | yes |
+   | ARP discovery, packet capture, Wi-Fi scanning | no | yes |
+
+After the connector is running, repeat the checks from inside the container to
+confirm it sees what the host sees:
+
+```bash
+docker exec pick-connector getent hosts <internal-hostname>
+docker exec pick-connector nc -vz -w3 <known-live-ip> <open-port>
+```
+
+A check that works on the host but fails in the container points at the
+network mode, a subnet overlap, or the container's DNS settings.
+
 ### What Strike48 gives you
 
 1. Your **Studio URL**, for example `https://studio.example.com`. The connector
@@ -409,6 +474,7 @@ the network.
 | `PENTEST_ALLOW_PRIVATE_IPS is set to an unrecognized value` warning | The variable is set to something other than `true` or `1` | Set it to `true` or comment it out |
 | mDNS, SSDP, ARP, or Wi-Fi scans return nothing | The container is on the default bridge network, which multicast and layer 2 traffic do not cross | [Enable host networking](#enable-host-networking) on a Linux host |
 | Every host in a known-live range looks down, including TCP ports you know are open | The bridge subnet overlaps your LAN, or Docker Desktop cannot reach the local network | Check the subnet as shown in [Scanning your local network](#scanning-your-local-network-host-networking); change the Docker address pool or enable host networking |
+| Scans of internal hostnames fail but the same targets work by IP | The host's DNS does not resolve internal names, so the container cannot either | Fix the host's DNS, or set `dns:` in an override. See [Network requirements for scanning](#network-requirements-for-scanning) |
 | Pending for a long time | Nobody has approved it | Expected. Someone with Gateways permission in your Studio must approve |
 | Container restarts in a loop | Malformed `.env` | `docker compose logs`, fix, `docker compose up -d` |
 
