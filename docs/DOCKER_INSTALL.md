@@ -10,8 +10,8 @@ are what that run printed. The proxy and private-CA sections describe behaviour
 read from the connector's source and were not exercised against an appliance.
 The network requirements, host networking, and Docker Desktop on Windows
 sections describe Docker's documented behaviour and the connector's source;
-they were not exercised in that run. The files this guide refers to live in this repository under
-[`deploy/docker/`](../deploy/docker/).
+they were not exercised in that run. The files this guide refers to live in
+this repository under [`deploy/docker/`](../deploy/docker/).
 
 ## What you are installing
 
