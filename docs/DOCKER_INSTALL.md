@@ -52,6 +52,7 @@ On the host that will run the connector:
 | Disk | 3 GB free | `df -h /var/lib/docker` (the image is about 1.2 GB unpacked) |
 | Privileges | member of the `docker` group, or root | `docker ps` |
 | Architecture | linux/amd64 or linux/arm64 | `uname -m` |
+| Local-network discovery | a Linux host running Docker Engine. Docker Desktop on Windows or macOS supports TCP connect scans of routed hosts only; see [Docker Desktop on Windows](#docker-desktop-on-windows) | `docker version --format '{{.Server.Platform.Name}}'` names Docker Desktop if you are on it |
 
 The host does not need a public IP, an inbound DNS record, or a certificate of
 its own. If your egress goes through an HTTP proxy or a TLS-inspecting
@@ -73,13 +74,20 @@ target, neither can Pick. Check these on the host before you install.
    nc -vz -w3 <known-live-ip> <open-port>
    ```
 
+   If `nc` is not installed, bash can make the same check:
+
+   ```bash
+   timeout 3 bash -c '</dev/tcp/<known-live-ip>/<open-port>' && echo open
+   ```
+
 2. **The host resolves your internal names.** On the default network, Docker's
    embedded DNS server (`127.0.0.11` inside the container) forwards lookups to
    the DNS servers configured on the host. With
-   [host networking](#enable-host-networking) the container uses the host's
-   resolver configuration directly. Either way, a host that points only at a
-   public resolver cannot resolve internal names, and scans of those names
-   fail. Confirm with an internal hostname:
+   [host networking](#enable-host-networking) the container shares the host's
+   network stack. In both cases a host that points only at a public resolver
+   cannot resolve internal names, and scans of those names fail. The
+   in-container check at the end of this section confirms what the container
+   actually resolves. Confirm with an internal hostname:
 
    ```bash
    getent hosts <internal-hostname>
@@ -180,6 +188,12 @@ STRIKE48_INSTANCE_ID=pick-<hostname>-01
 and no port. `STRIKE48_API_URL` is the same hostname over `https://` with a
 trailing slash. `STRIKE48_INSTANCE_ID` is any stable name for this install; the
 approval is keyed to it, so pick something you will not change.
+
+**Use a different `STRIKE48_INSTANCE_ID` on every machine.** If you install on
+more than one machine, for example a laptop and a lab server, do not copy the
+same `.env` between them unchanged. Two connectors with the same instance id
+compete for one identity in Studio, and Studio can show the connector as
+offline or fail to open its app.
 
 ### 3. Start
 
@@ -481,6 +495,88 @@ Restarting the daemon stops every container on the host, so schedule it. The
 `pick-connector_pick-state` volume survives `docker compose down`, so the
 approval is kept. Check the new subnet with the `docker network inspect` command above.
 
+## Docker Desktop on Windows
+
+The connector runs on Docker Desktop for Windows, with less network reach than
+on a Linux host. Docker Desktop runs Linux containers inside a WSL 2 virtual
+machine, and Docker documents that all of that VM's network traffic goes
+through NAT in Docker Desktop's backend process (`com.docker.backend`). The
+container never sits directly on your LAN, and the
+[host networking](#enable-host-networking) option does not change that on
+Docker Desktop.
+
+### What works and what does not
+
+| Scan type | Docker Desktop on Windows |
+| --- | --- |
+| Connection to Studio, approval, tools that talk to the internet | works |
+| TCP connect scans of hosts your laptop can route to | works, subject to Windows firewall and VPN rules |
+| ICMP ping sweeps, raw-socket (SYN) scans | not documented by Docker; treat results as unreliable |
+| mDNS/Bonjour, SSDP/UPnP, ARP discovery, packet capture, Wi-Fi scanning | does not work |
+
+If you need local discovery from a Windows laptop, use the native Pick app for
+Windows from the
+[releases page](https://github.com/Strike48-public/pick/releases) instead of
+Docker. It runs on the laptop's own network interfaces rather than behind
+Docker's NAT; packet capture in it needs [Npcap](https://npcap.com/) installed.
+For the full discovery toolset, run the connector on a Linux host on the
+network you are scanning.
+
+### Requirements
+
+- Docker Desktop with the WSL 2 backend, running **Linux containers** (the
+  default). The image is a Linux image and does not run in Windows containers
+  mode.
+- Windows Defender Firewall, or your endpoint security agent, must allow
+  outbound traffic from `com.docker.backend`. Docker notes that host firewalls
+  filter Docker Desktop traffic on that process.
+- If you are on a VPN, your laptop may reach Studio but not the network you
+  are scanning, or the other way round. Check both before you start.
+
+### Install from PowerShell
+
+The install steps above are written for a Linux shell. In PowerShell, use
+these equivalents. Use `curl.exe`, not `curl`: in Windows PowerShell 5.1,
+`curl` is an alias for `Invoke-WebRequest` and rejects the flags below.
+
+```powershell
+$PICK_VERSION = "0.1.10"
+mkdir pick-connector; cd pick-connector
+curl.exe -fsSL "https://github.com/Strike48-public/pick/releases/download/v$PICK_VERSION/pick-docker-compose.yml" -o docker-compose.yml
+curl.exe -fsSL "https://github.com/Strike48-public/pick/releases/download/v$PICK_VERSION/pick-docker.env.example" -o .env.example
+Copy-Item .env.example .env
+notepad .env
+```
+
+In Notepad, fill in the required values and save. Make sure the file is still
+named `.env`, not `.env.txt`, and save it as UTF-8 rather than "UTF-8 with
+BOM". Then continue with [3. Start](#3-start); the `docker compose` and
+`docker exec` commands are the same in PowerShell.
+
+### Check your network from Windows
+
+Run these on the laptop before you install:
+
+```powershell
+Test-NetConnection <known-live-ip> -Port <open-port>
+Resolve-DnsName <internal-hostname>
+```
+
+`TcpTestSucceeded : True` means the laptop can reach the target, and a
+returned address means it resolves the name. After the connector is running,
+repeat the checks inside the container:
+
+```powershell
+docker exec pick-connector nc -vz -w3 <known-live-ip> <open-port>
+docker exec pick-connector getent hosts <internal-hostname>
+```
+
+If the laptop check passes but the container check fails, the cause is
+Docker Desktop's network path: the firewall rule for `com.docker.backend`, the
+VPN, or, for names, DNS. For DNS, set your internal DNS servers with the
+`dns:` override shown in
+[Network requirements for scanning](#network-requirements-for-scanning).
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -497,6 +593,8 @@ approval is kept. Check the new subnet with the `docker network inspect` command
 | mDNS, SSDP, ARP, or Wi-Fi scans return nothing | The container is on the default bridge network, which multicast and layer 2 traffic do not cross | [Enable host networking](#enable-host-networking) on a Linux host |
 | Every host in a known-live range looks down, including TCP ports you know are open | The bridge subnet overlaps your LAN, or Docker Desktop cannot reach the local network | Check the subnet as shown in [Scanning your local network](#scanning-your-local-network-host-networking); change the Docker address pool or enable host networking |
 | Scans of internal hostnames fail but the same targets work by IP | The host's DNS does not resolve internal names, so the container cannot either | Fix the host's DNS, or set `dns:` in an override. See [Network requirements for scanning](#network-requirements-for-scanning) |
+| The agent reports no live hosts on a network you know is up, or says a firewall is dropping ICMP | The container cannot reach or resolve the targets: wrong network mode, a subnet overlap, host DNS, or Docker Desktop's network limits. A scan that only times out is not evidence of a firewall | Run the host and in-container checks in [Network requirements for scanning](#network-requirements-for-scanning). On Windows, see [Docker Desktop on Windows](#docker-desktop-on-windows) |
+| Studio shows `App not found or connector is offline` when you open the connector | The connector is not approved or not connected, or two installs share one `STRIKE48_INSTANCE_ID` | Check the Gateways page for the connector's state and for duplicate entries. Give each machine its own `STRIKE48_INSTANCE_ID`, restart it, and approve the new entry |
 | Pending for a long time | Nobody has approved it | Expected. Someone with Gateways permission in your Studio must approve |
 | Container restarts in a loop | Malformed `.env` | `docker compose logs`, fix, `docker compose up -d` |
 
