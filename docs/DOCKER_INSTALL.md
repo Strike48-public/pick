@@ -8,7 +8,8 @@ The install, approval, restart, and removal steps in this guide were executed
 against a live Strike48 Studio with the `0.1.10` image, and the log lines shown
 are what that run printed. The proxy and private-CA sections describe behaviour
 read from the connector's source and were not exercised against an appliance.
-The files this guide refers to live in this repository under
+The host networking section describes Docker's documented behaviour and the
+connector's source; it was not exercised in that run. The files this guide refers to live in this repository under
 [`deploy/docker/`](../deploy/docker/).
 
 ## What you are installing
@@ -310,6 +311,89 @@ Treat that change as a scope decision recorded in your rules of engagement, not
 a troubleshooting step. The cloud-metadata range `169.254.0.0/16` stays blocked
 regardless.
 
+## Scanning your local network (host networking)
+
+By default the compose file puts the container on a Docker bridge network that
+Compose creates for it, named `pick-connector_default`. The container gets its
+own internal subnet and reaches your network through Docker's NAT. That is
+enough for the Studio connection and for TCP scans of routed hosts, but it
+limits local-network discovery:
+
+- **Multicast discovery returns nothing.** mDNS/Bonjour (`_ipp._tcp.local.`
+  and similar) and SSDP/UPnP use multicast, which does not cross the bridge. On
+  a bridge network these scans come back empty on every network.
+- **Layer 2 discovery and Wi-Fi tools see only the container.** ARP-based host
+  discovery, packet capture, and Wi-Fi scanning see the container's virtual
+  interface, not the host's Ethernet or wireless adapters.
+- **A subnet overlap hides targets.** If Docker assigned the bridge a range
+  that overlaps your LAN (Docker's default pools draw from `172.16.0.0/12` and
+  `192.168.0.0/16`, and many organisations configure `10.x` pools), traffic to
+  those targets stays inside the container and every host looks down.
+
+To check which network the container is on and what subnet it was given:
+
+```bash
+docker inspect pick-connector --format '{{.HostConfig.NetworkMode}}'
+docker network inspect pick-connector_default --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'
+```
+
+### Enable host networking
+
+Host networking puts the container on the host's own network stack, so tools
+use the host's interfaces directly. This is the Compose equivalent of
+`docker run --network=host`.
+
+1. Create `docker-compose.override.yml` beside `docker-compose.yml`. If you
+   already have one (for example for a private CA), add the `network_mode`
+   line to the existing `pick` service instead.
+
+   ```yaml
+   services:
+     pick:
+       network_mode: host
+   ```
+
+2. Recreate the container:
+
+   ```bash
+   docker compose up -d
+   ```
+
+3. Confirm the mode:
+
+   ```bash
+   docker inspect pick-connector --format '{{.HostConfig.NetworkMode}}'
+   ```
+
+   This prints `host`.
+
+The approval is stored in the `pick-connector_pick-state` volume, so the
+connector comes back online without a new approval. The `NET_RAW` and
+`NET_ADMIN` capabilities in the compose file still apply and are still needed
+for raw-socket tools.
+
+### Before you enable it
+
+- **Use a Linux host running Docker Engine.** On Docker Desktop for macOS or
+  Windows, containers run inside a virtual machine. Docker Desktop 4.34 and
+  later offers host networking as an opt-in setting, but Docker documents it as
+  layer 4 only: TCP and UDP work, and protocols below them do not. ICMP, ARP,
+  raw-socket scans, and Wi-Fi tools therefore still cannot reach your network
+  from Docker Desktop. On a laptop, run the Pick desktop app natively instead.
+- **Use a dedicated scanning host.** Host networking removes the network
+  isolation between the connector and the host. The connector's internal
+  service ports listen on the host's loopback interface, where other local
+  processes can reach them. Run it on a host that only runs the connector.
+- **Scope still applies.** Host networking gives the tools reach to every
+  network the host can see. Keep targets to the scope recorded in your rules of
+  engagement.
+
+If you only need TCP scans and the problem is a subnet overlap, you can keep
+the bridge instead: set `default-address-pools` in the Docker daemon
+configuration (`/etc/docker/daemon.json`) to a range your network does not use,
+then run `docker compose down` and `docker compose up -d` so Compose recreates
+the network.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -323,6 +407,8 @@ regardless.
 | Logs say `Registered successfully` but nothing appears in Gateways | Wrong `STRIKE48_TENANT`, so it registered against another tenant | Confirm the UUID with Strike48, fix `.env`, `docker compose down -v`, `docker compose up -d` |
 | Registration fails right after start with a token in `.env` | The token expired, was already used, or the line is set but empty | Get a fresh token or comment the line out and approve by hand |
 | `PENTEST_ALLOW_PRIVATE_IPS is set to an unrecognized value` warning | The variable is set to something other than `true` or `1` | Set it to `true` or comment it out |
+| mDNS, SSDP, ARP, or Wi-Fi scans return nothing | The container is on the default bridge network, which multicast and layer 2 traffic do not cross | [Enable host networking](#enable-host-networking) on a Linux host |
+| Every host in a known-live range looks down, including TCP ports you know are open | The bridge subnet overlaps your LAN, or Docker Desktop cannot reach the local network | Check the subnet as shown in [Scanning your local network](#scanning-your-local-network-host-networking); change the Docker address pool or enable host networking |
 | Pending for a long time | Nobody has approved it | Expected. Someone with Gateways permission in your Studio must approve |
 | Container restarts in a loop | Malformed `.env` | `docker compose logs`, fix, `docker compose up -d` |
 
@@ -334,6 +420,8 @@ an untrusted channel.
 
 - The container runs as root with the `NET_RAW` and `NET_ADMIN` capabilities so
   that nmap and similar tools can open raw sockets. It has no published ports.
+  With [host networking](#enable-host-networking) enabled it shares the host's
+  network stack instead of an isolated bridge.
 - The connector holds no long-lived bearer token. At approval it stores a
   client identity and a private key in the `pick-connector_pick-state` volume,
   under `/root/.strike48/credentials/` and `/root/.strike48/keys/`, both mode
