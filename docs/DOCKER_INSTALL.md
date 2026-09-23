@@ -52,7 +52,7 @@ On the host that will run the connector:
 | Disk | 3 GB free | `df -h /var/lib/docker` (the image is about 1.2 GB unpacked) |
 | Privileges | member of the `docker` group, or root | `docker ps` |
 | Architecture | linux/amd64 or linux/arm64 | `uname -m` |
-| Local-network discovery | a Linux host running Docker Engine. Docker Desktop on Windows or macOS supports TCP connect scans of routed hosts only; see [Docker Desktop on Windows](#docker-desktop-on-windows) | `docker version --format '{{.Server.Platform.Name}}'` names Docker Desktop if you are on it |
+| Local-network discovery | a Linux host running Docker Engine. Docker Desktop on Windows or macOS supports TCP connect scans of routed hosts only; see [Docker Desktop on Windows](#docker-desktop-on-windows) | `uname -s` on the host prints `Linux`. On Windows or macOS, Docker runs in a virtual machine whichever product you use (Docker Desktop, Colima, and others), with similar network limits |
 
 The host does not need a public IP, an inbound DNS record, or a certificate of
 its own. If your egress goes through an HTTP proxy or a TLS-inspecting
