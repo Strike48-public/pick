@@ -8,8 +8,9 @@ The install, approval, restart, and removal steps in this guide were executed
 against a live Strike48 Studio with the `0.1.10` image, and the log lines shown
 are what that run printed. The proxy and private-CA sections describe behaviour
 read from the connector's source and were not exercised against an appliance.
-The host networking section describes Docker's documented behaviour and the
-connector's source; it was not exercised in that run. The files this guide refers to live in this repository under
+The network requirements and host networking sections describe Docker's
+documented behaviour and the connector's source; they were not exercised in
+that run. The files this guide refers to live in this repository under
 [`deploy/docker/`](../deploy/docker/).
 
 ## What you are installing
@@ -447,8 +448,9 @@ for raw-socket tools.
   from Docker Desktop. On a laptop, run the Pick desktop app natively instead.
 - **Use a dedicated scanning host.** Host networking removes the network
   isolation between the connector and the host. The connector's internal
-  service ports listen on the host's loopback interface, where other local
-  processes can reach them. Run it on a host that only runs the connector.
+  model proxy listens on a loopback TCP port, which is then on the host's
+  loopback interface, where other local processes can reach it. Run it on a
+  host that only runs the connector.
 - **Scope still applies.** Host networking gives the tools reach to every
   network the host can see. Keep targets to the scope recorded in your rules of
   engagement.
@@ -456,8 +458,28 @@ for raw-socket tools.
 If you only need TCP scans and the problem is a subnet overlap, you can keep
 the bridge instead: set `default-address-pools` in the Docker daemon
 configuration (`/etc/docker/daemon.json`) to a range your network does not use,
-then run `docker compose down` and `docker compose up -d` so Compose recreates
-the network.
+for example:
+
+```json
+{
+  "default-address-pools": [
+    { "base": "172.30.0.0/16", "size": 24 }
+  ]
+}
+```
+
+The daemon reads this setting only at start, so restart it, then recreate the
+connector's network:
+
+```bash
+sudo systemctl restart docker
+docker compose down
+docker compose up -d
+```
+
+Restarting the daemon stops every container on the host, so schedule it. The
+`pick-connector_pick-state` volume survives `docker compose down`, so the
+approval is kept. Check the new subnet with the `docker network inspect` command above.
 
 ## Troubleshooting
 
