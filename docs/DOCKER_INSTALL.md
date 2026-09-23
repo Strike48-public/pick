@@ -8,9 +8,9 @@ The install, approval, restart, and removal steps in this guide were executed
 against a live Strike48 Studio with the `0.1.10` image, and the log lines shown
 are what that run printed. The proxy and private-CA sections describe behaviour
 read from the connector's source and were not exercised against an appliance.
-The network requirements and host networking sections describe Docker's
-documented behaviour and the connector's source; they were not exercised in
-that run. The files this guide refers to live in this repository under
+The network requirements, host networking, and Docker Desktop on Windows
+sections describe Docker's documented behaviour and the connector's source;
+they were not exercised in that run. The files this guide refers to live in this repository under
 [`deploy/docker/`](../deploy/docker/).
 
 ## What you are installing
@@ -87,7 +87,7 @@ target, neither can Pick. Check these on the host before you install.
    network stack. In both cases a host that points only at a public resolver
    cannot resolve internal names, and scans of those names fail. The
    in-container check at the end of this section confirms what the container
-   actually resolves. Confirm with an internal hostname:
+   actually resolves. On the host, confirm with an internal hostname:
 
    ```bash
    getent hosts <internal-hostname>
