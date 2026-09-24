@@ -168,6 +168,16 @@ fn resolve_entry<'a>(catalog: &'a [CatalogEntry], key: &str) -> Result<&'a Catal
         )));
     };
 
+    // Installed is terminal regardless of install method — installability (the
+    // refusal below) is moot when the binary is already present, and the caller
+    // short-circuits with the installed payload. Without this, a Manual entry
+    // already on PATH — or a pacman key probed Installed with the sandbox off —
+    // returned "cannot be installed automatically" for a tool that IS present
+    // (review LOW 2, pick#478).
+    if entry.state == InstallState::Installed {
+        return Ok(entry);
+    }
+
     if !entry.is_auto_installable() {
         let instructions = entry
             .manual_instructions()
@@ -306,8 +316,10 @@ mod tests {
 
     #[test]
     fn installed_entry_short_circuits_without_install_work() {
-        // Review SHOULD-FIX 2 (pick#478): execute must not re-run install_entry
-        // for a tool the catalog already probed as Installed.
+        // Unit test for the already_installed_payload DECISION — the call site
+        // in execute is the single `if let Some(payload)` that consults it
+        // (guarded end-to-end by installed_entry_executes_without_install_work
+        // below, where the environment provides an installed entry).
         let mut entry = CatalogEntry {
             binary_name: "webwright".into(),
             display_name: "WebWright".into(),
@@ -330,6 +342,37 @@ mod tests {
         // A missing entry must NOT short-circuit — it proceeds to install.
         entry.state = InstallState::Missing;
         assert!(already_installed_payload(&entry).is_none());
+    }
+
+    #[tokio::test]
+    async fn installed_entry_executes_without_install_work() {
+        // Call-site guard (review LOW 1, pick#478): against the REAL catalog,
+        // execute must return the installed payload without invoking
+        // install_entry. Skipped when the test environment has no installed
+        // catalog entry — the decision itself is covered by the helper test
+        // above.
+        let catalog = build_catalog().await;
+        let Some(entry) = catalog
+            .iter()
+            .find(|e| e.state == InstallState::Installed)
+            .map(|e| e.binary_name.clone())
+        else {
+            eprintln!(
+                "skipping: no installed catalog entry in this environment — \
+                 the short-circuit decision is covered by the helper test"
+            );
+            return;
+        };
+
+        let tool = InstallToolTool;
+        let result = tool
+            .execute(json!({"binary_name": entry}), &ToolContext::default())
+            .await
+            .expect("execute must succeed for an installed tool");
+
+        assert!(result.success);
+        assert_eq!(result.data["install_state"], "installed");
+        assert_eq!(result.data["duration_secs"], 0);
     }
 
     #[test]
