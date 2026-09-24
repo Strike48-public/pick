@@ -91,6 +91,14 @@ impl PentestTool for InstallToolTool {
             let catalog = build_catalog().await;
             let entry = resolve_entry(&catalog, key)?;
 
+            // Already present → short-circuit before any install work: re-running
+            // install_entry would cost a redundant `-Sy` refresh / installer run
+            // (up to the 600s timeout) for the same result. Review SHOULD-FIX 2,
+            // Strike48-public/pick#478.
+            if let Some(payload) = already_installed_payload(entry) {
+                return Ok(payload);
+            }
+
             // Collect progress steps so the caller sees how far an install got.
             let steps: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
             let sink_steps = Arc::clone(&steps);
@@ -196,6 +204,24 @@ fn state_label(state: InstallState) -> &'static str {
     }
 }
 
+/// The early "already installed" response: the probed catalog state says the
+/// binary is present, so no install work is scheduled. Returns `None` for any
+/// other state so the caller proceeds with the install.
+fn already_installed_payload(entry: &CatalogEntry) -> Option<Value> {
+    if entry.state != InstallState::Installed {
+        return None;
+    }
+    Some(json!({
+        "binary_name": entry.binary_name,
+        "display_name": entry.display_name,
+        "install_method": method_label(&entry.install_method),
+        "install_state": "installed",
+        "duration_secs": 0,
+        "used_by": entry.used_by,
+        "note": "Already installed; nothing to do. Re-run the original command that reported \"command not found\".",
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +276,60 @@ mod tests {
             let err = resolve_entry(&catalog, hostile).unwrap_err();
             assert!(err.to_string().contains("Unknown catalog key"), "{err}");
         }
+    }
+
+    #[test]
+    fn valid_auto_installable_key_resolves_with_catalog_method() {
+        // pick#447's test criterion: a VALID key resolves successfully (not just
+        // unknown/manual refusals). Custom{webwright} is auto-installable even
+        // with the sandbox disabled (the installer works natively via pip/uv).
+        let entry = CatalogEntry {
+            binary_name: "webwright".into(),
+            display_name: "WebWright".into(),
+            description: "headless browser automation".into(),
+            category: pentest_core::tools::ToolCategory::Web,
+            install_method: InstallMethod::Custom {
+                id: "webwright".into(),
+            },
+            recommended: false,
+            used_by: vec![],
+            state: InstallState::Missing,
+        };
+
+        let resolved =
+            resolve_entry(std::slice::from_ref(&entry), "webwright").expect("must resolve");
+        assert_eq!(resolved.binary_name, "webwright");
+        assert!(
+            matches!(&resolved.install_method, InstallMethod::Custom { id } if id == "webwright")
+        );
+    }
+
+    #[test]
+    fn installed_entry_short_circuits_without_install_work() {
+        // Review SHOULD-FIX 2 (pick#478): execute must not re-run install_entry
+        // for a tool the catalog already probed as Installed.
+        let mut entry = CatalogEntry {
+            binary_name: "webwright".into(),
+            display_name: "WebWright".into(),
+            description: "headless browser automation".into(),
+            category: pentest_core::tools::ToolCategory::Web,
+            install_method: InstallMethod::Custom {
+                id: "webwright".into(),
+            },
+            recommended: false,
+            used_by: vec!["webwright".into()],
+            state: InstallState::Installed,
+        };
+
+        let payload =
+            already_installed_payload(&entry).expect("installed entry must short-circuit");
+        assert_eq!(payload["install_state"], "installed");
+        assert_eq!(payload["duration_secs"], 0);
+        assert_eq!(payload["binary_name"], "webwright");
+
+        // A missing entry must NOT short-circuit — it proceeds to install.
+        entry.state = InstallState::Missing;
+        assert!(already_installed_payload(&entry).is_none());
     }
 
     #[test]
