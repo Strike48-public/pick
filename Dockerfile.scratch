@@ -162,7 +162,7 @@ RUN set -eux; \
     python3 -c "import zipfile; zipfile.ZipFile('/tmp/httpx.zip').extract('httpx', '/usr/local/bin')"; \
     rm -f /tmp/httpx.zip; \
     chmod +x /usr/local/bin/httpx; \
-    httpx -version | grep -q "v1.12.0"
+    httpx -version 2>&1 | grep -q "v1.12.0"
 
 # theHarvester CLI fallback: the Kali deb is an `_all` pure-python package and
 # must expose the `theharvester` entry point; if a future packaging change
