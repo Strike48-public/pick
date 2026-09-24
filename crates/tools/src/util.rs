@@ -24,16 +24,40 @@ pub fn param_str_opt(params: &Value, key: &str) -> Option<String> {
 }
 
 /// Extract a `u64` parameter with a default value.
-/// Accepts integer, float, or string JSON values (e.g. `300`, `300.0`, `"300"`).
+///
+/// Accepts integer, float, or string JSON values (e.g. `300`, `300.0`, `"300"`,
+/// and float-strings `"300.0"` — LLM tool callers emit numeric args as floats
+/// AND as float-strings, and a bare `parse::<u64>()` on `"300.0"` would
+/// silently fall back to the default, so the user's value is coerced via the
+/// float path instead of dropped — issue Strike48/matrix#4715, defect 2).
 pub fn param_u64(params: &Value, key: &str, default: u64) -> u64 {
     params
         .get(key)
         .and_then(|v| {
             v.as_u64()
                 .or_else(|| v.as_f64().map(|f| f as u64))
-                .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+                .or_else(|| v.as_str().and_then(parse_number_string))
         })
         .unwrap_or(default)
+}
+
+/// Parse a numeric string that may carry a fractional part ("60" / "60.0")
+/// into a `u64` (fraction truncated). Returns `None` for non-numeric input.
+///
+/// Shared by `param_u64`/`param_u16_opt` so the float-string coercion cannot
+/// drift between the two. `"60.0".parse::<u64>()` fails, which is exactly why
+/// model-shaped params like `timing: "5.0"` used to be silently coerced to the
+/// default (Strike48/matrix#4715).
+fn parse_number_string(s: &str) -> Option<u64> {
+    let trimmed = s.trim();
+    if let Ok(int) = trimmed.parse::<u64>() {
+        return Some(int);
+    }
+    trimmed
+        .parse::<f64>()
+        .ok()
+        .filter(|f| f.is_finite() && *f >= 0.0)
+        .map(|f| f as u64)
 }
 
 /// Extract an optional `u16` parameter (e.g. a network port).
@@ -47,7 +71,7 @@ pub fn param_u16_opt(params: &Value, key: &str) -> Option<u16> {
     params.get(key).and_then(|v| {
         v.as_u64()
             .or_else(|| v.as_f64().map(|f| f as u64))
-            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+            .or_else(|| v.as_str().and_then(parse_number_string))
             .filter(|n| *n >= 1 && *n <= u16::MAX as u64)
             .map(|n| n as u16)
     })
@@ -195,5 +219,39 @@ mod tests {
         assert!(param_bool(&json!({"append": ""}), "append", true));
         assert!(param_bool(&json!({"append": null}), "append", true));
         assert!(!param_bool(&json!({"append": null}), "append", false));
+    }
+
+    #[test]
+    fn param_u64_accepts_float_strings() {
+        // Model callers emit numeric args as float-strings ("60.0", "5.0").
+        // `"60.0".parse::<u64>()` fails, so before the float-string coercion
+        // these silently fell back to the DEFAULT — the user's value was
+        // dropped (Strike48/matrix#4715, defect 2). All shapes must coerce.
+        assert_eq!(param_u64(&json!({"timeout": 60}), "timeout", 300), 60);
+        assert_eq!(param_u64(&json!({"timeout": 60.0}), "timeout", 300), 60);
+        assert_eq!(param_u64(&json!({"timeout": "60"}), "timeout", 300), 60);
+        assert_eq!(param_u64(&json!({"timeout": "60.0"}), "timeout", 300), 60);
+        assert_eq!(param_u64(&json!({"timing": "5.0"}), "timing", 3), 5);
+        // Fraction is truncated, not rounded.
+        assert_eq!(param_u64(&json!({"n": "2.9"}), "n", 0), 2);
+    }
+
+    #[test]
+    fn param_u64_still_falls_back_on_garbage_or_negative() {
+        assert_eq!(param_u64(&json!({}), "n", 42), 42);
+        assert_eq!(param_u64(&json!({"n": "nope"}), "n", 42), 42);
+        assert_eq!(param_u64(&json!({"n": null}), "n", 42), 42);
+        // Negative values are rejected (filtered out) -> default, not 0 and
+        // not a panic: a negative timeout/timing is never a sane input.
+        assert_eq!(param_u64(&json!({"n": "-5.0"}), "n", 42), 42);
+    }
+
+    #[test]
+    fn param_u16_opt_accepts_float_strings() {
+        assert_eq!(param_u16_opt(&json!({"port": "22.0"}), "port"), Some(22));
+        assert_eq!(
+            param_u16_opt(&json!({"port": "65535.0"}), "port"),
+            Some(65535)
+        );
     }
 }

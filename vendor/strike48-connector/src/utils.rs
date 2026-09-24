@@ -131,7 +131,73 @@ pub fn error_response(message: &str) -> Result<Vec<u8>> {
     serialize_payload(&error_data, PayloadEncoding::Json)
 }
 
-/// Sanitize an identifier so it is safe to use in a connector address.
+/// Enforce the "never a blank failure" wire contract (Strike48/matrix#4715,
+/// defect 2).
+///
+/// `execute_with_context` returns a `Value` the SDK wraps in an
+/// `ExecuteResponse` with `success: true` and an EMPTY `error` — even when the
+/// connector-level tool result inside the payload reports a failure. If that
+/// payload failure carries a blank `error` (the exact failure mode that left
+/// the agent "diagnosing blind" all night), this:
+///
+/// 1. patches the payload's `error` field with an actionable message, and
+/// 2. returns that message so the caller can mirror it into the envelope's
+///    `error` field (never blank on a failure).
+///
+/// Successful payloads and payloads with no recognizable failure shape are
+/// returned untouched with `None`.
+///
+/// # Returns
+/// `(patched_payload, envelope_error_message)`
+pub fn sanitize_failure_payload(
+    response_data: &serde_json::Value,
+    capability_id: Option<&str>,
+) -> (serde_json::Value, Option<String>) {
+    let serde_json::Value::Object(fields) = response_data else {
+        return (response_data.clone(), None);
+    };
+
+    // Only intervene on an explicit tool-level failure.
+    let failed = fields
+        .get("success")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false);
+    if !failed {
+        return (response_data.clone(), None);
+    }
+
+    let blank = fields
+        .get("error")
+        .and_then(|v| match v {
+            serde_json::Value::String(s) => Some(s.trim().is_empty()),
+            serde_json::Value::Null => Some(true),
+            _ => Some(false),
+        })
+        .unwrap_or(true);
+
+    if !blank {
+        return (response_data.clone(), None);
+    }
+
+    let tool = capability_id
+        .filter(|c| !c.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "the requested tool".to_string());
+
+    let message = format!(
+        "Tool '{tool}' failed without returning an error message. Check the connector \
+         pod logs for the underlying failure and retry — if the request was malformed, \
+         retry with the tool's documented parameters (a minimal `target` alone is a \
+         good starting point)."
+    );
+
+    let mut patched = fields.clone();
+    patched.insert("error".to_string(), serde_json::json!(message));
+
+    (serde_json::Value::Object(patched), Some(message))
+}
+
+//// Sanitize an identifier so it is safe to use in a connector address.
 ///
 /// The Matrix server rejects `tenant_id` / `connector_type` / `instance_id`
 /// values that contain `.`, `:`, tab, space, or newline (those characters
@@ -256,5 +322,75 @@ pub fn encoding_to_string(encoding: PayloadEncoding) -> &'static str {
         PayloadEncoding::Protobuf => "protobuf",
         PayloadEncoding::Msgpack => "msgpack",
         PayloadEncoding::Parquet => "parquet",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn sanitize_failure_payload_patches_blank_failure() {
+        // The wire contract (Strike48/matrix#4715, defect 2): a tool result
+        // that reports a failure with a blank error must never leave the SDK
+        // — the payload error is patched and the message returned for the
+        // envelope.
+        let payload = json!({
+            "success": false,
+            "data": Value::Null,
+            "error": "",
+            "outcome": "failed",
+        });
+
+        let (patched, envelope_error) = sanitize_failure_payload(&payload, Some("nmap"));
+
+        let msg = envelope_error.expect("envelope error must be set on a blank failure");
+        assert!(!msg.trim().is_empty());
+        assert!(msg.contains("nmap"), "message should name the tool: {msg}");
+
+        assert_eq!(patched["success"], false);
+        assert_eq!(patched["error"], msg);
+        // Non-error fields are preserved.
+        assert_eq!(patched["outcome"], "failed");
+    }
+
+    #[test]
+    fn sanitize_failure_payload_untouched_when_error_present() {
+        let payload = json!({"success": false, "error": "target parameter is required"});
+
+        let (patched, envelope_error) = sanitize_failure_payload(&payload, Some("nmap"));
+
+        assert!(envelope_error.is_none());
+        assert_eq!(patched["error"], "target parameter is required");
+    }
+
+    #[test]
+    fn sanitize_failure_payload_untouched_on_success() {
+        let payload = json!({"success": true, "data": json!({"count": 1})});
+
+        let (patched, envelope_error) = sanitize_failure_payload(&payload, Some("nmap"));
+
+        assert!(envelope_error.is_none());
+        assert_eq!(patched["success"], true);
+    }
+
+    #[test]
+    fn sanitize_failure_payload_handles_null_and_whitespace_errors() {
+        for blank in [Value::Null, json!("   ")] {
+            let payload = json!({"success": false, "error": blank});
+            let (_, envelope_error) = sanitize_failure_payload(&payload, None);
+            assert!(
+                envelope_error.is_some(),
+                "blank error {blank:?} must produce an envelope message"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_failure_payload_ignores_non_object_payloads() {
+        let (patched, envelope_error) = sanitize_failure_payload(&json!("ok"), Some("nmap"));
+        assert!(envelope_error.is_none());
+        assert_eq!(patched, json!("ok"));
     }
 }
