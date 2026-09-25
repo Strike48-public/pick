@@ -106,9 +106,9 @@ If the Validator doesn't have access to evidence or update functions, file this 
 
 Inspect the JSON manifest in the Report Agent conversation. Check that:
 
-✅ No secrets visible in `effective_command` fields
-✅ Commands are properly redacted
-✅ Response excerpts are truncated to ~2KB
+No secrets visible in `effective_command` fields
+Commands are properly redacted
+Response excerpts are truncated to ~2KB
 
 ---
 
@@ -425,7 +425,7 @@ Use this checklist during manual testing:
 
 ## Success Criteria
 
-✅ **Pipeline is working correctly when:**
+**Pipeline is working correctly when:**
 
 1. Tools produce evidence nodes automatically
 2. Evidence starts in Pending state
@@ -456,10 +456,10 @@ If all tests pass:
 
 From code review, these issues were identified:
 
-### 🛑 BLOCKER (NOW FIXED)
-- ✅ Producer wiring added (this PR)
+### BLOCKER (NOW FIXED)
+- Producer wiring added (this PR)
 
-### ⚠️ CONCERNS
+### CONCERNS
 - [ ] Report Agent needs `write_file` tool
 - [ ] `RAW_RESPONSE_MAX_BYTES` too small (2048 → 8192?)
 - [ ] Parallel Generate Report clicks not debounced

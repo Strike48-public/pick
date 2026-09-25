@@ -39,7 +39,7 @@ Press `Ctrl+Shift+[1-8]` for instant theme switching:
 - `Ctrl+Shift+8` → Nord
 
 #### Random Theme
-Click the **🎲 dice button** next to the theme dropdown for a random theme.
+Click the **dice button** next to the theme dropdown for a random theme.
 
 ### Theme Transitions
 
@@ -108,12 +108,12 @@ The theme will be copied to `~/.config/pentest-connector/themes/` and validated 
 
 Custom themes are validated to prevent security issues:
 
-- ❌ No external resources (no `url(http://...)`)
-- ❌ No JavaScript URLs
-- ❌ No CSS imports
-- ❌ No font loading
-- ❌ No data URLs
-- ✅ Only local CSS properties and colors
+- No external resources (no `url(http://...)`)
+- No JavaScript URLs
+- No CSS imports
+- No font loading
+- No data URLs
+- Only local CSS properties and colors
 
 See `themes/README.md` for complete documentation.
 

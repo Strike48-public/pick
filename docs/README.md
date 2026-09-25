@@ -87,11 +87,11 @@ cargo clippy -- -D warnings
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| Linux | ✓ Full Support | Debian/Ubuntu, Fedora/RHEL |
-| macOS | ✓ Full Support | Intel and Apple Silicon |
-| Windows | ✓ Via WSL | Native support in progress |
-| Android | ⚠ Experimental | Requires cargo-mobile2 |
-| iOS | ⚠ Experimental | Requires Xcode |
+| Linux | Full Support | Debian/Ubuntu, Fedora/RHEL |
+| macOS | Full Support | Intel and Apple Silicon |
+| Windows | Via WSL | Native support in progress |
+| Android | Experimental | Requires cargo-mobile2 |
+| iOS | Experimental | Requires Xcode |
 
 ## Architecture
 

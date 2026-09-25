@@ -8,15 +8,15 @@
 
 Pick executes external penetration testing tools (nmap, hydra, etc.) with user-provided parameters. This audit examines command execution security to prevent command injection vulnerabilities.
 
-**Overall Assessment:** ✅ **GOOD** - Command execution uses safe array-based arguments with proper escaping.
+**Overall Assessment:** **GOOD** - Command execution uses safe array-based arguments with proper escaping.
 
 **Key Findings:**
-1. ✅ All command execution uses array-based arguments (`Command::new(cmd).args(args)`)
-2. ✅ `CommandBuilder` safely constructs argument arrays without shell interpolation
-3. ✅ Shell escaping is applied when falling back to sandboxed execution
-4. ⚠️ Input validation could be more comprehensive
-5. ⚠️ Some tools lack timeout configuration
-6. ℹ️ Sandboxed execution concatenates args into shell command (but with escaping)
+1. PASS: All command execution uses array-based arguments (`Command::new(cmd).args(args)`)
+2. PASS: `CommandBuilder` safely constructs argument arrays without shell interpolation
+3. PASS: Shell escaping is applied when falling back to sandboxed execution
+4. WARN: Input validation could be more comprehensive
+5. WARN: Some tools lack timeout configuration
+6. INFO: Sandboxed execution concatenates args into shell command (but with escaping)
 
 ## Architecture Overview
 
@@ -58,7 +58,7 @@ platform.execute_command(cmd, &[&str], timeout)
 
 ## Security Analysis
 
-### ✅ Safe Patterns Found
+### Safe Patterns Found
 
 #### 1. Array-Based Argument Passing
 
@@ -140,7 +140,7 @@ fn shell_escape(s: &str) -> String {
 
 **Why Safe:** Proper POSIX shell escaping wraps arguments in single quotes and escapes any embedded quotes.
 
-### ⚠️ Areas for Improvement
+### Areas for Improvement
 
 #### 1. Input Validation
 
@@ -579,10 +579,10 @@ fn test_shell_escape_function() {
 
 Pick's command execution architecture is **fundamentally secure**:
 
-- ✅ Array-based argument passing prevents injection
-- ✅ No `format!()` or string interpolation in command construction
-- ✅ Shell escaping applied for sandboxed execution
-- ✅ Timeout enforcement prevents resource exhaustion
+- Array-based argument passing prevents injection
+- No `format!()` or string interpolation in command construction
+- Shell escaping applied for sandboxed execution
+- Timeout enforcement prevents resource exhaustion
 
 **Areas for improvement** are primarily around input validation and consistency, not fundamental security flaws.
 

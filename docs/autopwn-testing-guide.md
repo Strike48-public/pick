@@ -1,6 +1,6 @@
 # AutoPwn Testing Guide
 
-## ⚠️ Legal & Safety Notice
+## Legal & Safety Notice
 
 **CRITICAL:** WiFi penetration testing is ILLEGAL unless:
 - You own the network
@@ -200,7 +200,7 @@ TEST_BSSID="00:11:22:33:44:55"  # Your test AP MAC
 TEST_CHANNEL=6
 
 echo "=== AutoPwn Integration Test ==="
-echo "⚠️  Ensure this is YOUR test network!"
+echo "Ensure this is YOUR test network!"
 read -p "Continue? (yes/no): " confirm
 [[ "$confirm" == "yes" ]] || exit 1
 
@@ -247,26 +247,26 @@ echo "=== Test Complete ==="
 #### 4.4 Expected Results
 
 **Phase 1A (Planning):**
-- ✓ Analyzes target
-- ✓ Recommends WPA strategy
-- ✓ Shows feasibility score
-- ✓ Lists attack steps
+- Analyzes target
+- Recommends WPA strategy
+- Shows feasibility score
+- Lists attack steps
 
 **Phase 1B (Capture):**
-- ✓ Enables monitor mode
-- ✓ Starts airodump-ng
-- ✓ Sends deauth packets
-- ✓ Captures handshake
-- ✓ Verifies handshake is valid
-- ✓ Saves to `/tmp/autopwn-TIMESTAMP/`
-- ✓ Disables monitor mode on completion
+- Enables monitor mode
+- Starts airodump-ng
+- Sends deauth packets
+- Captures handshake
+- Verifies handshake is valid
+- Saves to `/tmp/autopwn-TIMESTAMP/`
+- Disables monitor mode on completion
 
 **Phase 1C (Cracking):**
-- ✓ Downloads wordlist (first run)
-- ✓ Tries common passwords
-- ✓ Runs aircrack-ng
-- ✓ Reports password if found
-- ✓ Handles timeout gracefully
+- Downloads wordlist (first run)
+- Tries common passwords
+- Runs aircrack-ng
+- Reports password if found
+- Handles timeout gracefully
 
 ### Level 5: Unit Tests
 
@@ -304,16 +304,16 @@ if params["dry_run"].as_bool().unwrap_or(false) {
 ### What Can Run in CI
 
 **Safe for CI (no hardware):**
-- ✓ Unit tests (`cargo test`)
-- ✓ Strategy selection tests
-- ✓ Vendor intelligence tests
-- ✓ Type parsing tests
-- ✓ Compilation checks
+- Unit tests (`cargo test`)
+- Strategy selection tests
+- Vendor intelligence tests
+- Type parsing tests
+- Compilation checks
 
 **NOT safe for CI:**
-- ✗ Monitor mode tests (requires specific hardware)
-- ✗ Packet capture (needs WiFi adapter)
-- ✗ Integration tests with real WiFi
+- Monitor mode tests (requires specific hardware)
+- Packet capture (needs WiFi adapter)
+- Integration tests with real WiFi
 
 ### GitHub Actions Test Matrix
 

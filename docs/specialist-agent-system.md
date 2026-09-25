@@ -414,24 +414,24 @@ pub struct SpawnSpecialistResult {
 
 ### Completed
 
-- ✅ Specialist agent system prompts (4 files, 500-700 lines each)
-- ✅ Aggression level system (`crates/core/src/aggression.rs`)
-- ✅ Specialist spawner orchestration (`crates/core/src/specialist_spawner.rs`)
-- ✅ CLI parameter support (`--aggression` / `-a`)
-- ✅ Environment variable support (`AGGRESSION_LEVEL`)
-- ✅ Cost warnings for expensive modes
-- ✅ spawn_specialist tool structure (`crates/tools/src/spawn_specialist.rs`)
-- ✅ Red Team system prompt integration
-- ✅ All tests passing (13 tests across aggression.rs and specialist_spawner.rs)
+- Specialist agent system prompts (4 files, 500-700 lines each)
+- Aggression level system (`crates/core/src/aggression.rs`)
+- Specialist spawner orchestration (`crates/core/src/specialist_spawner.rs`)
+- CLI parameter support (`--aggression` / `-a`)
+- Environment variable support (`AGGRESSION_LEVEL`)
+- Cost warnings for expensive modes
+- spawn_specialist tool structure (`crates/tools/src/spawn_specialist.rs`)
+- Red Team system prompt integration
+- All tests passing (13 tests across aggression.rs and specialist_spawner.rs)
 
 ### Pending
 
-- ⏸️ ToolContext enhancements (required for spawn_specialist to become functional):
+- ToolContext enhancements (required for spawn_specialist to become functional):
   1. Matrix client injection: `ctx.matrix_client()`
   2. Aggression level propagation: `ctx.aggression_level()`
   3. Parent agent name tracking: `ctx.agent_name()`
-- ⏸️ Integration testing with live Matrix agent spawning
-- ⏸️ Mid-scan aggression adjustment capability
+- Integration testing with live Matrix agent spawning
+- Mid-scan aggression adjustment capability
 
 ## Cost Transparency
 
@@ -439,10 +439,10 @@ The system displays cost warnings when expensive aggression modes are selected:
 
 ```bash
 $ ./run-pentest.sh headless dev --aggression=aggressive
-ℹ️  Aggressive mode may spawn multiple specialists. Estimated cost: 2-4x Conservative mode.
+Aggressive mode may spawn multiple specialists. Estimated cost: 2-4x Conservative mode.
 
 $ ./run-pentest.sh headless dev --aggression=maximum
-⚠️  MAXIMUM mode spawns specialists for every target. This can be expensive for large networks. Estimated cost: 5-10x Conservative mode. Recommend starting with Aggressive mode first.
+MAXIMUM mode spawns specialists for every target. This can be expensive for large networks. Estimated cost: 5-10x Conservative mode. Recommend starting with Aggressive mode first.
 ```
 
 Cost multipliers relative to Conservative mode (1.0x):

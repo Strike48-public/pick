@@ -29,13 +29,13 @@ def restore_legacy_session(blob):
 
 **Pick Defense Strategy:**
 
-✅ **DO:**
+PASS **DO:**
 - Use `serde_json` for JSON serialization (Rust default)
 - Use `bincode` or `postcard` for binary formats (safe by design)
 - Validate all deserialized data with schemas
 - Prefer stateless protocols where possible
 
-❌ **NEVER:**
+FAIL **NEVER:**
 - Use Python's `pickle` in tool wrappers
 - Deserialize untrusted data without validation
 - Use `unsafe_load` variants of any serialization library
@@ -66,7 +66,7 @@ def _unused_shell(user_input):
 
 **Pick Defense Strategy:**
 
-✅ **DO:**
+PASS **DO:**
 - Use `Command::new()` with array arguments (Rust stdlib)
 - Quote/escape arguments if shell is required
 - Validate inputs against allowlists
@@ -88,7 +88,7 @@ fn validate_ip(ip: &str) -> Result<()> {
 }
 ```
 
-❌ **NEVER:**
+FAIL **NEVER:**
 - Format strings into shell commands
 - Use `/bin/sh -c` with unsanitized input
 - Trust user input for command arguments without validation
@@ -121,7 +121,7 @@ def _unused_sql(cursor, username):
 
 **Pick Defense Strategy:**
 
-✅ **DO:**
+PASS **DO:**
 - Use parameterized queries (sqlx with `?` placeholders)
 - Use query builders (diesel, sea-orm)
 - Validate input types before queries
@@ -143,7 +143,7 @@ let results = targets
     .load::<Target>(&conn)?;
 ```
 
-❌ **NEVER:**
+FAIL **NEVER:**
 - Concatenate strings into SQL queries
 - Use `format!()` to build SQL statements
 - Trust user input in WHERE clauses without parameterization
@@ -174,7 +174,7 @@ def _unused_path(user_path):
 
 **Pick Defense Strategy:**
 
-✅ **DO:**
+PASS **DO:**
 - Canonicalize paths with `fs::canonicalize()`
 - Validate paths stay within allowed directories
 - Use allowlists for file access patterns
@@ -196,7 +196,7 @@ fn safe_file_access(base: &Path, user_path: &str) -> Result<PathBuf> {
 }
 ```
 
-❌ **NEVER:**
+FAIL **NEVER:**
 - Concatenate user input directly into file paths
 - Skip path validation for "trusted" inputs
 - Use user-provided paths without canonicalization
@@ -226,7 +226,7 @@ _SAMPLE_INPUT = "a" * 32 + "!"  # Takes exponential time
 
 **Pick Defense Strategy:**
 
-✅ **DO:**
+PASS **DO:**
 - Use `regex` crate (backtracking limits built-in)
 - Test regex performance with long inputs
 - Prefer simple patterns over complex ones
@@ -252,7 +252,7 @@ match tokio::time::timeout(timeout, async {
 }
 ```
 
-❌ **NEVER:**
+FAIL **NEVER:**
 - Use nested quantifiers: `(a+)+`, `(a*)*`, `(a+)*`
 - Allow user-provided regex patterns without validation
 - Skip performance testing on regex with user input
@@ -288,7 +288,7 @@ def _unused_xxe(untrusted_xml):
 
 **Pick Defense Strategy:**
 
-✅ **DO:**
+PASS **DO:**
 - Use `quick-xml` with external entities disabled (Rust default)
 - Parse XML with strict settings
 - Validate XML structure before parsing
@@ -310,7 +310,7 @@ fn safe_xml_parse(xml: &str) -> Result<()> {
 }
 ```
 
-❌ **NEVER:**
+FAIL **NEVER:**
 - Enable external entity resolution on parsers
 - Parse untrusted XML without validation
 - Use XML for untrusted data interchange (prefer JSON)
@@ -347,7 +347,7 @@ def _unused_jwt(token):
 
 **Pick Defense Strategy:**
 
-✅ **DO:**
+PASS **DO:**
 - Use Argon2id for password hashing (`argon2` crate)
 - Use bcrypt as fallback (`bcrypt` crate)
 - Always verify JWT signatures
@@ -376,7 +376,7 @@ fn verify_password(password: &[u8], hash: &str) -> Result<bool> {
 }
 ```
 
-❌ **NEVER:**
+FAIL **NEVER:**
 - Use MD5, SHA1, or plain SHA256 for passwords
 - Skip signature verification on JWTs
 - Roll your own crypto primitives
@@ -410,7 +410,7 @@ def _unused_tempfile():
 
 **Pick Defense Strategy:**
 
-✅ **DO:**
+PASS **DO:**
 - Use `tempfile` crate for safe temp files
 - Files are created atomically with secure permissions
 - Automatic cleanup on drop
@@ -435,7 +435,7 @@ fn create_persistent_temp() -> Result<PathBuf> {
 }
 ```
 
-❌ **NEVER:**
+FAIL **NEVER:**
 - Generate temp file names manually
 - Use predictable paths in `/tmp/`
 - Skip cleanup of sensitive temp files
@@ -468,7 +468,7 @@ memcpy(resp + 3, &buf[cursor + 3], payload_len);
 
 **Pick Defense Strategy:**
 
-✅ **DO (if using FFI):**
+PASS **DO (if using FFI):**
 - Validate all sizes before allocation/copy
 - Use saturating arithmetic for size calculations
 - Add static assertions for size limits
@@ -489,7 +489,7 @@ fn safe_buffer_copy(dst: &mut [u8], src: &[u8], offset: usize) -> Result<()> {
 }
 ```
 
-❌ **NEVER (in FFI):**
+FAIL **NEVER (in FFI):**
 - Trust size fields from untrusted input
 - Use `memcpy` without bounds validation
 - Skip overflow checks in size calculations
@@ -523,7 +523,7 @@ def _unused_requests(url):
 
 **Pick Defense Strategy:**
 
-✅ **DO:**
+PASS **DO:**
 - Validate URLs against allowlist
 - Block private IP ranges (10.0.0.0/8, 127.0.0.0/8, etc.)
 - Always verify TLS certificates
@@ -567,7 +567,7 @@ fn is_private_ip(ip: IpAddr) -> bool {
 }
 ```
 
-❌ **NEVER:**
+FAIL **NEVER:**
 - Allow user-controlled URLs without validation
 - Disable TLS verification in production
 - Skip timeout configuration
@@ -596,7 +596,7 @@ _EXAMPLE_STRIPE_LIVE = "sk_live_" + "4" * 24
 
 **Pick Defense Strategy:**
 
-✅ **DO:**
+PASS **DO:**
 - Store secrets in environment variables
 - Use `.env` files (excluded from git)
 - Use secret management services (Vault, AWS Secrets Manager)
@@ -616,7 +616,7 @@ fn load_secrets() -> Result<Config> {
 }
 ```
 
-❌ **NEVER:**
+FAIL **NEVER:**
 - Hardcode secrets in source code
 - Commit `.env` files to git
 - Log secrets (even in debug mode)
