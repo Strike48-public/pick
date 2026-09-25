@@ -1,0 +1,48 @@
+name: Feature Request
+description: Suggest a new capability or improvement for Pick
+title: "[Feature]: "
+labels: ["type/feature", "product/pick"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement to Pick. Please fill out the
+        sections below.
+
+        If you are proposing a new attack-surface specialist, review the
+        existing specialist pattern (indicators, spawn thresholds, guardrails,
+        JSON-context tool dispatch) before filling this out, and describe how
+        your proposal fits it rather than introducing a parallel structure.
+
+        Do not include customer or tenant names, secrets, credentials, real
+        Strike48 instance URLs, or internal hostnames anywhere in this request.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What problem does this solve? Who is affected, and how?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the feature or change you would like to see.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you considered and why you did not choose them.
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is in scope for this request? What is explicitly out of scope?
+    validations:
+      required: true

@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Strike48-public/pick/security/policy
+    about: >-
+      Security vulnerabilities must be reported privately, not as a public
+      issue. This link opens the repository's security policy (SECURITY.md),
+      which has the private reporting address.
+  - name: Questions and discussion
+    url: https://github.com/Strike48-public/pick/discussions
+    about: Ask questions or discuss ideas with maintainers and other users.
+# Note: GitHub Discussions must be enabled for this repository by an admin
+# before the "Questions and discussion" link above will resolve. Until then
+# it 404s.
