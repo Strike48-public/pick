@@ -969,7 +969,11 @@ struct LinpeasScrub {
 }
 
 static LINPEAS_SCRUB: LazyLock<LinpeasScrub> = LazyLock::new(|| LinpeasScrub {
-    scheme_userinfo: Regex::new(r"(\w+://)[^/\s:@]*:[^/\s:@]+(@)")
+    // Userinfo runs from `://` to the LAST `@` before the host, so the
+    // char classes must allow `@` inside the password; anchoring on the first
+    // `@` (`[^/\s:@]+`) left the tail of an `@`-bearing password on the report.
+    // Greedy `[^/\s]*` + trailing `(@)` matches through to the final `@`.
+    scheme_userinfo: Regex::new(r"(\w+://)[^/\s]*:[^/\s]*(@)")
         .expect("valid scheme userinfo regex"),
     keyword_value: Regex::new(
         r"(?i)\b(password|passwd|pwd|secret|token|credential)s?\b[ \t]*[:=]?[ \t]*\S+",
@@ -2189,7 +2193,13 @@ mod tests {
         });
         let nodes = evidence_from_linpeas(&data, postexploit_prov());
         assert_eq!(nodes.len(), 4);
-        for secret in ["MyP@ss123", "r3disSecret", "hunter2", "0123456789abcdef"] {
+        for secret in [
+            "MyP@ss123",
+            "ss123",
+            "r3disSecret",
+            "hunter2",
+            "0123456789abcdef",
+        ] {
             assert_no_secret(&nodes, secret);
         }
         // Benign structure survives so the operator keeps the finding's
@@ -2216,5 +2226,32 @@ mod tests {
         assert!(
             evidence_from_lateral_exec(&fail, "impacket-psexec", postexploit_prov()).is_empty()
         );
+    }
+    /// Regression (pick#438): the userinfo/host boundary is the LAST `@`
+    /// before the host, so an `@` inside the password must not end redaction
+    /// early. The prior `[^/\s:@]+` password class stopped at the first `@`
+    /// and left the password tail on the report and the public share link.
+    #[test]
+    fn linpeas_scrub_redacts_full_userinfo_when_password_contains_at() {
+        let data = json!({
+            "high_priority_findings": [
+                "[!] service creds mysql://root:MyP@ss123@10.0.0.1/prod",
+                "[!] db creds postgres://admin:Tr0ub@dor99@db.internal:5432/app",
+            ],
+            "findings": [],
+        });
+        let nodes = evidence_from_linpeas(&data, postexploit_prov());
+        // Neither the whole password nor the tail after the first `@` survives.
+        for secret in ["MyP@ss123", "ss123", "Tr0ub@dor99", "dor99"] {
+            assert_no_secret(&nodes, secret);
+        }
+        // The host after the userinfo is preserved for operator context.
+        let joined: String = nodes
+            .iter()
+            .map(|n| n.description.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("10.0.0.1"));
+        assert!(joined.contains("db.internal"));
     }
 }
