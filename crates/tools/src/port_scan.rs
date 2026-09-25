@@ -87,7 +87,7 @@ fn scan_target_spec(params: &Value) -> String {
     parts.join(" ")
 }
 
-/// Expand an IPv4 CIDR (e.g. "10.10.0.0/24") into its usable host addresses.
+/// Expand an IPv4 CIDR (e.g. "192.0.2.0/24") into its usable host addresses.
 /// Network and broadcast addresses are dropped for prefixes < /31. Capped at
 /// 1024 hosts so a wide prefix can't blow up the scan; prefixes narrower than
 /// /22 are rejected for the same reason.
@@ -183,7 +183,7 @@ impl PentestTool for PortScanTool {
             .param(ToolParam::optional(
                 "subnet",
                 ParamType::String,
-                "IPv4 CIDR to scan in one call (e.g. '10.10.0.0/24'); /22 or narrower",
+                "IPv4 CIDR to scan in one call (e.g. '192.0.2.0/24'); /22 or narrower",
                 json!(null),
             ))
             .param(ToolParam::optional(
@@ -391,12 +391,12 @@ mod tests {
 
     #[test]
     fn expand_ipv4_cidr_24_drops_network_and_broadcast() {
-        let hosts = expand_ipv4_cidr("10.10.0.0/24").unwrap();
+        let hosts = expand_ipv4_cidr("192.0.2.0/24").unwrap();
         assert_eq!(hosts.len(), 254); // 256 - network - broadcast
-        assert_eq!(hosts.first().unwrap(), "10.10.0.1");
-        assert_eq!(hosts.last().unwrap(), "10.10.0.254");
-        assert!(!hosts.contains(&"10.10.0.0".to_string()));
-        assert!(!hosts.contains(&"10.10.0.255".to_string()));
+        assert_eq!(hosts.first().unwrap(), "192.0.2.1");
+        assert_eq!(hosts.last().unwrap(), "192.0.2.254");
+        assert!(!hosts.contains(&"192.0.2.0".to_string()));
+        assert!(!hosts.contains(&"192.0.2.255".to_string()));
     }
 
     #[test]
@@ -409,17 +409,17 @@ mod tests {
     #[test]
     fn expand_ipv4_cidr_32_is_single_host() {
         // /31 and /32 have no network/broadcast to drop.
-        assert_eq!(expand_ipv4_cidr("10.10.0.5/32").unwrap(), vec!["10.10.0.5"]);
+        assert_eq!(expand_ipv4_cidr("192.0.2.5/32").unwrap(), vec!["192.0.2.5"]);
     }
 
     #[test]
     fn collect_hosts_merges_and_dedups() {
         let params = json!({
-            "host": "10.10.0.1",
-            "hosts": ["10.10.0.2", "10.10.0.1"], // 10.10.0.1 duplicate
+            "host": "192.0.2.1",
+            "hosts": ["192.0.2.2", "192.0.2.1"], // 192.0.2.1 duplicate
         });
         let hosts = collect_hosts(&params).unwrap();
-        assert_eq!(hosts, vec!["10.10.0.1", "10.10.0.2"]);
+        assert_eq!(hosts, vec!["192.0.2.1", "192.0.2.2"]);
     }
 
     #[test]
@@ -433,8 +433,8 @@ mod tests {
         // A subnet stays a CIDR (not 254 expanded hosts) in the synthesized
         // provenance command, and host + hosts[] are space-joined.
         assert_eq!(
-            scan_target_spec(&json!({ "subnet": "10.10.0.0/24" })),
-            "10.10.0.0/24"
+            scan_target_spec(&json!({ "subnet": "192.0.2.0/24" })),
+            "192.0.2.0/24"
         );
         assert_eq!(
             scan_target_spec(&json!({ "host": "10.0.0.1", "hosts": ["10.0.0.2"] })),

@@ -162,7 +162,7 @@ fn parse_rustscan_output(stdout: &str, target: &str) -> Result<Value> {
     for line in stdout.lines() {
         let line = line.trim();
 
-        // RustScan outputs: "Open 10.10.2.169:22"
+        // RustScan outputs: "Open 192.0.2.169:22"
         // or "-> 22" format
         if line.starts_with("Open") {
             if let Some(port_str) = line.split(':').next_back() {
