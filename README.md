@@ -303,7 +303,7 @@ This tool is designed for authorized penetration testing and security research. 
 
 ## License
 
-MIT License - See LICENSE file for details.
+Mozilla Public License 2.0 (MPL-2.0) - See the LICENSE file for details.
 
 ## Credits
 

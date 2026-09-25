@@ -444,9 +444,9 @@ helm install pick pick/pick-connector
 
 ## Open Source
 
-Pick is MIT licensed and fully open source:
+Pick is licensed under the Mozilla Public License 2.0 (MPL-2.0) and fully open source:
 - **Repository:** https://github.com/Strike48-public/pick
-- **License:** MIT
+- **License:** MPL-2.0
 - **Contributing:** Pull requests welcome
 
 **Why Open Source?**

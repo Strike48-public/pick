@@ -17,7 +17,7 @@ pub fn LicensesPage() -> Element {
                 // Pick itself
                 LicenseCard {
                     name: "Pick Penetration Testing Connector",
-                    license: "MIT License",
+                    license: "MPL-2.0",
                     description: "This application",
                     url: "https://github.com/Strike48-public/pick"
                 }
