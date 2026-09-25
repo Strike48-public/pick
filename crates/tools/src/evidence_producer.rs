@@ -2237,12 +2237,21 @@ mod tests {
             "high_priority_findings": [
                 "[!] service creds mysql://root:MyP@ss123@10.0.0.1/prod",
                 "[!] db creds postgres://admin:Tr0ub@dor99@db.internal:5432/app",
+                "[!] http svc https://svc:Xy@zz42@web.internal/login",
             ],
             "findings": [],
         });
         let nodes = evidence_from_linpeas(&data, postexploit_prov());
-        // Neither the whole password nor the tail after the first `@` survives.
-        for secret in ["MyP@ss123", "ss123", "Tr0ub@dor99", "dor99"] {
+        // Neither the whole password nor the tail after the first `@` survives,
+        // for http (via shared redact) and non-http schemes (via scheme_userinfo).
+        for secret in [
+            "MyP@ss123",
+            "ss123",
+            "Tr0ub@dor99",
+            "dor99",
+            "Xy@zz42",
+            "zz42",
+        ] {
             assert_no_secret(&nodes, secret);
         }
         // The host after the userinfo is preserved for operator context.
