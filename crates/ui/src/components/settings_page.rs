@@ -60,6 +60,11 @@ pub fn SettingsPage(
     // effective display to Native regardless of the persisted setting.
     let is_proot = sandbox_available && shell_mode == ShellMode::Proot;
 
+    // Where the rolling JSON log lands, shown in the Logs card so a customer
+    // can find the file support asks for without reading the console.
+    let log_dir = pentest_core::logging::log_dir().display().to_string();
+    let log_files_kept = pentest_core::logging::LOG_FILES_KEPT;
+
     // Track which mode was just saved for visual feedback (bold border)
     let mut just_saved = use_signal(|| None::<ShellMode>);
 
@@ -1908,6 +1913,19 @@ pub fn SettingsPage(
                         div { class: "export-info text-dim-xs",
                             "Exports will be saved to your workspace directory"
                         }
+                    }
+                }
+
+                // Logs section
+                div { class: "settings-card",
+                    div { class: "settings-card-header",
+                        h2 { "Logs" }
+                    }
+                    div { class: "settings-card-body",
+                        p { class: "text-dim-s",
+                            "Pick writes one JSON log file per day and keeps the last {log_files_kept}. When reporting a problem, attach the file for the day it happened."
+                        }
+                        code { class: "text-dim-xs", "{log_dir}" }
                     }
                 }
             }
