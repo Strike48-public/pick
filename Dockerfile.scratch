@@ -138,7 +138,36 @@ RUN printf 'deb http://kali.download/kali kali-rolling main contrib non-free non
         proxychains4 \
         python3 \
         python3-pip \
+        masscan \
+        rustscan \
+        theharvester \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# projectdiscovery httpx — NOT from Kali apt. Kali's `httpx` (0.28.x) is the
+# PYTHON http client library, not the recon CLI (same name-collision trap as
+# several other Go tools). The recon CLI comes from projectdiscovery releases;
+# pin the version for reproducible builds (Strike48/matrix#4715, defect 2:
+# the workflow pre-flight requires at least one network-class tool present,
+# and the advertised tool set must match what is actually in the image).
+# python3 (installed above) unpacks the zip — no `unzip` dependency.
+RUN set -eux; \
+    arch=$(dpkg --print-architecture); \
+    case "$arch" in \
+        amd64)  httpx_arch=amd64 ;; \
+        arm64)  httpx_arch=arm64 ;; \
+        *) echo "unsupported architecture for httpx: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/httpx.zip \
+        "https://github.com/projectdiscovery/httpx/releases/download/v1.12.0/httpx_1.12.0_linux_${httpx_arch}.zip"; \
+    python3 -c "import zipfile; zipfile.ZipFile('/tmp/httpx.zip').extract('httpx', '/usr/local/bin')"; \
+    rm -f /tmp/httpx.zip; \
+    chmod +x /usr/local/bin/httpx; \
+    httpx -version 2>&1 | grep -q "v1.12.0"
+
+# theHarvester CLI fallback: the Kali deb is an `_all` pure-python package and
+# must expose the `theharvester` entry point; if a future packaging change
+# breaks that, pip-install it rather than shipping a broken image.
+RUN command -v theharvester >/dev/null 2>&1 || python3 -m pip install --no-cache-dir theHarvester
 
 COPY --from=builder /out/pentest-agent /usr/local/bin/pentest-agent
 

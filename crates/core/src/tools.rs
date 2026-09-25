@@ -1007,7 +1007,11 @@ impl ToolRegistry {
                         &[("tool", name), ("outcome", outcome)],
                     );
                 }
-                result
+                // Single choke point for the "never an empty error" contract
+                // (Strike48/matrix#4715, defect 2): a failure that reaches the
+                // platform with a blank message is invisible to the model AND
+                // the operator. Replace blanks with an actionable message.
+                result.map(|r| Self::ensure_actionable_error(name, r))
             }
             None => {
                 // Find similar tool names for suggestions
@@ -1043,6 +1047,41 @@ impl ToolRegistry {
                     name
                 )))
             }
+        }
+    }
+
+    /// Guarantee a failed `ToolResult` carries a human-actionable error
+    /// message (Strike48/matrix#4715, defect 2).
+    ///
+    /// An empty or whitespace-only `error` on a failed result surfaces on the
+    /// Matrix side as a blank string in workflow node outputs and agent tool
+    /// results — the model has nothing to act on ("the model diagnosed blind
+    /// all night" is this exact failure), and the operator cannot tell what
+    /// went wrong. A blank failure is replaced with a message that names the
+    /// tool and points at the connector pod logs. Successful results and
+    /// failures that already carry a real message are returned untouched.
+    fn ensure_actionable_error(tool_name: &str, result: ToolResult) -> ToolResult {
+        let has_message = result
+            .error
+            .as_deref()
+            .map(str::trim)
+            .map(|m| !m.is_empty())
+            .unwrap_or(false);
+
+        if result.success || has_message {
+            result
+        } else {
+            tracing::warn!(
+                tool = tool_name,
+                "tool failed with an EMPTY error message — substituting actionable message"
+            );
+            ToolResult::error_with_duration(
+                format!(
+                    "Tool '{tool_name}' failed without returning an error message. Check the pick connector pod logs for the underlying failure and retry — if the request was malformed, retry with the tool's documented parameters (a minimal `target` alone is a good starting point)."
+                ),
+                result.duration_ms,
+            )
+            .with_outcome(result.outcome)
         }
     }
 

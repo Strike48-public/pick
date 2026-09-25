@@ -5,7 +5,9 @@ use crate::logger::Logger;
 use crate::transport::TransportType;
 use crate::types::*;
 use crate::url_parser::parse_url;
-use crate::utils::{deserialize_payload, error_response, sanitize_identifier, serialize_payload};
+use crate::utils::{
+    deserialize_payload, error_response, sanitize_failure_payload, sanitize_identifier, serialize_payload,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1690,6 +1692,15 @@ impl ConnectorRunner {
                     .await
                 {
                     Ok(response_data) => {
+                        // Never put a blank failure on the wire (Strike48/matrix#4715,
+                        // defect 2): if the tool result inside the payload reports a
+                        // failure with a blank `error`, patch the payload and mirror
+                        // the actionable message into the envelope's `error` field.
+                        let (response_data, failure_error) = sanitize_failure_payload(
+                            &response_data,
+                            request.capability_id.as_deref(),
+                        );
+
                         match serialize_payload(&response_data, PayloadEncoding::Json) {
                             Ok(payload) => {
                                 let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -1704,7 +1715,7 @@ impl ConnectorRunner {
                                     success: true,
                                     payload,
                                     payload_encoding: PayloadEncoding::Json,
-                                    error: String::new(),
+                                    error: failure_error.unwrap_or_default(),
                                     duration_ms,
                                 }
                             }
