@@ -400,8 +400,9 @@ async fn try_native_web_auth_session(base: &str) -> crate::error::Result<Option<
     // (reqwest re-exports it) so query encoding is correct, not hand-rolled.
     let redirect = format!("{NATIVE_OAUTH_SCHEME}://oauth/callback");
     let state = generate_oauth_state();
-    let mut login_url = reqwest::Url::parse(base)
-        .map_err(|e| crate::error::Error::Matrix(format!("invalid Matrix base URL: {e}")))?;
+    let mut login_url = reqwest::Url::parse(base).map_err(|e| {
+        crate::error::Error::Matrix(format!("invalid Matrix base URL: {e}")).with_source(e)
+    })?;
     login_url.set_path("/auth/login");
     login_url
         .query_pairs_mut()
@@ -423,7 +424,9 @@ async fn try_native_web_auth_session(base: &str) -> crate::error::Result<Option<
         session(&login_url, &scheme)
     })
     .await
-    .map_err(|e| crate::error::Error::Matrix(format!("web auth task join error: {e}")))?
+    .map_err(|e| {
+        crate::error::Error::Matrix(format!("web auth task join error: {e}")).with_source(e)
+    })?
     .map_err(crate::error::Error::Matrix)?;
 
     tracing::info!("[BROWSER_AUTH] iOS: web auth session returned a callback URL");
@@ -514,8 +517,9 @@ async fn try_native_android_oauth(base: &str) -> crate::error::Result<Option<Str
     // with the url crate so query encoding is correct (not hand-rolled).
     let redirect = format!("{NATIVE_OAUTH_SCHEME}://oauth/callback");
     let state = generate_oauth_state();
-    let mut login_url = reqwest::Url::parse(base)
-        .map_err(|e| crate::error::Error::Matrix(format!("invalid Matrix base URL: {e}")))?;
+    let mut login_url = reqwest::Url::parse(base).map_err(|e| {
+        crate::error::Error::Matrix(format!("invalid Matrix base URL: {e}")).with_source(e)
+    })?;
     login_url.set_path("/auth/login");
     login_url
         .query_pairs_mut()

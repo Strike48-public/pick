@@ -91,7 +91,7 @@ impl PentestTool for TrafficCaptureTool {
                             duration_ms,
                         ))
                     }
-                    Err(e) => Ok(ToolResult::error(e.to_string())),
+                    Err(e) => Ok(ToolResult::error(e.chain())),
                 },
 
                 "stop" => match stop_current_capture().await {
@@ -105,7 +105,7 @@ impl PentestTool for TrafficCaptureTool {
                             duration_ms,
                         ))
                     }
-                    Err(e) => Ok(ToolResult::error(e.to_string())),
+                    Err(e) => Ok(ToolResult::error(e.chain())),
                 },
 
                 "get_packets" => {
@@ -148,7 +148,7 @@ impl PentestTool for TrafficCaptureTool {
                                 duration_ms,
                             ))
                         }
-                        Err(e) => Ok(ToolResult::error(e.to_string())),
+                        Err(e) => Ok(ToolResult::error(e.chain())),
                     }
                 }
 

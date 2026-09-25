@@ -297,7 +297,8 @@ impl PentestTool for PortScanTool {
                         "host_state_note": host_state_note(r.reachability),
                     }),
                     Err((host, e)) => {
-                        return Err(pentest_core::error::Error::Network(format!("{host}: {e}")))
+                        return Err(pentest_core::error::Error::Network(format!("{host}: {e}"))
+                            .with_source(e))
                     }
                 }
             } else {
@@ -344,7 +345,14 @@ impl PentestTool for PortScanTool {
                             }));
                         }
                         Err((host, e)) => {
-                            errors.push(json!({ "host": host, "error": e.to_string() }))
+                            // Render the full cause chain (TLS/DNS/refused), to
+                            // match the single-host arm's `.with_source().chain()`
+                            // detail. `host` is already a separate field here, so
+                            // it is not prefixed onto the message (pick#476).
+                            errors.push(json!({
+                                "host": host,
+                                "error": pentest_core::error::source_chain(&e),
+                            }))
                         }
                     }
                 }

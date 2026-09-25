@@ -132,7 +132,7 @@ impl PentestTool for ExecuteCommandTool {
                         injected.extend(std::mem::take(&mut args));
                         args = injected;
                     }
-                    Err(e) => return Ok(ToolResult::error(e.to_string())),
+                    Err(e) => return Ok(ToolResult::error(e.chain())),
                 }
             }
             Some(other) => {

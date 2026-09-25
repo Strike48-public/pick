@@ -241,12 +241,15 @@ impl BaseConnector for ToolConnector {
                     result
                 }
                 Err(e) => {
+                    // Render the full cause chain here: this line and the
+                    // result below are where the error leaves the process.
+                    let error = e.chain();
                     tracing::warn!(
                         tool = tool_name.as_str(),
-                        error = %e,
+                        error = %error,
                         "tool execution failed"
                     );
-                    crate::tools::ToolResult::error(e.to_string())
+                    crate::tools::ToolResult::error(error)
                 }
             };
 
@@ -326,9 +329,35 @@ mod tests {
         }
     }
 
+    /// Fails the way a real tool does when its binary is missing: a classified
+    /// error with the io cause attached, so the boundary test can check the
+    /// cause reaches the result sent back to Strike48.
+    struct FailingTool;
+
+    #[async_trait]
+    impl PentestTool for FailingTool {
+        fn name(&self) -> &str {
+            "failing_tool"
+        }
+        fn description(&self) -> &str {
+            "A tool that always fails with a cause attached"
+        }
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new("failing_tool", "A tool that always fails")
+        }
+        async fn execute(&self, _params: Value, _ctx: &ToolContext) -> ToolFnResult<ToolResult> {
+            Err(
+                crate::error::Error::ToolExecution("nmap failed".into()).with_source(
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "nmap: command not found"),
+                ),
+            )
+        }
+    }
+
     fn test_connector() -> ToolConnector {
         let mut registry = ToolRegistry::new();
         registry.register(StubTool);
+        registry.register(FailingTool);
         ToolConnector::new(
             Arc::new(RwLock::new(registry)),
             "pentest-connector",
@@ -342,6 +371,31 @@ mod tests {
     fn behaviors_is_tool_only() {
         let connector = test_connector();
         assert_eq!(connector.behaviors(), vec![ConnectorBehavior::Tool]);
+    }
+
+    /// The error string sent back to Strike48 is the last thing a support
+    /// engineer sees, so it must carry the whole cause chain, not only the
+    /// outermost message (pick#476).
+    #[tokio::test]
+    async fn failure_result_carries_the_full_cause_chain() {
+        let connector = test_connector();
+        let context: HashMap<String, String> = HashMap::new();
+
+        let result = connector
+            .execute_with_context(
+                serde_json::json!({"tool": "failing_tool", "parameters": {}}),
+                None,
+                &context,
+            )
+            .await
+            .expect("hop returns Ok(ToolResult) even when the tool fails");
+
+        assert_eq!(result["success"], false);
+        let error = result["error"].as_str().expect("error string");
+        assert_eq!(
+            error,
+            "Tool execution error: nmap failed: nmap: command not found"
+        );
     }
 
     #[test]
