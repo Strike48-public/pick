@@ -18,8 +18,8 @@
 # --ott for auto-approval.
 #
 # Examples:
-#   scripts/connect.sh https://discoball.strike48.engineering \
-#       019db695-552e-7f81-9377-4643bd170e3c
+#   scripts/connect.sh https://studio.example.com \
+#       <tenant-uuid>
 #   scripts/connect.sh https://foo.example.com <tenant-uuid> --launch
 #   scripts/connect.sh http://localhost:4000 <tenant-uuid>   # local dev (ws/no-TLS)
 #   scripts/connect.sh https://foo.example.com <tenant-uuid> --ott ott_abc123
