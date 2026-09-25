@@ -27,6 +27,7 @@ pub mod seed;
 pub mod settings;
 pub mod share;
 pub mod social_share;
+pub mod spans;
 pub mod specialist_spawner;
 pub mod state;
 pub mod telemetry;
