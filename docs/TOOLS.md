@@ -298,6 +298,12 @@ reports from `name()` - the string an operator or the model invokes. See
 | `device_info` | Native | System/device information gathering | No |
 | `execute_command` | Native | Shell command execution | Depends |
 
+### Tool Installation
+
+| Tool | Type | Description | Requires Root |
+|------|------|-------------|---------------|
+| `install_tool` | Native | Install a missing external tool from the connector's catalog; takes a catalog key (`binary_name`), resolves the install method itself (sandbox pacman / host package manager / bespoke installer), refuses manual-only entries with operator instructions | Depends |
+
 ### OSINT & Reconnaissance
 
 | Tool | Type | Description | Requires Root |
