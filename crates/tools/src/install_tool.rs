@@ -376,6 +376,38 @@ mod tests {
     }
 
     #[test]
+    fn installed_manual_entry_resolves_before_the_auto_installable_refusal() {
+        // Review LOW 2 (pick#478): guards the `Installed` check INSIDE
+        // resolve_entry. Without this, deleting `if entry.state == Installed { return
+        // Ok(entry) }` leaves every test green while a tool that IS present regresses
+        // to the bogus "cannot be installed automatically" blocker for
+        // Manual-method or sandbox-disabled-pacman entries.
+        let entry = CatalogEntry {
+            binary_name: "burpsuite".into(),
+            display_name: "Burp Suite".into(),
+            description: "proxy".into(),
+            category: pentest_core::tools::ToolCategory::Web,
+            install_method: InstallMethod::Manual {
+                url: None,
+                instructions: "download from the vendor portal".into(),
+            },
+            recommended: false,
+            used_by: vec![],
+            state: InstallState::Installed,
+        };
+
+        let resolved = resolve_entry(std::slice::from_ref(&entry), "burpsuite")
+            .expect("an installed entry must resolve: installability is moot when present");
+        assert_eq!(resolved.binary_name, "burpsuite");
+
+        // …and the caller then short-circuits with the installed payload.
+        let payload =
+            already_installed_payload(resolved).expect("installed entry must short-circuit");
+        assert_eq!(payload["install_state"], "installed");
+        assert_eq!(payload["duration_secs"], 0);
+    }
+
+    #[test]
     fn manual_entry_is_refused_with_operator_instructions() {
         let entry = CatalogEntry {
             binary_name: "burpsuite".into(),
