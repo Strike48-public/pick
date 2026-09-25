@@ -325,6 +325,48 @@ regardless.
 | `PENTEST_ALLOW_PRIVATE_IPS is set to an unrecognized value` warning | The variable is set to something other than `true` or `1` | Set it to `true` or comment it out |
 | Pending for a long time | Nobody has approved it | Expected. Someone with Gateways permission in your Studio must approve |
 | Container restarts in a loop | Malformed `.env` | `docker compose logs`, fix, `docker compose up -d` |
+| `Token request rejected (400 Bad Request)` with `Token was issued in the future`, possibly after `Registered successfully` | The Docker host or VM clock is ahead of the Studio's | See [Clock skew](#clock-skew) below |
+
+### Clock skew
+
+At every start, and again before each token expires, the connector signs a
+short-lived assertion stamped with the container's current time and exchanges
+it at your authentication host for a JWT. The authentication host rejects an
+assertion whose timestamp is ahead of its own clock, and the log shows:
+
+```
+Token request rejected (400 Bad Request): {"error":"invalid_client","error_description":"Token was issued in the future"}
+```
+
+The WebSocket registration does not carry that JWT, so the log can still say
+`Registered successfully` and the gateway can still appear in Studio while every
+authenticated call fails. The connector keeps retrying on its own; nothing is
+lost and no re-approval is needed once the clock is right.
+
+Containers do not keep their own clock: they read the clock of the Docker host,
+or of the Docker Desktop virtual machine on macOS and Windows. That VM clock is
+the usual culprit: it drifts while the machine sleeps and does not resync until
+Docker Desktop restarts. Confirm which side is off by comparing three clocks:
+
+```bash
+date -u                                                  # this host
+docker run --rm alpine date -u                           # the clock the container sees
+curl -sI https://studio.example.com/ | grep -i '^date'   # the Studio's clock; use your STRIKE48_API_URL
+```
+
+If the container clock is ahead of the `date` header, fix the clock:
+
+- Docker Desktop on macOS or Windows: quit and reopen Docker Desktop. The VM
+  clock resyncs on start.
+- Linux host: enable time synchronisation, for example
+  `sudo timedatectl set-ntp true`, and check `timedatectl status` reports
+  `System clock synchronized: yes`.
+
+Then run `docker compose restart`. The next token request succeeds within a few
+seconds and the log shows the connector online.
+
+If the `date` header itself is behind real time, the problem is on the Studio
+side. Send the three outputs to Strike48 support.
 
 When contacting Strike48 support, include the output of `docker compose ps`
 and the last fifty log lines. Redact your tenant UUID if you are sending over
