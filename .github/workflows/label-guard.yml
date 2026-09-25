@@ -1,0 +1,40 @@
+name: label-guard
+
+on:
+  issues:
+    types: [opened, edited, reopened, labeled, unlabeled]
+
+permissions:
+  issues: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.payload.issue.state === 'closed') return;
+            const { data: fresh } = await github.rest.issues.get({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number });
+            const required = ['product/', 'type/', 'priority/', 'size/'];
+            const labels = (fresh.labels || []).map(l => (typeof l === 'string' ? l : l.name));
+            const missing = required.filter(fam => !labels.some(l => l.startsWith(fam)));
+            if (!fresh.type || !fresh.type.name) missing.push('issue type (Bug / Feature / Epic / Task / ...)');
+            const marker = '<!-- label-guard -->';
+            const body = marker + '\n### Label guard' + '\n\n' +
+              (missing.length
+                ? 'Missing required: ' + missing.map(m => '`' + m + '`').join(', ') +
+                  '. See [.github/LABELS.md](./.github/LABELS.md) for the canonical schema. Priority and size ride on labels, not board fields; the issue type mirrors the `type/*` label.'
+                : 'All required label families and the issue type are present. Thank you.');
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number, per_page: 100 });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              if (existing.body.trim() !== body.trim()) {
+                await github.rest.issues.updateComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body });
+              }
+            } else {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body });
+            }
