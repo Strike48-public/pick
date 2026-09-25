@@ -252,6 +252,14 @@ jobs:
   android:
     name: Android Build
     runs-on: ubuntu-latest
+    # DISABLED 2026-09-25 — see issue #499. The job was red on every run:
+    # `just fetch-proot` downloads a hard-pinned Termux deb
+    # (proot_5.1.107.94_{x86_64,aarch64}.deb) that the Termux mirror rotated
+    # off → HTTP 404 / exit 22 in "Fetch Android proot runtime". Re-enable by
+    # removing this `if: false` ONLY after the rotation-proof fetch fix in
+    # #499 lands (plus the matching release.yml fix). actionlint will warn
+    # `if-cond` on this line — expected while disabled; drop both together.
+    if: false
     steps:
       - uses: actions/checkout@v5
       # Build through the nix flake so PR CI uses the exact same toolchain,
