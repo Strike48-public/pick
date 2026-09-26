@@ -2,6 +2,7 @@
 
 use super::oui;
 use super::types::{Device, NetworkMap, ThreatLevel};
+use super::{with_budget, NMAP_SWEEP_BUDGET_SECS};
 use crate::network_context::subnet_cidr_v4;
 use anyhow::Context;
 use pentest_platform::{NetworkOps, SystemInfo};
@@ -57,7 +58,17 @@ pub async fn discover_network() -> anyhow::Result<NetworkMap> {
     // sweep may not cover the whole segment, which is why we also merge the
     // ARP table.
     let subnet = determine_subnet(&local_ip, local_prefix)?;
-    let nmap_ips = match run_nmap_arp_scan(&subnet).await {
+    // #495: the sweep gets its OWN inner budget so a wedged nmap falls
+    // back to ARP-table-only discovery (the Err arm below) instead of eating
+    // the whole network-discovery budget. The child carries kill_on_drop(true)
+    // so abandoning it on the deadline leaves no orphan scan behind.
+    let nmap_ips = match with_budget(
+        "nmap ARP sweep",
+        NMAP_SWEEP_BUDGET_SECS,
+        run_nmap_arp_scan(&subnet),
+    )
+    .await
+    {
         Ok(ips) => {
             tracing::info!("nmap discovered {} hosts in {}", ips.len(), subnet);
             ips
@@ -345,8 +356,11 @@ fn determine_subnet(local_ip: &IpAddr, prefix_len: Option<u8>) -> anyhow::Result
 
 /// Run nmap ARP scan to discover hosts on the subnet.
 async fn run_nmap_arp_scan(subnet: &str) -> anyhow::Result<Vec<IpAddr>> {
-    // Check if nmap is available
+    // Check if nmap is available. kill_on_drop: if a stage budget (#495)
+    // abandons the future below, the child must die with it — an orphaned nmap
+    // would keep scanning the target after its caller gave up.
     let nmap_check = Command::new("nmap")
+        .kill_on_drop(true)
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -359,6 +373,7 @@ async fn run_nmap_arp_scan(subnet: &str) -> anyhow::Result<Vec<IpAddr>> {
 
     // Run nmap with -sn (ping scan, no port scan) for speed
     let output = Command::new("nmap")
+        .kill_on_drop(true)
         .arg("-sn") // Ping scan only
         .arg("-T4") // Aggressive timing (faster)
         .arg(subnet)

@@ -36,6 +36,54 @@ pub use types::{
     Severity, ThreatLevel,
 };
 
+// --- Stage wall-clock budgets (#495) ---------------------------------
+// Every stage below used to be an unbounded `.await`: one wedged OS resolver,
+// gateway probe or nmap sweep pinned the WHOLE tool until matrix's 520s
+// connector timeout fired and the tool errored — 4/4 live invocations on
+// 2026-09-24 died at exactly the 530s ceiling (520s budget + 10s grace), never
+// returning a result, while every other Pick tool answered in <10s.
+//
+// A budget converts "never returns" into `Err(.. timed out ..)`, which the
+// existing per-stage `Err` arms in `run_safety_check` already degrade into
+// `CheckStatus::Unknown` — a structured, honest "could not check" instead of
+// a nine-minute hang (#495).
+//
+// Worst-case SEQUENTIAL sum is asserted in tests to stay under the ~30s an
+// operator expects from a metadata-class tool (the matrix side gives this
+// tool a matching budget — see matrix tool timeout classes).
+//
+// Note: `tokio::time::timeout` abandons the future; threads parked inside
+// `spawn_blocking` (OS resolver, default_net probes) keep running until the OS
+// returns — bounded by tokio's blocking pool, one call per stage per run. The
+// nmap CHILD is explicitly `kill_on_drop(true)` so no orphan scan survives a
+// budget (network_map.rs).
+pub(crate) const DNS_CHECK_BUDGET_SECS: u64 = 5;
+pub(crate) const THREAT_INTEL_BUDGET_SECS: u64 = 5;
+/// Covers the 15s nmap inner budget plus gateway/ARP/interface probes.
+pub(crate) const NETWORK_DISCOVERY_BUDGET_SECS: u64 = 17;
+pub(crate) const NMAP_SWEEP_BUDGET_SECS: u64 = 15;
+pub(crate) const NETWORK_CONTEXT_BUDGET_SECS: u64 = 2;
+
+/// Run one safety-check stage under a hard wall-clock budget (#495).
+///
+/// Returns the stage's own `Ok`/`Err` untouched when it finishes inside the
+/// budget; converts an over-budget (wedged) stage into an `Err` naming the
+/// stage and its budget, so callers' existing error arms degrade gracefully.
+pub(crate) async fn with_budget<T>(
+    stage: &str,
+    budget_secs: u64,
+    fut: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    match tokio::time::timeout(std::time::Duration::from_secs(budget_secs), fut).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!(
+            "{} timed out after {}s (safety-check stage budget)",
+            stage,
+            budget_secs
+        )),
+    }
+}
+
 /// Run a comprehensive safety check on the local network environment.
 ///
 /// This function orchestrates all safety checks and aggregates results.
@@ -53,7 +101,13 @@ pub async fn run_safety_check() -> anyhow::Result<SafetyCheckResult> {
     let timestamp = chrono::Utc::now();
 
     // Run DNS integrity check
-    match dns_check::check_dns_integrity().await {
+    match with_budget(
+        "DNS integrity check",
+        DNS_CHECK_BUDGET_SECS,
+        dns_check::check_dns_integrity(),
+    )
+    .await
+    {
         Ok(result) => {
             tracing::info!("DNS check completed: {:?}", result.status);
             checks.push(result);
@@ -70,7 +124,13 @@ pub async fn run_safety_check() -> anyhow::Result<SafetyCheckResult> {
     }
 
     // Run router threat intelligence check
-    match threat_intel::check_router_threat_intel().await {
+    match with_budget(
+        "router threat intel",
+        THREAT_INTEL_BUDGET_SECS,
+        threat_intel::check_router_threat_intel(),
+    )
+    .await
+    {
         Ok(result) => {
             tracing::info!("Router threat intel check completed: {:?}", result.status);
             checks.push(result);
@@ -87,7 +147,13 @@ pub async fn run_safety_check() -> anyhow::Result<SafetyCheckResult> {
     }
 
     // Run network device discovery
-    let network_map = match network_map::discover_network().await {
+    let network_map = match with_budget(
+        "network discovery",
+        NETWORK_DISCOVERY_BUDGET_SECS,
+        network_map::discover_network(),
+    )
+    .await
+    {
         Ok(map) => {
             tracing::info!(
                 "Network discovery completed: {} devices found",
@@ -117,7 +183,13 @@ pub async fn run_safety_check() -> anyhow::Result<SafetyCheckResult> {
     // nmap/ARP). This is the reusable "what network am I on" source of truth,
     // independent of whether the discovery sweep above succeeded. Best-effort:
     // an enumeration failure yields an empty list, never a failed check.
-    let active_subnets = match crate::network_context::network_context().await {
+    let active_subnets = match with_budget("network context", NETWORK_CONTEXT_BUDGET_SECS, async {
+        crate::network_context::network_context()
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    })
+    .await
+    {
         Ok(subnets) => {
             tracing::info!(
                 "Active subnets (scan-free): {}",
@@ -261,6 +333,66 @@ fn spans_multiple_subnets(map: &NetworkMap) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    // --- #495: stage wall-clock budgets -----------------------------
+
+    #[tokio::test]
+    async fn with_budget_returns_the_stages_own_result_when_under_budget() {
+        let ok = with_budget("fast", 5, async { Ok::<_, anyhow::Error>(7) }).await;
+        assert_eq!(ok.unwrap(), 7);
+
+        let err = with_budget("failing", 5, async {
+            Err::<i32, _>(anyhow::anyhow!("boom"))
+        })
+        .await;
+        assert_eq!(err.unwrap_err().to_string(), "boom");
+    }
+
+    #[tokio::test]
+    async fn with_budget_converts_a_wedged_stage_into_a_named_timeout_error() {
+        // Zero budget = the stage can never finish in time; the future sleeps
+        // an hour, so the timeout path is deterministic AND instant — this is
+        // exactly the 4/4-hang shape from #495 (a stage that never
+        // returns), reduced to a test that cannot flake.
+        let started = std::time::Instant::now();
+        let result = with_budget("wedged stage", 0, async {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await;
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("wedged stage"),
+            "stage name must surface: {err}"
+        );
+        assert!(err.contains("timed out"), "budget must surface: {err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the timeout must not wait for the wedged future"
+        );
+    }
+
+    #[test]
+    fn worst_case_stage_sum_stays_under_the_metadata_tool_budget() {
+        // #495: a fully-degraded run (every stage hits its budget) must
+        // still finish under the ~30s the matrix side allots metadata-class
+        // tools — the whole point is never again approaching the 520s ceiling.
+        // Inline const so the assertion is checked at compile time (clippy's
+        // `assertions_on_constants` applies to runtime-evaluated const sums).
+        const {
+            assert!(
+                DNS_CHECK_BUDGET_SECS
+                    + THREAT_INTEL_BUDGET_SECS
+                    + NETWORK_DISCOVERY_BUDGET_SECS
+                    + NETWORK_CONTEXT_BUDGET_SECS
+                    <= 30,
+                "stage budgets must sum to <= 30s (metadata-class tool budget, #495)"
+            );
+            assert!(NMAP_SWEEP_BUDGET_SECS <= NETWORK_DISCOVERY_BUDGET_SECS);
+        }
+    }
 
     /// Manual smoke test: runs the real safety check against the live network
     /// and prints the actual Markdown report. Ignored by default (needs network
