@@ -8,9 +8,9 @@ The install, approval, restart, and removal steps in this guide were executed
 against a live Strike48 Studio with the `0.1.10` image, and the log lines shown
 are what that run printed. The proxy and private-CA sections describe behaviour
 read from the connector's source and were not exercised against an appliance.
-The network requirements, host networking, and Docker Desktop on Windows
-sections describe Docker's documented behaviour and the connector's source;
-they were not exercised in that run. The files this guide refers to live in
+The network requirements, virtual machine, host networking, and Docker Desktop
+on Windows sections describe Docker's and hypervisors' documented behaviour and
+the connector's source; they were not exercised in that run. The files this guide refers to live in
 this repository under [`deploy/docker/`](../deploy/docker/).
 
 ## What you are installing
@@ -130,6 +130,58 @@ docker exec pick-connector nc -vz -w3 <known-live-ip> <open-port>
 
 A check that works on the host but fails in the container points at the
 network mode, a subnet overlap, or the container's DNS settings.
+
+### Running Docker inside a virtual machine
+
+If the Docker host is itself a virtual machine (for example a Linux VM on
+VMware, Hyper-V, Proxmox, VirtualBox, or a cloud instance), scan traffic passes
+through one more layer: the container, then the VM, then the hypervisor or
+physical host, then your network. Every layer must be allowed to reach every
+system you intend to test. A check that passes on the physical host proves
+nothing about the VM, so run the checks above from inside the VM.
+
+**Network access.** Give the VM itself a path to each in-scope system:
+
+- Attach the VM's virtual network adapter to the in-scope segment, with the
+  VLAN or port group that segment uses. A bridged or external-switch adapter
+  puts the VM directly on that network. A NAT adapter hides the VM behind the
+  physical host.
+- Allow the traffic through every firewall between the VM and the targets: the
+  VM's own firewall, the physical host's firewall, and for a cloud instance its
+  security groups, network ACLs, and route tables.
+- The VM also needs the Studio and authentication egress in the table at the
+  top of [Before you begin](#before-you-begin).
+
+**Authorization.** Targets see the scan coming from the VM's address when its
+adapter is bridged, and from the physical host's address when it uses NAT. That
+address is the one to record in your rules of engagement, and the one target
+owners need to allowlist or expect in their firewall and intrusion-detection
+logs. Prefer a bridged adapter with its own address: with NAT, the scan shares
+an address with everything else the physical host sends, which makes the
+activity harder to attribute.
+
+**Limits a VM adds:**
+
+- [Host networking](#enable-host-networking) inside a VM gives the container
+  the VM's interfaces, not the physical host's. Layer 2 discovery (mDNS, SSDP,
+  ARP) sees only the segment the VM's adapter is attached to, and sees nothing
+  of your LAN through a NAT adapter.
+- Packet capture needs the virtual switch to pass traffic not addressed to the
+  VM. Many hypervisors reject promiscuous mode on a virtual switch by default;
+  allow it on the VM's port group if you need capture.
+- Some hypervisor NAT modes, in particular user-mode NAT, do not forward raw
+  packets faithfully. SYN scans and ICMP ping sweeps through them can report
+  hosts as down or ports as filtered when they are not. Use a bridged adapter
+  for scanning.
+
+To see the address the VM scans from when its adapter is bridged:
+
+```bash
+ip -4 addr show
+```
+
+With a NAT adapter, the address targets see is the physical host's, not one
+shown inside the VM.
 
 ### What Strike48 gives you
 
@@ -594,6 +646,7 @@ VPN, or, for names, DNS. For DNS, set your internal DNS servers with the
 | Every host in a known-live range looks down, including TCP ports you know are open | The bridge subnet overlaps your LAN, or Docker Desktop cannot reach the local network | Check the subnet as shown in [Scanning your local network](#scanning-your-local-network-host-networking); change the Docker address pool or enable host networking |
 | Scans of internal hostnames fail but the same targets work by IP | The host's DNS does not resolve internal names, so the container cannot either | Fix the host's DNS, or set `dns:` in an override. See [Network requirements for scanning](#network-requirements-for-scanning) |
 | The agent reports no live hosts on a network you know is up, or says a firewall is dropping ICMP | The container cannot reach or resolve the targets: wrong network mode, a subnet overlap, host DNS, or Docker Desktop's network limits. A scan that only times out is not evidence of a firewall | Run the host and in-container checks in [Network requirements for scanning](#network-requirements-for-scanning). On Windows, see [Docker Desktop on Windows](#docker-desktop-on-windows) |
+| Targets are reachable from the physical host but not from the connector, and Docker runs in a VM | The VM's adapter is not on the in-scope segment, or a VM, host, or cloud firewall blocks it | Run the checks inside the VM and fix its adapter and firewall rules. See [Running Docker inside a virtual machine](#running-docker-inside-a-virtual-machine) |
 | Studio shows `App not found or connector is offline` when you open the connector | The connector is not approved or not connected, or two installs share one `STRIKE48_INSTANCE_ID` | Check the Gateways page for the connector's state and for duplicate entries. Give each machine its own `STRIKE48_INSTANCE_ID`, restart it, and approve the new entry |
 | Pending for a long time | Nobody has approved it | Expected. Someone with Gateways permission in your Studio must approve |
 | Container restarts in a loop | Malformed `.env` | `docker compose logs`, fix, `docker compose up -d` |
