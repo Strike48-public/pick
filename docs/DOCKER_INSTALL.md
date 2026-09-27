@@ -8,9 +8,12 @@ The install, approval, restart, and removal steps in this guide were executed
 against a live Strike48 Studio with the `0.1.10` image, and the log lines shown
 are what that run printed. The proxy and private-CA sections describe behaviour
 read from the connector's source and were not exercised against an appliance.
-The network requirements, virtual machine, host networking, and Docker Desktop
-on Windows sections describe Docker's and hypervisors' documented behaviour and
-the connector's source; they were not exercised in that run. The files this guide refers to live in
+The network requirements (including IPv6, clock, endpoint security, virtual
+machine, and authorization), host networking, Docker Desktop on Windows, and
+what-leaves-your-network sections describe Docker's and hypervisors'
+documented behaviour and the connector's source; they were not exercised in
+that run. The memory figures were measured separately against a single test
+target. The files this guide refers to live in
 this repository under [`deploy/docker/`](../deploy/docker/).
 
 ## What you are installing
@@ -49,7 +52,10 @@ On the host that will run the connector:
 | Outbound HTTPS to authentication | 443 to your Strike48 authentication hostname | `curl -sS -o /dev/null -w '%{http_code}\n' https://<your-auth-host>/` prints a 2xx or 3xx code |
 | Outbound HTTPS to the image registry | 443 to `ghcr.io` and `pkg-containers.githubusercontent.com`, which serves the image layers | `docker pull ghcr.io/strike48-public/pick:0.1.10` |
 | Outbound HTTPS to GitHub releases, install time only | 443 to `github.com` and `release-assets.githubusercontent.com`, which the release download redirects to | the `curl` commands in step 1 succeed |
-| Disk | 3 GB free | `df -h /var/lib/docker` (the image is about 1.2 GB unpacked) |
+| Disk | 8 GB free | `df -h /var/lib/docker` (the `0.1.10` image is about 1.2 GB to download on arm64 and 1.4 GB on amd64, and about 5 GB once unpacked) |
+| Memory | 2 GB minimum, 4 GB recommended | `free -h`. Measured with the `0.1.10` image against one web target: a full-port nmap scan with version detection peaked at 42 MB, and nuclei with its default templates at about 850 MB, including its first template download. Tools the agent runs in parallel add up, and nuclei grows with concurrency and target count |
+| CPU | 2 vCPUs or more | `nproc`. Not a hard minimum; scans take longer on fewer cores |
+| Clock | synchronised by NTP or your hypervisor's time sync | `timedatectl` shows `System clock synchronized: yes`. See [Keep the clock in sync](#keep-the-clock-in-sync) |
 | Privileges | member of the `docker` group, or root | `docker ps` |
 | Architecture | linux/amd64 or linux/arm64 | `uname -m` |
 | Local-network discovery | a Linux host running Docker Engine. Docker Desktop on Windows or macOS supports TCP connect scans of routed hosts only; see [Docker Desktop on Windows](#docker-desktop-on-windows) | `uname -s` on the host prints `Linux`. On Windows or macOS, Docker runs in a virtual machine whichever product you use (Docker Desktop, Colima, and others), with similar network limits |
@@ -131,6 +137,66 @@ docker exec pick-connector nc -vz -w3 <known-live-ip> <open-port>
 A check that works on the host but fails in the container points at the
 network mode, a subnet overlap, or the container's DNS settings.
 
+### IPv6 targets
+
+The default network Compose creates for the connector is IPv4 only. Docker
+enables IPv6 on a network only when you ask for it, and only on Linux hosts, so
+an IPv6 target that the host can reach is unreachable from the container until
+you do. If your scope includes IPv6 ranges, either use
+[host networking](#enable-host-networking), which gives the container the
+host's IPv6 addresses, or enable IPv6 on the connector's network in
+`docker-compose.override.yml`:
+
+```yaml
+networks:
+  default:
+    enable_ipv6: true
+```
+
+Without a subnet, Docker assigns the network a unique local (`fd00::/8`)
+`/64`. Recreate the network with `docker compose down` and
+`docker compose up -d`, then confirm from inside the container:
+
+```bash
+docker exec pick-connector ip -6 addr show
+docker exec pick-connector nc -6 -vz -w3 <known-live-ipv6> <open-port>
+```
+
+`PENTEST_ALLOW_PRIVATE_IPS=true` (see
+[Scanning private address ranges](#scanning-private-address-ranges)) also
+covers IPv6 unique local addresses (`fc00::/7`) and loopback. Link-local
+addresses (`fe80::/10`) stay blocked for the web tools either way.
+
+### Keep the clock in sync
+
+At every start and credential refresh the connector signs a short assertion
+that is valid for 60 seconds by the host's clock, and it treats a token as
+expired 30 seconds before its expiry time. A host clock that has drifted by
+more than about a minute can make authentication fail after approval, with
+errors that do not mention time. Containers use the host's clock, so fix the
+time on the host, not in the container:
+
+```bash
+timedatectl
+```
+
+This should print `System clock synchronized: yes`. If it does not, enable
+NTP (`sudo timedatectl set-ntp true`) or your hypervisor's guest time
+synchronisation. VMs that have been suspended or restored from a snapshot are
+the usual cause.
+
+### Endpoint security on the host
+
+The image is built on Kali Linux and contains offensive security tools. An
+endpoint detection or antivirus agent on the host, or on the VM, may block the
+image pull, quarantine files from its layers, or stop tool processes partway
+through a scan. From the connector's side that looks like a tool failing or a
+scan ending early, not like a security block. Before the first engagement,
+agree an exclusion for the connector with whoever runs endpoint security on
+that host: for example Docker's data directory (`/var/lib/docker`) and
+processes running in the `pick-connector` container. Check the endpoint
+agent's own alerts first when tools fail without a clear error.
+
 ### Running Docker inside a virtual machine
 
 If the Docker host is itself a virtual machine (for example a Linux VM on
@@ -158,7 +224,23 @@ address is the one to record in your rules of engagement, and the one target
 owners need to allowlist or expect in their firewall and intrusion-detection
 logs. Prefer a bridged adapter with its own address: with NAT, the scan shares
 an address with everything else the physical host sends, which makes the
-activity harder to attribute.
+activity harder to attribute. See
+[Authorization and notice](#authorization-and-notice) for who else needs that
+address.
+
+**Do not clone an approved VM.** The connector's identity is its
+`STRIKE48_INSTANCE_ID` in `.env` and the credential stored in the
+`pick-connector_pick-state` volume. Cloning the VM, building a template from
+it, or running a copy restored from a snapshot duplicates both, and two
+connectors then share one identity. Clone or template the VM before the first
+`docker compose up`. If a clone already exists, on the clone run
+`docker compose down -v`, set a new `STRIKE48_INSTANCE_ID` in `.env`, start it
+with `docker compose up -d`, and approve the new entry in Studio.
+
+**Keep the VM running for the engagement.** A VM that is suspended, paused by
+the hypervisor, or asleep on a laptop drops its connection to Studio, and any
+task running at the time stalls. The connector reconnects when the VM resumes,
+but check its clock (see [Keep the clock in sync](#keep-the-clock-in-sync)).
 
 **Limits a VM adds:**
 
@@ -182,6 +264,25 @@ ip -4 addr show
 
 With a NAT adapter, the address targets see is the physical host's, not one
 shown inside the VM.
+
+### Authorization and notice
+
+Network access is not permission. Before the first scan:
+
+- **Record the source address.** Put the address targets will see (the host's,
+  or the VM's or physical host's as described in
+  [Running Docker inside a virtual machine](#running-docker-inside-a-virtual-machine))
+  in your rules of engagement, next to the in-scope ranges and the test window.
+- **Tell the target's security team.** Scans trigger intrusion detection,
+  SIEM alerts, rate limiting, and sometimes automatic blocking. Give the
+  target owner's security operations team the source address and the test
+  window in advance, so the activity is recognised and the address is not
+  blocked partway through the engagement.
+- **Check your cloud provider's rules.** If the connector runs in a cloud
+  instance, or the targets are hosted in one, the provider's penetration
+  testing policy applies as well. Each provider publishes its own, and none of
+  them authorises testing assets you do not own. Confirm the engagement fits
+  the policy of every provider involved.
 
 ### What Strike48 gives you
 
@@ -333,6 +434,7 @@ is ignored.
 | `HTTPS_PROXY`, `NO_PROXY` | no | Standard proxy variables, HTTP CONNECT. Lowercase spellings work too. |
 | `MATRIX_TLS_CA_CERT` | no | Path inside the container to an extra CA certificate in PEM format. Added to the system roots. |
 | `PENTEST_ALLOW_PRIVATE_IPS` | no | `true` lets tools target RFC 1918 and loopback addresses. See [Scanning private address ranges](#scanning-private-address-ranges). |
+| `STRIKE48_TELEMETRY` | no | `0`, `false`, `off`, or `no` turns usage telemetry off. See [What leaves your network](#what-leaves-your-network). |
 | `RUST_LOG` | no | Log filter. Default `info,strike48_connector=info`. |
 
 Pinned by the compose file and not configurable from `.env`:
@@ -648,12 +750,41 @@ VPN, or, for names, DNS. For DNS, set your internal DNS servers with the
 | The agent reports no live hosts on a network you know is up, or says a firewall is dropping ICMP | The container cannot reach or resolve the targets: wrong network mode, a subnet overlap, host DNS, or Docker Desktop's network limits. A scan that only times out is not evidence of a firewall | Run the host and in-container checks in [Network requirements for scanning](#network-requirements-for-scanning). On Windows, see [Docker Desktop on Windows](#docker-desktop-on-windows) |
 | Targets are reachable from the physical host but not from the connector, and Docker runs in a VM | The VM's adapter is not on the in-scope segment, or a VM, host, or cloud firewall blocks it | Run the checks inside the VM and fix its adapter and firewall rules. See [Running Docker inside a virtual machine](#running-docker-inside-a-virtual-machine) |
 | Studio shows `App not found or connector is offline` when you open the connector | The connector is not approved or not connected, or two installs share one `STRIKE48_INSTANCE_ID` | Check the Gateways page for the connector's state and for duplicate entries. Give each machine its own `STRIKE48_INSTANCE_ID`, restart it, and approve the new entry |
+| Approved, egress to the authentication host works, but authentication fails at start or reconnect | The host clock has drifted, often after a VM suspend or snapshot restore | Check `timedatectl` on the host and enable time sync. See [Keep the clock in sync](#keep-the-clock-in-sync) |
+| The image pull fails partway, files are missing from the image, or tools stop mid-scan with no clear error | An endpoint security agent on the host is quarantining files or stopping processes | Check that agent's alerts and agree an exclusion. See [Endpoint security on the host](#endpoint-security-on-the-host) |
+| The connector goes offline, or switches between online and offline, when another VM starts | A cloned or snapshot-restored VM shares the original's instance id and credential | On the clone, `docker compose down -v`, set a new `STRIKE48_INSTANCE_ID`, start, and approve. See [Running Docker inside a virtual machine](#running-docker-inside-a-virtual-machine) |
+| IPv6 targets are unreachable from the connector but reachable from the host | The connector's network is IPv4 only | Enable IPv6 or host networking. See [IPv6 targets](#ipv6-targets) |
 | Pending for a long time | Nobody has approved it | Expected. Someone with Gateways permission in your Studio must approve |
 | Container restarts in a loop | Malformed `.env` | `docker compose logs`, fix, `docker compose up -d` |
 
 When contacting Strike48 support, include the output of `docker compose ps`
 and the last fifty log lines. Redact your tenant UUID if you are sending over
 an untrusted channel.
+
+## What leaves your network
+
+- **To your Studio, over the connector's connection.** The AI agent that
+  plans the engagement runs in Studio; the connector holds no model. Studio
+  sends the connector tool requests, and the connector sends back the output
+  of each tool run: discovered hosts, open ports, service banners, HTTP
+  responses, findings, and evidence. Returning that output is the connector's
+  purpose, so it is not filtered beyond the redaction below. It is stored in
+  your tenant in Studio; ask Strike48 about retention and data location.
+- **Redaction before it is sent.** The connector replaces credential-shaped
+  values it recognises, such as authorization headers, tokens, and passwords,
+  in the commands it records and in evidence. This is pattern matching, so a
+  secret in a format it does not recognise can still be sent. Do not put
+  credentials in a target description or scope note.
+- **To your authentication host.** The signed assertion and the short-lived
+  token exchange described in [Security notes](#security-notes). No scan data.
+- **Usage telemetry.** The connector's code includes optional, pseudonymous
+  usage telemetry (an install id, platform, and event names; no targets,
+  commands, or results). The `0.1.10` image is built without a telemetry
+  endpoint, so it sends none. To keep it off in any build, set
+  `STRIKE48_TELEMETRY=0` in `.env`.
+- **Tool data.** Some tools fetch their own data at run time. nuclei downloads
+  its templates from GitHub the first time it runs, so it needs outbound HTTPS
+  to GitHub, or it has no templates to run.
 
 ## Security notes
 
