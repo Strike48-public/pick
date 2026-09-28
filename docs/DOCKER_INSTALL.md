@@ -579,20 +579,51 @@ addresses (`fe80::/10`) stay blocked for the web tools either way.
 ### Keep the clock in sync
 
 At every start and credential refresh the connector signs a short assertion
-that is valid for 60 seconds by the host's clock, and it treats a token as
-expired 30 seconds before its expiry time. A host clock that has drifted by
-more than about a minute can make authentication fail after approval, with
-errors that do not mention time. Containers use the host's clock, so fix the
-time on the host, not in the container:
+stamped with the container's current time, valid for 60 seconds, and exchanges
+it at your authentication host for a token. It treats a token as expired 30
+seconds before its expiry time. Drift breaks this in either direction:
+
+- **Clock ahead of the authentication host, by any amount.** The
+  authentication host allows no leeway for a timestamp in the future, and the
+  log shows:
+
+  ```
+  Token request rejected (400 Bad Request): {"error":"invalid_client","error_description":"Token was issued in the future"}
+  ```
+
+- **Clock behind by more than about a minute.** The assertion has already
+  expired by the authentication host's clock, and the error may not mention
+  time.
+
+The WebSocket registration does not carry the token, so the log can still say
+`Registered successfully` and the gateway can still appear in Studio while
+every authenticated call fails. The connector keeps retrying on its own;
+nothing is lost and no re-approval is needed once the clock is right.
+
+Containers do not keep their own clock: they read the clock of the Docker
+host, or of the Docker Desktop virtual machine on macOS and Windows. Confirm
+which side is off by comparing three clocks, with your `STRIKE48_API_URL` in
+place of `https://studio.example.com`:
 
 ```bash
-timedatectl
+date -u                                                  # this host
+docker run --rm alpine date -u                           # the clock the container sees
+curl -sI https://studio.example.com/ | grep -i '^date'   # the Studio's clock
 ```
 
-This should print `System clock synchronized: yes`. If it does not, enable
-NTP (`sudo timedatectl set-ntp true`) or your hypervisor's guest time
-synchronisation. VMs that have been suspended or restored from a snapshot are
-the usual cause.
+If the container clock differs from the `date` header, fix the time where the
+container reads it, not in the container:
+
+- Linux host: `timedatectl` should print `System clock synchronized: yes`. If
+  it does not, enable NTP (`sudo timedatectl set-ntp true`) or your
+  hypervisor's guest time synchronisation. VMs that have been suspended or
+  restored from a snapshot are the usual cause.
+- Docker Desktop on macOS or Windows: quit and reopen Docker Desktop. Its VM
+  clock drifts while the machine sleeps and resyncs when Docker Desktop
+  starts.
+
+Then run `docker compose restart`. The next token request succeeds within a
+few seconds and the log shows the connector online.
 
 ### Endpoint security on the host
 
@@ -1051,7 +1082,8 @@ VPN, or, for names, DNS. For DNS, set your internal DNS servers with the
 | The agent reports no live hosts on a network you know is up, or says a firewall is dropping ICMP | The container cannot reach or resolve the targets: wrong network mode, a subnet overlap, host DNS, or Docker Desktop's network limits. A scan that only times out is not evidence of a firewall | Run the host and in-container checks in [Network requirements for scanning](#network-requirements-for-scanning). On Windows, see [Docker Desktop on Windows](#docker-desktop-on-windows) |
 | Targets are reachable from the physical host but not from the connector, and Docker runs in a VM | The VM's adapter is not on the in-scope segment, or a VM, host, or cloud firewall blocks it | Run the checks inside the VM and fix its adapter and firewall rules. See [Running Docker inside a virtual machine](#running-docker-inside-a-virtual-machine) |
 | Studio shows `App not found or connector is offline` when you open the connector | The connector is not approved or not connected, or two installs share one `STRIKE48_INSTANCE_ID` | Check the Gateways page for the connector's state and for duplicate entries. Give each machine its own `STRIKE48_INSTANCE_ID`, restart it, and approve the new entry |
-| Approved, egress to the authentication host works, but authentication fails at start or reconnect | The host clock has drifted, often after a VM suspend or snapshot restore | Check `timedatectl` on the host and enable time sync. See [Keep the clock in sync](#keep-the-clock-in-sync) |
+| `Token request rejected (400 Bad Request)` with `Token was issued in the future`, possibly after `Registered successfully` | The Docker host or Docker Desktop VM clock is ahead of the authentication host's | Compare the three clocks and fix the side that is off. See [Keep the clock in sync](#keep-the-clock-in-sync) |
+| Approved, egress to the authentication host works, but authentication fails at start or reconnect | The host clock has drifted, often after a VM suspend, snapshot restore, or laptop sleep under Docker Desktop | Compare the three clocks and enable time sync, or restart Docker Desktop. See [Keep the clock in sync](#keep-the-clock-in-sync) |
 | The image pull fails partway, files are missing from the image, or tools stop mid-scan with no clear error | An endpoint security agent on the host is quarantining files or stopping processes | Check that agent's alerts and agree an exclusion. See [Endpoint security on the host](#endpoint-security-on-the-host) |
 | The connector goes offline, or switches between online and offline, when another VM starts | A cloned or snapshot-restored VM shares the original's instance id and credential | On the clone, `docker compose down -v`, set a new `STRIKE48_INSTANCE_ID`, start, and approve. See [Running Docker inside a virtual machine](#running-docker-inside-a-virtual-machine) |
 | IPv6 targets are unreachable from the connector but reachable from the host | The connector's network is IPv4 only | Enable IPv6 or host networking. See [IPv6 targets](#ipv6-targets) |
