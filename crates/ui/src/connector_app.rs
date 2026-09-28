@@ -20,8 +20,8 @@ use crate::auth_flow::{reduce, AuthEvent, AuthFlow};
 use crate::components::icons::MessageCircle;
 use crate::components::{
     AppLayout, ChatPanel, ConfigForm, ConnectingScreen, ConnectingStep, Dashboard, EasyModeShell,
-    FileBrowser, InteractiveShell, NavPage, SettingsPage, Terminal, ToolsPage, WslInstallBanner,
-    STRIKE48_SIDEBAR_LOGO_SVG,
+    FileBrowser, InteractiveShell, NavPage, PostExploitPanel, SettingsPage, Terminal, ToolsPage,
+    WslInstallBanner, STRIKE48_SIDEBAR_LOGO_SVG,
 };
 use crate::download_manager::is_blackarch_ready;
 use crate::{
@@ -195,6 +195,11 @@ pub fn ConnectorPages(props: ConnectorPagesProps) -> Element {
                 ToolsPage {
                     on_open_chat: move |msg: String| on_open_chat.call(msg),
                 }
+            }
+
+            // Post-Exploitation findings (credentials, lateral movement, priv-esc)
+            if page == NavPage::PostExploit {
+                PostExploitPanel {}
             }
 
             // Files

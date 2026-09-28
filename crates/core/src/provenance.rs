@@ -194,7 +194,11 @@ fn redact_regexes() -> &'static RedactRegexes {
         bearer: Regex::new(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+").expect("valid bearer regex"),
         basic_auth_flag: Regex::new(r"(-u\s+)[^\s]+:[^\s]+")
             .expect("valid basic auth flag regex"),
-        url_userinfo: Regex::new(r"(https?://)([^/\s:@]+:[^/\s:@]+)@")
+        // Userinfo ends at the LAST `@` before the host, so the password class
+        // must allow `@`; the old `[^/\s:@]+` anchored on the first `@` and
+        // left the tail of an `@`-bearing password in every redact() sink
+        // (published commands, response excerpts, evidence node fields).
+        url_userinfo: Regex::new(r"(https?://)[^/\s]*:[^/\s]*@")
             .expect("valid url userinfo regex"),
         password_flag: Regex::new(
             r"(?i)(--password[=\s]+|--token[=\s]+|--api[_-]?key[=\s]+)[^\s]+",
@@ -211,7 +215,10 @@ fn redact_regexes() -> &'static RedactRegexes {
     })
 }
 
-const REDACTION: &str = "<REDACTED>";
+/// Marker used by [`redact`] and [`redact_known_secret`]. Public so callers
+/// building additional pattern layers on top of `redact` (e.g. the linpeas
+/// free-text scrub) reuse the same marker instead of inventing their own.
+pub const REDACTION: &str = "<REDACTED>";
 
 /// Scrub a *known* secret value from `text` by exact substring, replacing it
 /// with the same [`REDACTION`] marker [`redact`] uses. An empty `secret` is a
@@ -328,6 +335,18 @@ mod tests {
         let out = redact(cmd);
         assert!(!out.contains("s3cret"));
         assert!(!out.contains("alice:"));
+    }
+
+    /// Regression (pick#438): userinfo ends at the LAST `@` before the host, so
+    /// a password containing `@` must be fully redacted. The prior first-`@`
+    /// anchor left the password tail in every redact() sink.
+    #[test]
+    fn redact_strips_url_userinfo_with_at_in_password() {
+        let out = redact("curl https://admin:Tr0ub@dor99@db.internal:5432/app");
+        assert!(!out.contains("dor99"), "leaked password tail: {out}");
+        assert!(!out.contains("Tr0ub"), "leaked password head: {out}");
+        // Host survives for reviewer context.
+        assert!(out.contains("db.internal"), "host lost: {out}");
     }
 
     #[test]
