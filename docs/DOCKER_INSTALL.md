@@ -443,12 +443,13 @@ nothing is lost and no re-approval is needed once the clock is right.
 
 Containers do not keep their own clock: they read the clock of the Docker
 host, or of the Docker Desktop virtual machine on macOS and Windows. Confirm
-which side is off by comparing three clocks:
+which side is off by comparing three clocks, with your `STRIKE48_API_URL` in
+place of `https://studio.example.com`:
 
 ```bash
 date -u                                                  # this host
 docker run --rm alpine date -u                           # the clock the container sees
-curl -sI https://studio.example.com/ | grep -i '^date'   # the Studio's clock; use your STRIKE48_API_URL
+curl -sI https://studio.example.com/ | grep -i '^date'   # the Studio's clock
 ```
 
 If the container clock differs from the `date` header, fix the time where the
