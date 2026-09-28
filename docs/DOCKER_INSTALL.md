@@ -8,6 +8,9 @@ The install, approval, restart, and removal steps in this guide were executed
 against a live Strike48 Studio with the `0.1.10` image, and the log lines shown
 are what that run printed. The proxy and private-CA sections describe behaviour
 read from the connector's source and were not exercised against an appliance.
+The host-networking steps come from a tester's working install on an Ubuntu VM
+and from the connector's source; this guide's own live run did not exercise
+them.
 The files this guide refers to live in this repository under
 [`deploy/docker/`](../deploy/docker/).
 
@@ -50,10 +53,18 @@ On the host that will run the connector:
 | Disk | 3 GB free | `df -h /var/lib/docker` (the image is about 1.2 GB unpacked) |
 | Privileges | member of the `docker` group, or root | `docker ps` |
 | Architecture | linux/amd64 or linux/arm64 | `uname -m` |
+| Host OS | Linux with Docker Engine, on bare metal or in a VM | `uname -s` prints `Linux` |
+
+Use a Linux host. Docker Desktop on Windows or macOS runs containers inside its
+own virtual machine, so the connector sits behind that VM's network and cannot
+see your LAN, even with host networking. If the Linux host is itself a VM, give
+it a bridged network adapter on the network you are testing, not a NAT adapter.
 
 The host does not need a public IP, an inbound DNS record, or a certificate of
 its own. If your egress goes through an HTTP proxy or a TLS-inspecting
 appliance, read [Corporate proxy and private CA](#corporate-proxy-and-private-ca)
+before you start. If the targets are on the same local network as this host,
+read [Testing the host's local network](#testing-the-hosts-local-network)
 before you start.
 
 ### What Strike48 gives you
@@ -72,6 +83,10 @@ before you start.
 There is no registry login. The image is public.
 
 ## Install
+
+Run the steps one at a time and check each result before you go on. Most steps
+end with output to compare against. A later step can look fine even when an
+earlier one failed.
 
 ### 1. Get the bundle
 
@@ -181,6 +196,22 @@ credential lives in the `pick-connector_pick-state` volume. After a restart the
 startup banner still prints `auth: ott (pending approval)` before the stored
 credential is loaded; the `Registering without JWT (pending approval flow)`
 line no longer appears, and Studio keeps showing the connector as active.
+
+### 7. Check which network the connector sees
+
+An online connector does not mean it can reach your targets. List the
+addresses the connector sees:
+
+```bash
+docker compose exec pick ip -4 -brief addr
+```
+
+If the only address apart from `lo` is on a Docker network (typically
+`172.16.0.0/12`) and your targets are on this host's local network, the
+connector will discover and scan the Docker network instead of yours. Follow
+[Testing the host's local network](#testing-the-hosts-local-network). If your
+targets sit on other routed networks, the Docker network works as long as you
+name the target ranges explicitly, because traffic leaves through the host.
 
 ## Configuration reference
 
@@ -295,6 +326,59 @@ verification. Instead, give the connector your CA:
 Compose merges the override automatically. The CA is added to the trust store
 the connector already uses, not substituted for it.
 
+## Testing the host's local network
+
+By default the container runs on a private Docker network behind the host.
+The connector then reads its network facts from inside that network: the
+subnet it scans when asked for the current or local network, its ARP table,
+and mDNS and SSDP discovery all see Docker's network, not the LAN the host is
+on. Hosts on your LAN stay reachable by explicit address, but local discovery
+finds nothing.
+
+To put the connector on the host's own network, switch it to host networking.
+This works on a Linux host only; see [Before you begin](#before-you-begin).
+
+1. Stop the connector. Leave out `-v`: the volume holds the approval, and
+   `docker compose down -v` deletes it and forces a new approval.
+
+   ```bash
+   docker compose down
+   ```
+
+2. Create `docker-compose.override.yml` beside `docker-compose.yml`. Do not
+   edit `docker-compose.yml` itself; Compose merges the override
+   automatically. If you already have an override for a private CA, add the
+   `network_mode` line to the same `pick` service.
+
+   ```yaml
+   services:
+     pick:
+       network_mode: host
+   ```
+
+3. Your LAN is almost certainly an RFC 1918 range, so also enable
+   [private address ranges](#scanning-private-address-ranges) in `.env` if
+   your rules of engagement cover them:
+
+   ```bash
+   PENTEST_ALLOW_PRIVATE_IPS=true
+   ```
+
+4. Start it again and confirm it now sees the host's interfaces:
+
+   ```bash
+   docker compose up -d
+   docker compose exec pick ip -4 -brief addr
+   ```
+
+   The output should list the host's LAN interface and address. Studio
+   continues to show the connector as active, with no new approval.
+
+Host networking removes the container's network isolation. The connector keeps
+the `NET_RAW` and `NET_ADMIN` capabilities, so it can now open raw sockets on
+the host's interfaces and change the host's network configuration. It still
+accepts no connections from the network. Use a host dedicated to testing.
+
 ## Scanning private address ranges
 
 The connector refuses to point its web tools at RFC 1918, loopback, and
@@ -323,6 +407,9 @@ regardless.
 | Logs say `Registered successfully` but nothing appears in Gateways | Wrong `STRIKE48_TENANT`, so it registered against another tenant | Confirm the UUID with Strike48, fix `.env`, `docker compose down -v`, `docker compose up -d` |
 | Registration fails right after start with a token in `.env` | The token expired, was already used, or the line is set but empty | Get a fresh token or comment the line out and approve by hand |
 | `PENTEST_ALLOW_PRIVATE_IPS is set to an unrecognized value` warning | The variable is set to something other than `true` or `1` | Set it to `true` or comment it out |
+| Online, but scans of the local network find nothing, or target a `172.x` range | The container is on Docker's private network, not the host's LAN | Follow [Testing the host's local network](#testing-the-hosts-local-network). On Windows or macOS, move to a Linux host |
+| Web tools (nikto, ffuf, gobuster, ZAP) refuse a `10.x`, `172.16-31.x`, or `192.168.x` target | Private ranges are blocked by default | Set `PENTEST_ALLOW_PRIVATE_IPS=true` if your rules of engagement allow it |
+| Asked to approve again after a network change | `docker compose down -v` deleted the volume holding the approval | Approve it again in Gateways. Use `docker compose down` without `-v` from now on |
 | Pending for a long time | Nobody has approved it | Expected. Someone with Gateways permission in your Studio must approve |
 | Container restarts in a loop | Malformed `.env` | `docker compose logs`, fix, `docker compose up -d` |
 
