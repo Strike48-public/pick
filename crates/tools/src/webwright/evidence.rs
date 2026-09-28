@@ -293,6 +293,7 @@ mod tests {
 
     #[test]
     fn ingest_creates_evidence_for_scripts() {
+        let _buffer = crate::evidence_producer::lock_evidence_buffer_for_test();
         let artifacts = json!({
             "scripts": ["/tmp/webwright/test/exploit_xss.py"],
             "screenshots": [],
@@ -310,6 +311,7 @@ mod tests {
 
     #[test]
     fn ingest_findings_parses_severity() {
+        let _buffer = crate::evidence_producer::lock_evidence_buffer_for_test();
         let findings = json!([
             {
                 "title": "Reflected XSS in search",
@@ -336,6 +338,7 @@ mod tests {
     /// different URL must not be silently erased.
     #[test]
     fn findings_flood_control_honors_explicit_severity_and_dedupes() {
+        let _buffer = crate::evidence_producer::lock_evidence_buffer_for_test();
         use crate::evidence_producer::drain_pending_evidence;
         use pentest_core::evidence::ValidationStatus;
 
@@ -406,6 +409,7 @@ mod tests {
     /// report, not severity-inflated to Low by the hygiene fallback.
     #[test]
     fn explicit_info_stays_info() {
+        let _buffer = crate::evidence_producer::lock_evidence_buffer_for_test();
         use crate::evidence_producer::drain_pending_evidence;
 
         let _ = drain_pending_evidence();
@@ -433,6 +437,7 @@ mod tests {
 
     #[test]
     fn generated_scripts_are_low_not_medium() {
+        let _buffer = crate::evidence_producer::lock_evidence_buffer_for_test();
         use crate::evidence_producer::drain_pending_evidence;
         let _ = drain_pending_evidence();
         let artifacts = json!({
