@@ -956,14 +956,15 @@ build-syscall-compat:
 # CAUTION (#397): packages.termux.dev is a *rolling* pool — it only serves the
 # latest build of each package. When Termux supersedes a pinned version the
 # download URL 404s and `fetch-proot` fails (this has broken the Android CI
-# lane twice: 5.1.107.91 -> .92 in #413, and earlier bumps). The sha256 pins
+# lane repeatedly: 5.1.107.91 -> .92 in #413, .92 -> .94 in #492, .94 -> .95
+# in #497, and earlier bumps). The sha256 pins
 # below catch silent in-place replacement of a pinned .deb; they do NOT fix
 # 404s. The durable fix is mirroring the .debs to an immutable location we
 # control (GitHub release assets, same pattern as #252) — until then, a 404
 # means: look up the current version in the pool index
 # (https://packages.termux.dev/apt/termux-main/pool/main/), bump the version
 # pin, download the new .deb, and refresh the checksum pin below.
-proot_version := "5.1.107.92"
+proot_version := "5.1.107.95"
 talloc_version := "2.4.3"
 busybox_version := "1.38.0-1"
 shmem_version := "0.7"
@@ -975,8 +976,8 @@ termux_repo := "https://packages.termux.dev/apt/termux-main/pool/main"
 # Verify on every download so a replaced/mismatched package fails loudly
 # instead of shipping different binaries in the APK (#372 integrity half).
 pkg_checksums := '''
-1f1c983509701f6826f568482c70673ee453a9ba38c9f5fa445a472d6b7524e9  proot_5.1.107.92_aarch64.deb
-70236632826c30ec0245082b633bbc7ef1e9fa5531bd51bd4f20231bfcdc999b  proot_5.1.107.92_x86_64.deb
+0a1b3d0f6ef76436c5ed924cd8e8f5a6b7186e99e1650eb2d9bc734e218a74cb  proot_5.1.107.95_aarch64.deb
+f63ce9bd0d38715eae0163a3772f3395913587444c7ce7232091c6d359afe3c3  proot_5.1.107.95_x86_64.deb
 ac81ad623d74c209718b9f3acb2dd702cc8a88c431e820d212229910b4db29da  libtalloc_2.4.3_aarch64.deb
 7ca2eaae2e53b28228a01301bc410b62845403d6317c25b8e0a7f40681de0628  libtalloc_2.4.3_x86_64.deb
 1bb7f1d4c00cadd0e1117b6dd7110311b8bf749ef00b486e96cfdc11c98f8fd9  busybox_1.38.0-1_aarch64.deb
