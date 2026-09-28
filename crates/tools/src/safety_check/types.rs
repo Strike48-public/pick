@@ -117,6 +117,11 @@ pub struct NetworkMap {
     pub your_device: Device,
     /// Other devices discovered on the network.
     pub other_devices: Vec<Device>,
+    /// Set when the nmap sweep did not complete inside its budget: carries the
+    /// timeout reason so a report can say "partial view" instead of implying a
+    /// full sweep happened (#495 review).
+    #[serde(default)]
+    pub sweep_truncated: Option<String>,
 }
 
 /// An actionable recommendation based on findings.

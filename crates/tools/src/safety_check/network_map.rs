@@ -2,7 +2,7 @@
 
 use super::oui;
 use super::types::{Device, NetworkMap, ThreatLevel};
-use super::{with_budget, NMAP_SWEEP_BUDGET_SECS};
+use super::{with_budget, NMAP_SWEEP_BUDGET_SECS, STAGE_BUDGET_MARKER};
 use crate::network_context::subnet_cidr_v4;
 use anyhow::Context;
 use pentest_platform::{NetworkOps, SystemInfo};
@@ -62,6 +62,9 @@ pub async fn discover_network() -> anyhow::Result<NetworkMap> {
     // back to ARP-table-only discovery (the Err arm below) instead of eating
     // the whole network-discovery budget. The child carries kill_on_drop(true)
     // so abandoning it on the deadline leaves no orphan scan behind.
+    // #495 review: a budget-truncated sweep is NOT equivalent to a completed
+    // one — record why it stopped so the report can flag a partial view.
+    let mut sweep_truncated: Option<String> = None;
     let nmap_ips = match with_budget(
         "nmap ARP sweep",
         NMAP_SWEEP_BUDGET_SECS,
@@ -75,7 +78,14 @@ pub async fn discover_network() -> anyhow::Result<NetworkMap> {
         }
         Err(e) => {
             // Not fatal: the ARP neighbor table alone is a valid host source.
-            tracing::warn!("nmap sweep unavailable ({}); relying on ARP table", e);
+            let reason = e.to_string();
+            if reason.contains(STAGE_BUDGET_MARKER) {
+                // Budget timeout → truncated view. "nmap not found" (the other
+                // common Err) keeps the legacy best-effort path unflagged: a
+                // known environment limitation, not a cut-short sweep.
+                sweep_truncated = Some(reason.clone());
+            }
+            tracing::warn!("nmap sweep unavailable ({}); relying on ARP table", reason);
             Vec::new()
         }
     };
@@ -113,6 +123,7 @@ pub async fn discover_network() -> anyhow::Result<NetworkMap> {
         gateway,
         your_device,
         other_devices,
+        sweep_truncated,
     })
 }
 
@@ -376,6 +387,8 @@ async fn run_nmap_arp_scan(subnet: &str) -> anyhow::Result<Vec<IpAddr>> {
         .kill_on_drop(true)
         .arg("-sn") // Ping scan only
         .arg("-T4") // Aggressive timing (faster)
+        .arg("-n") // Never resolve names: PTR lookups are the slow part of a
+        // sweep and this is a connectivity scan (#495 review)
         .arg(subnet)
         .output()
         .await
