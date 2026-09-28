@@ -217,6 +217,19 @@ pub fn drain_pending_evidence() -> Vec<EvidenceNode> {
     std::mem::take(&mut *PENDING_EVIDENCE.write().unwrap())
 }
 
+/// Serializes unit tests that push to or drain `PENDING_EVIDENCE`.
+///
+/// The buffer is process-global and the default test harness runs tests in
+/// parallel, so one test's drain can steal another's nodes. Every test in this
+/// crate that asserts on drained nodes, or pushes nodes another test asserts on,
+/// must hold this guard for its whole body. A poisoned lock is recovered so one
+/// failing test does not cascade into the rest.
+#[cfg(test)]
+pub(crate) fn lock_evidence_buffer_for_test() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Get current evidence buffer size.
 ///
 /// Useful for monitoring and debugging. The UI can use this to detect
@@ -918,10 +931,11 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // NOTE: Tests that interact with the global PENDING_EVIDENCE static may
-    // experience race conditions when run in parallel. Run with --test-threads=1
-    // if you need deterministic behavior. The production code is thread-safe;
-    // this is only a testing artifact.
+    // NOTE: Tests that interact with the global PENDING_EVIDENCE static hold
+    // `lock_evidence_buffer_for_test()` so they serialize under the parallel
+    // harness. The #[ignore]d capacity tests below additionally need an empty
+    // buffer for the whole run, so they still require --test-threads=1.
+    // The production code is thread-safe; this is only a testing artifact.
     //
     // Run: cargo test --package pentest-tools --lib evidence_producer::tests -- --test-threads=1
 
@@ -1040,6 +1054,7 @@ mod tests {
 
     #[test]
     fn evidence_flows_through_buffer() {
+        let _buffer = lock_evidence_buffer_for_test();
         // Create test evidence nodes with unique IDs
         let node1 = EvidenceNode::new(
             "test-flow-unique-1".to_string(),

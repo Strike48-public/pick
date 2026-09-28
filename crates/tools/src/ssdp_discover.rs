@@ -3,7 +3,8 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
+    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolOutcome, ToolParam,
+    ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, NetworkOps};
 use serde_json::{json, Value};
@@ -49,7 +50,7 @@ impl PentestTool for SsdpDiscoverTool {
 
         execute_timed(|| async move {
             let platform = get_platform();
-            let devices = platform.ssdp_discover(timeout_ms).await?;
+            let (devices, probe) = platform.ssdp_discover_with_outcome(timeout_ms).await?;
             Ok(json!({
                 "devices": devices.iter().map(|d| json!({
                     "location": d.location,
@@ -61,8 +62,80 @@ impl PentestTool for SsdpDiscoverTool {
                     "model": d.model,
                 })).collect::<Vec<_>>(),
                 "count": devices.len(),
+                "probe": probe,
             }))
         })
         .await
+        .map(classify_probe_outcome)
+    }
+}
+
+/// Reclassify a completed SSDP run from the platform probe outcome (#309).
+///
+/// The shared discovery implementation degrades an unsendable probe (blocked
+/// sandbox, no available socket) to an empty result rather than an error.
+/// `data.probe` carries the [`ProbeOutcome`]; a `skipped` status downgrades the
+/// result to [`ToolOutcome::Skipped`] — `with_outcome` also clears `success` —
+/// so the model and the report gate read it as "the probe never ran", never as
+/// evidence of a clean network. A `Ran` result (including a truthful
+/// zero-finding sweep) passes through unchanged.
+fn classify_probe_outcome(result: ToolResult) -> ToolResult {
+    // Only a `Ran` result needs reclassification; anything the tool body
+    // already marked Failed/Skipped passes through.
+    if result.outcome != ToolOutcome::Ran {
+        return result;
+    }
+    match probe_status(&result.data) {
+        Some("skipped") => result.with_outcome(ToolOutcome::Skipped),
+        _ => result,
+    }
+}
+
+/// The `status` tag of the `probe` outcome recorded in a tool payload, if any.
+fn probe_status(data: &Value) -> Option<&str> {
+    data.get("probe")
+        .and_then(|p| p.get("status"))
+        .and_then(Value::as_str)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skipped_probe_downgrades_outcome_and_success() {
+        let result = ToolResult::success(json!({
+            "devices": [],
+            "count": 0,
+            "probe": {"status": "skipped", "reason": "bind failed: permission denied"},
+        }));
+        let classified = classify_probe_outcome(result);
+        assert_eq!(classified.outcome, ToolOutcome::Skipped);
+        assert!(!classified.success, "a skipped probe is not a success");
+        // The reason stays available for diagnostics.
+        assert_eq!(
+            classified.data["probe"]["reason"].as_str(),
+            Some("bind failed: permission denied")
+        );
+    }
+
+    #[test]
+    fn ran_zero_finding_sweep_stays_ran() {
+        // "ran and found nothing" must remain a success — that is the whole
+        // distinction #309 asks for.
+        let result = ToolResult::success(json!({
+            "devices": [],
+            "count": 0,
+            "probe": {"status": "ran"},
+        }));
+        let classified = classify_probe_outcome(result);
+        assert_eq!(classified.outcome, ToolOutcome::Ran);
+        assert!(classified.success);
+    }
+
+    #[test]
+    fn payload_without_probe_field_is_left_alone() {
+        let result = ToolResult::success(json!({"devices": [], "count": 0}));
+        assert_eq!(classify_probe_outcome(result).outcome, ToolOutcome::Ran);
     }
 }

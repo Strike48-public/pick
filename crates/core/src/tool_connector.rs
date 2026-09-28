@@ -65,8 +65,19 @@ impl ToolConnector {
 }
 
 impl BaseConnector for ToolConnector {
+    /// The SDK connector type, NOT the persona `connector_name` (#386).
+    ///
+    /// The SDK runner feeds this to every auth path: `OttProvider::new`,
+    /// `register_with_ott` (the pre-approved OTT redemption the server
+    /// validates against the type the host minted the token for), and
+    /// `load_saved_credentials` (the `{connector_type}_{instance_id}` file
+    /// name). It also lands verbatim in the WebSocket
+    /// `RegisterConnectorRequest.connector_type`. Returning the persona here
+    /// redeemed otherwise-valid OTTs with the wrong type and fragmented the
+    /// saved-credential file per persona. The persona identity keeps flowing
+    /// where it belongs: `with_agent_name` for tool contexts and logs.
     fn connector_type(&self) -> &str {
-        &self.connector_name
+        crate::config::CONNECTOR_TYPE
     }
 
     fn version(&self) -> &str {
@@ -368,6 +379,28 @@ mod tests {
                 cap.name
             );
         }
+    }
+
+    /// Regression guard for #386: `BaseConnector::connector_type()` — which
+    /// the SDK runner feeds to `register_with_ott`, `load_saved_credentials`,
+    /// and the `RegisterConnectorRequest` — must be the fixed SDK type, never
+    /// the persona `connector_name`. StrikeHub mints pre-approved OTTs for
+    /// `pentest-connector`; redeeming one with a persona name fails with a
+    /// misleading "Invalid or expired OTT". The fixture's `connector_name`
+    /// is deliberately a persona value to keep this honest.
+    #[test]
+    fn connector_type_is_sdk_type_not_persona_name() {
+        let mut registry = ToolRegistry::new();
+        registry.register(StubTool);
+        let connector = ToolConnector::new(
+            Arc::new(RwLock::new(registry)),
+            "pentest-connector-web-app",
+            "test-instance",
+            None,
+            String::new(),
+        );
+        assert_eq!(connector.connector_type(), crate::config::CONNECTOR_TYPE);
+        assert_ne!(connector.connector_type(), "pentest-connector-web-app");
     }
 
     #[test]

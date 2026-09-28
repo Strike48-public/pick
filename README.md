@@ -79,6 +79,24 @@ Evidence quality assurance through specialized agents:
 - **Validator Agent** - Quality verification and validation
 - **Report Agent** - Finding synthesis and reporting
 
+### Why Agent Hardening (Attacks & Aislop)
+
+Autonomous agents that execute attacker-influenced content need defense against two failure modes: **attacks** (adversarial content hijacking the agent) and **aislop** (AI-generated noise and decoys that grind an agent down, burning tokens on dead ends until it gets stuck in the mud).
+
+We borrowed the defensive playbook from [honeyslop](https://github.com/gadievron/honeyslop) — self-identifying markers that make forged output instantly triageable, layered defense-in-depth, provenance consistency checks, bounded iteration budgets, and a CI "doctor" that re-verifies every control on every PR.
+
+In short: agent output must be triageable, agent context must be sanitized, agent work must be budgeted, and agent controls must be CI-verified.
+
+- **C1: Seed-channel fail-closed sanitization** — neutralize injection before Validator/Report seeds
+- **C2: Injection-flag publish gate** — findings flagged for injected-instruction markers at ingestion are refused at the report boundary; webwright severity hygiene (explicit info stays Info, unlabeled descends to Low, same-title duplicates merge) *(provenance-consistency checking is planned, not shipped)*
+- **C3: Session budget envelope + stall detector** — per-engagement tool-spend cap with a wind-down refusal, advisory stall detection, and a bounded `begin_scan` reset so an agent cannot restart its own envelope *(advisory only — the stall detector warns, it does not yet kill dead-end loops)*
+- **C4: Doctor-style CI validator** — re-verify every control on every PR
+- **C5: Canary markers + triage gate** — per-engagement nonces make forged output self-identify
+- **C6-C8: Handoff hygiene, target scope fence, persona distrust boundary** (P1)
+- **C9-C10: Marker rotation, evidence flood control + loop breaker** (P2)
+
+Full rationale, the attack-surface analysis behind these choices, and the trade-off decisions are in [`docs/AGENT_HARDENING_REVIEW.md`](docs/AGENT_HARDENING_REVIEW.md).
+
 ### Recent Features
 
 - **Android Root Detection** (PR #123) - Detect rooted Android devices
