@@ -1,0 +1,31 @@
+name: Docker Bundle
+
+# Guards the customer Docker bundle in deploy/docker: the preflight check must
+# stay shellcheck clean and pass its hermetic regression tests.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'deploy/docker/**'
+      - '.github/workflows/docker-bundle.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/docker/**'
+      - '.github/workflows/docker-bundle.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Preflight check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: shellcheck deploy/docker/preflight.sh deploy/docker/preflight.test.sh
+
+      - name: Regression tests
+        run: deploy/docker/preflight.test.sh
