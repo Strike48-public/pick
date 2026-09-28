@@ -5,14 +5,22 @@ network, connect it outbound to your Strike48 Studio, and approve it in Studio.
 Install takes about ten minutes on a host that already has Docker.
 
 This guide assumes you can open a terminal on a Linux machine and run
-commands, and nothing more. You do not need to know Docker. If you are on
-Windows, read [Docker Desktop on Windows](#docker-desktop-on-windows) first.
+commands, and nothing more. You do not need to know Docker.
+
+**Use a Linux host.** A Linux server or virtual machine with Docker Engine,
+sitting on the network you want to test, is the supported setup and the only
+one where every scan type works. Docker Desktop on Windows or macOS runs the
+container behind its own virtual machine, so it cannot see your local network.
+If Windows is all you have, read
+[Docker Desktop on Windows](#docker-desktop-on-windows) first to see what it
+cannot do.
 
 **The short version:** install Docker, download the files, run the preflight
 check, fill in four values, start the container, and approve it in Studio.
 Steps [0 to 7 under Install](#install) walk through each one, with the output
-you should see after every command. The sections after Install cover what to
-check before your first scan and are not needed to get the connector online.
+you should see after every command. Then work through
+[Before your first scan](#before-your-first-scan): a connector that shows as
+online in Studio can still be unable to see the network you want to test.
 To have an AI coding agent do the install with you, see
 [Install with an AI coding agent](#install-with-an-ai-coding-agent).
 
@@ -114,6 +122,10 @@ appliance, read [Corporate proxy and private CA](#corporate-proxy-and-private-ca
 before you start.
 
 ## Install
+
+Run the steps in order, one command at a time, and compare each result with
+the output the step shows before you go on. If you use an AI assistant to help,
+ask it to do the same: running several steps at once hides the one that failed.
 
 ### 0. Install Docker
 
@@ -401,6 +413,9 @@ credential lives in the `pick-connector_pick-state` volume. After a restart the
 startup banner still prints `auth: ott (pending approval)` before the stored
 credential is loaded; the `Registering without JWT (pending approval flow)`
 line no longer appears, and Studio keeps showing the connector as active.
+
+Online is not the same as ready to scan. Continue with
+[Before your first scan](#before-your-first-scan) before the first engagement.
 
 ## Install with an AI coding agent
 
@@ -849,19 +864,42 @@ use the host's interfaces directly. This is the Compose equivalent of
        network_mode: host
    ```
 
-2. Recreate the container:
+2. If your targets are on private addresses (`10.x`, `172.16.x` to `172.31.x`,
+   or `192.168.x`), which a local network almost always is, set this in `.env`
+   as well, provided your rules of engagement cover those ranges. See
+   [Scanning private address ranges](#scanning-private-address-ranges).
+
+   ```bash
+   PENTEST_ALLOW_PRIVATE_IPS=true
+   ```
+
+3. Recreate the container:
 
    ```bash
    docker compose up -d
    ```
 
-3. Confirm the mode:
+   You do not need to stop the connector first. If you do stop it, use
+   `docker compose down`, never `docker compose down -v`: the `-v` deletes the
+   volume that holds the approval, and you would have to approve the connector
+   again.
+
+4. Confirm the mode:
 
    ```bash
    docker inspect pick-connector --format '{{.HostConfig.NetworkMode}}'
    ```
 
    This prints `host`.
+
+5. Confirm the connector now sees the host's network:
+
+   ```bash
+   docker exec pick-connector ip -4 -brief addr
+   ```
+
+   The output lists the host's own interfaces, including the address on the
+   network you want to test. Before the change it listed only a Docker address.
 
 The approval is stored in the `pick-connector_pick-state` volume, so the
 connector comes back online without a new approval. The `NET_RAW` and
@@ -913,8 +951,8 @@ approval is kept. Check the new subnet with the `docker network inspect` command
 
 ## Docker Desktop on Windows
 
-The connector runs on Docker Desktop for Windows, with less network reach than
-on a Linux host. Docker Desktop runs Linux containers inside a WSL 2 virtual
+We recommend a Linux host instead. The connector does run on Docker Desktop
+for Windows, but with much less network reach than on a Linux host. Docker Desktop runs Linux containers inside a WSL 2 virtual
 machine, and Docker documents that all of that VM's network traffic goes
 through NAT in Docker Desktop's backend process (`com.docker.backend`). The
 container never sits directly on your LAN, and the
@@ -1017,6 +1055,7 @@ VPN, or, for names, DNS. For DNS, set your internal DNS servers with the
 | The image pull fails partway, files are missing from the image, or tools stop mid-scan with no clear error | An endpoint security agent on the host is quarantining files or stopping processes | Check that agent's alerts and agree an exclusion. See [Endpoint security on the host](#endpoint-security-on-the-host) |
 | The connector goes offline, or switches between online and offline, when another VM starts | A cloned or snapshot-restored VM shares the original's instance id and credential | On the clone, `docker compose down -v`, set a new `STRIKE48_INSTANCE_ID`, start, and approve. See [Running Docker inside a virtual machine](#running-docker-inside-a-virtual-machine) |
 | IPv6 targets are unreachable from the connector but reachable from the host | The connector's network is IPv4 only | Enable IPv6 or host networking. See [IPv6 targets](#ipv6-targets) |
+| Studio asks you to approve the connector again after a network change | `docker compose down -v` was run, which deletes the volume holding the approval | Approve it again in Gateways. Use `docker compose down` without `-v` from now on |
 | Pending for a long time | Nobody has approved it | Expected. Someone with Gateways permission in your Studio must approve |
 | Container restarts in a loop | Malformed `.env` | `docker compose logs`, fix, `docker compose up -d` |
 
