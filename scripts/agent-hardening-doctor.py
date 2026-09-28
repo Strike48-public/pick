@@ -39,12 +39,24 @@ How it verifies (review #453, S4/F3):
   call must live inside push_evidence / the seed builders / the connector
   execute path), so deleting the real call while leaving `#[cfg(test)]`
   call-sites in place still fails.
-- `--self-test` exercises both negative paths against throwaway fixtures,
-  so the tripwire is itself guarded.
+- `#[cfg(test)]` items and modules are removed before function bodies are
+  extracted, so a same-named function inside a test module cannot stand in
+  for the production one.
+- `--self-test` exercises the evasion modes against throwaway fixtures,
+  checks each check's pattern count against a pinned table, then knocks out
+  every pattern of every check in turn and requires that check to fail, so
+  each check (not just one) is itself guarded.
 
 Non-goals (deliberate, matching honeyslop-doctor's scope discipline):
 - Does not prove runtime behavior; the Rust unit tests do that. This is
   a structural presence check so the layers cannot silently vanish.
+- Deliberate evasion is out of scope: a call kept only inside a string
+  literal, dead code (`if false { ... }`), or an unused closure still
+  matches. The doctor catches accidental or "cleanup" removal; runtime
+  tests are the guard against a determined author.
+- Advisory until the repository makes it a required check: the doctor and
+  its self-test run from the PR's own checkout, so a PR can edit them.
+  CODEOWNERS only suggests a second reviewer on these paths.
 - C5 canary markers are a later control; when they land, add a marker
   registration check here (see docs/AGENT_HARDENING_REVIEW.md C9 for the
   rotation playbook that same check supports).
@@ -90,7 +102,7 @@ CHECKS: list[dict] = [
         "desc": "seed builders route through neutralize_manifest_for_seed (no raw evidence seed)",
         "files": ["crates/core/src/orchestrator.rs"],
         "file_patterns": [r"fn\s+neutralize_manifest_for_seed\b"],
-        # Every seed builder must call it, inside its own body — not merely
+        # Every seed builder must call it, inside its own body, not merely
         # somewhere in the file.
         "anchored": [
             (
@@ -125,17 +137,19 @@ CHECKS: list[dict] = [
             r"fn\s+ingest_webwright_findings\b",
         ],
         "anchored": [
-            # Anchor inside ingest_webwright_findings's body: Severity::Info /
-            # Severity::Low also appear elsewhere in the file, so a whole-file
-            # match could stay green if the dedupe/merge was removed while
-            # severity mapping remained.
+            # Anchor inside ingest_webwright_findings's body, and on the
+            # behavior rather than bare symbol names: the nested severity_rank
+            # helper already names Severity::Low and Severity::Info, so bare
+            # symbols would stay green with the label mapping gone. Require
+            # the unlabeled-to-Low default arm, the explicit-info arm, and the
+            # same-title lookup that drives the merge.
             (
                 r"ingest_webwright_findings",
                 [
-                    r"Severity::Info\b",
-                    r"Severity::Low\b",
-                    r"by_title\b",
-                    r"severity_rank\b",
+                    r"\b_\s*=>\s*Severity::Low\b",
+                    r'"info"\s*\|\s*"informational"\s*=>\s*Severity::Info\b',
+                    r"by_title\.get\(",
+                    r"severity_rank\(",
                 ],
             ),
         ],
@@ -348,6 +362,31 @@ def _next_body_brace(text: str, start: int) -> int:
     return -1
 
 
+_CFG_TEST = re.compile(r"#\[cfg\(\s*(?:all\(\s*)?test\b[^\]]*\]")
+
+
+def _strip_cfg_test(text: str) -> str:
+    """Remove every `#[cfg(test)]` (or `#[cfg(all(test, ...))]`) item from
+    comment-stripped `text`: the attribute through the end of the item it
+    gates (its `{ ... }` body, or the `;` of a bodiless item)."""
+    out: list[str] = []
+    pos = 0
+    for m in _CFG_TEST.finditer(text):
+        if m.start() < pos:
+            continue  # nested inside an item already removed
+        brace = _next_body_brace(text, m.end())
+        if brace == -1:
+            semi = text.find(";", m.end())
+            end = len(text) if semi == -1 else semi + 1
+        else:
+            close = _find_matching(text, brace)
+            end = len(text) if close == -1 else close + 1
+        out.append(text[pos : m.start()])
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def _missing_for_check(check: dict, root: Path) -> list[str]:
     """Return the list of unmet requirements for `check` (empty = all present)."""
     missing: list[str] = []
@@ -360,8 +399,9 @@ def _missing_for_check(check: dict, root: Path) -> list[str]:
         for pat in check.get("file_patterns", []):
             if re.search(pat, text) is None:
                 missing.append(f"{rel}: not found: {pat}")
+        prod_text = _strip_cfg_test(text)
         for fn_regex, patterns in check.get("anchored", []):
-            body = _extract_fn_bodies(text, fn_regex)
+            body = _extract_fn_bodies(prod_text, fn_regex)
             if not body:
                 missing.append(f"{rel}: production fn /{fn_regex}/ not found")
                 continue
@@ -377,11 +417,11 @@ def run(root: Path) -> bool:
         missing = _missing_for_check(check, root)
         if missing:
             ok = False
-            print(f"FAIL {check['id']} — {check['desc']}")
+            print(f"FAIL {check['id']} - {check['desc']}")
             for m in missing:
                 print(f"  missing: {m}")
         else:
-            print(f"ok   {check['id']} — {check['desc']}")
+            print(f"ok   {check['id']} - {check['desc']}")
     return ok
 
 
@@ -389,13 +429,18 @@ def run(root: Path) -> bool:
 # Self-test: prove the tripwire actually trips (review #453, S4/F3).
 #
 # Builds a throwaway fixture tree where every control is present (doctor
-# must pass), then applies the two evasion modes the review demonstrated
-# on the real PR and asserts the doctor now FAILS:
-#   (1) comment the guarded call out            -> must fail
-#   (2) delete the production call, keep a test  -> must fail
+# must pass), then applies the evasion modes the reviews demonstrated on the
+# real PR and asserts the doctor now FAILS:
+#   (1) comment the guarded call out                         -> must fail
+#   (2) delete the production call, keep a test              -> must fail
+#   (3) delete it, add a same-named fn in a #[cfg(test)] mod -> must fail
+# Then (4) compares each check's pattern count with a pinned table, and
+# (5) knocks out each pattern of each check in turn and requires that check
+# to fail. Weakening a check therefore needs a second, visible edit to the
+# pinned table; the self-test cannot stop a PR that makes both edits.
 # ------------------------------------------------------------------
 
-# Minimal fixture files (regex-scanned, not compiled) — one production call
+# Minimal fixture files (regex-scanned, not compiled): one production call
 # site plus a #[cfg(test)] call site so mode (2) has a test remnant to leave.
 _FIXTURE_EVIDENCE = """\
 pub fn push_evidence(node: EvidenceNode) -> Result<(), BufferFullError> {
@@ -450,10 +495,15 @@ _FIXTURE_SANITIZE = 'pub const NEUTRALIZED: &str = "[neutralized-instruction]";\
 _FIXTURE_WEBWRIGHT = """\
 fn ingest_webwright_findings() {
     fn severity_rank(s: Severity) -> u8 { 0 }
-    let severity = Severity::Low;
-    let info = Severity::Info;
+    let severity = match label {
+        "critical" => Severity::Critical,
+        "info" | "informational" => Severity::Info,
+        _ => Severity::Low,
+    };
     let mut by_title = std::collections::HashMap::new();
-    let _ = (severity, info, &mut by_title);
+    if let Some(&idx) = by_title.get(&title) {
+        if severity_rank(severity) > 0 { let _ = idx; }
+    }
 }
 """
 
@@ -568,7 +618,73 @@ def _self_test() -> bool:
         ep.write_text(good.replace(_GUARDED_CALL, "", 1), encoding="utf-8")
         expect(run(root), False, "production call removed with test remnant")
 
+        print("self-test 3: production call deleted, same-named fn in a test mod, must fail")
+        _write_fixture(root)
+        ep.write_text(
+            good.replace(_GUARDED_CALL, "", 1)
+            + "\n#[cfg(test)]\nmod evade {\n    fn push_evidence() {\n"
+            + "    " + _GUARDED_CALL + "    }\n}\n",
+            encoding="utf-8",
+        )
+        expect(run(root), False, "same-named fn inside #[cfg(test)] mod")
+
+        print("self-test 4: every check keeps its pinned number of patterns")
+        by_id = {c["id"]: c for c in CHECKS}
+        for cid, want in _EXPECTED_TARGETS.items():
+            got = len(_knockout_targets(by_id[cid])) if cid in by_id else 0
+            if got < want:
+                ok = False
+                print(f"  [FAIL] {cid}: {got} patterns, pinned {want} (check weakened or removed)")
+            else:
+                print(f"  [PASS] {cid}: {got} patterns (pinned {want})")
+
+        print("self-test 5: knock out each pattern of each check, that check must fail")
+        for check in CHECKS:
+            for rel, pat in _knockout_targets(check):
+                _write_fixture(root)
+                path = root.joinpath(*rel.split("/"))
+                original = path.read_text(encoding="utf-8")
+                knocked = re.sub(pat, "__knocked_out__", original)
+                if knocked == original:
+                    ok = False
+                    print(f"  [FAIL] {check['id']}: fixture has no match for {pat} in {rel}")
+                    continue
+                path.write_text(knocked, encoding="utf-8")
+                missing = _missing_for_check(check, root)
+                expect(not missing, False, f"{check['id']}: {rel}: knock out {pat}")
+
     return ok
+
+
+# Pinned pattern count per check (file patterns + anchored fn definitions +
+# anchored patterns, per file). Self-test 5 derives its knock-outs from
+# CHECKS, so without this pin, deleting a check's patterns would also delete
+# the knock-outs that guard them. Raise a count when you strengthen a check;
+# lowering one is a visible weakening that a reviewer should question.
+_EXPECTED_TARGETS = {
+    "c1.1": 3,
+    "c1.2": 5,
+    "c1.3": 1,
+    "c2.1": 2,
+    "c2.2": 6,
+    "c3.1": 4,
+    "c3.2": 8,
+    "c3.3": 7,
+}
+
+
+def _knockout_targets(check: dict) -> list[tuple[str, str]]:
+    """Every (file, pattern) a check depends on, including the anchored fn's
+    own definition, so self-test 4 can remove each one in turn."""
+    targets: list[tuple[str, str]] = []
+    for rel in check["files"]:
+        for pat in check.get("file_patterns", []):
+            targets.append((rel, pat))
+        for fn_regex, patterns in check.get("anchored", []):
+            targets.append((rel, r"\bfn\s+(?:%s)\b" % fn_regex))
+            for pat in patterns:
+                targets.append((rel, pat))
+    return targets
 
 
 def main() -> int:
@@ -591,9 +707,9 @@ def main() -> int:
         ok = _self_test()
         print("=" * 32)
         if ok:
-            print("self-test: OK — tripwire trips on both evasion modes")
+            print("self-test: OK - tripwire trips on every evasion mode and knock-out")
             return 0
-        print("self-test: FAILED — tripwire is bypassable")
+        print("self-test: FAILED - tripwire is bypassable")
         return 1
 
     print("= pick agent-hardening doctor =")
@@ -602,7 +718,7 @@ def main() -> int:
     if ok:
         print("doctor: OK")
         return 0
-    print("doctor: FAILED — one or more agent-hardening controls are missing")
+    print("doctor: FAILED - one or more agent-hardening controls are missing")
     return 1
 
 
