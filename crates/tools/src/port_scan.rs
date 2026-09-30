@@ -177,7 +177,7 @@ impl PentestTool for PortScanTool {
             .param(ToolParam::optional(
                 "hosts",
                 ParamType::Array,
-                "List of target hosts to scan in one call (e.g. [\"10.0.0.1\", \"10.0.0.2\"])",
+                "List of target hosts to scan in one call (e.g. [\"192.0.2.1\", \"192.0.2.2\"])",
                 json!([]),
             ))
             .param(ToolParam::optional(
@@ -437,8 +437,8 @@ mod tests {
             "192.0.2.0/24"
         );
         assert_eq!(
-            scan_target_spec(&json!({ "host": "10.0.0.1", "hosts": ["10.0.0.2"] })),
-            "10.0.0.1 10.0.0.2"
+            scan_target_spec(&json!({ "host": "192.0.2.1", "hosts": ["192.0.2.2"] })),
+            "192.0.2.1 192.0.2.2"
         );
     }
 
