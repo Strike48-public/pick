@@ -11,14 +11,18 @@ Checks (each maps to a control):
 C1 - Seed-channel fail-closed sanitization
   c1.1  evidence_producer.rs must sanitize node text fields at the write
         path (sanitize_node_fields called from push_evidence).
-  c1.2  orchestrator seed builders must route the manifest through
+  c1.2  every orchestrator seed builder must route the manifest through
         neutralize_manifest_for_seed (defense-in-depth at the agent
-        boundary), so a future seed-builder cannot return raw evidence.
+        boundary), so a future seed-builder cannot return raw evidence
+        (the check matches every build_*_seed_message definition and
+        fails closed when a new one appears unwired).
   c1.3  sanitize.rs must export NEUTRALIZED (the shared inert token).
 
 C2 - Fail-closed gate + severity hygiene
   c2.1  gate_for_report must reject injection-flagged publishable
-        findings (InjectionFlaggedNodes), closing the fail-open gap.
+        findings (InjectionFlaggedNodes), closing the fail-open gap;
+        both the flag read and the rejection must live inside the
+        gate's own body, so un-wiring the gate cannot pass green.
   c2.2  webwright findings must default to Low unless explicitly
         critical/high (severity hygiene), explicit info stays Info, and
         same-title findings merge into the retained node (max severity,
@@ -85,6 +89,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #                  fn_name_regex, in the same file. This defeats "delete the real
 #                  call, keep the #[cfg(test)] call" because test call-sites live
 #                  in other functions.
+#   anchored_every - list of (fn_name_regex, [patterns]); like `anchored`, but
+#                  EVERY production function whose name matches fn_name_regex
+#                  must contain every pattern (and at least one such function
+#                  must exist). Used where the guard is a class of functions
+#                  (e.g. every seed builder), so a future sibling added
+#                  without the call fails closed instead of staying green.
 # ------------------------------------------------------------------
 
 CHECKS: list[dict] = [
@@ -99,18 +109,17 @@ CHECKS: list[dict] = [
     },
     {
         "id": "c1.2",
-        "desc": "seed builders route through neutralize_manifest_for_seed (no raw evidence seed)",
+        "desc": "every seed builder routes through neutralize_manifest_for_seed (no raw evidence seed)",
         "files": ["crates/core/src/orchestrator.rs"],
         "file_patterns": [r"fn\s+neutralize_manifest_for_seed\b"],
-        # Every seed builder must call it, inside its own body, not merely
-        # somewhere in the file.
-        "anchored": [
+        # Every build_*_seed_message definition must call it, inside its own
+        # body, not merely somewhere in the file. anchored_every (not plain
+        # anchored) means EVERY matching builder must be wired, so a future
+        # seed builder added without the neutralize call fails the doctor
+        # instead of passing green beside the wired ones.
+        "anchored_every": [
             (
-                r"build_report_agent_seed_message",
-                [r"neutralize_manifest_for_seed\(&mut value\)\s*;"],
-            ),
-            (
-                r"build_validator_seed_message",
+                r"build_\w*seed_message",
                 [r"neutralize_manifest_for_seed\(&mut value\)\s*;"],
             ),
         ],
@@ -126,8 +135,22 @@ CHECKS: list[dict] = [
         "id": "c2.1",
         "desc": "gate blocks injection-flagged publishable findings",
         "files": ["crates/core/src/orchestrator.rs"],
-        "file_patterns": [r"InjectionFlaggedNodes\s*\{", r"injection_suspected"],
-        "anchored": [],
+        "file_patterns": [r"InjectionFlaggedNodes\s*\{"],
+        # Anchor inside gate_for_report's own body: both the flag read and
+        # the InjectionFlaggedNodes rejection must be wired in the gate
+        # itself. The tokens also appear in the enum declaration, seed
+        # builders and tests, so a whole-file presence check stayed green
+        # when the gate was un-wired (its .get() pointed at a nonexistent
+        # key); this anchoring closes that bypass.
+        "anchored": [
+            (
+                r"gate_for_report",
+                [
+                    r'\.get\("injection_suspected"\)',
+                    r"GateError::InjectionFlaggedNodes",
+                ],
+            ),
+        ],
     },
     {
         "id": "c2.2",
@@ -322,8 +345,8 @@ def _find_matching(text: str, open_idx: int) -> int:
     return i - 1 if not stack else -1
 
 
-def _extract_fn_bodies(text: str, name_regex: str) -> str:
-    """Return the concatenated bodies of every `fn <name_regex>(...)` definition
+def _extract_all_fn_bodies(text: str, name_regex: str) -> list[str]:
+    """Return the individual bodies of every `fn <name_regex>(...)` definition
     in `text` (comment-stripped input expected). Trait-method declarations with
     no body (`fn foo();`) contribute nothing."""
     header = re.compile(r"\bfn\s+(?:%s)\s*(?:<[^>]*>)?\s*\(" % name_regex)
@@ -340,7 +363,13 @@ def _extract_fn_bodies(text: str, name_regex: str) -> str:
         if brace_close == -1:
             continue
         bodies.append(text[brace_open : brace_close + 1])
-    return "\n".join(bodies)
+    return bodies
+
+
+def _extract_fn_bodies(text: str, name_regex: str) -> str:
+    """Return the concatenated bodies of every `fn <name_regex>(...)` definition
+    in `text` (comment-stripped input expected)."""
+    return "\n".join(_extract_all_fn_bodies(text, name_regex))
 
 
 def _next_body_brace(text: str, start: int) -> int:
@@ -408,6 +437,17 @@ def _missing_for_check(check: dict, root: Path) -> list[str]:
             for pat in patterns:
                 if re.search(pat, body) is None:
                     missing.append(f"{rel}: not found in fn /{fn_regex}/: {pat}")
+        for fn_regex, patterns in check.get("anchored_every", []):
+            bodies = _extract_all_fn_bodies(text, fn_regex)
+            if not bodies:
+                missing.append(f"{rel}: production fn /{fn_regex}/ not found")
+                continue
+            for i, body in enumerate(bodies):
+                for pat in patterns:
+                    if re.search(pat, body) is None:
+                        missing.append(
+                            f"{rel}: not found in fn /{fn_regex}/ match {i + 1}: {pat}"
+                        )
     return missing
 
 
@@ -487,6 +527,26 @@ pub fn build_validator_seed_message(manifest: &Manifest) -> Result<String, Strin
 
 pub enum GateError {
     InjectionFlaggedNodes { nodes: Vec<String> },
+}
+
+pub fn gate_for_report(nodes: &[EvidenceNode]) -> Result<Manifest, GateError> {
+    let injection_flagged: Vec<String> = nodes
+        .iter()
+        .filter(|n| {
+            n.is_publishable_finding()
+                && n.metadata
+                    .get("injection_suspected")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+        })
+        .map(|n| n.id.clone())
+        .collect();
+    if !injection_flagged.is_empty() {
+        return Err(GateError::InjectionFlaggedNodes {
+            ids: injection_flagged,
+        });
+    }
+    Ok(Manifest::default())
 }
 """
 
@@ -653,6 +713,38 @@ def _self_test() -> bool:
                 missing = _missing_for_check(check, root)
                 expect(not missing, False, f"{check['id']}: {rel}: knock out {pat}")
 
+        # The knockout loop proves each existing pattern matters; these two
+        # modes prove the builder CLASS matters: a brand-new
+        # build_*_seed_message added without the neutralize call must fail
+        # (anchored_every), and a wired one must stay green (no false positive).
+        print("self-test 6: new unwired seed builder must fail (c1.2 class match)")
+        _write_fixture(root)
+        orch = root.joinpath(*("crates/core/src/orchestrator.rs".split("/")))
+        orch_good = orch.read_text(encoding="utf-8")
+        orch.write_text(
+            orch_good
+            + "\npub fn build_future_seed_message(manifest: &Manifest) -> String {\n"
+            + "    let mut value = to_value(manifest);\n"
+            + "    serde_json::to_string(&value).unwrap_or_default()\n"
+            + "}\n",
+            encoding="utf-8",
+        )
+        expect(run(root), False, "new seed builder without the neutralize call")
+
+        print("self-test 7: new WIRED seed builder must stay green (no false positive)")
+        _write_fixture(root)
+        orch.write_text(
+            orch_good
+            + "\npub fn build_future_seed_message(manifest: &Manifest) -> String {\n"
+            + "    let mut value = to_value(manifest);\n"
+            + "    let injection_suspected = neutralize_manifest_for_seed(&mut value);\n"
+            + "    let _ = injection_suspected;\n"
+            + "    String::new()\n"
+            + "}\n",
+            encoding="utf-8",
+        )
+        expect(run(root), True, "new seed builder wired correctly")
+
     return ok
 
 
@@ -663,9 +755,9 @@ def _self_test() -> bool:
 # lowering one is a visible weakening that a reviewer should question.
 _EXPECTED_TARGETS = {
     "c1.1": 3,
-    "c1.2": 5,
+    "c1.2": 3,
     "c1.3": 1,
-    "c2.1": 2,
+    "c2.1": 4,
     "c2.2": 6,
     "c3.1": 4,
     "c3.2": 8,
@@ -680,7 +772,9 @@ def _knockout_targets(check: dict) -> list[tuple[str, str]]:
     for rel in check["files"]:
         for pat in check.get("file_patterns", []):
             targets.append((rel, pat))
-        for fn_regex, patterns in check.get("anchored", []):
+        for fn_regex, patterns in check.get("anchored", []) + check.get(
+            "anchored_every", []
+        ):
             targets.append((rel, r"\bfn\s+(?:%s)\b" % fn_regex))
             for pat in patterns:
                 targets.append((rel, pat))

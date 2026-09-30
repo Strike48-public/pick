@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: agent-hardening-doctor-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   hardening-doctor:
     name: Agent hardening controls present
