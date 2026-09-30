@@ -175,9 +175,9 @@ with `Ctrl+X`. The file name starts with a dot, so `ls` hides it; `ls -a`
 shows it.
 
 Fill in the four required values. Everything else in the file is optional and
-stays commented out unless you need it.
+stays commented out unless you need it. In your editor, set:
 
-```bash
+```ini
 STRIKE48_HOST=wss://studio.example.com
 STRIKE48_API_URL=https://studio.example.com/
 STRIKE48_TENANT=<your tenant UUID>
