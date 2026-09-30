@@ -37,7 +37,7 @@ use crate::multi::shared_channel::{SharedChannel, SharedStream};
 use crate::types::ConnectorMetrics;
 use crate::types::{ExecuteRequest as SdkExecuteRequest, ExecuteResponse, PayloadEncoding};
 use crate::types::{WsCloseRequest, WsFrame, WsFrameType, WsOpenRequest};
-use crate::utils::{deserialize_payload, error_response, sanitize_identifier, serialize_payload};
+use crate::utils::{deserialize_payload, error_response, sanitize_failure_payload, sanitize_identifier, serialize_payload};
 
 use strike48_proto::proto::{
     self, ConnectorCapabilities, CredentialsIssued, HeartbeatRequest, HeartbeatResponse,
@@ -1082,43 +1082,49 @@ async fn handle_execute(
             .execute_with_context(req_data, request.capability_id.as_deref(), &request.context)
             .await
         {
-            Ok(resp_data) => match serialize_payload(&resp_data, PayloadEncoding::Json) {
-                Ok(payload) => {
-                    let duration_ms = start.elapsed().as_millis() as u64;
-                    {
-                        let mut m = metrics.lock().await;
-                        m.requests_processed += 1;
-                        m.bytes_sent += payload.len() as u64;
-                        m.total_duration_ms += duration_ms;
+            Ok(resp_data) => {
+                // Never put a blank failure on the wire (Strike48/matrix#4715,
+                // defect 2): same contract as ConnectorRunner::handle_request.
+                let (resp_data, failure_error) =
+                    sanitize_failure_payload(&resp_data, request.capability_id.as_deref());
+                match serialize_payload(&resp_data, PayloadEncoding::Json) {
+                    Ok(payload) => {
+                        let duration_ms = start.elapsed().as_millis() as u64;
+                        {
+                            let mut m = metrics.lock().await;
+                            m.requests_processed += 1;
+                            m.bytes_sent += payload.len() as u64;
+                            m.total_duration_ms += duration_ms;
+                        }
+                        ExecuteResponse {
+                            request_id: request.request_id,
+                            success: true,
+                            payload,
+                            payload_encoding: PayloadEncoding::Json,
+                            error: failure_error.unwrap_or_default(),
+                            duration_ms,
+                        }
                     }
-                    ExecuteResponse {
-                        request_id: request.request_id,
-                        success: true,
-                        payload,
-                        payload_encoding: PayloadEncoding::Json,
-                        error: String::new(),
-                        duration_ms,
+                    Err(e) => {
+                        logger.error(
+                            &format!("registration {key}: serialization failed"),
+                            &e.to_string(),
+                        );
+                        {
+                            let mut m = metrics.lock().await;
+                            m.requests_failed += 1;
+                        }
+                        ExecuteResponse {
+                            request_id: request.request_id,
+                            success: false,
+                            payload: error_response(&e.to_string()).unwrap_or_default(),
+                            payload_encoding: PayloadEncoding::Json,
+                            error: e.to_string(),
+                            duration_ms: start.elapsed().as_millis() as u64,
+                        }
                     }
                 }
-                Err(e) => {
-                    logger.error(
-                        &format!("registration {key}: serialization failed"),
-                        &e.to_string(),
-                    );
-                    {
-                        let mut m = metrics.lock().await;
-                        m.requests_failed += 1;
-                    }
-                    ExecuteResponse {
-                        request_id: request.request_id,
-                        success: false,
-                        payload: error_response(&e.to_string()).unwrap_or_default(),
-                        payload_encoding: PayloadEncoding::Json,
-                        error: e.to_string(),
-                        duration_ms: start.elapsed().as_millis() as u64,
-                    }
-                }
-            },
+            }
             Err(e) => {
                 logger.error(
                     &format!("registration {key}: execute failed"),
@@ -2037,6 +2043,104 @@ mod tests {
             Some(stream_message::Message::ExecuteResponse(r)) => {
                 assert!(r.success);
                 assert_eq!(r.request_id, "req-legacy-1");
+            }
+            other => panic!("expected ExecuteResponse, got {other:?}"),
+        }
+    }
+
+    /// Connector whose tool result is an explicit failure carrying a blank
+    /// `error` - the exact wire defect from Strike48/matrix#4715 (defect 2).
+    struct BlankFailureConn;
+
+    impl BaseConnector for BlankFailureConn {
+        fn connector_type(&self) -> &str {
+            "blank-failure"
+        }
+        fn version(&self) -> &str {
+            "0.0.0"
+        }
+        fn execute(
+            &self,
+            _request: serde_json::Value,
+            _capability_id: Option<&str>,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + '_>>
+        {
+            Box::pin(async {
+                unreachable!("SDK must dispatch through execute_with_context, not bare execute")
+            })
+        }
+        fn execute_with_context<'a>(
+            &'a self,
+            _request: serde_json::Value,
+            _capability_id: Option<&'a str>,
+            _context: &'a StdHashMap<String, String>,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                Ok(serde_json::json!({
+                    "success": false,
+                    "data": serde_json::Value::Null,
+                    "error": "",
+                    "outcome": "failed",
+                }))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_execute_patches_blank_failure_into_envelope() {
+        // The registration-runner hop must honor the same never-blank contract
+        // as ConnectorRunner::handle_request: a tool result that reports
+        // failure with a blank `error` gets a patched payload and a mirrored,
+        // actionable envelope error. Reverting the envelope mirror to
+        // `String::new()` (or dropping the sanitize call) turns this red.
+        let connector: Arc<dyn BaseConnector> = Arc::new(BlankFailureConn);
+        let metrics = Arc::new(Mutex::new(ConnectorMetrics::default()));
+        let logger = Logger::new("test/blank-failure");
+        let key = key_for_context_tests();
+
+        let payload = serialize_payload(
+            &serde_json::json!({"request": "in"}),
+            PayloadEncoding::Json,
+        )
+        .expect("serialize request payload");
+        let request = SdkExecuteRequest {
+            request_id: "req-blank-1".into(),
+            payload,
+            payload_encoding: PayloadEncoding::Json,
+            context: StdHashMap::new(),
+            capability_id: Some("nmap".into()),
+        };
+
+        let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
+        handle_execute(connector, request, tx, metrics, &logger, &key)
+            .await
+            .expect("handle_execute should succeed");
+
+        let resp = rx.try_recv().expect("must produce an ExecuteResponse");
+        match resp.message {
+            Some(stream_message::Message::ExecuteResponse(r)) => {
+                assert!(
+                    r.success,
+                    "envelope success reflects transport, not the tool outcome"
+                );
+                assert!(
+                    !r.error.trim().is_empty(),
+                    "a blank payload failure must never leave a blank envelope error"
+                );
+                assert!(
+                    r.error.contains("nmap"),
+                    "message should name the tool: {}",
+                    r.error
+                );
+                let patched: serde_json::Value =
+                    deserialize_payload(&r.payload, r.payload_encoding.into())
+                        .expect("deserialize patched payload");
+                assert_eq!(
+                    patched["error"], r.error,
+                    "payload error and envelope error must mirror"
+                );
+                assert_eq!(patched["outcome"], "failed");
             }
             other => panic!("expected ExecuteResponse, got {other:?}"),
         }

@@ -147,31 +147,22 @@ impl PentestTool for NmapTool {
             let target = validate_target(&target)?;
 
             let scan_type = param_str_or(&params, "scan_type", "connect");
-            // The advertised schema declares `ports` as a String, but model
-            // callers frequently emit a JSON array ("80", ["80","443"], [80,443])
-            // — coerce the array shapes onto the comma-joined string the port
-            // resolver already validates, instead of failing the call
-            // (Strike48/matrix#4715, defect 2: adapter must accept the shapes
-            // the model produces).
-            let params = coerce_ports_param(&params);
-            let ports = param_str_or(&params, "ports", "top1000");
-            let service_detection = param_bool(&params, "service_detection", false);
-            let os_detection = param_bool(&params, "os_detection", false);
-            let aggressive = param_bool(&params, "aggressive", false);
-            let timing = param_u64(&params, "timing", 3).clamp(0, 5);
-            let no_ping = param_bool(&params, "no_ping", false);
+            // Model-shaped param resolution (array-shaped `ports`, float-string
+            // `timeout`/`timing`) lives in ONE production helper that the tests
+            // drive directly, so the wiring cannot drift from the guard
+            // (Strike48/matrix#4715, defect 2).
+            let resolved = resolve_scan_params(&params);
+            let ports = resolved.ports;
+            let service_detection = resolved.service_detection;
+            let os_detection = resolved.os_detection;
+            let aggressive = resolved.aggressive;
+            let timing = resolved.timing;
+            let no_ping = resolved.no_ping;
 
             // Calculate smart timeout based on scan parameters.
             // If user provided explicit timeout, use it. Otherwise calculate.
-            //
-            // Detect the user value in EVERY shape the model emits (60, 60.0,
-            // "60", "60.0"): the previous `as_u64()`-only check silently
-            // dropped float and float-string timeouts and fell back to the
-            // auto-calculation (which can be far longer than what was asked
-            // for) — Strike48/matrix#4715, defect 2.
-            let explicit_timeout = param_u64(&params, "timeout", 0);
-            let timeout = if explicit_timeout > 0 {
-                explicit_timeout // User-provided
+            let timeout = if resolved.explicit_timeout > 0 {
+                resolved.explicit_timeout // User-provided
             } else {
                 calculate_timeout(
                     &target,
@@ -509,6 +500,44 @@ async fn validate_nse_scripts<P: CommandExec>(
 /// error in older builds). This joins numeric/string array items with commas
 /// (the same syntax `validate_port_spec` accepts) and passes everything else
 /// through untouched (Strike48/matrix#4715, defect 2).
+/// Resolved scan parameters, in every shape the model emits.
+///
+/// Single source of truth for the model-shaped coercion `execute` applies
+/// (Strike48/matrix#4715, defect 2). The tests drive THIS function, not a
+/// re-implementation of its lines, so a regression in the coercion or the
+/// timeout detection fails the suite instead of passing green beside the
+/// duplicated literals.
+struct ResolvedScanParams {
+    ports: String,
+    service_detection: bool,
+    os_detection: bool,
+    aggressive: bool,
+    timing: u64,
+    no_ping: bool,
+    explicit_timeout: u64,
+}
+
+fn resolve_scan_params(params: &Value) -> ResolvedScanParams {
+    // The advertised schema declares `ports` as a String, but model callers
+    // frequently emit a JSON array ("80", ["80","443"], [80,443]) - coerce
+    // the array shapes onto the comma-joined string the port resolver already
+    // validates, instead of failing the call.
+    let params = coerce_ports_param(params);
+    // Detect the user timeout value in EVERY shape the model emits (60, 60.0,
+    // "60", "60.0"): an `as_u64()`-only check silently drops float and
+    // float-string timeouts and falls back to the auto-calculation (which can
+    // be far longer than what was asked for).
+    ResolvedScanParams {
+        ports: param_str_or(&params, "ports", "top1000"),
+        service_detection: param_bool(&params, "service_detection", false),
+        os_detection: param_bool(&params, "os_detection", false),
+        aggressive: param_bool(&params, "aggressive", false),
+        timing: param_u64(&params, "timing", 3).clamp(0, 5),
+        no_ping: param_bool(&params, "no_ping", false),
+        explicit_timeout: param_u64(&params, "timeout", 0),
+    }
+}
+
 fn coerce_ports_param(params: &Value) -> Value {
     let Value::Object(obj) = params else {
         return params.clone();
@@ -1882,33 +1911,40 @@ mod tests {
         // The exact param shape the engagement agent emitted in the DVWA run
         // (issue comment 5807990952): no_ping, ports as a string, scan_type,
         // timeout and timing as FLOAT-STRINGS. Every field must resolve to the
-        // value the model asked for — previously the float-strings silently
+        // value the model asked for - previously the float-strings silently
         // coerced to the defaults (timing 3 instead of 5, auto timeout
         // instead of 60s) and the deployed build rejected the shape with an
-        // EMPTY error string.
+        // EMPTY error string. Drives the production `resolve_scan_params`
+        // helper (the same one `execute` calls), not a re-implementation.
         let params = json!({
             "no_ping": true,
             "ports": "8081",
             "scan_type": "connect",
-            "target": "10.20.2.105",
+            "target": "192.0.2.105",
             "timeout": "60.0",
             "timing": "5.0",
         });
 
-        let params = coerce_ports_param(&params);
-        assert_eq!(param_str_or(&params, "target", ""), "10.20.2.105");
-        assert_eq!(param_str_or(&params, "scan_type", "connect"), "connect");
-        assert_eq!(param_str_or(&params, "ports", "top1000"), "8081");
-        assert!(param_bool(&params, "no_ping", false));
+        let resolved = resolve_scan_params(&params);
+        assert_eq!(resolved.ports, "8081");
+        assert!(resolved.no_ping);
+        assert_eq!(resolved.timing, 5, "float-string timing must coerce");
         assert_eq!(
-            param_u64(&params, "timing", 3),
-            5,
-            "float-string timing must coerce"
+            resolved.explicit_timeout, 60,
+            "float-string timeout must be honored"
         );
 
-        // The explicit-timeout detection must see float/float-string values
-        // (the pre-fix `as_u64()`-only check dropped them to auto-calc).
-        let explicit_timeout = param_u64(&params, "timeout", 0);
-        assert_eq!(explicit_timeout, 60, "float-string timeout must be honored");
+        // Array-shaped ports coerce onto the joined string.
+        let resolved = resolve_scan_params(&json!({"ports": [80, 443]}));
+        assert_eq!(resolved.ports, "80,443");
+
+        // Bare-number and negative timeouts/timings behave deterministically:
+        // bare 60.0 is honored, negatives fall back to the defaults (never 0).
+        let resolved = resolve_scan_params(&json!({"timeout": 60.0, "timing": -1}));
+        assert_eq!(resolved.explicit_timeout, 60);
+        assert_eq!(
+            resolved.timing, 3,
+            "negative timing must fall back to default"
+        );
     }
 }

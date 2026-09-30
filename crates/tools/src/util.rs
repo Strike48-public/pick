@@ -35,7 +35,9 @@ pub fn param_u64(params: &Value, key: &str, default: u64) -> u64 {
         .get(key)
         .and_then(|v| {
             v.as_u64()
-                .or_else(|| v.as_f64().map(|f| f as u64))
+                // Negative bare numbers fall back to the default too (not a
+                // saturating 0): a negative timeout/timing is never sane.
+                .or_else(|| v.as_f64().filter(|f| *f >= 0.0).map(|f| f as u64))
                 .or_else(|| v.as_str().and_then(parse_number_string))
         })
         .unwrap_or(default)
@@ -243,7 +245,10 @@ mod tests {
         assert_eq!(param_u64(&json!({"n": null}), "n", 42), 42);
         // Negative values are rejected (filtered out) -> default, not 0 and
         // not a panic: a negative timeout/timing is never a sane input.
+        // Both the string shapes and bare JSON numbers must fall back.
         assert_eq!(param_u64(&json!({"n": "-5.0"}), "n", 42), 42);
+        assert_eq!(param_u64(&json!({"n": -5}), "n", 42), 42);
+        assert_eq!(param_u64(&json!({"n": -5.0}), "n", 42), 42);
     }
 
     #[test]

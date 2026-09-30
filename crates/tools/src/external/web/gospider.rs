@@ -63,7 +63,10 @@ impl PentestTool for GospiderTool {
                 ));
             }
 
-            let depth = params.get("depth").and_then(|v| v.as_u64()).unwrap_or(2);
+            // Model callers emit numeric args as float-strings (matrix#4715);
+            // param_u64 coerces them and rejects negatives instead of
+            // silently defaulting.
+            let depth = crate::util::param_u64(&params, "depth", 2);
             let timeout_secs = crate::util::param_u64(&params, "timeout", 120);
 
             let builder = CommandBuilder::new()

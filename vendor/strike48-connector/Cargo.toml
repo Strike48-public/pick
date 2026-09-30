@@ -293,3 +293,8 @@ version = "0.4"
 
 [build-dependencies.tonic-build]
 version = "0.12"
+
+# Vendored-fork marker: makes this directory its own workspace root so
+# `cargo test --lib` can run the SDK unit tests standalone (they are not
+# workspace members; see PATCHES.md).
+[workspace]

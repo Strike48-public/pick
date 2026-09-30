@@ -328,7 +328,7 @@ pub fn encoding_to_string(encoding: PayloadEncoding) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     #[test]
     fn sanitize_failure_payload_patches_blank_failure() {
