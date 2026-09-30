@@ -2,7 +2,7 @@
 //!
 //! This crate provides platform-specific implementations for all pentest capabilities.
 //!
-//! All apps (desktop, web/liveview, mobile, tui) ARE connectors that execute tools locally.
+//! All apps (desktop, web/liveview, mobile) ARE connectors that execute tools locally.
 //! The platform abstraction provides the actual tool implementations.
 
 pub mod common;
