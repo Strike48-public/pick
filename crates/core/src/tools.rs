@@ -1058,7 +1058,7 @@ impl ToolRegistry {
     /// results — the model has nothing to act on ("the model diagnosed blind
     /// all night" is this exact failure), and the operator cannot tell what
     /// went wrong. A blank failure is replaced with a message that names the
-    /// tool and points at the connector pod logs. Successful results and
+    /// tool and points at the connector's logs. Successful results and
     /// failures that already carry a real message are returned untouched.
     fn ensure_actionable_error(tool_name: &str, result: ToolResult) -> ToolResult {
         let has_message = result
@@ -1077,7 +1077,7 @@ impl ToolRegistry {
             );
             ToolResult::error_with_duration(
                 format!(
-                    "Tool '{tool_name}' failed without returning an error message. Check the pick connector pod logs for the underlying failure and retry — if the request was malformed, retry with the tool's documented parameters (a minimal `target` alone is a good starting point)."
+                    "Tool '{tool_name}' failed without returning an error message. Check the pick connector's logs for the underlying failure and retry; if the request was malformed, retry with the tool's documented parameters (a minimal `target` alone is a good starting point)."
                 ),
                 result.duration_ms,
             )

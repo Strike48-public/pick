@@ -159,8 +159,12 @@ RUN set -eux; \
     esac; \
     curl -fsSL -o /tmp/httpx.zip \
         "https://github.com/projectdiscovery/httpx/releases/download/v1.12.0/httpx_1.12.0_linux_${httpx_arch}.zip"; \
+    curl -fsSL -o /tmp/httpx_checksums.txt \
+        "https://github.com/projectdiscovery/httpx/releases/download/v1.12.0/httpx_1.12.0_checksums.txt"; \
+    expected=$(grep "httpx_1.12.0_linux_${httpx_arch}.zip" /tmp/httpx_checksums.txt | awk '{print $1}'); \
+    echo "${expected}  /tmp/httpx.zip" | sha256sum -c -; \
     python3 -c "import zipfile; zipfile.ZipFile('/tmp/httpx.zip').extract('httpx', '/usr/local/bin')"; \
-    rm -f /tmp/httpx.zip; \
+    rm -f /tmp/httpx.zip /tmp/httpx_checksums.txt; \
     chmod +x /usr/local/bin/httpx; \
     httpx -version 2>&1 | grep -q "v1.12.0"
 

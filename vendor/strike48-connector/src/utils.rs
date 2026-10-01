@@ -186,7 +186,7 @@ pub fn sanitize_failure_payload(
 
     let message = format!(
         "Tool '{tool}' failed without returning an error message. Check the connector \
-         pod logs for the underlying failure and retry — if the request was malformed, \
+         logs for the underlying failure and retry; if the request was malformed, \
          retry with the tool's documented parameters (a minimal `target` alone is a \
          good starting point)."
     );
@@ -197,7 +197,7 @@ pub fn sanitize_failure_payload(
     (serde_json::Value::Object(patched), Some(message))
 }
 
-//// Sanitize an identifier so it is safe to use in a connector address.
+/// Sanitize an identifier so it is safe to use in a connector address.
 ///
 /// The Matrix server rejects `tenant_id` / `connector_type` / `instance_id`
 /// values that contain `.`, `:`, tab, space, or newline (those characters
