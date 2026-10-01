@@ -83,7 +83,7 @@ Evidence quality assurance through specialized agents:
 
 Autonomous agents that execute attacker-influenced content need defense against two failure modes: **attacks** (adversarial content hijacking the agent) and **aislop** (AI-generated noise and decoys that grind an agent down, burning tokens on dead ends until it gets stuck in the mud).
 
-We borrowed the defensive playbook from [honeyslop](https://github.com/gadievron/honeyslop): self-identifying markers that make forged output instantly triageable, layered defense-in-depth, provenance consistency checks, bounded iteration budgets, and a CI "doctor" that re-verifies every control on every PR.
+We borrowed the defensive playbook from [honeyslop](https://github.com/gadievron/honeyslop): self-identifying markers that make forged output instantly triageable, layered defense-in-depth, provenance consistency checks, bounded iteration budgets, and a CI "doctor" that re-verifies every control on every PR. Pick adopts that playbook incrementally: each control below is marked shipped or planned, and the CI doctor (C4) is not shipped yet.
 
 In short: agent output must be triageable, agent context must be sanitized, agent work must be budgeted, and agent controls must be CI-verified.
 
