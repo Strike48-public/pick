@@ -960,22 +960,26 @@ mod tests {
 
         let output = String::from_utf8(buffer.0.lock().expect("buffer poisoned").clone())
             .expect("utf8 log output");
-        // On failure, dump the capture next to the panic so the flake's shape
-        // (flat first line vs missing lines) is diagnosable from CI logs.
+        // On failure, dump the capture next to the panic so a future flake is
+        // diagnosable from CI logs.
         let dump = |what: &str| -> String {
             let dir = std::env::temp_dir();
             let _ = std::fs::write(dir.join("pick-482-capture.log"), &output);
             format!("{what} (capture dumped to temp pick-482-capture.log): {output:?}")
         };
-        // The hop emits several [execreq-ctx] lines (summary + per-key). Under
-        // scheduler pressure the FIRST line can surface before the instrumented
-        // span is entered on that poll (observed flake: first line flat, later
-        // lines scoped), so the guard must accept ANY line that carries the
-        // scope, not pin it on the first one.
-        let scoped_ctx_line = output
+        // The hop emits several [execreq-ctx] lines (summary + per-key). With
+        // the interest cache rebuilt above, the span is always live, so EVERY
+        // one of them must carry the scope. Checking all lines (not just any)
+        // is what catches a hop that scopes only part of its output.
+        let ctx_lines: Vec<&str> = output
             .lines()
-            .find(|l| l.contains("[execreq-ctx]") && l.contains("tool_execution{"))
-            .unwrap_or_else(|| panic!("{}", dump("no scoped [execreq-ctx] line")));
+            .filter(|l| l.contains("[execreq-ctx]"))
+            .collect();
+        assert!(!ctx_lines.is_empty(), "{}", dump("no [execreq-ctx] line"));
+        if let Some(flat) = ctx_lines.iter().find(|l| !l.contains("tool_execution{")) {
+            panic!("{}", dump(&format!("unscoped [execreq-ctx] line {flat:?}")));
+        }
+        let scoped_ctx_line = ctx_lines[0];
         for expected in [
             "tool=missing_tool",
             "instance_id=test",
