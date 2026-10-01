@@ -25,9 +25,9 @@ Canonical labels for this repo. Every issue carries **exactly one** label from e
 
 - `area/*`: `frontend`, `orchestrator`, `recon-agent`, `report-agent`, `infrastructure`, `database`, `agent-schema`, `integration`, `c2`
 - `feature/*`: `security`, `evidence-chains`, `pick-integration`, `ai-foundation`, `autopwn`, `post-exploit`, `knowledge-graph`
-- `status/triage`, `status/backlog` (slash spelling only)
 - `mvp/strike-kit`, `persona/ciso`, `persona/pentester`
 - pick only: `source/clearwing`, `source/specialist-gap`, `platform/macos`, `platform/windows`, `platform/android`, `platform/linux-desktop`, `platform/linux-headless`
+- `status/triage` and `status/backlog` are **matrix-only** (canonical schema: `status_matrix_only`) - do not apply them in this repo. The five legacy `status/*` labels this repo already carries (`status/in-progress`, `status/needs-review`, `status/needs-testing`, `status/blocked`, `status/needs-design`) predate the schema; treat them as deprecated and do not add them to new issues.
 
 ## Rules
 
@@ -37,7 +37,7 @@ Canonical labels for this repo. Every issue carries **exactly one** label from e
 4. Issues on [Project 42 (Strike Kit slice)](https://github.com/orgs/Strike48/projects/42) should be fully labeled at triage: product, type, priority, size, plus area/feature as applicable.
 ## Global issue types (org standard - required)
 
-In addition to labels, every issue must carry a GitHub **issue type** (org-wide standard): `Bug`, `Feature`, `Compliance`, `Infrastructure`, `Spike`, `Initiative`, `Epic`, `Task`. The type is a coarse roll-up that mirrors the `type/*` label:
+In addition to labels, every issue must carry a GitHub **issue type** (org-wide standard): `Bug`, `Feature`, `Epic`, `Task`, `Spike`, `Initiative`, `Infrastructure` / `Compliance`. The type is a coarse roll-up that mirrors the `type/*` label:
 
 | `type/*` label (source of truth) | Global issue type |
 |---|---|
@@ -48,4 +48,9 @@ In addition to labels, every issue must carry a GitHub **issue type** (org-wide 
 | `type/docs`, `type/chore`, `type/refactor`, `type/test`, `type/technical-debt` | `Task` |
 | initiative records (`[INIT]` in project-management) | `Initiative` |
 
-Labels remain mandatory: `product/*`, `priority/*`, `size/*`, `area/*`, `feature/*`, and `status/*` have no global-type equivalent. Set the type at filing time (issue templates do this automatically) and keep it in sync when the `type/*` label changes.
+Labels remain mandatory: `product/*`, `priority/*`, `size/*`, `area/*`, and `feature/*` have no global-type equivalent. Keep the type in sync when the `type/*` label changes.
+
+Two repo caveats (verified 2026-09-24):
+
+1. **This repo enables only `Bug`, `Feature` and `Task`.** Every other type is rejected by the API until enabled in repo Settings → General → Issues. Pick epics carry the `type/epic` label until `Epic` is enabled.
+2. **Nothing sets the type automatically here.** This repo has no issue templates (see pick#480, still open), so set the type manually when filing (`gh issue create --type` or the type picker) - do not assume template auto-selection.
