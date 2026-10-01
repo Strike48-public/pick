@@ -64,6 +64,7 @@ pub fn SettingsPage(
     // can find the file support asks for without reading the console.
     let log_dir = pentest_core::logging::log_dir().display().to_string();
     let log_files_kept = pentest_core::logging::LOG_FILES_KEPT;
+    let log_sink_failed = pentest_core::logging::file_sink_failed();
 
     // Track which mode was just saved for visual feedback (bold border)
     let mut just_saved = use_signal(|| None::<ShellMode>);
@@ -1926,6 +1927,11 @@ pub fn SettingsPage(
                             "Pick writes one JSON log file per day and keeps the last {log_files_kept}. When reporting a problem, attach the file for the day it happened."
                         }
                         code { class: "text-dim-xs", "{log_dir}" }
+                        if log_sink_failed {
+                            div { class: "seed-result-error",
+                                "Writing to the log file failed this session (disk full or no permission), so it may be missing recent events."
+                            }
+                        }
                     }
                 }
             }

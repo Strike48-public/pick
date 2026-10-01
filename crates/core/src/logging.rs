@@ -10,8 +10,10 @@
 //! a log can be filtered by `tool_call_id` with one command and parsed by the
 //! diagnostics export (pick#476).
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use tracing::Subscriber;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::registry::LookupSpan;
@@ -46,6 +48,7 @@ pub fn log_dir() -> PathBuf {
 pub fn open_log_appender(log_dir: &Path) -> std::io::Result<RollingFileAppender> {
     std::fs::create_dir_all(log_dir)?;
     restrict_to_owner(log_dir)?;
+    precreate_todays_file(log_dir)?;
     RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
         .filename_prefix(LOG_FILE_PREFIX)
@@ -72,25 +75,52 @@ fn restrict_to_owner(_log_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The JSON-lines file layer.
+/// Create today's file owner-only (`0600`) before the appender opens it.
 ///
-/// One object per event with `timestamp`, `level`, `target`, `fields`, the
-/// current `span` and the enclosing `spans`, so the correlation ids carried by
-/// the tool-execution span land on every line as queryable keys rather than
-/// as text to be parsed out of a prefix.
-/// Wrap a file-sink writer so write failures become visible instead of
-/// silent. `tracing_subscriber`'s fmt layer swallows writer errors: with a
-/// bare `RollingFileAppender`, a disk-full or quota failure stops the file
-/// with no signal anywhere - the operator sees a healthy process and a log
-/// that just stops (review finding on pick#484, probed with RLIMIT_FSIZE).
+/// `tracing_appender` opens with the process umask (usually `0644`) and has
+/// no mode option; it appends to an existing file without changing its mode,
+/// so creating the file first fixes the mode of the file this process starts
+/// writing. A file the appender rolls over to mid-run is still created with
+/// the umask, inside the `0700` directory.
+#[cfg(unix)]
+fn precreate_todays_file(log_dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let name = format!(
+        "{LOG_FILE_PREFIX}.{}.{LOG_FILE_SUFFIX}",
+        chrono::Utc::now().format("%Y-%m-%d")
+    );
+    let path = log_dir.join(name);
+    std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .open(&path)?;
+    // An existing file keeps its old mode through `open`.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn precreate_todays_file(_log_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Wrap a file-sink writer so write failures are visible and never corrupt
+/// a neighbouring record. `tracing_subscriber`'s fmt layer swallows writer
+/// errors: with a bare `RollingFileAppender`, a disk-full or quota failure
+/// stops the file with no signal anywhere, and a write cut short leaves a
+/// partial JSON line that the next record is appended onto (review findings
+/// on pick#484, probed with RLIMIT_FSIZE).
 ///
-/// On the first failure this prints one loud console line and records the
-/// failure in [`FileSinkHealth`]; later writes keep retrying the underlying
-/// sink (so a transient ENOSPC self-heals) and never panic or propagate the
-/// error into the event stream.
+/// Each event is buffered and committed as one line-terminated record. If a
+/// commit fails after some of its bytes landed, the next record starts with a
+/// newline, so the cut-off fragment stays on a line of its own and every
+/// later record parses. The first failure prints one loud console line and
+/// is recorded in [`FileSinkHealth`]; later records keep retrying the
+/// underlying sink (so a transient ENOSPC self-heals) and never panic or
+/// propagate the error into the event stream.
 struct FailLoud<W> {
     inner: W,
-    health: std::sync::Arc<FileSinkHealth>,
+    health: Arc<FileSinkHealth>,
 }
 
 impl<'a, W> fmt::MakeWriter<'a> for FailLoud<W>
@@ -102,45 +132,97 @@ where
     fn make_writer(&'a self) -> Self::Writer {
         FailLoudWriter {
             inner: self.inner.make_writer(),
+            record: Vec::new(),
             health: self.health.clone(),
         }
     }
 }
 
-struct FailLoudWriter<W> {
+/// One event's writer: collects the formatted record and commits it whole
+/// on flush or drop.
+struct FailLoudWriter<W: Write> {
     inner: W,
-    health: std::sync::Arc<FileSinkHealth>,
+    record: Vec<u8>,
+    health: Arc<FileSinkHealth>,
 }
 
-impl<W: std::io::Write> std::io::Write for FailLoudWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match self.inner.write_all(buf) {
-            Ok(()) => Ok(buf.len()),
-            Err(err) => {
-                self.health.failed.store(true, Ordering::Relaxed);
-                if !self.health.reported.swap(true, Ordering::Relaxed) {
-                    eprintln!(
-                        "pick log file sink is failing (IO error: {err}); events are NOT reaching the log file until this resolves"
-                    );
-                }
-                // Report success to the fmt layer: a failed log write must
-                // never take down or corrupt the event stream.
-                Ok(buf.len())
+impl<W: Write> FailLoudWriter<W> {
+    fn commit(&mut self) {
+        if self.record.is_empty() {
+            return;
+        }
+        let mut record = std::mem::take(&mut self.record);
+        // Held across the write so in-process records cannot interleave with
+        // the fragment bookkeeping.
+        let mut fragment_open = self
+            .health
+            .fragment_open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prefixed = *fragment_open;
+        if prefixed {
+            record.insert(0, b'\n');
+        }
+        match write_counted(&mut self.inner, &record) {
+            Ok(()) => *fragment_open = false,
+            Err((written, err)) => {
+                // The line is left open unless exactly the separator newline
+                // landed: nothing at all written with no prefix, or only the
+                // prefix written.
+                *fragment_open = written != usize::from(prefixed);
+                drop(fragment_open);
+                self.health.record_failure(&err);
             }
         }
     }
+}
+
+impl<W: Write> Write for FailLoudWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.record.extend_from_slice(buf);
+        Ok(buf.len())
+    }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
+        self.commit();
+        if let Err(err) = self.inner.flush() {
+            self.health.record_failure(&err);
+        }
+        // A failed log write must never take down the event stream.
+        Ok(())
     }
 }
 
-/// Whether the file sink has dropped events to a write failure. Exposed for
-/// diagnostics surfaces that want to show log-sink health.
+impl<W: Write> Drop for FailLoudWriter<W> {
+    fn drop(&mut self) {
+        self.commit();
+    }
+}
+
+/// `write_all` that reports how many bytes landed before an error.
+fn write_counted(w: &mut impl Write, buf: &[u8]) -> Result<(), (usize, std::io::Error)> {
+    let mut written = 0;
+    while written < buf.len() {
+        match w.write(&buf[written..]) {
+            Ok(0) => return Err((written, std::io::ErrorKind::WriteZero.into())),
+            Ok(n) => written += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err((written, e)),
+        }
+    }
+    Ok(())
+}
+
+/// Whether the file sink has dropped events to a write failure.
+///
+/// The installed sink's handle is kept for the life of the process and read
+/// through [`file_sink_failed`], which the settings Logs card shows.
 #[derive(Default)]
 pub struct FileSinkHealth {
     failed: AtomicBool,
     reported: AtomicBool,
+    /// A failed write left a partial line at the end of the file.
+    fragment_open: Mutex<bool>,
 }
 
 impl FileSinkHealth {
@@ -148,16 +230,44 @@ impl FileSinkHealth {
     pub fn has_failed(&self) -> bool {
         self.failed.load(Ordering::Relaxed)
     }
+
+    fn record_failure(&self, err: &std::io::Error) {
+        self.failed.store(true, Ordering::Relaxed);
+        if !self.reported.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "pick log file sink is failing (IO error: {err}); events are NOT reaching the log file until this resolves"
+            );
+        }
+    }
 }
 
-pub fn json_file_layer<S>(appender: RollingFileAppender) -> impl Layer<S>
+/// Health of the file sink installed by [`init_logging_with_file`].
+static FILE_SINK_HEALTH: OnceLock<Arc<FileSinkHealth>> = OnceLock::new();
+
+/// True when the installed file sink has failed a write this process. False
+/// when it is healthy or when no file sink is installed.
+pub fn file_sink_failed() -> bool {
+    FILE_SINK_HEALTH.get().is_some_and(|h| h.has_failed())
+}
+
+/// The JSON-lines file layer, plus the health handle of its sink.
+///
+/// One object per event with `timestamp`, `level`, `target`, `fields`, the
+/// current `span` and the enclosing `spans`, so the correlation ids carried by
+/// the tool-execution span land on every line as queryable keys rather than
+/// as text to be parsed out of a prefix. The writer is wrapped in
+/// [`FailLoud`], so a write failure is reported and never corrupts a record.
+pub fn json_file_layer<S, W>(writer: W) -> (impl Layer<S>, Arc<FileSinkHealth>)
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
+    W: for<'a> fmt::MakeWriter<'a> + 'static,
 {
-    json_layer(FailLoud {
-        inner: appender,
-        health: std::sync::Arc::new(FileSinkHealth::default()),
-    })
+    let health = Arc::new(FileSinkHealth::default());
+    let layer = json_layer(FailLoud {
+        inner: writer,
+        health: health.clone(),
+    });
+    (layer, health)
 }
 
 fn json_layer<S, W>(writer: W) -> impl Layer<S>
@@ -221,9 +331,12 @@ pub fn init_logging_with_file(default_level: &str) -> Option<PathBuf> {
     let log_dir = log_dir();
     match open_log_appender(&log_dir) {
         Ok(appender) => {
+            let (file_layer, health) = json_file_layer(appender);
+            // Retained so the settings Logs card can say the file stopped.
+            let _ = FILE_SINK_HEALTH.set(health);
             tracing_subscriber::registry()
                 .with(fmt::layer())
-                .with(json_file_layer(appender))
+                .with(file_layer)
                 .with(env_filter(default_level))
                 .init();
             Some(log_dir)
@@ -255,84 +368,160 @@ mod tests {
 
     fn emit_one_round(dir: &Path, f: impl FnOnce()) {
         let appender = open_log_appender(dir).expect("appender opens");
-        let subscriber = tracing_subscriber::registry().with(json_file_layer(appender));
+        let (layer, _health) = json_file_layer(appender);
+        let subscriber = tracing_subscriber::registry().with(layer);
         tracing::subscriber::with_default(subscriber, f);
     }
 
-    /// A sink that succeeds for the first `ok` writes, then fails forever -
-    /// the disk-full shape the review probed with RLIMIT_FSIZE. Local
-    /// newtype so the orphan rules allow the MakeWriter impl.
-    #[derive(Clone)]
-    struct TestSink(std::sync::Arc<FailsAfterN>);
+    /// A disk with an optional size limit, the shape the review probed with
+    /// RLIMIT_FSIZE: a write that crosses the limit lands only the bytes that
+    /// fit, and every later write fails until the limit is lifted. The room
+    /// left is computed with `saturating_sub`, so a full disk stays full.
+    /// Local newtype so the orphan rules allow the MakeWriter impl.
+    #[derive(Clone, Default)]
+    struct FakeDisk(Arc<Mutex<DiskState>>);
 
-    struct FailsAfterN {
-        remaining: std::sync::atomic::AtomicUsize,
-        health: std::sync::Arc<FileSinkHealth>,
+    #[derive(Default)]
+    struct DiskState {
+        bytes: Vec<u8>,
+        limit: Option<usize>,
+        failed_writes: usize,
     }
 
-    impl TestSink {
-        fn new(ok: usize) -> (Self, std::sync::Arc<FileSinkHealth>) {
-            let health = std::sync::Arc::new(FileSinkHealth::default());
-            let sink = Self(std::sync::Arc::new(FailsAfterN {
-                remaining: std::sync::atomic::AtomicUsize::new(ok),
-                health: health.clone(),
-            }));
-            (sink, health)
+    impl FakeDisk {
+        fn state(&self) -> std::sync::MutexGuard<'_, DiskState> {
+            self.0.lock().expect("fake disk poisoned")
+        }
+
+        /// Fill up: allow `extra` more bytes, then fail every write.
+        fn fill_after(&self, extra: usize) {
+            let mut st = self.state();
+            st.limit = Some(st.bytes.len() + extra);
+        }
+
+        fn free_space(&self) {
+            self.state().limit = None;
+        }
+
+        fn contents(&self) -> String {
+            String::from_utf8(self.state().bytes.clone()).expect("utf8 log")
         }
     }
 
-    impl fmt::MakeWriter<'_> for TestSink {
-        type Writer = TestSink;
+    impl fmt::MakeWriter<'_> for FakeDisk {
+        type Writer = FakeDisk;
         fn make_writer(&self) -> Self::Writer {
-            TestSink(self.0.clone())
+            self.clone()
         }
     }
 
-    impl std::io::Write for TestSink {
+    impl Write for FakeDisk {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            if self
-                .0
-                .remaining
-                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
-                == 0
-            {
+            let mut st = self.state();
+            let room = st
+                .limit
+                .map_or(usize::MAX, |limit| limit.saturating_sub(st.bytes.len()));
+            if room == 0 {
+                st.failed_writes += 1;
                 return Err(std::io::Error::other("disk full (simulated)"));
             }
-            Ok(buf.len())
+            let n = buf.len().min(room);
+            st.bytes.extend_from_slice(&buf[..n]);
+            Ok(n)
         }
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
     }
 
-    /// The review's defect shape: writes fail mid-stream (disk full). The
-    /// subscriber must not panic, must keep accepting events (they are
-    /// dropped from the file, never crash the process), and the failure must
-    /// be observable via FileSinkHealth instead of silent.
+    /// Run `f` against the production file layer writing to `disk`.
+    fn with_file_layer(disk: &FakeDisk, f: impl FnOnce()) -> Arc<FileSinkHealth> {
+        let (layer, health) = json_file_layer(disk.clone());
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, f);
+        health
+    }
+
+    /// The review's defect shape: the disk fills mid-record and stays full.
+    /// The subscriber must not panic, must keep retrying every later record
+    /// (each one fails), and the failure must be observable.
     #[test]
     fn write_failures_are_loud_and_never_panic() {
-        let (sink, health) = TestSink::new(2);
-        // Route the sink through the same FailLoud wrapper production uses.
-        let wrapped = FailLoud {
-            inner: sink,
-            health: health.clone(),
-        };
-        let subscriber = tracing_subscriber::registry().with(json_layer(wrapped));
+        let disk = FakeDisk::default();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            tracing::subscriber::with_default(subscriber, || {
-                for i in 0..50 {
+            with_file_layer(&disk, || {
+                tracing::info!(event = 0, "before the disk fills");
+                disk.fill_after(10);
+                for i in 1..50 {
                     tracing::info!(event = i, "survives sink failure");
                 }
-            });
+            })
         }));
-        assert!(
-            result.is_ok(),
-            "a failing file sink must never panic the process"
-        );
+        let health = result.expect("a failing file sink must never panic the process");
         assert!(
             health.has_failed(),
             "the write failure must be observable, not silent"
         );
+        assert_eq!(
+            disk.state().failed_writes,
+            49,
+            "every record after the disk filled must be retried and fail"
+        );
+    }
+
+    /// No corruption: a record cut short by a failed write must not swallow
+    /// the next one. After space frees up, every later record is whole JSON
+    /// on its own line; the only unparseable line is the cut-off fragment.
+    #[test]
+    fn a_failed_partial_write_never_corrupts_the_next_record() {
+        let disk = FakeDisk::default();
+        with_file_layer(&disk, || {
+            tracing::info!(event = 0, "written whole");
+            disk.fill_after(10);
+            for i in 1..5 {
+                tracing::info!(event = i, "dropped while the disk is full");
+            }
+            disk.free_space();
+            for i in 5..10 {
+                tracing::info!(event = i, "written after recovery");
+            }
+        });
+
+        let contents = disk.contents();
+        let (parsed, fragments): (Vec<_>, Vec<_>) = contents
+            .lines()
+            .map(|l| (l, serde_json::from_str::<serde_json::Value>(l)))
+            .partition(|(_, r)| r.is_ok());
+        let events: Vec<u64> = parsed
+            .into_iter()
+            .map(|(_, r)| r.unwrap()["fields"]["event"].as_u64().expect("event"))
+            .collect();
+        assert_eq!(events, vec![0, 5, 6, 7, 8, 9], "file was:\n{contents}");
+        assert_eq!(fragments.len(), 1, "one cut-off fragment: {contents}");
+        assert_eq!(
+            fragments[0].0.len(),
+            10,
+            "fragment is the 10 bytes that fit"
+        );
+        assert!(contents.ends_with('\n'), "file ends on a whole line");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn log_file_is_created_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        emit_one_round(tmp.path(), || tracing::info!("mode probe"));
+
+        let files = log_files(tmp.path());
+        assert_eq!(files.len(), 1, "{files:?}");
+        let mode = std::fs::metadata(&files[0])
+            .expect("file metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "log file must not be group/world readable");
     }
 
     fn json_lines(path: &Path) -> Vec<serde_json::Value> {
@@ -429,4 +618,3 @@ mod tests {
         assert!(!err.to_string().is_empty());
     }
 }
-// (appended below in place via edit)
