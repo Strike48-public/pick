@@ -351,7 +351,7 @@ impl PentestTool for PortScanTool {
                             // it is not prefixed onto the message (pick#476).
                             errors.push(json!({
                                 "host": host,
-                                "error": pentest_core::error::source_chain(&e),
+                                "error": e.chain(),
                             }))
                         }
                     }

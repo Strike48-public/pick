@@ -159,9 +159,11 @@ impl Error {
 /// `: `, skipping a segment that merely restates the text so far.
 ///
 /// Public so a tool site holding a foreign error (not an [`Error`]) can render
-/// the same underlying cause detail — TLS, DNS, connection refused — that the
+/// the same underlying cause detail - TLS, DNS, connection refused - that the
 /// boundary [`Error::chain`] produces, instead of a bare top-line
-/// `to_string()`.
+/// `to_string()`. For an [`Error`] use [`Error::chain`] instead: it also sees
+/// the causes attached with [`Error::with_source`], which this walk of
+/// `source()` alone can drop when they are stacked.
 pub fn source_chain(err: &dyn std::error::Error) -> String {
     let mut rendered = String::new();
     push_source_chain(&mut rendered, err);
