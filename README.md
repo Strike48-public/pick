@@ -200,7 +200,7 @@ Environment variables:
 
 1. You run one of the apps (desktop, web, headless, mobile)
 2. The app connects to the Strike48 backend and registers as a connector
-3. The app presents a UI for manual tool execution
+3. Apps with a UI (desktop, web, mobile) present it for manual tool execution; headless has no local UI
 4. Tools can also be triggered remotely via the Strike48 API (e.g., by an AI agent)
 5. All tool execution happens locally on the machine running the app
 
