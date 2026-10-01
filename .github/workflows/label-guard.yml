@@ -7,6 +7,12 @@ on:
 permissions:
   issues: write
 
+# Serialize runs per issue so near-simultaneous events (labeled + unlabeled
+# during triage) cannot both miss the marker comment and double-post.
+concurrency:
+  group: label-guard-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
 jobs:
   guard:
     runs-on: ubuntu-latest
@@ -45,7 +51,9 @@ jobs:
             if (context.payload.issue.state === 'closed') return;
             const { data: fresh } = await github.rest.issues.get({
               owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number });
-            const labels = (fresh.labels || []).map(l => (typeof l === 'string' ? l : l.name));
+            const labels = (fresh.labels || [])
+              .map(l => (typeof l === 'string' ? l : l && l.name))
+              .filter(Boolean);
 
             const missing = [];
             const problems = [];
@@ -64,32 +72,41 @@ jobs:
               }
             }
 
-            // Label/type mirroring: only enforced when the mapped issue type is
-            // one this repo actually enables.
+            // Issue type presence and label/type mirroring. Both are enforced
+            // only when the mapped issue type is one this repo enables; a
+            // type/epic or type/research issue may stay untyped until Epic and
+            // Spike exist. With no canonical type/* label there is nothing to
+            // map, so an issue type is simply required.
             const typeLabel = labels.find(l => Object.keys(TYPE_MIRROR).includes(l));
             const issueType = fresh.type && fresh.type.name;
-            if (typeLabel && issueType) {
-              const expected = TYPE_MIRROR[typeLabel];
-              if (expected !== issueType && ENABLED_TYPES.has(expected)) {
-                problems.push(`issue type '${issueType}' does not mirror '${typeLabel}' (expected '${expected}')`);
+            const expected = typeLabel ? TYPE_MIRROR[typeLabel] : null;
+            const typeRequired = !typeLabel || ENABLED_TYPES.has(expected);
+            if (!issueType) {
+              if (typeRequired) {
+                missing.push(expected ? `issue type (${expected})` : 'issue type (Bug / Feature / Task)');
               }
+            } else if (typeLabel && expected !== issueType && ENABLED_TYPES.has(expected)) {
+              problems.push(`issue type '${issueType}' does not mirror '${typeLabel}' (expected '${expected}')`);
             }
 
             const marker = '<!-- label-guard -->';
             let body = marker + '\n### Label guard\n\n';
             if (missing.length || problems.length) {
               const parts = [];
-              if (missing.length) parts.push('Missing required families: ' + missing.map(m => '`' + m + '`').join(', '));
+              if (missing.length) parts.push('Missing: ' + missing.map(m => '`' + m + '`').join(', '));
               parts.push(...problems.map(p => '- ' + p));
-              body += parts.join('\n') + '\n\nSee [.github/LABELS.md](./.github/LABELS.md) for the canonical schema. '
-                + 'Exactly one label per required family (product, type, priority, size); the issue type mirrors the `type/*` label '
-                + '(enforced only for Bug/Feature/Task, the types this repo enables). '
-                + '`area/*` and `feature/*` are optional; `status/*` labels are matrix-only and deprecated here.';
+              body += parts.join('\n') + '\n\nSee [.github/LABELS.md](https://github.com/Strike48-public/pick/blob/main/.github/LABELS.md) for the canonical schema. '
+                + 'Required: exactly one canonical label each from `product/`, `type/`, `priority/` and `size/`, plus the issue type '
+                + 'the `type/*` label maps to when that type is Bug, Feature or Task (the only types this repo has; '
+                + '`type/epic` and `type/research` issues may stay untyped). '
+                + '`area/*` and `feature/*` are optional but encouraged. `status/triage` and `status/backlog` are matrix-only, '
+                + 'and the legacy `status/*` labels here are deprecated.';
             } else {
-              body += 'All required label families carry exactly one canonical value, and the issue type mirrors the `type/*` label. Thank you.';
+              body += 'All required label families carry exactly one canonical value, and the issue type is set and mirrors the `type/*` label where this repo supports it. Thank you.';
             }
 
-            const { data: comments } = await github.rest.issues.listComments({
+            // Paginate: the marker comment may sit past the first page.
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner, repo: context.repo.repo,
               issue_number: context.issue.number, per_page: 100 });
             const existing = comments.find(c => c.body && c.body.includes(marker));
