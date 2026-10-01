@@ -7,7 +7,7 @@
 
 ---
 
-> **Vision / Roadmap — not current-state.** This document describes the aspirational
+> **Vision / Roadmap - not current-state.** This document describes the aspirational
 > Pick + StrikeKit ecosystem architecture, including integrations and components that are
 > planned but not yet implemented. For the authoritative description of what Pick actually
 > does today, see [ARCHITECTURE.md](../ARCHITECTURE.md) at the repository root.
