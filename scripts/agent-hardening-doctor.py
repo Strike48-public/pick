@@ -43,9 +43,13 @@ How it verifies (review #453, S4/F3):
   call must live inside push_evidence / the seed builders / the connector
   execute path), so deleting the real call while leaving `#[cfg(test)]`
   call-sites in place still fails.
+- All anchored patterns of a check must sit together in ONE production
+  function body; same-named functions are never pooled, so the anchors
+  cannot be split between a gutted function and a decoy.
 - `#[cfg(test)]` items and modules are removed before function bodies are
-  extracted, so a same-named function inside a test module cannot stand in
-  for the production one.
+  extracted (for both anchored and anchored_every checks), so a same-named
+  function inside a test module cannot stand in for the production one, and
+  a test-only seed-builder helper does not trip c1.2.
 - `--self-test` exercises the evasion modes against throwaway fixtures,
   checks each check's pattern count against a pinned table, then knocks out
   every pattern of every check in turn and requires that check to fail, so
@@ -84,11 +88,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #                  truth for paths; drives run() so there is no second copy)
 #   file_patterns- regexes that must appear anywhere in the (comment-stripped)
 #                  file
-#   anchored     - list of (fn_name_regex, [patterns]); each pattern must appear
-#                  inside the body of a PRODUCTION function whose name matches
-#                  fn_name_regex, in the same file. This defeats "delete the real
-#                  call, keep the #[cfg(test)] call" because test call-sites live
-#                  in other functions.
+#   anchored     - list of (fn_name_regex, [patterns]); at least ONE PRODUCTION
+#                  function whose name matches fn_name_regex must contain every
+#                  pattern in its own body (bodies are never pooled), in the same
+#                  file. This defeats "delete the real call, keep the
+#                  #[cfg(test)] call" because test call-sites live in other
+#                  functions, and "split the anchors across two same-named fns".
 #   anchored_every - list of (fn_name_regex, [patterns]); like `anchored`, but
 #                  EVERY production function whose name matches fn_name_regex
 #                  must contain every pattern (and at least one such function
@@ -117,9 +122,11 @@ CHECKS: list[dict] = [
         # anchored) means EVERY matching builder must be wired, so a future
         # seed builder added without the neutralize call fails the doctor
         # instead of passing green beside the wired ones.
+        # The trailing \w* also covers suffixed names (build_x_seed_message_v2),
+        # so renaming a builder with a suffix does not drop it from the class.
         "anchored_every": [
             (
-                r"build_\w*seed_message",
+                r"build_\w*seed_message\w*",
                 [r"neutralize_manifest_for_seed\(&mut value\)\s*;"],
             ),
         ],
@@ -366,10 +373,27 @@ def _extract_all_fn_bodies(text: str, name_regex: str) -> list[str]:
     return bodies
 
 
-def _extract_fn_bodies(text: str, name_regex: str) -> str:
-    """Return the concatenated bodies of every `fn <name_regex>(...)` definition
-    in `text` (comment-stripped input expected)."""
-    return "\n".join(_extract_all_fn_bodies(text, name_regex))
+def _missing_in_one_body(
+    rel: str, prod_text: str, fn_regex: str, patterns: list[str]
+) -> list[str]:
+    """`anchored` semantics: at least ONE production fn matching `fn_regex` must
+    contain EVERY pattern in its own body. Bodies are never pooled, so the
+    anchors cannot be split across two same-named fns (one gutted, one decoy).
+    Several definitions may legitimately share a name (cfg-gated platform
+    variants, `execute` beside `execute_with_context`), so this is "some body
+    holds all", not "every body holds all". On failure, report what the
+    closest body lacks."""
+    bodies = _extract_all_fn_bodies(prod_text, fn_regex)
+    if not bodies:
+        return [f"{rel}: production fn /{fn_regex}/ not found"]
+    gaps = [[p for p in patterns if re.search(p, b) is None] for b in bodies]
+    best = min(gaps, key=len)
+    if not best:
+        return []
+    where = f"fn /{fn_regex}/" if len(bodies) == 1 else (
+        f"any single one of {len(bodies)} fns /{fn_regex}/"
+    )
+    return [f"{rel}: not found in {where}: {pat}" for pat in best]
 
 
 def _next_body_brace(text: str, start: int) -> int:
@@ -430,15 +454,9 @@ def _missing_for_check(check: dict, root: Path) -> list[str]:
                 missing.append(f"{rel}: not found: {pat}")
         prod_text = _strip_cfg_test(text)
         for fn_regex, patterns in check.get("anchored", []):
-            body = _extract_fn_bodies(prod_text, fn_regex)
-            if not body:
-                missing.append(f"{rel}: production fn /{fn_regex}/ not found")
-                continue
-            for pat in patterns:
-                if re.search(pat, body) is None:
-                    missing.append(f"{rel}: not found in fn /{fn_regex}/: {pat}")
+            missing.extend(_missing_in_one_body(rel, prod_text, fn_regex, patterns))
         for fn_regex, patterns in check.get("anchored_every", []):
-            bodies = _extract_all_fn_bodies(text, fn_regex)
+            bodies = _extract_all_fn_bodies(prod_text, fn_regex)
             if not bodies:
                 missing.append(f"{rel}: production fn /{fn_regex}/ not found")
                 continue
@@ -478,6 +496,10 @@ def run(root: Path) -> bool:
 # (5) knocks out each pattern of each check in turn and requires that check
 # to fail. Weakening a check therefore needs a second, visible edit to the
 # pinned table; the self-test cannot stop a PR that makes both edits.
+# Modes (6)-(13) cover the c1.2 builder class and the c2.1 gate: an unwired
+# new, suffixed or production-mod builder fails; anchors split across two
+# same-named gates fail; each is paired with a benign counterpart (wired
+# builder, test-mod builder, same-named platform variant) that stays green.
 # ------------------------------------------------------------------
 
 # Minimal fixture files (regex-scanned, not compiled): one production call
@@ -634,6 +656,15 @@ _FIXTURES = {
 # The one production call site that both evasion modes target.
 _GUARDED_CALL = "    let report = sanitize_node_fields(&mut node);\n"
 
+# The fixture gate's rejection block, removed by the split-anchor mode (8).
+_GATE_REJECTION = """\
+    if !injection_flagged.is_empty() {
+        return Err(GateError::InjectionFlaggedNodes {
+            ids: injection_flagged,
+        });
+    }
+"""
+
 
 def _write_fixture(root: Path) -> None:
     for rel, content in _FIXTURES.items():
@@ -744,6 +775,80 @@ def _self_test() -> bool:
             encoding="utf-8",
         )
         expect(run(root), True, "new seed builder wired correctly")
+
+        # Round-4 review shapes. Each evasion is paired with a benign
+        # counterpart so the fix cannot be a blanket "any duplicate fails".
+        unwired_builder = (
+            "    pub fn build_helper_seed_message(manifest: &Manifest) -> String {\n"
+            "        serde_json::to_string(manifest).unwrap_or_default()\n"
+            "    }\n"
+        )
+        assert _GATE_REJECTION in orch_good, "fixture drifted from the gate-rejection constant"
+
+        print("self-test 8: c2.1 anchors split across two same-named fns must fail")
+        _write_fixture(root)
+        orch.write_text(
+            orch_good.replace(_GATE_REJECTION, "", 1)
+            + "\nmod gate_wiring {\n"
+            + "    pub fn gate_for_report() -> GateError {\n"
+            + "        GateError::InjectionFlaggedNodes { nodes: Vec::new() }\n"
+            + "    }\n}\n",
+            encoding="utf-8",
+        )
+        expect(run(root), False, "gate read in one fn, rejection in a same-named decoy")
+
+        print("self-test 9: intact gate plus a same-named platform variant stays green")
+        _write_fixture(root)
+        orch.write_text(
+            orch_good
+            + '\n#[cfg(target_arch = "wasm32")]\n'
+            + "pub fn gate_for_report(_nodes: &[EvidenceNode]) -> Result<Manifest, GateError> {\n"
+            + "    Ok(Manifest::default())\n}\n",
+            encoding="utf-8",
+        )
+        expect(run(root), True, "second same-named gate beside the intact one")
+
+        print("self-test 10: unwired seed builder inside a #[cfg(test)] mod stays green")
+        _write_fixture(root)
+        orch.write_text(
+            orch_good + "\n#[cfg(test)]\nmod seed_helpers {\n" + unwired_builder + "}\n",
+            encoding="utf-8",
+        )
+        expect(run(root), True, "test-only seed builder without the neutralize call")
+
+        print("self-test 11: the same unwired builder in a production mod must fail")
+        _write_fixture(root)
+        orch.write_text(
+            orch_good + "\nmod seed_helpers {\n" + unwired_builder + "}\n",
+            encoding="utf-8",
+        )
+        expect(run(root), False, "production seed builder without the neutralize call")
+
+        print("self-test 12: suffixed rename of an unwired builder must fail")
+        _write_fixture(root)
+        orch.write_text(
+            orch_good.replace(
+                "fn build_validator_seed_message(", "fn build_validator_seed_message_v2(", 1
+            ).replace(
+                "    let injection_suspected = neutralize_manifest_for_seed(&mut value);\n"
+                "    let _ = injection_suspected;\n"
+                "    Ok(String::new())",
+                "    Ok(String::new())",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        expect(run(root), False, "build_validator_seed_message_v2 without the neutralize call")
+
+        print("self-test 13: suffixed rename of a wired builder stays green")
+        _write_fixture(root)
+        orch.write_text(
+            orch_good.replace(
+                "fn build_validator_seed_message(", "fn build_validator_seed_message_v2(", 1
+            ),
+            encoding="utf-8",
+        )
+        expect(run(root), True, "build_validator_seed_message_v2 still wired")
 
     return ok
 
