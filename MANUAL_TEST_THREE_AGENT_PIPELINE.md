@@ -106,9 +106,9 @@ If the Validator doesn't have access to evidence or update functions, file this 
 
 Inspect the JSON manifest in the Report Agent conversation. Check that:
 
-No secrets visible in `effective_command` fields
-Commands are properly redacted
-Response excerpts are truncated to ~2KB
+- No secrets visible in `effective_command` fields
+- Commands are properly redacted
+- Response excerpts are truncated to ~2KB
 
 ---
 

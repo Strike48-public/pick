@@ -231,8 +231,8 @@ rm ~/tmp/pentest.log
 
 | Method | Complexity | Flexibility | Setup Time |
 |--------|-----------|-------------|------------|
-| `./run-pentest.sh` | Simple | Medium | 1 minute |
-| `just run-headless-env` | Easy | High | 1 minute |
+| `./run-pentest.sh` | Very simple | Medium | 1 minute |
+| `just run-headless-env` | Simple | High | 1 minute |
 | Manual env vars | Complex | Full | 0 minutes |
 
 **Recommendation**: Start with `./run-pentest.sh` or `just run-headless-env`
