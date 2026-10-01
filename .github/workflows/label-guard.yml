@@ -14,19 +14,81 @@ jobs:
       - uses: actions/github-script@v7
         with:
           script: |
+            // Canonical schema: .github/LABELS.md (keep these lists in sync
+            // when LABELS.md changes). Exactly ONE label per required family,
+            // and the value must be one of the listed forms.
+            const REQUIRED = {
+              'product/': ['product/pick', 'product/strikekit', 'product/matrix'],
+              'type/': ['type/bug', 'type/feature', 'type/enhancement', 'type/epic',
+                        'type/docs', 'type/chore', 'type/refactor', 'type/research',
+                        'type/technical-debt', 'type/test'],
+              'priority/': ['priority/P0', 'priority/P1', 'priority/P2', 'priority/P3', 'priority/P4'],
+              'size/': ['size/XS', 'size/S', 'size/M', 'size/L', 'size/XL'],
+            };
+            // Family -> GitHub issue type. pick only enables Bug/Feature/Task,
+            // so mirroring is enforced only where the mapped type exists here;
+            // a type/epic label with no Epic issue type is not a mismatch yet.
+            const TYPE_MIRROR = {
+              'type/bug': 'Bug',
+              'type/feature': 'Feature',
+              'type/enhancement': 'Feature',
+              'type/epic': 'Epic',
+              'type/research': 'Spike',
+              'type/docs': 'Task',
+              'type/chore': 'Task',
+              'type/refactor': 'Task',
+              'type/test': 'Task',
+              'type/technical-debt': 'Task',
+            };
+            const ENABLED_TYPES = new Set(['Bug', 'Feature', 'Task']);
+
             if (context.payload.issue.state === 'closed') return;
             const { data: fresh } = await github.rest.issues.get({
               owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number });
-            const required = ['product/', 'type/', 'priority/', 'size/'];
             const labels = (fresh.labels || []).map(l => (typeof l === 'string' ? l : l.name));
-            const missing = required.filter(fam => !labels.some(l => l.startsWith(fam)));
-            if (!fresh.type || !fresh.type.name) missing.push('issue type (Bug / Feature / Epic / Task / ...)');
+
+            const missing = [];
+            const problems = [];
+            for (const [fam, values] of Object.entries(REQUIRED)) {
+              const inFamily = labels.filter(l => l.startsWith(fam));
+              if (inFamily.length === 0) {
+                missing.push(fam);
+                continue;
+              }
+              if (inFamily.length > 1) {
+                problems.push(`${fam} has ${inFamily.length} labels (${inFamily.join(', ')}) - exactly one required`);
+              }
+              const unknown = inFamily.filter(l => !values.includes(l));
+              if (unknown.length) {
+                problems.push(`${fam} value not in the canonical schema: ${unknown.join(', ')}`);
+              }
+            }
+
+            // Label/type mirroring: only enforced when the mapped issue type is
+            // one this repo actually enables.
+            const typeLabel = labels.find(l => Object.keys(TYPE_MIRROR).includes(l));
+            const issueType = fresh.type && fresh.type.name;
+            if (typeLabel && issueType) {
+              const expected = TYPE_MIRROR[typeLabel];
+              if (expected !== issueType && ENABLED_TYPES.has(expected)) {
+                problems.push(`issue type '${issueType}' does not mirror '${typeLabel}' (expected '${expected}')`);
+              }
+            }
+
             const marker = '<!-- label-guard -->';
-            const body = marker + '\n### Label guard' + '\n\n' +
-              (missing.length
-                ? 'Missing required: ' + missing.map(m => '`' + m + '`').join(', ') +
-                  '. See [.github/LABELS.md](./.github/LABELS.md) for the canonical schema. Priority and size ride on labels, not board fields; the issue type mirrors the `type/*` label.'
-                : 'All required label families and the issue type are present. Thank you.');
+            let body = marker + '\n### Label guard\n\n';
+            if (missing.length || problems.length) {
+              const parts = [];
+              if (missing.length) parts.push('Missing required families: ' + missing.map(m => '`' + m + '`').join(', '));
+              parts.push(...problems.map(p => '- ' + p));
+              body += parts.join('\n') + '\n\nSee [.github/LABELS.md](./.github/LABELS.md) for the canonical schema. '
+                + 'Exactly one label per required family (product, type, priority, size); the issue type mirrors the `type/*` label '
+                + '(enforced only for Bug/Feature/Task, the types this repo enables). '
+                + '`area/*` and `feature/*` are optional; `status/*` labels are matrix-only and deprecated here.';
+            } else {
+              body += 'All required label families carry exactly one canonical value, and the issue type mirrors the `type/*` label. Thank you.';
+            }
+
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner, repo: context.repo.repo,
               issue_number: context.issue.number, per_page: 100 });
