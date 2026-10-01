@@ -10,7 +10,7 @@
 Pick is a multi-platform penetration testing connector that bridges Strike48 (orchestration control plane) with local security tools. Each Pick instance IS a connector - it registers with Strike48 and executes tools locally on the machine where it runs.
 
 **Architecture philosophy:**
-- Each app (desktop, mobile, headless) is an independent connector
+- Each app (desktop, web, mobile, headless) is an independent connector
 - Tools execute on the connector's host machine, not remotely
 - Evidence flows back to Strike48 for aggregation and analysis
 - Three-agent validation pipeline ensures evidence quality
