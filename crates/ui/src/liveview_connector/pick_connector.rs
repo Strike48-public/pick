@@ -913,13 +913,30 @@ mod tests {
         }
 
         let buffer = Capture::default();
-        let subscriber =
+        // Root cause of the flake (reproduced 7x, capture-dump diagnosed): the
+        // `tool_execution` span callsite is SHARED with other tests in this
+        // binary that execute the same hop without a subscriber. If one of
+        // them executes the callsite first, callsite registration caches
+        // Interest::NEVER (Rebuilder::JustOne consults only get_default on
+        // the registering thread - no subscriber there), and every span from
+        // that callsite is afterwards a no-op: the hop's lines lose their
+        // span context entirely. set_default's own rebuild only covers
+        // callsites registered before it, so it cannot heal a poison that
+        // lands after. Warm up the callsite under our subscriber, then force
+        // a full interest-cache rebuild with a second set_default
+        // (register_dispatch re-evaluates EVERY registered callsite against
+        // this thread's dispatch), which restores Interest::ALWAYS even for
+        // an already-poisoned callsite.
+        let make_subscriber = || {
             tracing_subscriber::registry().with(pentest_core::logging::apply_span_policy(
                 tracing_subscriber::fmt::layer()
                     .with_ansi(false)
                     .with_writer(buffer.clone()),
-            ));
-        let _guard = tracing::subscriber::set_default(subscriber);
+            ))
+        };
+        let _guard = tracing::subscriber::set_default(make_subscriber());
+        let _warmup = pentest_core::spans::tool_execution_span("warmup", "test", &HashMap::new());
+        let _rebuild = tracing::subscriber::set_default(make_subscriber());
 
         let connector = test_connector();
         let ctx: HashMap<String, String> = [
@@ -943,21 +960,31 @@ mod tests {
 
         let output = String::from_utf8(buffer.0.lock().expect("buffer poisoned").clone())
             .expect("utf8 log output");
-        // A pre-existing line from inside the hop inherits the span fields.
-        let ctx_line = output
+        // On failure, dump the capture next to the panic so the flake's shape
+        // (flat first line vs missing lines) is diagnosable from CI logs.
+        let dump = |what: &str| -> String {
+            let dir = std::env::temp_dir();
+            let _ = std::fs::write(dir.join("pick-482-capture.log"), &output);
+            format!("{what} (capture dumped to temp pick-482-capture.log): {output:?}")
+        };
+        // The hop emits several [execreq-ctx] lines (summary + per-key). Under
+        // scheduler pressure the FIRST line can surface before the instrumented
+        // span is entered on that poll (observed flake: first line flat, later
+        // lines scoped), so the guard must accept ANY line that carries the
+        // scope, not pin it on the first one.
+        let scoped_ctx_line = output
             .lines()
-            .find(|l| l.contains("[execreq-ctx]"))
-            .unwrap_or_else(|| panic!("no context line in {output:?}"));
+            .find(|l| l.contains("[execreq-ctx]") && l.contains("tool_execution{"))
+            .unwrap_or_else(|| panic!("{}", dump("no scoped [execreq-ctx] line")));
         for expected in [
-            "tool_execution{",
             "tool=missing_tool",
             "instance_id=test",
             "request_id=req-1",
             "tool_call_id=call-1",
         ] {
             assert!(
-                ctx_line.contains(expected),
-                "missing {expected} in {ctx_line}"
+                scoped_ctx_line.contains(expected),
+                "missing {expected} in {scoped_ctx_line}"
             );
         }
         assert!(
