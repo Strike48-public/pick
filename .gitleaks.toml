@@ -14,3 +14,13 @@ paths = [
     '''crates/cyberchef/src/recipes/library\.rs''',
     '''crates/ui/src/components/cyberchef_page\.rs'''
 ]
+
+# Test-only RSA private key, vendored byte-identical from the upstream SDK
+# (Strike48/sdk-rs crates/connector/test_fixtures/legacy_rsa_key.pem, also
+# shipped in the public strike48-connector crates.io package). It is read only
+# by two #[cfg(test)] tests in vendor/strike48-connector/src/auth/ott_provider.rs
+# and is not a credential for any live system. Scoped to this single file; it
+# does not exempt any other path. See vendor/strike48-connector/PATCHES.md.
+[[allowlists]]
+description = "Vendored SDK test-only RSA key fixture"
+paths = ['''^vendor/strike48-connector/test_fixtures/legacy_rsa_key\.pem$''']
