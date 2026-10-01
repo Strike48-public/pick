@@ -15,13 +15,28 @@ use std::path::{Path, PathBuf};
 /// appears in this source file.
 fn denylist() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("internal hostname (build host)", concat!("discoball", ".strike48.engineering")),
-        ("internal hostname (demo host)", concat!("jt-demo", "-01.strike48.engineering")),
-        ("internal hostname (default ws)", concat!("default", ".strike48.engineering")),
-        ("shared lab SSH password", concat!("sshpass -p ", "engineering")),
+        (
+            "internal hostname (build host)",
+            concat!("discoball", ".strike48.engineering"),
+        ),
+        (
+            "internal hostname (demo host)",
+            concat!("jt-demo", "-01.strike48.engineering"),
+        ),
+        (
+            "internal hostname (default ws)",
+            concat!("default", ".strike48.engineering"),
+        ),
+        (
+            "shared lab SSH password",
+            concat!("sshpass -p ", "engineering"),
+        ),
         ("workstation absolute path", concat!("/home/", "jtomek")),
         ("workstation absolute path", concat!("/home/", "jadams")),
-        ("captured tenant UUID", concat!("019f86b4", "-d2bf-7f56-89cf-30485d8a956b")),
+        (
+            "captured tenant UUID",
+            concat!("019f86b4", "-d2bf-7f56-89cf-30485d8a956b"),
+        ),
         ("captured realm slug", concat!("personal-", "f668ca45dbb0")),
         ("captured OTT token", concat!("ott_", "8Ucs8wG8RRMX")),
     ]
