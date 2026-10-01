@@ -90,9 +90,9 @@ On the host that will run the connector:
 | Outbound HTTPS to Studio | 443 to your Studio hostname | `curl -sS -o /dev/null -w '%{http_code}\n' https://<your-studio-host>/` prints `302` or `200` |
 | Outbound HTTPS to authentication | 443 to your Strike48 authentication hostname | `curl -sS -o /dev/null -w '%{http_code}\n' https://<your-auth-host>/` prints a 2xx or 3xx code |
 | Outbound HTTPS to the image registry | 443 to `ghcr.io` and `pkg-containers.githubusercontent.com`, which serves the image layers | `docker pull ghcr.io/strike48-public/pick:0.1.10` |
-| Outbound HTTPS to GitHub releases, install time only | 443 to `github.com` and `release-assets.githubusercontent.com`, which the release download redirects to | the `curl` commands in step 1 succeed |
+| Outbound HTTPS to GitHub, install time and at run time | 443 to `github.com` and `release-assets.githubusercontent.com`, which the release download redirects to; nuclei downloads its templates from GitHub at run time (see [What leaves your network](#what-leaves-your-network)) | the `curl` commands in step 1 succeed; nuclei template updates work |
 | Disk | 8 GB free | `df -h /var/lib/docker` (the `0.1.10` image is about 1.2 GB to download on arm64 and 1.4 GB on amd64, and about 5 GB once unpacked) |
-| Memory | 2 GB minimum, 4 GB recommended | `free -h`. Measured with the `0.1.10` image against one web target: a full-port nmap scan with version detection peaked at 42 MB, and nuclei with its default templates at about 850 MB, including its first template download. Tools the agent runs in parallel add up, and nuclei grows with concurrency and target count |
+| Memory | 2 GB (recommended floor), 4 GB comfortable | `free -h`. Guidance, not a measured minimum. Measured with the `0.1.10` image against one web target: a full-port nmap scan with version detection peaked at 42 MB, and nuclei with its default templates at about 850 MB, including its first template download. Tools the agent runs in parallel add up, and nuclei grows with concurrency and target count |
 | CPU | 2 vCPUs or more | `nproc`. Not a hard minimum; scans take longer on fewer cores |
 | Clock | synchronised by NTP or your hypervisor's time sync | `timedatectl` shows `System clock synchronized: yes`. See [Keep the clock in sync](#keep-the-clock-in-sync) |
 | Privileges | member of the `docker` group, or root | `docker ps` |
@@ -424,9 +424,9 @@ stamped with the container's current time, valid for 60 seconds, and exchanges
 it at your authentication host for a token. It treats a token as expired 30
 seconds before its expiry time. Drift breaks this in either direction:
 
-- **Clock ahead of the authentication host, by any amount.** The
-  authentication host allows no leeway for a timestamp in the future, and the
-  log shows:
+- **Clock ahead of the authentication host, by any amount.** Observed on a
+  customer host: the authentication host allows no leeway for a timestamp in
+  the future, and the log shows:
 
   ```
   Token request rejected (400 Bad Request): {"error":"invalid_client","error_description":"Token was issued in the future"}
@@ -436,7 +436,8 @@ seconds before its expiry time. Drift breaks this in either direction:
   expired by the authentication host's clock, and the error may not mention
   time.
 
-The WebSocket registration does not carry the token, so the log can still say
+When the token request fails, the connector registers without a token
+(`RegisterConnectorRequest.jwt_token` is empty), so the log can still say
 `Registered successfully` and the gateway can still appear in Studio while
 every authenticated call fails. The connector keeps retrying on its own;
 nothing is lost and no re-approval is needed once the clock is right.
@@ -987,9 +988,9 @@ read from the connector's source and were not exercised against an appliance.
 The network requirements (including IPv6, clock, endpoint security, virtual
 machine, and authorization), host networking, Docker Desktop on Windows, and
 what-leaves-your-network sections describe Docker's and hypervisors'
-documented behaviour and the connector's source; they were not exercised in
-that run. The memory figures were measured separately against a single test
-target. The Studio steps in [5. Approve in Studio](#5-approve-in-studio)
+documented behaviour, the connector's source, and operational guidance; they
+were not exercised in that run. The memory figures were measured separately
+against a single test target. The Studio steps in [5. Approve in Studio](#5-approve-in-studio)
 were written from the source of Studio's Gateways page, not from a new live
 run. The files this guide refers to
 live in this repository under [`deploy/docker/`](../deploy/docker/).
