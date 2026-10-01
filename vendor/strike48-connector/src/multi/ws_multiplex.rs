@@ -56,7 +56,10 @@ use crate::multi::registration_runner::{REJECTIONS_BEFORE_TOKEN_DROP, auth_mint_
 use crate::multi::{MultiTransportOptions, RegistrationKey};
 use crate::transport::{Transport, TransportOptions, TransportType, WebSocketTransport};
 use crate::types::{ConnectorMetrics, ExecuteRequest as SdkExecuteRequest, PayloadEncoding};
-use crate::utils::{deserialize_payload, error_response, sanitize_failure_payload, sanitize_identifier, serialize_payload};
+use crate::utils::{
+    deserialize_payload, error_response, sanitize_failure_payload, sanitize_identifier,
+    serialize_payload,
+};
 
 use strike48_proto::proto::{
     self, ConnectorCapabilities, HeartbeatRequest, HeartbeatResponse, InstanceMetadata,
@@ -2673,8 +2676,9 @@ mod tests {
         let logger = Logger::new("test/blank-failure");
         let key = key("blank-failure-inst");
 
-        let payload = serialize_payload(&serde_json::json!({"request": "in"}), PayloadEncoding::Json)
-            .expect("serialize request payload");
+        let payload =
+            serialize_payload(&serde_json::json!({"request": "in"}), PayloadEncoding::Json)
+                .expect("serialize request payload");
         let request = SdkExecuteRequest {
             request_id: "req-blank-1".into(),
             payload,

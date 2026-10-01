@@ -6,7 +6,8 @@ use crate::transport::TransportType;
 use crate::types::*;
 use crate::url_parser::parse_url;
 use crate::utils::{
-    deserialize_payload, error_response, sanitize_failure_payload, sanitize_identifier, serialize_payload,
+    deserialize_payload, error_response, sanitize_failure_payload, sanitize_identifier,
+    serialize_payload,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -2994,7 +2995,9 @@ mod tests {
         .await
         .expect("handle_request should succeed");
 
-        let msg = rx.try_recv().expect("ExecuteResponse must be sent to the client");
+        let msg = rx
+            .try_recv()
+            .expect("ExecuteResponse must be sent to the client");
         match msg.message {
             Some(strike48_proto::proto::stream_message::Message::ExecuteResponse(r)) => {
                 assert!(

@@ -158,20 +158,17 @@ pub fn sanitize_failure_payload(
     };
 
     // Only intervene on an explicit tool-level failure.
-    let failed = fields
-        .get("success")
-        .and_then(serde_json::Value::as_bool)
-        == Some(false);
+    let failed = fields.get("success").and_then(serde_json::Value::as_bool) == Some(false);
     if !failed {
         return (response_data.clone(), None);
     }
 
     let blank = fields
         .get("error")
-        .and_then(|v| match v {
-            serde_json::Value::String(s) => Some(s.trim().is_empty()),
-            serde_json::Value::Null => Some(true),
-            _ => Some(false),
+        .map(|v| match v {
+            serde_json::Value::String(s) => s.trim().is_empty(),
+            serde_json::Value::Null => true,
+            _ => false,
         })
         .unwrap_or(true);
 
@@ -328,7 +325,7 @@ pub fn encoding_to_string(encoding: PayloadEncoding) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     #[test]
     fn sanitize_failure_payload_patches_blank_failure() {

@@ -37,7 +37,10 @@ use crate::multi::shared_channel::{SharedChannel, SharedStream};
 use crate::types::ConnectorMetrics;
 use crate::types::{ExecuteRequest as SdkExecuteRequest, ExecuteResponse, PayloadEncoding};
 use crate::types::{WsCloseRequest, WsFrame, WsFrameType, WsOpenRequest};
-use crate::utils::{deserialize_payload, error_response, sanitize_failure_payload, sanitize_identifier, serialize_payload};
+use crate::utils::{
+    deserialize_payload, error_response, sanitize_failure_payload, sanitize_identifier,
+    serialize_payload,
+};
 
 use strike48_proto::proto::{
     self, ConnectorCapabilities, CredentialsIssued, HeartbeatRequest, HeartbeatResponse,
@@ -2099,11 +2102,9 @@ mod tests {
         let logger = Logger::new("test/blank-failure");
         let key = key_for_context_tests();
 
-        let payload = serialize_payload(
-            &serde_json::json!({"request": "in"}),
-            PayloadEncoding::Json,
-        )
-        .expect("serialize request payload");
+        let payload =
+            serialize_payload(&serde_json::json!({"request": "in"}), PayloadEncoding::Json)
+                .expect("serialize request payload");
         let request = SdkExecuteRequest {
             request_id: "req-blank-1".into(),
             payload,
