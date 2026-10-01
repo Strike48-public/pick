@@ -59,7 +59,12 @@ async fn get_arp_table_linux() -> Result<Vec<ArpEntry>> {
 async fn get_arp_table_macos() -> Result<Vec<ArpEntry>> {
     use std::process::Command;
 
-    let output = tokio::task::spawn_blocking(|| Command::new("arp").arg("-a").output())
+    // `-an`: numeric only, no reverse-DNS per entry. `-a` resolves each
+    // hostname (~5s for 8 entries on a cold resolver — 3/3 runs in review)
+    // and this parser sets hostname: None anyway: the lookups were pure
+    // waste, and they delayed the safety-check sweep start enough that the
+    // outer discovery budget beat the inner sweep budget (#495 review).
+    let output = tokio::task::spawn_blocking(|| Command::new("arp").arg("-an").output())
         .await
         .map_err(|e| Error::Unknown(e.to_string()))?
         .map_err(Error::Io)?;
