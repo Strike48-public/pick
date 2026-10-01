@@ -200,7 +200,8 @@ jobs:
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           tar -xzf gitleaks.tar.gz gitleaks
           sudo mv gitleaks /usr/local/bin/
-      - run: gitleaks detect --source . --verbose
+      # --redact: this is a public repo, so matched values must never reach the Actions log.
+      - run: gitleaks detect --source . --verbose --redact
 
   cargo-audit:
     name: Dependency Audit
