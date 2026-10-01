@@ -46,3 +46,46 @@ body:
       description: What is in scope for this request? What is explicitly out of scope?
     validations:
       required: true
+
+  - type: textarea
+    id: acceptance-checklist
+    attributes:
+      label: Acceptance checklist
+      description: >-
+        Optional. A checklist of conditions that must hold for this to be
+        considered done.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: test-cases
+    attributes:
+      label: Steps or test cases to verify
+      description: >-
+        Optional. Commands or steps a maintainer can run to confirm the
+        outcome.
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots (or write No UI)
+      description: >-
+        Optional. Paste screenshots if the change touches the UI, or write
+        "No UI". Redact customer names, tenant names and internal hostnames.
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        Priority and size: you may propose a priority (P0 to P4) and a size
+        (XS to XL) in the body of this issue. Maintainers apply the
+        `priority/*` and `size/*` labels at triage.

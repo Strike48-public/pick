@@ -30,4 +30,4 @@
 
 ## Related issues
 
-<!-- e.g. Closes #123 -->
+<!-- e.g. Closes #123 (same-repo refs only; GitHub does not resolve a bare pick#123. For another repo use Closes owner/repo#123) -->
