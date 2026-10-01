@@ -73,14 +73,14 @@ RecipeExecutor (Rust-native operations)
 
 ## Implementation Status
 
-✅ **Phase 1: Complete**
+ **Phase 1: Complete**
 - CyberChef tool implementation
 - Recipe library with 20 recipes
 - Rust-native executor
 - Full test coverage (14 tests passing)
 - Tool registry integration
 
-🚧 **Future Phases:**
+ **Future Phases:**
 - Phase 2: Embedded CyberChef UI (iframe integration)
 - Phase 3: Node.js bridge for full CyberChef operations
 - Phase 4: Dashboard quick actions

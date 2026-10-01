@@ -352,15 +352,15 @@ git commit -m "feat(easy-mode): full-height scan-card-over-chat layout"
 ## Self-Review
 
 **Spec coverage (Phase 1 scope of `2026-07-18-easy-mode-design.md`):**
-- §4.1 shell / `easy_mode` on `ConnectorAppConfig` / default true on mobile → Tasks 1, 4, 5. ✓
-- §4.2 one-button scan via seed prompt (reusing existing tools/agent) → Tasks 2, 3. ✓
-- §4.3 standalone chat via `ChatPanel { full_page: true }`, expert actions hidden → Task 3 (full_page already suppresses the header actions). ✓
-- §6 platform coverage: mobile default (Task 1), desktop/web unaffected when false (Task 4 Step 5). ✓
+- §4.1 shell / `easy_mode` on `ConnectorAppConfig` / default true on mobile → Tasks 1, 4, 5. 
+- §4.2 one-button scan via seed prompt (reusing existing tools/agent) → Tasks 2, 3. 
+- §4.3 standalone chat via `ChatPanel { full_page: true }`, expert actions hidden → Task 3 (full_page already suppresses the header actions). 
+- §6 platform coverage: mobile default (Task 1), desktop/web unaffected when false (Task 4 Step 5). 
 - **Deferred (documented, not in this plan):** §4.1 runtime desktop/web settings toggle, and the entire §4.4 documents + share pillar → Phase 2 plan (gated on #1390 + risks R1/R2/R4).
 
-**Placeholder scan:** No TBD/TODO; every code step shows complete code; commands have expected output. ✓
+**Placeholder scan:** No TBD/TODO; every code step shows complete code; commands have expected output. 
 
-**Type consistency:** `easy_mode_scan_prompt() -> String` (Task 2) is consumed unchanged in Task 3; `EasyModeShellProps` fields (`api_url`, `auth_token`, `tenant_id`, `chat_mailbox`, `conversation_mailbox`) match the invocation in Task 4; `ChatPanel` props match the existing invocation copied from `workspace_app.rs:169`. ✓
+**Type consistency:** `easy_mode_scan_prompt() -> String` (Task 2) is consumed unchanged in Task 3; `EasyModeShellProps` fields (`api_url`, `auth_token`, `tenant_id`, `chat_mailbox`, `conversation_mailbox`) match the invocation in Task 4; `ChatPanel` props match the existing invocation copied from `workspace_app.rs:169`. 
 
 ## Notes for the implementer
 

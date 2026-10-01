@@ -1018,16 +1018,16 @@ Note in the ledger: on an arm64 device and an x86_64 emulator, run the ignored t
 ## Self-Review
 
 **1. Spec coverage** (against `docs/superpowers/specs/2026-07-29-arm64-sandbox-support-design.md`):
-- Goal 1 (arch-aware WSL + Linux + Docker): Tasks 1-4. ✓
-- Goal 2 (x86_64 byte-for-byte): golden-string test (Task 4), `wsl_rootfs_url`/x86_64 script keeps ArchWSL + pkgbuild (Task 2), `extracted_subdir_for(false)` + unchanged x86_64 extract branch (Task 3). ✓
-- Goal 3 (real exec-sanity in tests, not the probe): Task 5 (desktop) + Task 6 (Android); probe.rs untouched. ✓
-- Shared helper consumed by all three backends: `arch.rs` (Task 1) used in Tasks 2/3/4. ✓
-- ALARM mirrors + `archlinuxarm` keyring on arm64; `[blackarch]` `$arch` unchanged: Tasks 2/3/4. ✓
-- Docker: `menci/archlinuxarm` + `linux/arm64` native + direct blackarch repo append on arm64: Task 4. ✓
-- macOS is a verifiable arm64 target: Task 5 Step 5. ✓
+- Goal 1 (arch-aware WSL + Linux + Docker): Tasks 1-4. 
+- Goal 2 (x86_64 byte-for-byte): golden-string test (Task 4), `wsl_rootfs_url`/x86_64 script keeps ArchWSL + pkgbuild (Task 2), `extracted_subdir_for(false)` + unchanged x86_64 extract branch (Task 3). 
+- Goal 3 (real exec-sanity in tests, not the probe): Task 5 (desktop) + Task 6 (Android); probe.rs untouched. 
+- Shared helper consumed by all three backends: `arch.rs` (Task 1) used in Tasks 2/3/4. 
+- ALARM mirrors + `archlinuxarm` keyring on arm64; `[blackarch]` `$arch` unchanged: Tasks 2/3/4. 
+- Docker: `menci/archlinuxarm` + `linux/arm64` native + direct blackarch repo append on arm64: Task 4. 
+- macOS is a verifiable arm64 target: Task 5 Step 5. 
 
-**2. Placeholder scan:** No TBD/TODO/"handle edge cases"/"similar to Task N". Every code step shows full code. ✓
+**2. Placeholder scan:** No TBD/TODO/"handle edge cases"/"similar to Task N". Every code step shows full code. 
 
-**3. Type consistency:** `is_aarch64`, `keyring_for`, `mirrorlist_for`, `docker_platform`/`docker_platform_for`, `docker_base_image_for`, `pacman_keyring`, `pacman_mirrorlist`, `ALARM_AARCH64_ROOTFS` — names identical across Tasks 1-4. `wsl_setup_script`/`wsl_setup_script_for`, `wsl_rootfs_url`, `bootstrap_url`, `extracted_subdir_for`, `dockerfile_contents`/`dockerfile_contents_for` — each defined once and referenced consistently. `execute_in_proot`/`SandboxManager::execute` signatures match the source read. ✓
+**3. Type consistency:** `is_aarch64`, `keyring_for`, `mirrorlist_for`, `docker_platform`/`docker_platform_for`, `docker_base_image_for`, `pacman_keyring`, `pacman_mirrorlist`, `ALARM_AARCH64_ROOTFS` — names identical across Tasks 1-4. `wsl_setup_script`/`wsl_setup_script_for`, `wsl_rootfs_url`, `bootstrap_url`, `extracted_subdir_for`, `dockerfile_contents`/`dockerfile_contents_for` — each defined once and referenced consistently. `execute_in_proot`/`SandboxManager::execute` signatures match the source read. 
 
 **Known limitation (called out, not a gap):** the arm64 *Linux* bwrap/proot extract path (Task 3) has no available test hardware; its automated guard is the pure `extracted_subdir_for` test + x86_64 compile. Verify on real arm64 Linux when a box exists. arm64 *Windows* WSL2 also remains untested (only WSL1-capable arm box available). Both are documented in the spec's Risks.

@@ -439,10 +439,10 @@ The system displays cost warnings when expensive aggression modes are selected:
 
 ```bash
 $ ./run-pentest.sh headless dev --aggression=aggressive
-Aggressive mode may spawn multiple specialists. Estimated cost: 2-4x Conservative mode.
+ℹ️  Aggressive mode may spawn multiple specialists. Estimated cost: 2-4x Conservative mode.
 
 $ ./run-pentest.sh headless dev --aggression=maximum
-MAXIMUM mode spawns specialists for every target. This can be expensive for large networks. Estimated cost: 5-10x Conservative mode. Recommend starting with Aggressive mode first.
+⚠️  MAXIMUM mode spawns specialists for every target. This can be expensive for large networks. Estimated cost: 5-10x Conservative mode. Recommend starting with Aggressive mode first.
 ```
 
 Cost multipliers relative to Conservative mode (1.0x):

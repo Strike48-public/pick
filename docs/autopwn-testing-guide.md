@@ -200,7 +200,7 @@ TEST_BSSID="00:11:22:33:44:55"  # Your test AP MAC
 TEST_CHANNEL=6
 
 echo "=== AutoPwn Integration Test ==="
-echo "Ensure this is YOUR test network!"
+echo "⚠️  Ensure this is YOUR test network!"
 read -p "Continue? (yes/no): " confirm
 [[ "$confirm" == "yes" ]] || exit 1
 

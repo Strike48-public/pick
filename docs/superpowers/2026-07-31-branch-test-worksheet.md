@@ -20,7 +20,7 @@
 
 ## Part A — Automatable test pass (agent-runnable per host)
 
-For each host, run the applicable block. Legend: ✅ pass / ❌ fail / ⚠️ partial / — n/a / ⏭️ skipped (no backend).
+For each host, run the applicable block. Legend:  pass /  fail /  partial / — n/a / ⏭ skipped (no backend).
 
 ### A1. Build + unit gate (Linux local only — the authoritative gate)
 
