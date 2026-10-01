@@ -60,23 +60,9 @@ const LAB_HOSTS: &[&str] = &[
     "e5406b86ec78c2821922a7d91884a44082b399596381993b4222c00eb0ad4a1d",
 ];
 
-/// The lab network's first two octets (`a.b`). Any address in it is flagged
-/// outside `LAB_NET_PENDING_483`.
+/// The lab network's first two octets (`a.b`). Any address in it is flagged;
+/// examples use RFC 5737 documentation addresses (192.0.2.0/24) instead.
 const LAB_NET_PREFIX: &str = "d18db89633de9e2e23fe81e7f394959c8da7f6c8ea86d68733462eab6f78146e";
-
-/// Files that still use lab-network addresses as generic examples. pick#483
-/// converts each of them to RFC 5737 documentation addresses (192.0.2.0/24),
-/// so new examples should use those ranges. Delete an entry once #483 lands:
-/// an entry with no lab-network address left fails this test as stale.
-const LAB_NET_PENDING_483: &[&str] = &[
-    "crates/core/src/matrix/agent_defaults.rs",
-    "crates/tools/src/autopwn/toolchain/webapp.rs",
-    "crates/tools/src/external/rustscan.rs",
-    "crates/tools/src/http_request.rs",
-    "crates/tools/src/port_scan.rs",
-    "crates/tools/tests/rustscan_runtime_test.rs",
-    "test-webapp-toolchain.sh",
-];
 
 /// Placeholder account names that are fine after `/home/` or `/Users/`.
 const GENERIC_HOME_NAMES: &[&str] = &[
@@ -322,23 +308,12 @@ fn no_internal_references_regress_into_the_tree() {
 
     let rules = Rules::new();
     let mut findings: Vec<String> = Vec::new();
-    let mut pending_seen: HashSet<&str> = HashSet::new();
     for rel in &files {
         let Some(text) = read_text(&root, rel) else {
             continue;
         };
         for (line, kind) in scan_text(&rules, &PRODUCTION_PINS, &text) {
-            match LAB_NET_PENDING_483.iter().find(|p| **p == rel.as_str()) {
-                Some(p) if kind == LAB_NET => {
-                    pending_seen.insert(*p);
-                }
-                _ => findings.push(format!("{rel}:{line}: {kind}")),
-            }
-        }
-    }
-    for p in LAB_NET_PENDING_483 {
-        if !pending_seen.contains(p) {
-            findings.push(format!("{p}: stale LAB_NET_PENDING_483 entry, delete it"));
+            findings.push(format!("{rel}:{line}: {kind}"));
         }
     }
     assert!(
