@@ -46,7 +46,7 @@ tells you what your host can do.
 | Preflight check and agent runbook | the same release, assets `pick-docker-preflight.sh` and `pick-docker-agent-setup.md` |
 | Newest release | [github.com/Strike48-public/pick/releases/latest](https://github.com/Strike48-public/pick/releases/latest) |
 
-You do not pull the image by hand; step 3 does it for you. Use the version
+You do not pull the image by hand; step 4 does it for you. Use the version
 number, not `latest`: the `latest` and `main` tags on the image are
 development builds that have not been released. If the newest release is
 newer than `0.1.10`, check with your Strike48 contact that it is approved for
@@ -198,7 +198,7 @@ Expected output. The `curl` commands print nothing when they succeed, and
 has no such file; check `PICK_VERSION` against the releases page.
 
 The compose file from a release defaults to that release's image tag, so you
-do not set the tag anywhere. The source of both files is
+do not set the tag anywhere. The source of all four files is
 [`deploy/docker/`](../deploy/docker/) in this repository; the release copy of
 the compose file differs only in that default.
 
