@@ -316,3 +316,59 @@ fn execute_command_schema_has_command_property() {
         "command not in required: {required_names:?}"
     );
 }
+
+// ── error chain envelope (pick#476) ────────────────────────────────────
+
+/// Fails the way a real tool does when its binary is missing: a classified
+/// error with the io cause attached (mirrors tool_connector's FailingTool),
+/// so the envelope test can check the whole cause chain reaches the agent.
+struct FailingTool;
+
+#[async_trait::async_trait]
+impl pentest_core::tools::PentestTool for FailingTool {
+    fn name(&self) -> &str {
+        "failing_tool"
+    }
+    fn description(&self) -> &str {
+        "A tool that always fails with a cause attached"
+    }
+    fn schema(&self) -> pentest_core::tools::ToolSchema {
+        pentest_core::tools::ToolSchema::new("failing_tool", "A tool that always fails")
+    }
+    async fn execute(
+        &self,
+        _params: Value,
+        _ctx: &pentest_core::tools::ToolContext,
+    ) -> pentest_core::error::Result<pentest_core::tools::ToolResult> {
+        Err(
+            pentest_core::error::Error::ToolExecution("nmap failed".into()).with_source(
+                std::io::Error::new(std::io::ErrorKind::NotFound, "nmap: command not found"),
+            ),
+        )
+    }
+}
+
+/// The agent-facing envelope on the Err arm must carry the full cause chain,
+/// same as the ToolEvent emitted alongside it. Reverting the `e.chain()` in
+/// the Err arm to `e.to_string()` turns this red (the top-line alone drops
+/// the root cause).
+#[tokio::test]
+async fn failure_result_carries_the_full_cause_chain() {
+    pentest_platform::set_use_sandbox(false);
+    let mut registry = pentest_core::tools::ToolRegistry::new();
+    registry.register(FailingTool);
+    let connector = PentestConnector::new(registry, None);
+
+    let result = exec(
+        &connector,
+        json!({"tool": "failing_tool", "parameters": {}}),
+    )
+    .await;
+
+    assert_eq!(result["success"], false);
+    let error = get_error(&result).expect("error string on failure");
+    assert_eq!(
+        error, "Tool execution error: nmap failed: nmap: command not found",
+        "agent-facing envelope must carry the full cause chain: {error}"
+    );
+}

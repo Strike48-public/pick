@@ -27,8 +27,13 @@ use pentest_ui::LiveViewConnector;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging (stderr only — no window, no file by default)
-    pentest_core::logging::init_logging("info");
+    // Initialize logging: console plus the rolling JSON file under the local
+    // data dir, so a failure in a customer install leaves a trail after the
+    // process is gone (pick#476). A read-only filesystem degrades to console
+    // only with a warning rather than refusing to start.
+    if let Some(log_dir) = pentest_core::logging::init_logging_with_file("info") {
+        tracing::info!("Log directory: {}", log_dir.display());
+    }
 
     let is_strikehub = std::env::var("STRIKEHUB_SOCKET").is_ok();
 

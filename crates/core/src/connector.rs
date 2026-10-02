@@ -349,14 +349,18 @@ impl BaseConnector for PentestConnector {
                     budget.record(false).await;
                     let _ = event_tx.send(ToolEvent::Failed {
                         tool_name: name,
-                        error: e.to_string(),
+                        error: e.chain(),
                     });
                     // The error string is connector-internal (not target output),
                     // but pass it through the same scrub so a secret echoed into
                     // an error message can't leak to the agent either (#320).
+                    // The agent-facing envelope carries the full cause chain,
+                    // same as the ToolEvent above - the top-line alone dropped
+                    // the root cause (e.g. "nmap failed" without ": nmap:
+                    // command not found").
                     let mut err_value = serde_json::json!({
                         "success": false,
-                        "error": e.to_string()
+                        "error": e.chain()
                     });
                     let _ = crate::sanitize::sanitize_agent_result(&mut err_value);
                     Ok(err_value)

@@ -28,10 +28,12 @@ const DESKTOP_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
 };
 
 fn main() {
-    // Initialize logging: console + file
-    let log_path = pentest_core::logging::init_logging_with_file("debug");
-
-    tracing::info!("Log file: {}", log_path.display());
+    // Initialize logging: console + rolling JSON file (append, daily, 7 kept).
+    // `None` means the file sink could not be opened; the warning that says
+    // why is already on the console by the time we get here.
+    if let Some(log_dir) = pentest_core::logging::init_logging_with_file("debug") {
+        tracing::info!("Log directory: {}", log_dir.display());
+    }
     tracing::info!("Starting Pentest Connector Desktop");
 
     // Register the OS credential store as the secure backend for bearer tokens
