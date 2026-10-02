@@ -433,8 +433,7 @@ helm install pick pick/pick-connector
 - Architecture and development documentation
 
 **Community:**
-- GitHub Issues for bug reports and feature requests
-- Discussions for questions and community support
+- GitHub Issues for bug reports, feature requests, and questions
 - Contributing guidelines for code contributions
 
 **Enterprise Support:**
