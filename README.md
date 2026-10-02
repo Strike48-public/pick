@@ -303,7 +303,10 @@ This tool is designed for authorized penetration testing and security research. 
 
 ## License
 
-MIT License - See LICENSE file for details.
+Mozilla Public License 2.0 (MPL-2.0) - See the LICENSE file for details. The
+vendored `strike48-connector` and `strike48-proto` SDK crates are Strike48
+proprietary components distributed under their own license
+(`vendor/strike48-connector/LICENSE`) and are outside the MPL-2.0 grant.
 
 ## Credits
 
