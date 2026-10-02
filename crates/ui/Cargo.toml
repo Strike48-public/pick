@@ -102,4 +102,7 @@ dioxus-ssr = { workspace = true }
 # later `optional = true` there cannot silently break these tests.
 axum = { workspace = true }
 serde_json = { workspace = true }
+# PentestTool impl in the pick_connector chain test (pick#476). async-trait is
+# unconditional in the workspace, repeated here so the test module owns its dep.
+async-trait = { workspace = true }
 

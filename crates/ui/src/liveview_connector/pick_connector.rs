@@ -320,11 +320,14 @@ impl BaseConnector for PickConnector {
                         result
                     }
                     Err(e) => {
+                        // Full cause chain: this is where the error leaves the
+                        // process, to the UI event and to Strike48.
+                        let error = e.chain();
                         self.send_event(ConnectorEvent::ToolFailed {
                             tool_name: tool_name.clone(),
-                            error: e.to_string(),
+                            error: error.clone(),
                         });
-                        pentest_core::tools::ToolResult::error(e.to_string())
+                        pentest_core::tools::ToolResult::error(error)
                     }
                 };
 
@@ -853,6 +856,83 @@ mod tests {
         assert!(
             result.get("_sanitization").is_none(),
             "benign output must not be flagged: {result}"
+        );
+    }
+
+    /// Fails the way a real tool does when its binary is missing: a classified
+    /// error with the io cause attached (mirrors tool_connector's FailingTool).
+    struct FailingTool;
+
+    #[async_trait::async_trait]
+    impl pentest_core::tools::PentestTool for FailingTool {
+        fn name(&self) -> &str {
+            "failing_tool"
+        }
+        fn description(&self) -> &str {
+            "A tool that always fails with a cause attached"
+        }
+        fn schema(&self) -> pentest_core::tools::ToolSchema {
+            pentest_core::tools::ToolSchema::new("failing_tool", "A tool that always fails")
+        }
+        async fn execute(
+            &self,
+            _params: Value,
+            _ctx: &pentest_core::tools::ToolContext,
+        ) -> pentest_core::error::Result<pentest_core::tools::ToolResult> {
+            Err(
+                pentest_core::error::Error::ToolExecution("nmap failed".into()).with_source(
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "nmap: command not found"),
+                ),
+            )
+        }
+    }
+
+    fn failing_connector() -> PickConnector {
+        let mut registry = ToolRegistry::new();
+        registry.register(FailingTool);
+        let (event_tx, _event_rx) = broadcast::channel(16);
+        PickConnector {
+            tools: Arc::new(RwLock::new(registry)),
+            workspace_path: None,
+            event_tx,
+            ws_connections: Arc::new(DashMap::new()),
+            matrix_client: Arc::new(RwLock::new(None)),
+            connector_name: "pentest-connector".to_string(),
+            instance_id: "test".to_string(),
+            aggression_level: Arc::new(RwLock::new(AggressionLevel::default())),
+            ipc_addr: Arc::new(RwLock::new(None)),
+            runner: Arc::new(RwLock::new(None)),
+            matrix_api_url: String::new(),
+            identities: Arc::new(pentest_core::identity::IdentityStore::new()),
+        }
+    }
+
+    /// The production hop's chain rendering was unguarded: reverting the Err
+    /// arm in `execute_with_context` to `e.to_string()` left every existing
+    /// pentest-ui test green (they only exercise success paths). This mirrors
+    /// tool_connector::tests::failure_result_carries_the_full_cause_chain
+    /// against a PickConnector: the ToolResult error sent back to Strike48
+    /// must carry the whole cause chain, not only the outermost message
+    /// (pick#476). Reverting the `e.chain()` call turns this red.
+    #[tokio::test]
+    async fn failure_result_carries_the_full_cause_chain() {
+        let connector = failing_connector();
+        let ctx: HashMap<String, String> = HashMap::new();
+
+        let result = connector
+            .execute_with_context(
+                json!({"tool": "failing_tool", "parameters": {}}),
+                None,
+                &ctx,
+            )
+            .await
+            .expect("hop returns Ok even when the tool fails");
+
+        assert_eq!(result["success"], false);
+        let error = result["error"].as_str().expect("error string");
+        assert_eq!(
+            error,
+            "Tool execution error: nmap failed: nmap: command not found"
         );
     }
 }
