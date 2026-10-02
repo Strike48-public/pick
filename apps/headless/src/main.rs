@@ -21,7 +21,7 @@
 //!   pentest-agent <host:port> [--token <jwt>] [--tenant <id>] [--no-tls]
 
 use pentest_core::config::{load_connector_config, ConfigLoadResult, ShellMode};
-use pentest_core::settings::load_settings;
+use pentest_core::settings::{load_settings, save_settings};
 use pentest_tools::create_tool_registry;
 use pentest_ui::LiveViewConnector;
 
@@ -29,6 +29,14 @@ use pentest_ui::LiveViewConnector;
 async fn main() -> anyhow::Result<()> {
     // Initialize logging (stderr only — no window, no file by default)
     pentest_core::logging::init_logging("info");
+
+    // Usage telemetry (#278): initialize before anything can emit activity.
+    // This binary previously called telemetry::flush() on exit without ever
+    // calling telemetry::init, so no headless/server deployment could report
+    // sessions or activity and the flush was always a no-op (#527). Runs
+    // before config load so the persisted device id below is the one
+    // load_connector_config reuses as the instance id on a fresh install.
+    init_telemetry();
 
     let is_strikehub = std::env::var("STRIKEHUB_SOCKET").is_ok();
 
@@ -294,4 +302,127 @@ fn print_usage() {
         "  AGGRESSION_LEVEL     Specialist spawning: conservative|balanced|aggressive|maximum"
     );
     eprintln!("  STRIKEHUB_SOCKET     Unix socket path (IPC mode)");
+}
+
+/// Initialize usage telemetry from persisted settings (#278, #527), mirroring
+/// the desktop app's startup resolution in `connector_app`:
+/// - `telemetry_enabled`: the persisted opt-out flag (on by default);
+/// - `device_id`: the persistent per-install identity, generated on first run
+///   and persisted so restarts (and `load_connector_config`, which reads the
+///   same settings file) keep one stable identity;
+/// - easy mode: `resolve_easy_mode` with `false` as the per-app default —
+///   headless only serves the full workspace app, while a persisted user
+///   choice or a build-time `PICK_EASY_MODE` still wins.
+///
+/// No-DSN builds (local dev, forks) and opt-out installs stay silent no-ops;
+/// `telemetry::init`/`install` log exactly one info line with the resolved
+/// state so a silent install is diagnosable from its log file (#527).
+fn init_telemetry() {
+    let mut settings = load_settings();
+    settings.ensure_device_id();
+    // Persist the generated device id (plus any migration load_settings
+    // performed), matching the desktop app's startup path. Best-effort: a
+    // read-only filesystem degrades to a per-run identity rather than a crash.
+    let _ = save_settings(&settings);
+    let easy_mode = pentest_core::config::resolve_easy_mode(settings.easy_mode, false);
+    pentest_core::telemetry::init(settings.telemetry_enabled, &settings.device_id, easy_mode);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Serializes the tests below, which mutate process-global env vars
+    /// (HOME / XDG_CONFIG_HOME) to point the settings dir at a tempdir. Same
+    /// pattern as `ENV_LOCK` in `crates/core/src/config.rs`.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Point the settings dir at a tempdir and return it. HOME covers the
+    /// macOS/Windows `dirs::config_dir()` result, XDG_CONFIG_HOME the Linux
+    /// one; both land inside the tempdir, so the real settings file is never
+    /// touched. (Edition 2021: set_var is safe here — single-threaded test,
+    /// serialized by ENV_LOCK.)
+    fn isolated_settings_dir() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+        tmp
+    }
+
+    /// Restore HOME / XDG_CONFIG_HOME. Called before the first assertion of
+    /// each scenario so a failing test does not leak env state.
+    fn restore_env(prev_home: &Option<String>, prev_xdg: &Option<String>) {
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        };
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        };
+    }
+
+    /// Regression test for #527: the headless startup path must call
+    /// `telemetry::init` with the settings-resolved identity. Before the fix,
+    /// `main()` never called `telemetry::init` at all (only `flush()`), so
+    /// `telemetry::last_identity()` was `None` after a headless-style startup
+    /// and no headless deployment could ever report sessions or activity.
+    #[test]
+    fn headless_startup_initializes_telemetry_with_resolved_identity() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev_home = std::env::var("HOME").ok();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+
+        // --- Scenario 1: fresh install (no settings file). ---
+        let _tmp1 = isolated_settings_dir(); // guard: dir lives until end of test
+        init_telemetry();
+        let first_run = load_settings(); // reads the file init_telemetry persisted
+        let first_device_id = first_run.device_id.clone();
+        restore_env(&prev_home, &prev_xdg);
+
+        assert!(
+            !first_run.device_id.is_empty(),
+            "device id must be generated"
+        );
+        assert!(
+            first_run.telemetry_enabled,
+            "telemetry is opt-out: enabled by default"
+        );
+        match pentest_core::telemetry::last_identity() {
+            Some((id, easy)) => {
+                assert_eq!(id, first_device_id, "init must use the persisted device id");
+                assert_eq!(
+                    easy,
+                    pentest_core::config::resolve_easy_mode(None, false),
+                    "headless per-app default is easy mode off (a build-time PICK_EASY_MODE may override)"
+                );
+            }
+            None => panic!("headless startup must call telemetry::init (#527)"),
+        }
+
+        // --- Scenario 2: restart with a persisted opt-out and an explicit
+        // easy-mode choice. The same device id must be reused (one identity
+        // per install) and the persisted values must win. ---
+        let _tmp2 = isolated_settings_dir(); // guard: dir lives until end of test
+        let mut second_run = first_run;
+        second_run.telemetry_enabled = false;
+        second_run.easy_mode = Some(true);
+        save_settings(&second_run).expect("persist opt-out settings");
+        init_telemetry();
+        restore_env(&prev_home, &prev_xdg);
+
+        match pentest_core::telemetry::last_identity() {
+            Some((id, easy)) => {
+                assert_eq!(
+                    id, first_device_id,
+                    "device id must be stable across restarts"
+                );
+                assert!(
+                    easy,
+                    "persisted easy-mode choice must win over the per-app default"
+                );
+            }
+            None => panic!("headless restart must still call telemetry::init (#527)"),
+        }
+    }
 }
