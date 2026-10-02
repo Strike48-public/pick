@@ -349,12 +349,14 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
     W: for<'a> fmt::MakeWriter<'a> + 'static,
 {
-    fmt::layer()
-        .json()
-        .with_ansi(false)
-        .with_current_span(true)
-        .with_span_list(true)
-        .with_writer(writer)
+    apply_span_policy(
+        fmt::layer()
+            .json()
+            .with_ansi(false)
+            .with_current_span(true)
+            .with_span_list(true)
+            .with_writer(writer),
+    )
 }
 
 /// `RUST_LOG` if set, plus the `pentest=<default_level>` directive for Pick's
@@ -760,8 +762,10 @@ mod tests {
             tracing::warn!(error = "boom", "tool execution failed");
         });
 
+        // The event, then the span's close record (span policy, pick#482).
         let lines = json_lines(&log_files(tmp.path())[0]);
-        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines[1]["fields"]["message"], "close", "{lines:?}");
         let line = &lines[0];
         assert_eq!(line["level"], "WARN");
         assert_eq!(line["fields"]["message"], "tool execution failed");
@@ -769,6 +773,34 @@ mod tests {
         assert_eq!(line["span"]["name"], "tool_execution");
         assert_eq!(line["span"]["request_id"], "req-1");
         assert_eq!(line["spans"][0]["tool"], "nmap");
+    }
+
+    /// The file sink carries the span policy too (pick#482 merge order): when
+    /// a `tool_execution` span closes, the file gets one JSON record with the
+    /// close message, the span's correlation fields and its duration. Without
+    /// `apply_span_policy` on the JSON layer only the console has the line
+    /// that says how long a tool took.
+    #[test]
+    fn file_sink_records_the_tool_execution_close_event() {
+        let disk = FakeDisk::default();
+        with_file_layer(&disk, || {
+            let span = tracing::info_span!("tool_execution", tool = "nmap", request_id = "req-1");
+            let _guard = span.enter();
+        });
+
+        let contents = disk.contents();
+        let close = contents
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("whole JSON line"))
+            .find(|v| v["fields"]["message"] == "close")
+            .unwrap_or_else(|| panic!("no close record in the file sink: {contents}"));
+        assert_eq!(close["span"]["name"], "tool_execution");
+        assert_eq!(close["span"]["tool"], "nmap");
+        assert_eq!(close["span"]["request_id"], "req-1");
+        assert!(
+            close["fields"]["time.busy"].is_string(),
+            "close record carries the duration: {close}"
+        );
     }
 
     #[test]
