@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-cd /home/jtomek/Code/strikekit
+cd ~/Code/strikekit
 
 echo "Adding labels to all issues..."
 echo ""
