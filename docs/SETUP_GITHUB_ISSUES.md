@@ -15,7 +15,7 @@ Complete guide to setting up all GitHub issues with proper labels for the 60-day
 First, create all the label categories in the StrikeKit repository:
 
 ```bash
-cd /home/jtomek/Code/pick/docs
+cd ~/Code/pick/docs
 ./create-labels.sh
 ```
 
@@ -33,7 +33,7 @@ Issue #94 has already been created and updated with:
 - Labels need to be added:
 
 ```bash
-cd /home/jtomek/Code/strikekit
+cd ~/Code/strikekit
 gh issue edit 94 --add-label "type: feature,priority: P1,feature: evidence-chains,size: M"
 ```
 
@@ -42,7 +42,7 @@ gh issue edit 94 --add-label "type: feature,priority: P1,feature: evidence-chain
 Run the script to create all 20 remaining issues:
 
 ```bash
-cd /home/jtomek/Code/pick/docs
+cd ~/Code/pick/docs
 ./create-all-issues.sh
 ```
 
@@ -60,7 +60,7 @@ All issues will be created with proper labels automatically.
 Check that all issues were created correctly:
 
 ```bash
-cd /home/jtomek/Code/strikekit
+cd ~/Code/strikekit
 gh issue list --limit 25
 ```
 
@@ -71,7 +71,7 @@ Expected output: Issues #94-#113 (21 total issues)
 If you need to update labels after creation, use the helper script:
 
 ```bash
-cd /home/jtomek/Code/pick/docs
+cd ~/Code/pick/docs
 # Edit add-labels-to-issues.sh to match actual issue numbers
 ./add-labels-to-issues.sh
 ```

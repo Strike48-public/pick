@@ -7,13 +7,13 @@ use serde_json::json;
 #[tokio::test]
 #[ignore] // Requires sandbox environment
 async fn test_rustscan_on_target() {
-    println!("🎯 Testing RustScan on 10.10.2.169");
+    println!("🎯 Testing RustScan on 192.0.2.169");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
 
     let tool = RustScanTool;
     let params = json!({
-        "target": "10.10.2.169",
+        "target": "192.0.2.169",
         "ports": "1-1000",
         "batch_size": 4500,
         "timeout": 1500,
@@ -23,7 +23,7 @@ async fn test_rustscan_on_target() {
     let ctx = ToolContext::default();
 
     println!("📡 Executing RustScan...");
-    println!("Target: 10.10.2.169");
+    println!("Target: 192.0.2.169");
     println!("Ports: 1-1000");
     println!("Mode: Fast scan (batch_size: 4500)");
     println!();
