@@ -52,7 +52,7 @@ Added comprehensive team structure organized by work streams (not individuals):
 - Parallel work stream opportunities
 - Prerequisites for team (Rust proficiency, existing codebase leverage)
 
-**Location:** `/home/jtomek/Code/pick/docs/SYSTEM_ARCHITECTURE.md` lines 1499-1595
+**Location:** `~/Code/pick/docs/SYSTEM_ARCHITECTURE.md` lines 1499-1595
 
 ---
 
@@ -81,7 +81,7 @@ Added comprehensive XBOW benchmark risk deep dive:
 **Investor Messaging Template:**
 Clear, honest communication about iterative improvement path (70% → 85% → 90%) while emphasizing Pick's unique advantages independent of XBOW score.
 
-**Location:** `/home/jtomek/Code/pick/docs/PRD_COMPETITIVE_POSITIONING.md` lines 1537-1630
+**Location:** `~/Code/pick/docs/PRD_COMPETITIVE_POSITIONING.md` lines 1537-1630
 
 ---
 

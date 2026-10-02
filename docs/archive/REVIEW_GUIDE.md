@@ -8,8 +8,8 @@
 
 ## Documents to Review
 
-1. `/home/jtomek/Code/pick/docs/SYSTEM_ARCHITECTURE.md` (81KB, ~100 pages)
-2. `/home/jtomek/Code/pick/docs/PRD_COMPETITIVE_POSITIONING.md` (59KB, ~90 pages)
+1. `~/Code/pick/docs/SYSTEM_ARCHITECTURE.md` (81KB, ~100 pages)
+2. `~/Code/pick/docs/PRD_COMPETITIVE_POSITIONING.md` (59KB, ~90 pages)
 
 **Backups available:**
 - `SYSTEM_ARCHITECTURE.backup-20260407-113428.md`
@@ -279,16 +279,16 @@ mcp-recall retrieve recall_6b96964f
 mcp-recall retrieve recall_88c5e5df
 
 # Read documents
-Read /home/jtomek/Code/pick/docs/SYSTEM_ARCHITECTURE.md
-Read /home/jtomek/Code/pick/docs/PRD_COMPETITIVE_POSITIONING.md
+Read ~/Code/pick/docs/SYSTEM_ARCHITECTURE.md
+Read ~/Code/pick/docs/PRD_COMPETITIVE_POSITIONING.md
 
 # Create review
-Write /home/jtomek/Code/pick/docs/ARCHITECTURE_REVIEW.md
+Write ~/Code/pick/docs/ARCHITECTURE_REVIEW.md
 
 # Search for specific items
-Grep "iOS" /home/jtomek/Code/pick/docs/SYSTEM_ARCHITECTURE.md
-Grep "Prospector Studio" /home/jtomek/Code/pick/docs/SYSTEM_ARCHITECTURE.md
-Grep "BlackArch" /home/jtomek/Code/pick/docs/SYSTEM_ARCHITECTURE.md
+Grep "iOS" ~/Code/pick/docs/SYSTEM_ARCHITECTURE.md
+Grep "Prospector Studio" ~/Code/pick/docs/SYSTEM_ARCHITECTURE.md
+Grep "BlackArch" ~/Code/pick/docs/SYSTEM_ARCHITECTURE.md
 ```
 
 ---

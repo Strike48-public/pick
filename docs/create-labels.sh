@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-cd /home/jtomek/Code/strikekit
+cd ~/Code/strikekit
 
 echo "Creating labels in StrikeKit repository..."
 echo ""
