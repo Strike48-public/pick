@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolOutcome, ToolParam,
-    ToolResult, ToolSchema,
+    classify_probe_outcome, execute_timed, ParamType, PentestTool, Platform, ToolContext,
+    ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, NetworkOps};
 use serde_json::{json, Value};
@@ -70,37 +70,10 @@ impl PentestTool for SsdpDiscoverTool {
     }
 }
 
-/// Reclassify a completed SSDP run from the platform probe outcome (#309).
-///
-/// The shared discovery implementation degrades an unsendable probe (blocked
-/// sandbox, no available socket) to an empty result rather than an error.
-/// `data.probe` carries the [`ProbeOutcome`]; a `skipped` status downgrades the
-/// result to [`ToolOutcome::Skipped`] — `with_outcome` also clears `success` —
-/// so the model and the report gate read it as "the probe never ran", never as
-/// evidence of a clean network. A `Ran` result (including a truthful
-/// zero-finding sweep) passes through unchanged.
-fn classify_probe_outcome(result: ToolResult) -> ToolResult {
-    // Only a `Ran` result needs reclassification; anything the tool body
-    // already marked Failed/Skipped passes through.
-    if result.outcome != ToolOutcome::Ran {
-        return result;
-    }
-    match probe_status(&result.data) {
-        Some("skipped") => result.with_outcome(ToolOutcome::Skipped),
-        _ => result,
-    }
-}
-
-/// The `status` tag of the `probe` outcome recorded in a tool payload, if any.
-fn probe_status(data: &Value) -> Option<&str> {
-    data.get("probe")
-        .and_then(|p| p.get("status"))
-        .and_then(Value::as_str)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pentest_core::tools::ToolOutcome;
 
     #[test]
     fn skipped_probe_downgrades_outcome_and_success() {
