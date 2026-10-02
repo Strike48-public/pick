@@ -605,6 +605,11 @@ jobs:
             deploy/docker/docker-compose.yml > release/pick-docker-compose.yml
           grep -qF "pick:\${PICK_IMAGE_TAG:-${VERSION}}" release/pick-docker-compose.yml
           cp deploy/docker/.env.example release/pick-docker.env.example
+          install -m 0755 deploy/docker/preflight.sh release/pick-docker-preflight.sh
+          # The agent runbook downloads this release's files, so pin it to this version too.
+          sed "s/^PICK_VERSION=.*/PICK_VERSION=${VERSION}/" \
+            deploy/docker/AGENT_SETUP.md > release/pick-docker-agent-setup.md
+          grep -qx "PICK_VERSION=${VERSION}" release/pick-docker-agent-setup.md
 
       - name: Generate checksums
         working-directory: release
@@ -652,7 +657,9 @@ jobs:
 
             `pick-docker-compose.yml` and `pick-docker.env.example` are the
             customer compose bundle for this release; see
-            `docs/DOCKER_INSTALL.md`.
+            `docs/DOCKER_INSTALL.md`. `pick-docker-preflight.sh` checks a host
+            before install, and `pick-docker-agent-setup.md` is a runbook an
+            AI coding agent can follow to do the install with you.
 
             ### Checksums
 
