@@ -884,7 +884,7 @@ impl LiveViewConnector {
         // Pre-connect reachability probe: fast-fail on obviously bad URLs
         // (DNS miss, TLS refused, connect timeout) before the SDK spins up a
         // full runner + auto-reconnect loop. Without this, a typo like
-        // `https://discoball.strike48.engineering/` leaves the UI stuck on
+        // `https://studio.example.com/` leaves the UI stuck on
         // the connecting spinner with no feedback (pick#223). Returning Err
         // here lets the caller populate its `connect_error` banner; we skip
         // emitting a `Disconnected` status event so we don't race the
@@ -1204,7 +1204,7 @@ impl LiveViewConnector {
 
 /// Fast reachability check against the configured Strike48 host.
 ///
-/// Bounded TCP connect so a typo like `wss://discoball.strike48.engineering`
+/// Bounded TCP connect so a typo like `wss://studio.example.com`
 /// fails immediately with a clear message instead of leaving the UI stuck on
 /// the connecting spinner while the SDK retries (pick#223). TLS-level
 /// failures still surface through the SDK's own WebSocket handshake, so we
