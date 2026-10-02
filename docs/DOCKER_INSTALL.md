@@ -8,8 +8,11 @@ The install, approval, restart, and removal steps in this guide were executed
 against a live Strike48 Studio with the `0.1.10` image, and the log lines shown
 are what that run printed. The proxy and private-CA sections describe behaviour
 read from the connector's source and were not exercised against an appliance.
-The files this guide refers to live in this repository under
-[`deploy/docker/`](../deploy/docker/).
+The network requirements (including IPv6 and virtual machines), host
+networking, and Docker Desktop on Windows sections describe Docker's and
+hypervisors' documented behaviour and the connector's source; they were not
+exercised in that run. The files this guide refers to live in
+this repository under [`deploy/docker/`](../deploy/docker/).
 
 ## What you are installing
 
@@ -50,11 +53,167 @@ On the host that will run the connector:
 | Disk | 3 GB free | `df -h /var/lib/docker` (the image is about 1.2 GB unpacked) |
 | Privileges | member of the `docker` group, or root | `docker ps` |
 | Architecture | linux/amd64 or linux/arm64 | `uname -m` |
+| Local-network discovery | a Linux host running Docker Engine. Docker Desktop on Windows or macOS supports TCP connect scans of routed hosts only; see [Docker Desktop on Windows](#docker-desktop-on-windows) | `uname -s` on the host prints `Linux`. On Windows or macOS, Docker runs in a virtual machine whichever product you use (Docker Desktop, Colima, and others), with similar network limits |
 
 The host does not need a public IP, an inbound DNS record, or a certificate of
 its own. If your egress goes through an HTTP proxy or a TLS-inspecting
 appliance, read [Corporate proxy and private CA](#corporate-proxy-and-private-ca)
 before you start.
+
+### Network requirements for scanning
+
+The table above covers what the connector needs to reach Studio. Scanning has
+separate requirements, and they are all properties of the Docker host: the
+container reaches your targets through the host's network and resolves names
+through the host's DNS configuration. If the host cannot reach or resolve a
+target, neither can Pick. Check these on the host before you install.
+
+1. **The host is on the network you want to scan.** Connect it to the VLAN or
+   segment in scope, and confirm it can reach a known-live target:
+
+   ```bash
+   nc -vz -w3 <known-live-ip> <open-port>
+   ```
+
+   If `nc` is not installed, bash can make the same check:
+
+   ```bash
+   timeout 3 bash -c '</dev/tcp/<known-live-ip>/<open-port>' && echo open
+   ```
+
+2. **The host resolves your internal names.** On the default network, Docker's
+   embedded DNS server (`127.0.0.11` inside the container) forwards lookups to
+   the DNS servers configured on the host. With
+   [host networking](#enable-host-networking) the container shares the host's
+   network stack. In both cases a host that points only at a public resolver
+   cannot resolve internal names, and scans of those names fail. The
+   in-container check at the end of this section confirms what the container
+   actually resolves. On the host, confirm with an internal hostname:
+
+   ```bash
+   getent hosts <internal-hostname>
+   ```
+
+   If this fails, fix the host's DNS first (your DHCP, netplan, or
+   systemd-resolved configuration). If the host must keep a different
+   resolver, give the container your internal DNS servers in
+   `docker-compose.override.yml`:
+
+   ```yaml
+   services:
+     pick:
+       dns:
+         - <internal-dns-server-ip>
+       dns_search:
+         - <internal.example.com>
+   ```
+
+3. **Docker uses the network mode your scans need.** The Compose bridge network
+   (`pick-connector_default`) is enough for TCP and UDP scans of routed hosts.
+   mDNS, SSDP, ARP discovery, packet capture, and Wi-Fi scanning need host
+   networking on a Linux host. See
+   [Scanning your local network](#scanning-your-local-network-host-networking)
+   to choose.
+
+   | Scan type | Compose bridge | Host networking (Linux) |
+   | --- | --- | --- |
+   | TCP/UDP port scans of routed hosts | yes, if the bridge subnet does not overlap your LAN | yes |
+   | ICMP ping sweeps | yes | yes |
+   | mDNS/Bonjour, SSDP/UPnP discovery | no | yes |
+   | ARP discovery, packet capture, Wi-Fi scanning | no | yes |
+
+After the connector is running, repeat the checks from inside the container to
+confirm it sees what the host sees:
+
+```bash
+docker exec pick-connector getent hosts <internal-hostname>
+docker exec pick-connector nc -vz -w3 <known-live-ip> <open-port>
+```
+
+A check that works on the host but fails in the container points at the
+network mode, a subnet overlap, or the container's DNS settings.
+
+### IPv6 targets
+
+The default network Compose creates for the connector is IPv4 only. Docker
+enables IPv6 on a network only when you ask for it, and only on Linux hosts, so
+an IPv6 target that the host can reach is unreachable from the container until
+you do. If your scope includes IPv6 ranges, either use
+[host networking](#enable-host-networking), which gives the container the
+host's IPv6 addresses, or enable IPv6 on the connector's network in
+`docker-compose.override.yml`:
+
+```yaml
+networks:
+  default:
+    enable_ipv6: true
+```
+
+Without a subnet, Docker assigns the network a unique local (`fd00::/8`)
+`/64`. Recreate the network with `docker compose down` and
+`docker compose up -d`, then confirm from inside the container:
+
+```bash
+docker exec pick-connector ip -6 addr show
+docker exec pick-connector nc -6 -vz -w3 <known-live-ipv6> <open-port>
+```
+
+`PENTEST_ALLOW_PRIVATE_IPS=true` (see
+[Scanning private address ranges](#scanning-private-address-ranges)) also
+covers IPv6 unique local addresses (`fc00::/7`) and loopback. Link-local
+addresses (`fe80::/10`) stay blocked for the web tools either way.
+
+### Running Docker inside a virtual machine
+
+If the Docker host is itself a virtual machine (for example a Linux VM on
+VMware, Hyper-V, Proxmox, VirtualBox, or a cloud instance), scan traffic passes
+through one more layer: the container, then the VM, then the hypervisor or
+physical host, then your network. Every layer must be allowed to reach every
+system you intend to test. A check that passes on the physical host proves
+nothing about the VM, so run the checks above from inside the VM.
+
+**Network access.** Give the VM itself a path to each in-scope system:
+
+- Attach the VM's virtual network adapter to the in-scope segment, with the
+  VLAN or port group that segment uses. A bridged or external-switch adapter
+  puts the VM directly on that network. A NAT adapter hides the VM behind the
+  physical host.
+- Allow the traffic through every firewall between the VM and the targets: the
+  VM's own firewall, the physical host's firewall, and for a cloud instance its
+  security groups, network ACLs, and route tables.
+- The VM also needs the Studio and authentication egress in the table at the
+  top of [Before you begin](#before-you-begin).
+
+**Authorization.** Targets see the scan coming from the VM's address when its
+adapter is bridged, and from the physical host's address when it uses NAT. That
+address is the one to record in your rules of engagement, and the one target
+owners need to allowlist or expect in their firewall and intrusion-detection
+logs. Prefer a bridged adapter with its own address: with NAT, the scan shares
+an address with everything else the physical host sends, which makes the
+activity harder to attribute.
+
+**Limits a VM adds:**
+
+- [Host networking](#enable-host-networking) inside a VM gives the container
+  the VM's interfaces, not the physical host's. Layer 2 discovery (mDNS, SSDP,
+  ARP) sees only the segment the VM's adapter is attached to, and sees nothing
+  of your LAN through a NAT adapter.
+- Packet capture needs the virtual switch to pass traffic not addressed to the
+  VM. Many hypervisors reject promiscuous mode on a virtual switch by default;
+  allow it on the VM's port group if you need capture.
+- Some hypervisor NAT modes, in particular user-mode NAT, do not forward raw
+  packets faithfully. SYN scans and ICMP ping sweeps through them can report
+  hosts as down or ports as filtered when they are not. Use a bridged adapter
+  for scanning.
+
+To see the address the VM scans from when its adapter is bridged:
+
+```bash
+ip -4 addr show
+```
+
+With a NAT adapter, the address targets see is the physical host's, not one
+shown inside the VM.
 
 ### What Strike48 gives you
 
@@ -113,6 +272,12 @@ STRIKE48_INSTANCE_ID=pick-<hostname>-01
 and no port. `STRIKE48_API_URL` is the same hostname over `https://` with a
 trailing slash. `STRIKE48_INSTANCE_ID` is any stable name for this install; the
 approval is keyed to it, so pick something you will not change.
+
+**Use a different `STRIKE48_INSTANCE_ID` on every machine.** If you install on
+more than one machine, for example a laptop and a lab server, do not copy the
+same `.env` between them unchanged. Two connectors with the same instance id
+compete for one identity in Studio, and Studio can show the connector as
+offline or fail to open its app.
 
 ### 3. Start
 
@@ -310,6 +475,192 @@ Treat that change as a scope decision recorded in your rules of engagement, not
 a troubleshooting step. The cloud-metadata range `169.254.0.0/16` stays blocked
 regardless.
 
+## Scanning your local network (host networking)
+
+By default the compose file puts the container on a Docker bridge network that
+Compose creates for it, named `pick-connector_default`. The container gets its
+own internal subnet and reaches your network through Docker's NAT. That is
+enough for the Studio connection and for TCP scans of routed hosts, but it
+limits local-network discovery:
+
+- **Multicast discovery returns nothing.** mDNS/Bonjour (`_ipp._tcp.local.`
+  and similar) and SSDP/UPnP use multicast, which does not cross the bridge. On
+  a bridge network these scans come back empty on every network.
+- **Layer 2 discovery and Wi-Fi tools see only the container.** ARP-based host
+  discovery, packet capture, and Wi-Fi scanning see the container's virtual
+  interface, not the host's Ethernet or wireless adapters.
+- **A subnet overlap hides targets.** If Docker assigned the bridge a range
+  that overlaps your LAN (Docker's default pools draw from `172.16.0.0/12` and
+  `192.168.0.0/16`, and many organisations configure `10.x` pools), traffic to
+  those targets stays inside the container and every host looks down.
+
+To check which network the container is on and what subnet it was given:
+
+```bash
+docker inspect pick-connector --format '{{.HostConfig.NetworkMode}}'
+docker network inspect pick-connector_default --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'
+```
+
+### Enable host networking
+
+Host networking puts the container on the host's own network stack, so tools
+use the host's interfaces directly. This is the Compose equivalent of
+`docker run --network=host`.
+
+1. Create `docker-compose.override.yml` beside `docker-compose.yml`. If you
+   already have one (for example for a private CA), add the `network_mode`
+   line to the existing `pick` service instead.
+
+   ```yaml
+   services:
+     pick:
+       network_mode: host
+   ```
+
+2. Recreate the container:
+
+   ```bash
+   docker compose up -d
+   ```
+
+3. Confirm the mode:
+
+   ```bash
+   docker inspect pick-connector --format '{{.HostConfig.NetworkMode}}'
+   ```
+
+   This prints `host`.
+
+The approval is stored in the `pick-connector_pick-state` volume, so the
+connector comes back online without a new approval. The `NET_RAW` and
+`NET_ADMIN` capabilities in the compose file still apply and are still needed
+for raw-socket tools.
+
+### Before you enable it
+
+- **Use a Linux host running Docker Engine.** On Docker Desktop for macOS or
+  Windows, containers run inside a virtual machine. Docker Desktop 4.34 and
+  later offers host networking as an opt-in setting, but Docker documents it as
+  layer 4 only: TCP and UDP work, and protocols below them do not. ICMP, ARP,
+  raw-socket scans, and Wi-Fi tools therefore still cannot reach your network
+  from Docker Desktop. On a laptop, run the Pick desktop app natively instead.
+- **Use a dedicated scanning host.** Host networking removes the network
+  isolation between the connector and the host. The connector's internal
+  model proxy listens on a loopback TCP port, which is then on the host's
+  loopback interface, where other local processes can reach it. Run it on a
+  host that only runs the connector.
+- **Scope still applies.** Host networking gives the tools reach to every
+  network the host can see. Keep targets to the scope recorded in your rules of
+  engagement.
+
+If you only need TCP scans and the problem is a subnet overlap, you can keep
+the bridge instead: set `default-address-pools` in the Docker daemon
+configuration (`/etc/docker/daemon.json`) to a range your network does not use,
+for example:
+
+```json
+{
+  "default-address-pools": [
+    { "base": "172.30.0.0/16", "size": 24 }
+  ]
+}
+```
+
+The daemon reads this setting only at start, so restart it, then recreate the
+connector's network:
+
+```bash
+sudo systemctl restart docker
+docker compose down
+docker compose up -d
+```
+
+Restarting the daemon stops every container on the host, so schedule it. The
+`pick-connector_pick-state` volume survives `docker compose down`, so the
+approval is kept. Check the new subnet with the `docker network inspect` command above.
+
+## Docker Desktop on Windows
+
+The connector runs on Docker Desktop for Windows, with less network reach than
+on a Linux host. Docker Desktop runs Linux containers inside a WSL 2 virtual
+machine, and Docker documents that all of that VM's network traffic goes
+through NAT in Docker Desktop's backend process (`com.docker.backend`). The
+container never sits directly on your LAN, and the
+[host networking](#enable-host-networking) option does not change that on
+Docker Desktop.
+
+### What works and what does not
+
+| Scan type | Docker Desktop on Windows |
+| --- | --- |
+| Connection to Studio, approval, tools that talk to the internet | works |
+| TCP connect scans of hosts your laptop can route to | works, subject to Windows firewall and VPN rules |
+| ICMP ping sweeps, raw-socket (SYN) scans | not documented by Docker; treat results as unreliable |
+| mDNS/Bonjour, SSDP/UPnP, ARP discovery, packet capture, Wi-Fi scanning | does not work |
+
+If you need local discovery from a Windows laptop, use the native Pick app for
+Windows from the
+[releases page](https://github.com/Strike48-public/pick/releases) instead of
+Docker. It runs on the laptop's own network interfaces rather than behind
+Docker's NAT; packet capture in it needs [Npcap](https://npcap.com/) installed.
+For the full discovery toolset, run the connector on a Linux host on the
+network you are scanning.
+
+### Requirements
+
+- Docker Desktop with the WSL 2 backend, running **Linux containers** (the
+  default). The image is a Linux image and does not run in Windows containers
+  mode.
+- Windows Defender Firewall, or your endpoint security agent, must allow
+  outbound traffic from `com.docker.backend`. Docker notes that host firewalls
+  filter Docker Desktop traffic on that process.
+- If you are on a VPN, your laptop may reach Studio but not the network you
+  are scanning, or the other way round. Check both before you start.
+
+### Install from PowerShell
+
+The install steps above are written for a Linux shell. In PowerShell, use
+these equivalents. Use `curl.exe`, not `curl`: in Windows PowerShell 5.1,
+`curl` is an alias for `Invoke-WebRequest` and rejects the flags below.
+
+```powershell
+$PICK_VERSION = "0.1.10"
+mkdir pick-connector; cd pick-connector
+curl.exe -fsSL "https://github.com/Strike48-public/pick/releases/download/v$PICK_VERSION/pick-docker-compose.yml" -o docker-compose.yml
+curl.exe -fsSL "https://github.com/Strike48-public/pick/releases/download/v$PICK_VERSION/pick-docker.env.example" -o .env.example
+Copy-Item .env.example .env
+notepad .env
+```
+
+In Notepad, fill in the required values and save. Make sure the file is still
+named `.env`, not `.env.txt`, and save it as UTF-8 rather than "UTF-8 with
+BOM". Then continue with [3. Start](#3-start); the `docker compose` and
+`docker exec` commands are the same in PowerShell.
+
+### Check your network from Windows
+
+Run these on the laptop before you install:
+
+```powershell
+Test-NetConnection <known-live-ip> -Port <open-port>
+Resolve-DnsName <internal-hostname>
+```
+
+`TcpTestSucceeded : True` means the laptop can reach the target, and a
+returned address means it resolves the name. After the connector is running,
+repeat the checks inside the container:
+
+```powershell
+docker exec pick-connector nc -vz -w3 <known-live-ip> <open-port>
+docker exec pick-connector getent hosts <internal-hostname>
+```
+
+If the laptop check passes but the container check fails, the cause is
+Docker Desktop's network path: the firewall rule for `com.docker.backend`, the
+VPN, or, for names, DNS. For DNS, set your internal DNS servers with the
+`dns:` override shown in
+[Network requirements for scanning](#network-requirements-for-scanning).
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -323,6 +674,13 @@ regardless.
 | Logs say `Registered successfully` but nothing appears in Gateways | Wrong `STRIKE48_TENANT`, so it registered against another tenant | Confirm the UUID with Strike48, fix `.env`, `docker compose down -v`, `docker compose up -d` |
 | Registration fails right after start with a token in `.env` | The token expired, was already used, or the line is set but empty | Get a fresh token or comment the line out and approve by hand |
 | `PENTEST_ALLOW_PRIVATE_IPS is set to an unrecognized value` warning | The variable is set to something other than `true` or `1` | Set it to `true` or comment it out |
+| mDNS, SSDP, ARP, or Wi-Fi scans return nothing | The container is on the Compose bridge network, which multicast and layer 2 traffic do not cross | [Enable host networking](#enable-host-networking) on a Linux host |
+| Every host in a known-live range looks down, including TCP ports you know are open | The bridge subnet overlaps your LAN, or Docker Desktop cannot reach the local network | Check the subnet as shown in [Scanning your local network](#scanning-your-local-network-host-networking); change the Docker address pool or enable host networking |
+| Scans of internal hostnames fail but the same targets work by IP | The host's DNS does not resolve internal names, so the container cannot either | Fix the host's DNS, or set `dns:` in an override. See [Network requirements for scanning](#network-requirements-for-scanning) |
+| The agent reports no live hosts on a network you know is up, or says a firewall is dropping ICMP | The container cannot reach or resolve the targets: wrong network mode, a subnet overlap, host DNS, or Docker Desktop's network limits. A scan that only times out is not evidence of a firewall | Run the host and in-container checks in [Network requirements for scanning](#network-requirements-for-scanning). On Windows, see [Docker Desktop on Windows](#docker-desktop-on-windows) |
+| Targets are reachable from the physical host but not from the connector, and Docker runs in a VM | The VM's adapter is not on the in-scope segment, or a VM, host, or cloud firewall blocks it | Run the checks inside the VM and fix its adapter and firewall rules. See [Running Docker inside a virtual machine](#running-docker-inside-a-virtual-machine) |
+| Studio shows `App not found or connector is offline` when you open the connector | The connector is not approved or not connected, or two installs share one `STRIKE48_INSTANCE_ID` | Check the Gateways page for the connector's state and for duplicate entries. Give each machine its own `STRIKE48_INSTANCE_ID`, restart it, and approve the new entry |
+| IPv6 targets are unreachable from the connector but reachable from the host | The connector's network is IPv4 only | Enable IPv6 or host networking. See [IPv6 targets](#ipv6-targets) |
 | Pending for a long time | Nobody has approved it | Expected. Someone with Gateways permission in your Studio must approve |
 | Container restarts in a loop | Malformed `.env` | `docker compose logs`, fix, `docker compose up -d` |
 
@@ -334,6 +692,8 @@ an untrusted channel.
 
 - The container runs as root with the `NET_RAW` and `NET_ADMIN` capabilities so
   that nmap and similar tools can open raw sockets. It has no published ports.
+  With [host networking](#enable-host-networking) enabled it shares the host's
+  network stack instead of an isolated bridge.
 - The connector holds no long-lived bearer token. At approval it stores a
   client identity and a private key in the `pick-connector_pick-state` volume,
   under `/root/.strike48/credentials/` and `/root/.strike48/keys/`, both mode
