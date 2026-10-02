@@ -121,8 +121,8 @@ Validator uncertain - requires operator judgment.
        │
        ▼
 ┌──────────────┐
-│ Orchestrator │  ✅ ALLOWS when all Confirmed or FalsePositive
-│    Gate      │  ❌ BLOCKS if any Pending or NeedsReview
+│ Orchestrator │   ALLOWS when all Confirmed or FalsePositive
+│    Gate      │   BLOCKS if any Pending or NeedsReview
 └──────┬───────┘
        │
        ▼
@@ -192,12 +192,12 @@ report_validation_issue finding-abc123 "Validator should detect 503 responses as
 
 ### Current Status (PR #61)
 
-- ✅ Evidence graph with Pending status
-- ✅ Provenance tracking (commands + responses)
-- ✅ Orchestrator gate enforcement
-- 🚧 Validator Agent implementation (planned)
-- 🚧 UI validation dashboard (planned)
-- 🚧 Override workflow (planned)
+-  Evidence graph with Pending status
+-  Provenance tracking (commands + responses)
+-  Orchestrator gate enforcement
+-  Validator Agent implementation (planned)
+-  UI validation dashboard (planned)
+-  Override workflow (planned)
 
 ### Future Enhancements
 
