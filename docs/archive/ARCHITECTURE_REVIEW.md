@@ -1186,7 +1186,7 @@ The architecture is technically sound, the competitive positioning is compelling
 
 **Verification Command (after edits):**
 ```bash
-grep -i "ios" /home/jtomek/Code/pick/docs/PRD_COMPETITIVE_POSITIONING.md
+grep -i "ios" ~/Code/pick/docs/PRD_COMPETITIVE_POSITIONING.md
 ```
 Expected result: No matches found (or only matches in competitors' sections describing their iOS limitations)
 

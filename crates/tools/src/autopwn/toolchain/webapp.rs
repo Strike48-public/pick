@@ -36,7 +36,7 @@ impl PentestTool for WebAppToolchain {
             .param(ToolParam::required(
                 "target",
                 ParamType::String,
-                "Target URL (e.g., http://10.10.2.169)",
+                "Target URL (e.g., http://192.0.2.169)",
             ))
             .param(ToolParam::optional(
                 "execution_mode",

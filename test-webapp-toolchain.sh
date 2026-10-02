@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-DVWA_TARGET="http://10.10.2.169"
+DVWA_TARGET="${DVWA_TARGET:-http://192.0.2.169}"
 
 echo "═══════════════════════════════════════════════════"
 echo "🧪 Testing Web Application Toolchain"

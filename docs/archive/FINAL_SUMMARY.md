@@ -61,7 +61,7 @@ All planning documents, issues, and scripts are complete and ready for the 60-da
 ### 1. Create Remaining StrikeKit Issues
 
 ```bash
-cd /home/jtomek/Code/pick/docs
+cd ~/Code/pick/docs
 ./create-all-issues.sh
 ```
 
