@@ -3,7 +3,8 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
+    classify_probe_outcome, execute_timed, ParamType, PentestTool, Platform, ToolContext,
+    ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, NetworkOps};
 use serde_json::{json, Value};
@@ -63,7 +64,9 @@ impl PentestTool for NetworkDiscoverTool {
             let timeout_ms = param_u64(&params, "timeout_ms", 10000);
 
             let platform = get_platform();
-            let services = platform.mdns_discover(service_type, timeout_ms).await?;
+            let (services, probe) = platform
+                .mdns_discover_with_outcome(service_type, timeout_ms)
+                .await?;
 
             Ok(json!({
                 "services": services.iter().map(|s| json!({
@@ -74,8 +77,52 @@ impl PentestTool for NetworkDiscoverTool {
                     "txt_records": s.txt_records,
                 })).collect::<Vec<_>>(),
                 "count": services.len(),
+                "probe": probe,
             }))
         })
         .await
+        .map(classify_probe_outcome)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pentest_core::tools::ToolOutcome;
+
+    #[test]
+    fn skipped_probe_downgrades_outcome_and_success() {
+        let result = ToolResult::success(json!({
+            "services": [],
+            "count": 0,
+            "probe": {"status": "skipped", "reason": "send failed: network unreachable"},
+        }));
+        let classified = classify_probe_outcome(result);
+        assert_eq!(classified.outcome, ToolOutcome::Skipped);
+        assert!(!classified.success, "a skipped probe is not a success");
+        assert_eq!(
+            classified.data["probe"]["reason"].as_str(),
+            Some("send failed: network unreachable")
+        );
+    }
+
+    #[test]
+    fn ran_zero_finding_sweep_stays_ran() {
+        // "ran and found nothing" must remain a success — that is the whole
+        // distinction #309 asks for.
+        let result = ToolResult::success(json!({
+            "services": [],
+            "count": 0,
+            "probe": {"status": "ran"},
+        }));
+        let classified = classify_probe_outcome(result);
+        assert_eq!(classified.outcome, ToolOutcome::Ran);
+        assert!(classified.success);
+    }
+
+    #[test]
+    fn payload_without_probe_field_is_left_alone() {
+        let result = ToolResult::success(json!({"services": [], "count": 0}));
+        assert_eq!(classify_probe_outcome(result).outcome, ToolOutcome::Ran);
     }
 }

@@ -1,5 +1,6 @@
 //! Platform trait definitions
 
+use crate::common::probe::ProbeOutcome;
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,36 @@ pub trait NetworkOps: Send + Sync {
 
     /// Discover mDNS services
     async fn mdns_discover(&self, service_type: &str, timeout_ms: u64) -> Result<Vec<MdnsService>>;
+
+    /// Like [`NetworkOps::ssdp_discover`] but also reports whether the probe
+    /// actually ran (#309).
+    ///
+    /// The default maps a backend error to `Err` and otherwise assumes the
+    /// probe ran — correct for implementations that surface socket failures as
+    /// errors. Implementations with best-effort paths that can return an empty
+    /// result without probing (blocked sandbox, unavailable socket) must
+    /// override this so "never looked" stays distinguishable from "nothing
+    /// there".
+    async fn ssdp_discover_with_outcome(
+        &self,
+        timeout_ms: u64,
+    ) -> Result<(Vec<SsdpDevice>, ProbeOutcome)> {
+        Ok((self.ssdp_discover(timeout_ms).await?, ProbeOutcome::Ran))
+    }
+
+    /// Like [`NetworkOps::mdns_discover`] but also reports whether the probe
+    /// actually ran (#309). See [`NetworkOps::ssdp_discover_with_outcome`] for
+    /// the default-override contract.
+    async fn mdns_discover_with_outcome(
+        &self,
+        service_type: &str,
+        timeout_ms: u64,
+    ) -> Result<(Vec<MdnsService>, ProbeOutcome)> {
+        Ok((
+            self.mdns_discover(service_type, timeout_ms).await?,
+            ProbeOutcome::Ran,
+        ))
+    }
 }
 
 /// System information trait
@@ -99,6 +130,34 @@ pub trait CommandExec: Send + Sync {
         _working_dir: Option<&std::path::Path>,
     ) -> Result<CommandResult> {
         self.execute_command(cmd, args, timeout).await
+    }
+
+    /// Execute a command, scrubbing `known_secret` from log output.
+    ///
+    /// When the caller injected a credential into `args` (differential-authz
+    /// identity run, pick#314), it passes the exact secret here so the platform
+    /// layer can redact it from every `tracing` line BY VALUE — closing the
+    /// exotic-shape gap where a header value no regex catches
+    /// (`X-Api-Id: ab12cd`) would otherwise reach journald/Quickwit verbatim
+    /// (pick#335). Non-secret arguments stay visible for debuggability.
+    ///
+    /// `None` (or an empty secret) means ordinary execution: only the
+    /// pattern-based redactor applies.
+    ///
+    /// The default implementation ignores the secret and delegates to
+    /// [`CommandExec::execute_command_in_dir`] so platforms without
+    /// secret-aware logging keep working unchanged; the desktop
+    /// implementation overrides it.
+    async fn execute_command_with_secret(
+        &self,
+        cmd: &str,
+        args: &[&str],
+        timeout: Duration,
+        working_dir: Option<&std::path::Path>,
+        _known_secret: Option<&str>,
+    ) -> Result<CommandResult> {
+        self.execute_command_in_dir(cmd, args, timeout, working_dir)
+            .await
     }
 
     /// Check if command execution is supported

@@ -73,6 +73,54 @@
     animation: pulse-attention 2s ease-in-out infinite;
 }
 
+/* Callout card shown while waiting for admin approval in the Strike48 web UI.
+   Uses --warning (amber) to signal "this needs human attention" without
+   implying an error. */
+.approval-callout {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 16px;
+    max-width: 420px;
+    padding: 20px 24px;
+    border-radius: 12px;
+    background-color: color-mix(in srgb, var(--warning) 10%, var(--background));
+    border: 1px solid color-mix(in srgb, var(--warning) 55%, transparent);
+    color: var(--foreground);
+    animation: pulse-callout 2.4s ease-in-out infinite;
+}
+
+.approval-callout-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background-color: color-mix(in srgb, var(--warning) 20%, var(--background));
+    color: var(--warning);
+}
+
+.approval-callout-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.approval-callout-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--warning);
+    letter-spacing: 0.01em;
+}
+
+.approval-callout-hint {
+    font-size: 0.9rem;
+    color: var(--muted-foreground);
+    line-height: 1.4;
+}
+
 .connecting-cancel-btn {
     background-color: transparent;
     color: var(--muted-foreground);
@@ -98,4 +146,13 @@
 @keyframes pulse-attention {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.6; }
+}
+
+@keyframes pulse-callout {
+    0%, 100% {
+        box-shadow: 0 0 0 0 color-mix(in srgb, var(--warning) 25%, transparent);
+    }
+    50% {
+        box-shadow: 0 0 0 8px color-mix(in srgb, var(--warning) 0%, transparent);
+    }
 }

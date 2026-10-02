@@ -5,8 +5,8 @@
 
 pub use lucide_dioxus::{
     Bolt, ChevronDown, ChevronLeft, CircleQuestionMark, Download, FileText, Folder, History, House,
-    Info, LayoutGrid, Lock, LogOut, Menu, MessageCircle, MessageSquare, Network, Palette, Plus,
-    ScrollText, Search, Settings, Shield, Terminal, User, Wifi, Wrench, X,
+    Info, KeyRound, LayoutGrid, Lock, LogOut, Menu, MessageCircle, MessageSquare, Network, Palette,
+    Plus, ScrollText, Search, Settings, Shield, Terminal, User, Wifi, Wrench, X,
 };
 
 // ---------------------------------------------------------------------------

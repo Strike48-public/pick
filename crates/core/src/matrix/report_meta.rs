@@ -61,7 +61,7 @@ impl ReportMeta {
     /// report (no badge) from a parsed-but-no-severity report ("clean" badge).
     pub fn parse(content: &str) -> Option<ReportMeta> {
         match split_frontmatter(content) {
-            (Some(yaml), _) => Some(serde_yml::from_str(yaml).unwrap_or_default()),
+            (Some(yaml), _) => Some(serde_norway::from_str(yaml).unwrap_or_default()),
             (None, _) => None,
         }
     }

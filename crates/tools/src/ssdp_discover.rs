@@ -3,7 +3,8 @@
 use async_trait::async_trait;
 use pentest_core::error::Result;
 use pentest_core::tools::{
-    execute_timed, ParamType, PentestTool, Platform, ToolContext, ToolParam, ToolResult, ToolSchema,
+    classify_probe_outcome, execute_timed, ParamType, PentestTool, Platform, ToolContext,
+    ToolParam, ToolResult, ToolSchema,
 };
 use pentest_platform::{get_platform, NetworkOps};
 use serde_json::{json, Value};
@@ -49,7 +50,7 @@ impl PentestTool for SsdpDiscoverTool {
 
         execute_timed(|| async move {
             let platform = get_platform();
-            let devices = platform.ssdp_discover(timeout_ms).await?;
+            let (devices, probe) = platform.ssdp_discover_with_outcome(timeout_ms).await?;
             Ok(json!({
                 "devices": devices.iter().map(|d| json!({
                     "location": d.location,
@@ -61,8 +62,53 @@ impl PentestTool for SsdpDiscoverTool {
                     "model": d.model,
                 })).collect::<Vec<_>>(),
                 "count": devices.len(),
+                "probe": probe,
             }))
         })
         .await
+        .map(classify_probe_outcome)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pentest_core::tools::ToolOutcome;
+
+    #[test]
+    fn skipped_probe_downgrades_outcome_and_success() {
+        let result = ToolResult::success(json!({
+            "devices": [],
+            "count": 0,
+            "probe": {"status": "skipped", "reason": "bind failed: permission denied"},
+        }));
+        let classified = classify_probe_outcome(result);
+        assert_eq!(classified.outcome, ToolOutcome::Skipped);
+        assert!(!classified.success, "a skipped probe is not a success");
+        // The reason stays available for diagnostics.
+        assert_eq!(
+            classified.data["probe"]["reason"].as_str(),
+            Some("bind failed: permission denied")
+        );
+    }
+
+    #[test]
+    fn ran_zero_finding_sweep_stays_ran() {
+        // "ran and found nothing" must remain a success — that is the whole
+        // distinction #309 asks for.
+        let result = ToolResult::success(json!({
+            "devices": [],
+            "count": 0,
+            "probe": {"status": "ran"},
+        }));
+        let classified = classify_probe_outcome(result);
+        assert_eq!(classified.outcome, ToolOutcome::Ran);
+        assert!(classified.success);
+    }
+
+    #[test]
+    fn payload_without_probe_field_is_left_alone() {
+        let result = ToolResult::success(json!({"devices": [], "count": 0}));
+        assert_eq!(classify_probe_outcome(result).outcome, ToolOutcome::Ran);
     }
 }

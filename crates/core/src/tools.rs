@@ -646,6 +646,37 @@ impl ToolResult {
     }
 }
 
+/// Reclassify a completed discovery run from the platform probe outcome (#309).
+///
+/// The shared mDNS and SSDP implementations degrade an unsendable probe
+/// (blocked sandbox, no available socket) to an empty result rather than an
+/// error. `data.probe` carries the probe outcome; a `skipped` status downgrades
+/// the result to [`ToolOutcome::Skipped`] (`with_outcome` also clears
+/// `success`), so the model and the report gate read it as "the probe never
+/// ran", never as evidence of a clean network. A `Ran` result (including a
+/// truthful zero-finding sweep) passes through unchanged.
+///
+/// One policy shared by `network_discover` and `ssdp_discover` so the two
+/// cannot drift.
+pub fn classify_probe_outcome(result: ToolResult) -> ToolResult {
+    // Only a `Ran` result needs reclassification; anything the tool body
+    // already marked Failed/Skipped passes through.
+    if result.outcome != ToolOutcome::Ran {
+        return result;
+    }
+    match probe_status(&result.data) {
+        Some("skipped") => result.with_outcome(ToolOutcome::Skipped),
+        _ => result,
+    }
+}
+
+/// The `status` tag of the `probe` outcome recorded in a tool payload, if any.
+fn probe_status(data: &Value) -> Option<&str> {
+    data.get("probe")
+        .and_then(|p| p.get("status"))
+        .and_then(Value::as_str)
+}
+
 /// Execute an async tool body, automatically timing the execution and wrapping
 /// the result in a `ToolResult` with the elapsed duration.
 pub async fn execute_timed<F, Fut>(f: F) -> Result<ToolResult>

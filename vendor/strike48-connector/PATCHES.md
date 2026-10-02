@@ -48,6 +48,30 @@ both ends agree on the same host algebra.
 **Drop when:** the equivalent lands upstream in Strike48/sdk-rs and pick moves to
 that release.
 
+## runner-exposes-jwt-presence
+
+**Files:** `src/connector.rs`
+
+**Problem.** The runner writes the connector JWT into its private config after
+the startup OTT exchange and after the post-approval `credentials_issued`
+round-trip, but exposes nothing about it: `get_stats()` reports transport
+health only, and no callback fires toward embedding frontends. The pick
+desktop UI therefore cannot tell "transport up, admin approval still pending"
+from "registered and usable", and (before pick#292) flipped to a
+non-functional Dashboard on a 3-second timer while authorization was still
+outstanding.
+
+**Change.** Add `ConnectorRunner::has_auth_token(&self) -> bool`, a read-only
+accessor over `config.auth_token`. Poll-only by design — no callback surface,
+no state duplication: the runner's config remains the single source of truth
+for JWT presence.
+
+**Tracking:** local to this vendored fork (pick#292). Candidate for an
+upstream `sdk-rs` PR.
+
+**Drop when:** an equivalent accessor lands upstream and pick moves to that
+release.
+
 **Vendoring scope:** only what `[patch.crates-io]` actually compiles — the lib.
 `tests/`, `test_fixtures/` and `examples/` are not vendored (they are never built
 through the patch, and the unit tests for this change live inline in
