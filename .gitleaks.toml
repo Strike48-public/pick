@@ -60,6 +60,25 @@ regexes = [
     '''^ott_hXg1Adwu12345$''',
 ]
 
+# Historical copies of a captured Matrix pre-approval one-time token, introduced
+# by these two commits. The token was confirmed revoked server-side on
+# 2026-10-01 (pick#520), so it is no longer a usable credential; the copies in
+# the current tree are removed separately. Scoped to the two commits AND the two
+# files AND one rule, so the same value anywhere else, or any new commit, still
+# fires.
+[[allowlists]]
+description = "Revoked Matrix OTT in two historical commits (pick#520)"
+targetRules = ["generic-api-key"]
+condition = "AND"
+commits = [
+    "7e2cef39a0a1c2352bb21a408fb60698fa6ad506",
+    "f82397f2a22104c839b2c59bdca3ddf1e8b2c553",
+]
+paths = [
+    '''^crates/core/src/matrix/pre_approval\.rs$''',
+    '''^docs/superpowers/plans/2026-07-21-plg-connector-oauth-registration\.md$''',
+]
+
 # Cargo.lock holds crate names and checksums only; generic-api-key trips on
 # crate names such as objc2-authentication-services.
 [[allowlists]]
