@@ -25,6 +25,7 @@ use strike48_connector::{
     TaskTypeSchema,
 };
 use tokio::sync::RwLock;
+use tracing::Instrument;
 
 /// Tool timeout advertised to the platform and used by the runner. Matches the
 /// shipping `PickConnector` — some tools (e.g. long scans) run for minutes.
@@ -171,88 +172,98 @@ impl BaseConnector for ToolConnector {
         _capability_id: Option<&'a str>,
         context: &'a HashMap<String, String>,
     ) -> Pin<Box<dyn std::future::Future<Output = SdkResult<Value>> + Send + 'a>> {
-        Box::pin(async move {
-            // Tool-only connector: every request is a tool invocation. The SDK
-            // spawns execute_with_context in its own tokio task already, so we
-            // run synchronously here.
-            let tool_name = request
-                .get("tool")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let params = request
-                .get("parameters")
-                .cloned()
-                .unwrap_or_else(|| request.clone());
+        // Tool-only connector: every request is a tool invocation. The SDK
+        // spawns execute_with_context in its own tokio task already, so we
+        // run synchronously here.
+        let tool_name = request
+            .get("tool")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        // Open the correlation span outside the future so every line the
+        // invocation emits, including the failure line, carries tool,
+        // request_id and tool_call_id (pick#476).
+        let span = crate::spans::tool_execution_span(&tool_name, &self.instance_id, context);
+        Box::pin(
+            async move {
+                let params = request
+                    .get("parameters")
+                    .cloned()
+                    .unwrap_or_else(|| request.clone());
 
-            tracing::info!(tool = tool_name.as_str(), "tool execution started");
+                tracing::info!(tool = tool_name.as_str(), "tool execution started");
 
-            let start = std::time::Instant::now();
+                let start = std::time::Instant::now();
 
-            // Build ToolContext, attaching the workspace when configured.
-            let mut ctx = match &self.workspace_path {
-                Some(path) => ToolContext::default().with_workspace(path.clone()),
-                None => ToolContext::default(),
-            };
+                // Build ToolContext, attaching the workspace when configured.
+                let mut ctx = match &self.workspace_path {
+                    Some(path) => ToolContext::default().with_workspace(path.clone()),
+                    None => ToolContext::default(),
+                };
 
-            // Populate metadata (instance_id, request_id, tool_call_id) from the
-            // caller-supplied context so tools that correlate live state can find
-            // their task.
-            let request_id = context.get("request_id").cloned().unwrap_or_default();
-            ctx.metadata
-                .insert("instance_id".to_string(), self.instance_id.clone());
-            ctx.metadata
-                .insert("request_id".to_string(), request_id.clone());
-            if let Some(tool_call_id) = context.get("tool_call_id") {
-                if !tool_call_id.is_empty() {
-                    ctx.metadata
-                        .insert("tool_call_id".to_string(), tool_call_id.clone());
-                }
-            }
-
-            // Forward the platform session token so tools that call back into
-            // Strike48 (StrikeKit uploads, document_write, etc.) can authenticate.
-            if let Some(token) = context.get("session_token") {
+                // Populate metadata (instance_id, request_id, tool_call_id) from the
+                // caller-supplied context so tools that correlate live state can find
+                // their task.
+                let request_id = context.get("request_id").cloned().unwrap_or_default();
                 ctx.metadata
-                    .insert("session_token".to_string(), token.clone());
-            }
-
-            // Tag the executing agent for provenance/logging.
-            ctx = ctx.with_agent_name(self.connector_name.clone());
-
-            // Build a Matrix client when we know the API URL so tools that create
-            // documents/evidence can reach the platform.
-            if !self.matrix_api_url.is_empty() {
-                let matrix_client =
-                    Arc::new(crate::matrix::MatrixChatClient::new(&self.matrix_api_url));
-                ctx = ctx.with_matrix_client(matrix_client);
-            }
-
-            let tools = self.tools.read().await;
-            let result = match tools.execute(&tool_name, params, &ctx).await {
-                Ok(result) => {
-                    let duration_ms = start.elapsed().as_millis() as u64;
-                    tracing::info!(
-                        tool = tool_name.as_str(),
-                        duration_ms,
-                        success = result.success,
-                        "tool execution completed"
-                    );
-                    result
+                    .insert("instance_id".to_string(), self.instance_id.clone());
+                ctx.metadata
+                    .insert("request_id".to_string(), request_id.clone());
+                if let Some(tool_call_id) = context.get("tool_call_id") {
+                    if !tool_call_id.is_empty() {
+                        ctx.metadata
+                            .insert("tool_call_id".to_string(), tool_call_id.clone());
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        tool = tool_name.as_str(),
-                        error = %e,
-                        "tool execution failed"
-                    );
-                    crate::tools::ToolResult::error(e.to_string())
-                }
-            };
 
-            let result_json = serde_json::to_value(&result).unwrap_or(Value::Null);
-            Ok(result_json)
-        })
+                // Forward the platform session token so tools that call back into
+                // Strike48 (StrikeKit uploads, document_write, etc.) can authenticate.
+                if let Some(token) = context.get("session_token") {
+                    ctx.metadata
+                        .insert("session_token".to_string(), token.clone());
+                }
+
+                // Tag the executing agent for provenance/logging.
+                ctx = ctx.with_agent_name(self.connector_name.clone());
+
+                // Build a Matrix client when we know the API URL so tools that create
+                // documents/evidence can reach the platform.
+                if !self.matrix_api_url.is_empty() {
+                    let matrix_client =
+                        Arc::new(crate::matrix::MatrixChatClient::new(&self.matrix_api_url));
+                    ctx = ctx.with_matrix_client(matrix_client);
+                }
+
+                let tools = self.tools.read().await;
+                let result = match tools.execute(&tool_name, params, &ctx).await {
+                    Ok(result) => {
+                        let duration_ms = start.elapsed().as_millis() as u64;
+                        tracing::info!(
+                            tool = tool_name.as_str(),
+                            duration_ms,
+                            success = result.success,
+                            "tool execution completed"
+                        );
+                        result
+                    }
+                    Err(e) => {
+                        // Render the full cause chain here: this line and the
+                        // result below are where the error leaves the process.
+                        let error = e.chain();
+                        tracing::warn!(
+                            tool = tool_name.as_str(),
+                            error = %error,
+                            "tool execution failed"
+                        );
+                        crate::tools::ToolResult::error(error)
+                    }
+                };
+
+                let result_json = serde_json::to_value(&result).unwrap_or(Value::Null);
+                Ok(result_json)
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -326,9 +337,35 @@ mod tests {
         }
     }
 
+    /// Fails the way a real tool does when its binary is missing: a classified
+    /// error with the io cause attached, so the boundary test can check the
+    /// cause reaches the result sent back to Strike48.
+    struct FailingTool;
+
+    #[async_trait]
+    impl PentestTool for FailingTool {
+        fn name(&self) -> &str {
+            "failing_tool"
+        }
+        fn description(&self) -> &str {
+            "A tool that always fails with a cause attached"
+        }
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new("failing_tool", "A tool that always fails")
+        }
+        async fn execute(&self, _params: Value, _ctx: &ToolContext) -> ToolFnResult<ToolResult> {
+            Err(
+                crate::error::Error::ToolExecution("nmap failed".into()).with_source(
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "nmap: command not found"),
+                ),
+            )
+        }
+    }
+
     fn test_connector() -> ToolConnector {
         let mut registry = ToolRegistry::new();
         registry.register(StubTool);
+        registry.register(FailingTool);
         ToolConnector::new(
             Arc::new(RwLock::new(registry)),
             "pentest-connector",
@@ -342,6 +379,31 @@ mod tests {
     fn behaviors_is_tool_only() {
         let connector = test_connector();
         assert_eq!(connector.behaviors(), vec![ConnectorBehavior::Tool]);
+    }
+
+    /// The error string sent back to Strike48 is the last thing a support
+    /// engineer sees, so it must carry the whole cause chain, not only the
+    /// outermost message (pick#476).
+    #[tokio::test]
+    async fn failure_result_carries_the_full_cause_chain() {
+        let connector = test_connector();
+        let context: HashMap<String, String> = HashMap::new();
+
+        let result = connector
+            .execute_with_context(
+                serde_json::json!({"tool": "failing_tool", "parameters": {}}),
+                None,
+                &context,
+            )
+            .await
+            .expect("hop returns Ok(ToolResult) even when the tool fails");
+
+        assert_eq!(result["success"], false);
+        let error = result["error"].as_str().expect("error string");
+        assert_eq!(
+            error,
+            "Tool execution error: nmap failed: nmap: command not found"
+        );
     }
 
     #[test]
@@ -382,5 +444,86 @@ mod tests {
             metadata.contains_key("tool_names"),
             "metadata should advertise tool_names"
         );
+    }
+
+    /// The failure line an operator greps for must carry the platform ids on
+    /// its own, without joining it to a separate `[execreq-ctx]` line
+    /// (pick#476). Drives the real `execute_with_context` hop with an unknown
+    /// tool so the registry fails fast.
+    #[tokio::test]
+    async fn failure_line_carries_request_and_tool_call_ids() {
+        use crate::logging::test_support::Capture;
+        use tracing_subscriber::{fmt, prelude::*};
+
+        let make_subscriber = |capture: &Capture| {
+            tracing_subscriber::registry().with(crate::logging::apply_span_policy(
+                fmt::layer().with_ansi(false).with_writer(capture.clone()),
+            ))
+        };
+        let connector = test_connector();
+
+        // failure_result_carries_the_full_cause_chain drives the same hop with
+        // no subscriber. If its thread registers the "tool execution failed"
+        // callsite first, the callsite caches Interest::NEVER and the failure
+        // line never reaches this capture (failed 40/40 with both tests in one
+        // binary). Run the hop once under this thread's subscriber so every
+        // callsite on the path is registered, then force an interest rebuild
+        // with a second set_default, the same remedy as pick_connector's
+        // liveview_hop_lines_carry_correlation_ids. The warm-up writes to its
+        // own capture so its lines cannot satisfy the assertions below.
+        let warmup = Capture::default();
+        let _warm_guard = tracing::subscriber::set_default(make_subscriber(&warmup));
+        let _ = connector
+            .execute_with_context(
+                serde_json::json!({"tool": "missing_tool", "parameters": {}}),
+                None,
+                &HashMap::new(),
+            )
+            .await;
+        let capture = Capture::default();
+        let _guard = tracing::subscriber::set_default(make_subscriber(&capture));
+
+        let context: HashMap<String, String> = [
+            ("request_id", "req-1"),
+            ("tool_call_id", "call-1"),
+            ("session_token", "secret-token-value"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+
+        let result = connector
+            .execute_with_context(
+                serde_json::json!({"tool": "missing_tool", "parameters": {}}),
+                None,
+                &context,
+            )
+            .await
+            .expect("hop returns Ok(ToolResult) even when the tool fails");
+        assert_eq!(result["success"], false);
+
+        let output = capture.contents();
+        let failure_line = output
+            .lines()
+            .find(|l| l.contains("tool execution failed"))
+            .unwrap_or_else(|| panic!("no failure line in {output:?}"));
+        for expected in [
+            "tool=missing_tool",
+            "instance_id=test-instance",
+            "request_id=req-1",
+            "tool_call_id=call-1",
+        ] {
+            assert!(
+                failure_line.contains(expected),
+                "missing {expected} in {failure_line}"
+            );
+        }
+        assert!(
+            output
+                .lines()
+                .any(|l| l.contains("close") && l.contains("tool_execution{tool=missing_tool")),
+            "no tool_execution close event in {output:?}"
+        );
+        assert!(!output.contains("secret-token-value"), "{output}");
     }
 }

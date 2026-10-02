@@ -7009,6 +7009,7 @@ name = "pentest-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum 0.8.8",
  "base64 0.22.1",
  "chrono",

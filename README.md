@@ -16,12 +16,12 @@ A multiplatform penetration testing connector built with [Dioxus](https://dioxus
         │                 │                 │                 │
         ▼                 ▼                 ▼                 ▼
 ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
-│   Desktop     │ │     Web       │ │    Mobile     │ │     TUI       │
+│   Desktop     │ │     Web       │ │    Mobile     │ │   Headless    │
 │  (dioxus-     │ │  (dioxus-     │ │  (dioxus-     │ │  (dioxus-     │
-│   desktop)    │ │   liveview)   │ │   mobile)     │ │   tui)        │
+│   desktop)    │ │   liveview)   │ │   mobile)     │ │   liveview)   │
 ├───────────────┤ ├───────────────┤ ├───────────────┤ ├───────────────┤
-│ UI + Tools    │ │ UI + Tools    │ │ UI + Tools    │ │ UI + Tools    │
-│ run locally   │ │ run on server │ │ run on device │ │ run locally   │
+│ UI + Tools    │ │ UI + Tools    │ │ UI + Tools    │ │ Tools only    │
+│ run locally   │ │ run on server │ │ run on device │ │ no local UI   │
 └───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘
 ```
 
@@ -34,7 +34,6 @@ A multiplatform penetration testing connector built with [Dioxus](https://dioxus
 | **Web** | dioxus-liveview + axum | Server hosting the app |
 | **Android** | dioxus-mobile | Android device |
 | **iOS** | dioxus-mobile | iOS device |
-| **TUI** | dioxus-tui | Local machine (terminal) |
 
 ## Features
 
@@ -99,7 +98,6 @@ pick/
 │   ├── headless/      # Headless agent (pentest-agent binary)
 │   ├── desktop/       # Desktop app (dioxus-desktop)
 │   ├── web/           # Web app (dioxus-liveview + axum)
-│   ├── tui/           # Terminal app (dioxus-tui)
 │   └── mobile/        # Mobile app (dioxus-mobile)
 ```
 
@@ -166,16 +164,6 @@ cargo run --package pentest-web
 cargo build --release --package pentest-web
 ```
 
-### TUI
-
-```bash
-# Development
-cargo run --package pentest-tui
-
-# Release build
-cargo build --release --package pentest-tui
-```
-
 ### Mobile (requires additional setup)
 
 ```bash
@@ -210,9 +198,9 @@ Environment variables:
 
 ## How It Works
 
-1. You run one of the apps (desktop, web, tui, mobile)
+1. You run one of the apps (desktop, web, headless, mobile)
 2. The app connects to the Strike48 backend and registers as a connector
-3. The app presents a UI for manual tool execution
+3. Apps with a UI (desktop, web, mobile) present it for manual tool execution; headless has no local UI
 4. Tools can also be triggered remotely via the Strike48 API (e.g., by an AI agent)
 5. All tool execution happens locally on the machine running the app
 
@@ -238,7 +226,7 @@ Pick is a native app that is both a UI and a connector - the same architecture p
 
 For WiFi scanning and pentesting features, we recommend using a dedicated external WiFi adapter. This prevents disconnection issues when your primary adapter enters monitor mode.
 
-### ⚠️ Important: Avoid Connection Loss
+### Important: Avoid Connection Loss
 
 If you're connected to the internet via WiFi and try to scan with your built-in adapter:
 1. Your adapter enters monitor mode

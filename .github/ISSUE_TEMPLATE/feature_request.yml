@@ -1,0 +1,91 @@
+name: Feature Request
+description: Suggest a new capability or improvement for Pick
+title: "[Feature]: "
+labels: ["type/feature", "product/pick"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement to Pick. Please fill out the
+        sections below.
+
+        If you are proposing a new attack-surface specialist, review the
+        existing specialist pattern (indicators, spawn thresholds, guardrails,
+        JSON-context tool dispatch) before filling this out, and describe how
+        your proposal fits it rather than introducing a parallel structure.
+
+        Do not include customer or tenant names, secrets, credentials, real
+        Strike48 instance URLs, or internal hostnames anywhere in this request.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What problem does this solve? Who is affected, and how?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the feature or change you would like to see.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you considered and why you did not choose them.
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is in scope for this request? What is explicitly out of scope?
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-checklist
+    attributes:
+      label: Acceptance checklist
+      description: >-
+        Optional. A checklist of conditions that must hold for this to be
+        considered done.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: test-cases
+    attributes:
+      label: Steps or test cases to verify
+      description: >-
+        Optional. Commands or steps a maintainer can run to confirm the
+        outcome.
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots (or write No UI)
+      description: >-
+        Optional. Paste screenshots if the change touches the UI, or write
+        "No UI". Redact customer names, tenant names and internal hostnames.
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        Priority and size: you may propose a priority (P0 to P4) and a size
+        (XS to XL) in the body of this issue. Maintainers apply the
+        `priority/*` and `size/*` labels at triage.

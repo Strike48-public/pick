@@ -44,35 +44,35 @@ npm run test:debug
 ### CyberChef Drag-and-Drop Tests (`tests/cyberchef.spec.ts`)
 
 **Basic Functionality:**
-- ✅ Display CyberChef page with empty recipe
-- ✅ Show operations in categories (7 categories, 20 operations)
-- ✅ Add operation by clicking
-- ✅ Add operation by dragging
+-  Display CyberChef page with empty recipe
+-  Show operations in categories (7 categories, 20 operations)
+-  Add operation by clicking
+-  Add operation by dragging
 
 **Drag-and-Drop:**
-- ✅ Add multiple operations to recipe
-- ✅ Reorder operations within recipe
-- ✅ Show insert indicator when dragging
-- ✅ Persist enabled/disabled state during reorder
+-  Add multiple operations to recipe
+-  Reorder operations within recipe
+-  Show insert indicator when dragging
+-  Persist enabled/disabled state during reorder
 
 **Recipe Management:**
-- ✅ Toggle operation enabled/disabled
-- ✅ Remove operation with × button
-- ✅ Clear entire recipe
+-  Toggle operation enabled/disabled
+-  Remove operation with × button
+-  Clear entire recipe
 
 **Execution:**
-- ✅ Execute single operation
-- ✅ Chain multiple operations
-- ✅ Skip disabled operations in chain
+-  Execute single operation
+-  Chain multiple operations
+-  Skip disabled operations in chain
 
 **UI Features:**
-- ✅ Search and filter operations
-- ✅ Resize input/output panels
+-  Search and filter operations
+-  Resize input/output panels
 
 **Edge Cases:**
-- ✅ Handle rapid drag operations
-- ✅ Handle empty input gracefully
-- ✅ Show error for invalid input
+-  Handle rapid drag operations
+-  Handle empty input gracefully
+-  Show error for invalid input
 
 ## CI Integration
 

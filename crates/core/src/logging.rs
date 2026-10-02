@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing::Subscriber;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter, Layer};
 
@@ -369,6 +370,19 @@ fn env_filter(default_level: &str) -> EnvFilter {
     )
 }
 
+/// Apply the fleet-wide span policy to a formatting layer.
+///
+/// Every layer Pick installs emits a `close` event when a span ends, carrying
+/// the span's fields and its `time.busy` / `time.idle` durations. Combined with
+/// the `tool_execution` span opened at each connector hop
+/// ([`crate::spans::tool_execution_span`]), this gives one line per tool
+/// invocation that says which tool, which `request_id` / `tool_call_id`, and
+/// how long it took, without touching the individual log calls underneath.
+pub fn apply_span_policy<S, N, E, W>(mut layer: fmt::Layer<S, N, E, W>) -> fmt::Layer<S, N, E, W> {
+    layer.set_span_events(FmtSpan::CLOSE);
+    layer
+}
+
 /// Initialise a console-only tracing subscriber.
 ///
 /// `default_level` is the tracing level applied to the `pentest` target
@@ -379,7 +393,7 @@ fn env_filter(default_level: &str) -> EnvFilter {
 /// Panics if the level string cannot be parsed as a valid tracing directive.
 pub fn init_logging(default_level: &str) {
     tracing_subscriber::registry()
-        .with(fmt::layer())
+        .with(apply_span_policy(fmt::layer()))
         .with(env_filter(default_level))
         .init();
 }
@@ -408,7 +422,7 @@ pub fn init_logging_with_file(default_level: &str) -> Option<PathBuf> {
             // Retained so the settings Logs card can say the file stopped.
             let _ = FILE_SINK_HEALTH.set(health);
             tracing_subscriber::registry()
-                .with(fmt::layer())
+                .with(apply_span_policy(fmt::layer()))
                 .with(file_layer)
                 .with(env_filter(default_level))
                 .init();
@@ -793,5 +807,76 @@ mod tests {
 
         let err = open_log_appender(&not_a_dir).expect_err("a file cannot be a log dir");
         assert!(!err.to_string().is_empty());
+    }
+}
+
+/// Test-only in-memory writer so tests can assert on formatted output.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone, Default)]
+    pub(crate) struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl Capture {
+        pub(crate) fn contents(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().expect("capture poisoned")).into_owned()
+        }
+    }
+
+    pub(crate) struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("capture poisoned")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for Capture {
+        type Writer = CaptureWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            CaptureWriter(self.0.clone())
+        }
+    }
+}
+
+#[cfg(test)]
+mod span_policy_tests {
+    use super::test_support::Capture;
+    use super::*;
+
+    #[test]
+    fn span_policy_emits_close_event_with_fields_and_duration() {
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::registry().with(apply_span_policy(
+            fmt::layer().with_ansi(false).with_writer(capture.clone()),
+        ));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("tool_execution", tool = "nmap");
+            let _guard = span.enter();
+        });
+
+        let output = capture.contents();
+        let close_line = output
+            .lines()
+            .find(|l| l.contains("close"))
+            .unwrap_or_else(|| panic!("no close event in {output:?}"));
+        assert!(
+            close_line.contains("tool_execution{tool=\"nmap\"}"),
+            "{close_line}"
+        );
+        assert!(close_line.contains("time.busy="), "{close_line}");
     }
 }
