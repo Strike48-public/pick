@@ -28,6 +28,7 @@ pub mod seed;
 pub mod settings;
 pub mod share;
 pub mod social_share;
+pub mod spans;
 pub mod specialist_spawner;
 pub mod state;
 pub mod telemetry;
@@ -78,7 +79,9 @@ pub mod prelude {
         GateError, ManifestCounts, ManifestFinding, PendingEvidenceManifest, SeverityCounts,
         ValidatedFindingsManifest, Verdict, VerdictDecision, VerdictParseError,
     };
-    pub use crate::provenance::{redact, ProbeCommand, Provenance, RAW_RESPONSE_MAX_BYTES};
+    pub use crate::provenance::{
+        redact, ProbeCommand, Provenance, RAW_RESPONSE_MAX_BYTES, REDACTION,
+    };
     pub use crate::seed::{
         ProgressCallback, ResourceType, SeedManager, SeedProgress, SeedResource, SeedStatus,
         SeedSummary, SeedTier, TierSummary,

@@ -7,7 +7,8 @@ use std::sync::Arc;
 use super::app_layout::ConversationRefresh;
 use super::chat_panel::format_relative_time;
 use super::icons::{
-    Bolt, FileText, Folder, House, MessageSquare, ScrollText, Settings, Terminal, Wrench, X,
+    Bolt, FileText, Folder, House, KeyRound, MessageSquare, ScrollText, Settings, Terminal, Wrench,
+    X,
 };
 use crate::text::truncate_chars;
 
@@ -17,6 +18,7 @@ pub enum NavPage {
     Dashboard,
     Tools,
     CyberChef,
+    PostExploit,
     Files,
     Shell,
     Chat,
@@ -32,6 +34,7 @@ impl NavPage {
             NavPage::Dashboard => rsx! { House { size } },
             NavPage::Tools => rsx! { Wrench { size } },
             NavPage::CyberChef => rsx! { Bolt { size } },
+            NavPage::PostExploit => rsx! { KeyRound { size } },
             NavPage::Files => rsx! { Folder { size } },
             NavPage::Shell => rsx! { Terminal { size } },
             NavPage::Chat => rsx! { MessageSquare { size } },
@@ -46,6 +49,7 @@ impl NavPage {
             NavPage::Dashboard => "Dashboard",
             NavPage::Tools => "Tools",
             NavPage::CyberChef => "CyberChef",
+            NavPage::PostExploit => "Post-Exploit",
             NavPage::Files => "Files",
             NavPage::Shell => "Shell",
             NavPage::Chat => "Chat",
@@ -57,10 +61,11 @@ impl NavPage {
 }
 
 /// Pages shown in the sidebar.
-pub const ALL_PAGES: [NavPage; 9] = [
+pub const ALL_PAGES: [NavPage; 10] = [
     NavPage::Dashboard,
     NavPage::Tools,
     NavPage::CyberChef,
+    NavPage::PostExploit,
     NavPage::Files,
     NavPage::Shell,
     NavPage::Chat,

@@ -227,7 +227,15 @@ impl PentestTool for HydraTool {
                 .unwrap_or_else(|_| result.stdout.clone());
 
             // Parse hydra output
-            parse_hydra_output(&output, &target, &service)
+            let data = parse_hydra_output(&output, &target, &service)?;
+            let prov = crate::evidence_producer::postexploit_provenance(
+                "hydra",
+                &format!("hydra {service}://{target}"),
+            );
+            for node in crate::evidence_producer::evidence_from_hydra(&data, prov) {
+                let _ = crate::evidence_producer::push_evidence(node);
+            }
+            Ok(data)
         })
         .await
     }

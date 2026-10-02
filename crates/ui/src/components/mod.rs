@@ -28,6 +28,7 @@ mod log_filter_bar;
 mod matrix_rain;
 pub mod offline_screen;
 pub mod pane_boundary;
+pub mod postexploit_panel;
 // router module requires dioxus-router dependency — kept as scaffolding reference
 // #[cfg(feature = "liveview")]
 // pub mod router;
@@ -76,6 +77,7 @@ pub use log_filter_bar::LogFilterBar;
 pub use matrix_rain::{matrix_rain_css, MatrixRainOverlay};
 pub use offline_screen::OfflineScreen;
 pub use pane_boundary::PaneBoundary;
+pub use postexploit_panel::PostExploitPanel;
 // #[cfg(feature = "liveview")]
 // pub use router::{Route, WorkspaceRouter};
 pub use icons::STRIKE48_SIDEBAR_LOGO_SVG;

@@ -16,6 +16,20 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Metadata keys that cross the tools → UI crate boundary. Declared once
+/// here so the producer that writes a key and the view that reads it cannot
+/// drift apart — bare duplicated strings fail silently as an empty panel.
+pub mod metadata_keys {
+    /// Post-exploit sub-category tag; the UI post-exploit view filters on it.
+    pub const POSTEXPLOIT_CATEGORY: &str = "postexploit_category";
+    /// Harvested account name (credential-access builders).
+    pub const USERNAME: &str = "username";
+    /// Tool that produced the node.
+    pub const ORIGIN_TOOL: &str = "origin_tool";
+    /// Lateral-movement technique label.
+    pub const TECHNIQUE: &str = "technique";
+}
+
 /// Lifecycle state of an evidence node as seen by the Validator Agent.
 ///
 /// The order below matches the happy-path transition the orchestrator
