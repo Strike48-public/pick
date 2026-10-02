@@ -60,9 +60,9 @@ just run-headless-dev
 
 ### Before (Complex):
 ```bash
-STRIKE48_HOST="wss://jt-demo-01.strike48.engineering" \
+STRIKE48_HOST="wss://matrix.example.com" \
 STRIKE48_TENANT=non-prod \
-MATRIX_API_URL=https://jt-demo-01.strike48.engineering \
+MATRIX_API_URL=https://matrix.example.com \
 MATRIX_TENANT_ID=non-prod \
 RUST_LOG=debug \
 just run-headless | tee -a ~/tmp/pentest.log
@@ -111,9 +111,9 @@ Edit `.env` to customize:
 
 ```bash
 # Your Strike48 configuration
-STRIKE48_HOST=wss://jt-demo-01.strike48.engineering
+STRIKE48_HOST=wss://matrix.example.com
 STRIKE48_TENANT=non-prod
-MATRIX_API_URL=https://jt-demo-01.strike48.engineering
+MATRIX_API_URL=https://matrix.example.com
 MATRIX_TENANT_ID=non-prod
 
 # Logging
@@ -134,9 +134,9 @@ If you want full control, you can still use the long form:
 ```bash
 # With sudo (required for WiFi)
 sudo -E env \
-    STRIKE48_HOST="wss://jt-demo-01.strike48.engineering" \
+    STRIKE48_HOST="wss://matrix.example.com" \
     STRIKE48_TENANT=non-prod \
-    MATRIX_API_URL=https://jt-demo-01.strike48.engineering \
+    MATRIX_API_URL=https://matrix.example.com \
     MATRIX_TENANT_ID=non-prod \
     RUST_LOG=debug \
     cargo run --package pentest-headless 2>&1 | tee -a ~/tmp/pentest.log

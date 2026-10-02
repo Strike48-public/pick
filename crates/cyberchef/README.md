@@ -151,4 +151,4 @@ No external runtime dependencies required for current operations.
 
 ## License
 
-MIT
+MPL-2.0

@@ -126,4 +126,4 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for contribution guidelines (if availa
 
 ## License
 
-MIT License - See [LICENSE](../LICENSE) file for details.
+Mozilla Public License 2.0 (MPL-2.0) - See the [LICENSE](../LICENSE) file for details.

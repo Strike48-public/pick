@@ -15,6 +15,7 @@ pub mod execute_command;
 pub mod external; // NEW: External tool integrations (BlackArch)
 pub mod http_request; // Native HTTP request tool (all platforms incl. iOS)
 pub mod inject_test_evidence; // NEW: Test tool for three-agent pipeline
+pub mod install_tool; // Agent-callable catalog installation (pick#447)
 pub mod installers; // NEW: Bespoke tool installers for the tool catalog
 pub mod lateral_movement;
 pub mod list_files;
@@ -79,6 +80,7 @@ pub use external::{
 pub use http_request::HttpRequestTool;
 #[cfg(feature = "inject-test-evidence")]
 pub use inject_test_evidence::InjectTestEvidenceTool;
+pub use install_tool::InstallToolTool;
 pub use lateral_movement::LateralMovementTool;
 pub use list_files::ListFilesTool;
 pub use network_discover::NetworkDiscoverTool;
@@ -234,6 +236,9 @@ pub fn create_tool_registry() -> ToolRegistry {
     // Device and system info
     registry.register(DeviceInfoTool);
     registry.register(ScreenshotTool);
+
+    // Tool catalog installation (agent-callable; pick#447)
+    registry.register(InstallToolTool);
 
     // Network safety validation
     registry.register(SafetyCheckTool);

@@ -610,7 +610,7 @@ fn load_secrets() -> Result<Config> {
         .map_err(|_| Error::MissingSecret("STRIKE48_API_KEY"))?;
     
     let ws_url = env::var("STRIKE48_WS_URL")
-        .unwrap_or_else(|_| "wss://default.strike48.engineering".to_string());
+        .unwrap_or_else(|_| "wss://pick.example.com".to_string());
     
     Ok(Config { api_key, ws_url })
 }
