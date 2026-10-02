@@ -60,7 +60,7 @@
 To create all remaining issues:
 
 ```bash
-cd /home/jtomek/Code/pick/docs
+cd ~/Code/pick/docs
 ./create-all-issues.sh
 ```
 
