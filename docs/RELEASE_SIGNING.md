@@ -63,8 +63,13 @@ workflow.
 ## Checking a release
 
 ```bash
-# Built by this repository's release workflow?
-gh attestation verify pick-macos-aarch64.tar.gz --repo Strike48-public/pick
+# Built by this repository's release workflow, from the release tag?
+# --repo alone also accepts an unsigned manual test build (attested from a
+# branch); --signer-workflow and --source-ref pin the tagged release run.
+# Use the tag of the release the file came from.
+gh attestation verify pick-macos-aarch64.tar.gz --repo Strike48-public/pick \
+    --signer-workflow Strike48-public/pick/.github/workflows/release.yml \
+    --source-ref refs/tags/v0.1.12
 
 # Signed by Strike48 and notarized?
 tar -xzf pick-macos-aarch64.tar.gz

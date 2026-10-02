@@ -509,11 +509,17 @@ jobs:
 
           ls -la release/
 
+      # The dispatch input reaches the shell through env, never through
+      # ${{ }} in the script, so a crafted version string cannot run commands
+      # in a job that can mint attestations.
       - name: Get version
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
           else
             echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
           fi
@@ -605,10 +611,12 @@ jobs:
 
             Every asset except `SHA256SUMS.txt` carries a signed build provenance
             attestation. To confirm a file was built by this repository's release
-            workflow:
+            workflow from this release's tag:
 
             ```
-            gh attestation verify <file> --repo Strike48-public/pick
+            gh attestation verify <file> --repo Strike48-public/pick \
+              --signer-workflow Strike48-public/pick/.github/workflows/release.yml \
+              --source-ref refs/tags/v${{ steps.version.outputs.version }}
             ```
 
             See `SHA256SUMS.txt` for file checksums.
