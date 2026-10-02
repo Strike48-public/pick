@@ -4,17 +4,36 @@ Run the Pick connector as a single Docker container on a host inside your
 network, connect it outbound to your Strike48 Studio, and approve it in Studio.
 Install takes about ten minutes on a host that already has Docker.
 
-The install, approval, restart, and removal steps in this guide were executed
-against a live Strike48 Studio with the `0.1.10` image, and the log lines shown
-are what that run printed. The proxy and private-CA sections describe behaviour
-read from the connector's source and were not exercised against an appliance.
-The network requirements (including IPv6, clock, endpoint security, virtual
-machine, and authorization), host networking, Docker Desktop on Windows, and
-what-leaves-your-network sections describe Docker's and hypervisors'
-documented behaviour, the connector's source, and operational guidance; they were not exercised in
-that run. The memory figures were measured separately against a single test
-target. The files this guide refers to live in
-this repository under [`deploy/docker/`](../deploy/docker/).
+This guide assumes you can open a terminal on a Linux machine and run
+commands, and nothing more. You do not need to know Docker.
+
+**Use a Linux host.** A Linux server or virtual machine with Docker Engine,
+sitting on the network you want to test, is the supported setup and the only
+one where every scan type works. Docker Desktop on Windows or macOS runs the
+container behind its own virtual machine, so it cannot see your local network.
+If Windows is all you have, read
+[Docker Desktop on Windows](#docker-desktop-on-windows) first to see what it
+cannot do.
+
+**The short version:** install Docker, download two files, fill in four
+values, start the container, and approve it in Studio. Steps
+[0 to 6 under Install](#install) walk through each one. Then work through
+[Before your first scan](#before-your-first-scan): a connector that shows as
+online in Studio can still be unable to see the network you want to test.
+
+## Downloads
+
+| What | Where |
+| --- | --- |
+| Docker image | `ghcr.io/strike48-public/pick:0.1.10` ([package page](https://github.com/orgs/Strike48-public/packages/container/package/pick)) |
+| Install files for this version | [Pick v0.1.10 release](https://github.com/Strike48-public/pick/releases/tag/v0.1.10), assets `pick-docker-compose.yml` and `pick-docker.env.example` |
+| Newest release | [github.com/Strike48-public/pick/releases/latest](https://github.com/Strike48-public/pick/releases/latest) |
+
+You do not pull the image by hand; step 3 does it for you. Use the version
+number, not `latest`: the `latest` and `main` tags on the image are
+development builds that have not been released. If the newest release is
+newer than `0.1.10`, check with your Strike48 contact that it is approved for
+customer use, then use its number in step 1.
 
 ## What you are installing
 
@@ -42,6 +61,26 @@ flowchart LR
 
 ## Before you begin
 
+### What Strike48 gives you
+
+1. Your **Studio URL**, for example `https://studio.example.com`. The connector
+   uses the same hostname you open in a browser.
+2. Your **authentication hostname**, for example `auth.example.com`. You do not
+   configure it anywhere; Studio hands it to the connector at approval. You need
+   it only to allow egress.
+3. Your **tenant UUID**, a value shaped like `0192a7c4-3f5e-7b21-9d4a-6e8f0c1b2a3d`.
+   It is an identifier rather than a secret, but treat it as internal. If you
+   can sign in to Studio, you can also copy it yourself: open **Gateways**, and
+   it is shown in the **Tenant** badge under the page title
+   **Gateway Configuration**.
+4. Optionally, a **registration token** (`ott_...`) if you want the connector
+   pre-approved instead of approving it by hand. Tokens are single-use and
+   expire fifteen minutes after they are issued.
+
+There is no registry login. The image is public.
+
+### What the host needs
+
 On the host that will run the connector:
 
 | Requirement | Minimum | How to check |
@@ -65,13 +104,224 @@ its own. If your egress goes through an HTTP proxy or a TLS-inspecting
 appliance, read [Corporate proxy and private CA](#corporate-proxy-and-private-ca)
 before you start.
 
+## Install
+
+Run the steps in order, one command at a time, and compare each result with
+the output the step shows before you go on. If you use an AI assistant to help,
+ask it to do the same: running several steps at once hides the one that failed.
+
+### 0. Install Docker
+
+Skip this step if `docker compose version` already prints a version.
+
+1. Install Docker Engine for your Linux distribution by following Docker's
+   own instructions at
+   [docs.docker.com/engine/install](https://docs.docker.com/engine/install/).
+   They install the Compose plugin as well.
+2. Let your user run Docker without `sudo`, as described in
+   [Docker's post-install steps](https://docs.docker.com/engine/install/linux-postinstall/):
+
+   ```bash
+   sudo usermod -aG docker $USER
+   ```
+
+   Log out and back in so the change takes effect.
+3. Confirm both commands print a version and that `docker ps` runs without a
+   permission error:
+
+   ```bash
+   docker --version
+   docker compose version
+   docker ps
+   ```
+
+Membership of the `docker` group is equivalent to root on that host, so only
+add users who should have it.
+
+### 1. Get the bundle
+
+Two files: a compose file you do not edit and an environment template you copy.
+Both ship as assets of the release you are installing, so the bundle, this
+guide, and the image are pinned to the same version. `0.1.10` is the release
+approved for customer use.
+
+```bash
+PICK_VERSION=0.1.10
+mkdir pick-connector && cd pick-connector
+curl -fsSL "https://github.com/Strike48-public/pick/releases/download/v${PICK_VERSION}/pick-docker-compose.yml" -o docker-compose.yml
+curl -fsSL "https://github.com/Strike48-public/pick/releases/download/v${PICK_VERSION}/pick-docker.env.example" -o .env.example
+```
+
+The compose file from a release defaults to that release's image tag, so you
+do not set the tag anywhere. The source of both files is
+[`deploy/docker/`](../deploy/docker/) in this repository; the release copy of
+the compose file differs only in that default.
+
+Run every `docker compose` command in this guide from inside this
+`pick-connector` folder. Compose finds the connector by the files in the
+current folder, so the same command run elsewhere fails with
+`no configuration file provided: not found`.
+
+### 2. Configure
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+`nano` is a simple terminal text editor; any editor you prefer works. In
+`nano`, move with the arrow keys, save with `Ctrl+O` then `Enter`, and quit
+with `Ctrl+X`. The file name starts with a dot, so `ls` hides it; `ls -a`
+shows it.
+
+Fill in the four required values. Everything else in the file is optional and
+stays commented out unless you need it. In your editor, set:
+
+```ini
+STRIKE48_HOST=wss://studio.example.com
+STRIKE48_API_URL=https://studio.example.com/
+STRIKE48_TENANT=<your tenant UUID>
+STRIKE48_INSTANCE_ID=pick-<hostname>-01
+```
+
+`STRIKE48_HOST` is your Studio hostname with `wss://` in place of `https://`
+and no port. `STRIKE48_API_URL` is the same hostname over `https://` with a
+trailing slash. `STRIKE48_INSTANCE_ID` is any stable name for this install; the
+approval is keyed to it, so pick something you will not change.
+
+**Use a different `STRIKE48_INSTANCE_ID` on every machine.** If you install on
+more than one machine, for example a laptop and a lab server, do not copy the
+same `.env` between them unchanged. Two connectors with the same instance id
+compete for one identity in Studio, and Studio can show the connector as
+offline or fail to open its app.
+
+### 3. Start
+
+```bash
+docker compose up -d
+```
+
+The first start pulls the image, which takes a minute or two. A missing
+required value aborts immediately with a message naming it, for example:
+
+```
+error while interpolating services.pick.environment.STRIKE48_TENANT:
+required variable STRIKE48_TENANT is missing a value: set STRIKE48_TENANT in .env to your tenant UUID
+```
+
+### 4. Check the logs
+
+```bash
+docker compose logs --no-color
+```
+
+A successful first start ends with these lines. The instance name and tenant
+are yours:
+
+```
+pentest-agent starting
+  host:      wss://studio.example.com
+  tenant:    0192a7c4-3f5e-7b21-9d4a-6e8f0c1b2a3d
+  instance:  pick-dc1-01
+  tls:       true
+  auth:      ott (pending approval)
+Registered 116 tools
+Registering without JWT (pending approval flow)
+Registered successfully: matrix:0192a7c4-3f5e-7b21-9d4a-6e8f0c1b2a3d:pentest-connector:pick-dc1-01
+[status] Registered
+```
+
+`Registered` here means the connector has announced itself and is waiting. It
+is not approved yet and cannot run tools.
+
+### 5. Approve in Studio
+
+You need a Studio account with Gateways permission for this step. If you do
+not have one, send your Studio administrator the instance id you set in
+`.env` and ask them to approve it.
+
+1. Open your Studio and go to **Gateways**. The page is titled
+   **Gateway Configuration**.
+2. Find the **Pending Approvals** section. It is collapsed when it holds more
+   than ten entries; click its heading to expand it, or type your instance id
+   in the search box.
+3. Find the row whose instance id matches `STRIKE48_INSTANCE_ID` in your
+   `.env`. The row also shows the connector type and how long ago it
+   registered.
+4. Click the green check button (**Approve**) on that row, and confirm when
+   Studio asks **Approve this connector?**. The red cross next to it rejects
+   the connector instead.
+
+<!-- Screenshot pending: Gateways page, Pending Approvals expanded, one pick-connector row with the Approve button highlighted. Save as docs/images/docker-install/gateways-pending.png, tenant UUID and hostnames redacted. -->
+
+After you approve, the row is replaced by a card that says the connector is
+approved and waiting to reconnect. The card disappears as soon as the
+connector reconnects with its new credential, usually within a few seconds.
+
+<!-- Screenshot pending: the same page with the connector shown as active. Save as docs/images/docker-install/gateways-active.png. -->
+
+If the connector has not reconnected after about 20 seconds, the card turns
+red and says it has not reconnected yet. That means the connector is not running or cannot reach Studio: check the logs in the next
+step and the [Troubleshooting](#troubleshooting) table.
+
+### 6. Confirm
+
+Approval reaches the connector over the connection it already holds. Within a
+few seconds the log shows:
+
+```
+Sent JWT re-registration on existing stream (no disconnect)
+Registered successfully: matrix:0192a7c4-3f5e-7b21-9d4a-6e8f0c1b2a3d:pentest-connector:pick-dc1-01
+```
+
+Check with:
+
+```bash
+docker compose logs --no-color --since 5m
+```
+
+The connector is online when Studio shows it as active. From this point the
+approval persists across restarts, upgrades, and host reboots, because the
+credential lives in the `pick-connector_pick-state` volume. After a restart the
+startup banner still prints `auth: ott (pending approval)` before the stored
+credential is loaded; the `Registering without JWT (pending approval flow)`
+line no longer appears, and Studio keeps showing the connector as active.
+
+Online is not the same as ready to scan. Continue with
+[Before your first scan](#before-your-first-scan) before the first engagement.
+
+## Before your first scan
+
+The connector is online, but that only proves it can reach Studio. Work
+through this section before the first engagement: it covers whether the
+connector can reach and resolve your targets, the host settings that make
+scans fail quietly, and the approvals you need before scanning anything.
+
+Terms used below:
+
+- **Host**: the machine running Docker and the connector. It can be a
+  physical server or a virtual machine.
+- **Bridge network**: Docker's default. The container gets a private address
+  and reaches your network through the host, like a device behind a home
+  router.
+- **Host networking**: an optional mode where the container uses the host's
+  own network interfaces directly.
+- **Override file**: `docker-compose.override.yml`, a file you create next to
+  `docker-compose.yml` to add settings. Docker Compose reads both files
+  automatically, so you never edit the downloaded compose file.
+- **Segment or VLAN**: the part of your network a set of targets sits on.
+- **Private address ranges (RFC 1918)**: internal addresses starting
+  `10.`, `172.16.` to `172.31.`, and `192.168.`.
+
 ### Network requirements for scanning
 
-The table above covers what the connector needs to reach Studio. Scanning has
+[What the host needs](#what-the-host-needs) covers what the connector needs
+to reach Studio. Scanning has
 separate requirements, and they are all properties of the Docker host: the
 container reaches your targets through the host's network and resolves names
 through the host's DNS configuration. If the host cannot reach or resolve a
-target, neither can Pick. Check these on the host before you install.
+target, neither can Pick. Run these checks on the host; they work the same
+before or after the connector is installed.
 
 1. **The host is on the network you want to scan.** Connect it to the VLAN or
    segment in scope, and confirm it can reach a known-live target:
@@ -317,138 +567,6 @@ Network access is not permission. Before the first scan:
   them authorises testing assets you do not own. Confirm the engagement fits
   the policy of every provider involved.
 
-### What Strike48 gives you
-
-1. Your **Studio URL**, for example `https://studio.example.com`. The connector
-   uses the same hostname you open in a browser.
-2. Your **authentication hostname**, for example `auth.example.com`. You do not
-   configure it anywhere; Studio hands it to the connector at approval. You need
-   it only to allow egress.
-3. Your **tenant UUID**, a value shaped like `0192a7c4-3f5e-7b21-9d4a-6e8f0c1b2a3d`.
-   It is an identifier rather than a secret, but treat it as internal.
-4. Optionally, a **registration token** (`ott_...`) if you want the connector
-   pre-approved instead of approving it by hand. Tokens are single-use and
-   expire fifteen minutes after they are issued.
-
-There is no registry login. The image is public.
-
-## Install
-
-### 1. Get the bundle
-
-Two files: a compose file you do not edit and an environment template you copy.
-Both ship as assets of the release you are installing, so the bundle, this
-guide, and the image are pinned to the same version. `0.1.10` is the release
-approved for customer use.
-
-```bash
-PICK_VERSION=0.1.10
-mkdir pick-connector && cd pick-connector
-curl -fsSL "https://github.com/Strike48-public/pick/releases/download/v${PICK_VERSION}/pick-docker-compose.yml" -o docker-compose.yml
-curl -fsSL "https://github.com/Strike48-public/pick/releases/download/v${PICK_VERSION}/pick-docker.env.example" -o .env.example
-```
-
-The compose file from a release defaults to that release's image tag, so you
-do not set the tag anywhere. The source of both files is
-[`deploy/docker/`](../deploy/docker/) in this repository; the release copy of
-the compose file differs only in that default.
-
-### 2. Configure
-
-```bash
-cp .env.example .env
-$EDITOR .env
-```
-
-Fill in the four required values. Everything else in the file is optional and
-stays commented out unless you need it.
-
-```bash
-STRIKE48_HOST=wss://studio.example.com
-STRIKE48_API_URL=https://studio.example.com/
-STRIKE48_TENANT=<your tenant UUID>
-STRIKE48_INSTANCE_ID=pick-<hostname>-01
-```
-
-`STRIKE48_HOST` is your Studio hostname with `wss://` in place of `https://`
-and no port. `STRIKE48_API_URL` is the same hostname over `https://` with a
-trailing slash. `STRIKE48_INSTANCE_ID` is any stable name for this install; the
-approval is keyed to it, so pick something you will not change.
-
-**Use a different `STRIKE48_INSTANCE_ID` on every machine.** If you install on
-more than one machine, for example a laptop and a lab server, do not copy the
-same `.env` between them unchanged. Two connectors with the same instance id
-compete for one identity in Studio, and Studio can show the connector as
-offline or fail to open its app.
-
-### 3. Start
-
-```bash
-docker compose up -d
-```
-
-The first start pulls the image, which takes a minute or two. A missing
-required value aborts immediately with a message naming it, for example:
-
-```
-error while interpolating services.pick.environment.STRIKE48_TENANT:
-required variable STRIKE48_TENANT is missing a value: set STRIKE48_TENANT in .env to your tenant UUID
-```
-
-### 4. Check the logs
-
-```bash
-docker compose logs --no-color
-```
-
-A successful first start ends with these lines. The instance name and tenant
-are yours:
-
-```
-pentest-agent starting
-  host:      wss://studio.example.com
-  tenant:    0192a7c4-3f5e-7b21-9d4a-6e8f0c1b2a3d
-  instance:  pick-dc1-01
-  tls:       true
-  auth:      ott (pending approval)
-Registered 116 tools
-Registering without JWT (pending approval flow)
-Registered successfully: matrix:0192a7c4-3f5e-7b21-9d4a-6e8f0c1b2a3d:pentest-connector:pick-dc1-01
-[status] Registered
-```
-
-`Registered` here means the connector has announced itself and is waiting. It
-is not approved yet and cannot run tools.
-
-### 5. Approve in Studio
-
-Open your Studio and go to **Gateways**. The connector appears as a pending
-entry identified by the instance id you set in `.env`. Confirm the id matches,
-then approve it.
-
-### 6. Confirm
-
-Approval reaches the connector over the connection it already holds. Within a
-few seconds the log shows:
-
-```
-Sent JWT re-registration on existing stream (no disconnect)
-Registered successfully: matrix:0192a7c4-3f5e-7b21-9d4a-6e8f0c1b2a3d:pentest-connector:pick-dc1-01
-```
-
-Check with:
-
-```bash
-docker compose logs --no-color --since 5m
-```
-
-The connector is online when Studio shows it as active. From this point the
-approval persists across restarts, upgrades, and host reboots, because the
-credential lives in the `pick-connector_pick-state` volume. After a restart the
-startup banner still prints `auth: ott (pending approval)` before the stored
-credential is loaded; the `Registering without JWT (pending approval flow)`
-line no longer appears, and Studio keeps showing the connector as active.
-
 ## Configuration reference
 
 All values are read from `.env`. The compose file passes the file through and
@@ -620,19 +738,42 @@ use the host's interfaces directly. This is the Compose equivalent of
        network_mode: host
    ```
 
-2. Recreate the container:
+2. If your targets are on private addresses (`10.x`, `172.16.x` to `172.31.x`,
+   or `192.168.x`), which a local network almost always is, set this in `.env`
+   as well, provided your rules of engagement cover those ranges. See
+   [Scanning private address ranges](#scanning-private-address-ranges).
+
+   ```bash
+   PENTEST_ALLOW_PRIVATE_IPS=true
+   ```
+
+3. Recreate the container:
 
    ```bash
    docker compose up -d
    ```
 
-3. Confirm the mode:
+   You do not need to stop the connector first. If you do stop it, use
+   `docker compose down`, never `docker compose down -v`: the `-v` deletes the
+   volume that holds the approval, and you would have to approve the connector
+   again.
+
+4. Confirm the mode:
 
    ```bash
    docker inspect pick-connector --format '{{.HostConfig.NetworkMode}}'
    ```
 
    This prints `host`.
+
+5. Confirm the connector now sees the host's network:
+
+   ```bash
+   docker exec pick-connector ip -4 -brief addr
+   ```
+
+   The output lists the host's own interfaces, including the address on the
+   network you want to test. Before the change it listed only a Docker address.
 
 The approval is stored in the `pick-connector_pick-state` volume, so the
 connector comes back online without a new approval. The `NET_RAW` and
@@ -684,8 +825,8 @@ approval is kept. Check the new subnet with the `docker network inspect` command
 
 ## Docker Desktop on Windows
 
-The connector runs on Docker Desktop for Windows, with less network reach than
-on a Linux host. Docker Desktop runs Linux containers inside a WSL 2 virtual
+We recommend a Linux host instead. The connector does run on Docker Desktop
+for Windows, but with much less network reach than on a Linux host. Docker Desktop runs Linux containers inside a WSL 2 virtual
 machine, and Docker documents that all of that VM's network traffic goes
 through NAT in Docker Desktop's backend process (`com.docker.backend`). The
 container never sits directly on your LAN, and the
@@ -788,6 +929,7 @@ VPN, or, for names, DNS. For DNS, set your internal DNS servers with the
 | The image pull fails partway, files are missing from the image, or tools stop mid-scan with no clear error | An endpoint security agent on the host is quarantining files or stopping processes | Check that agent's alerts and agree an exclusion. See [Endpoint security on the host](#endpoint-security-on-the-host) |
 | The connector goes offline, or switches between online and offline, when another VM starts | A cloned or snapshot-restored VM shares the original's instance id and credential | On the clone, `docker compose down -v`, set a new `STRIKE48_INSTANCE_ID`, start, and approve. See [Running Docker inside a virtual machine](#running-docker-inside-a-virtual-machine) |
 | IPv6 targets are unreachable from the connector but reachable from the host | The connector's network is IPv4 only | Enable IPv6 or host networking. See [IPv6 targets](#ipv6-targets) |
+| Studio asks you to approve the connector again after a network change | `docker compose down -v` was run, which deletes the volume holding the approval | Approve it again in Gateways. Use `docker compose down` without `-v` from now on |
 | Pending for a long time | Nobody has approved it | Expected. Someone with Gateways permission in your Studio must approve |
 | Container restarts in a loop | Malformed `.env` | `docker compose logs`, fix, `docker compose up -d` |
 
@@ -837,6 +979,22 @@ an untrusted channel.
 - The connector posts its registration only to the origin in
   `STRIKE48_API_URL`. If the Studio advertises a different callback address,
   the connector logs the override and uses yours.
+
+## How this guide was tested
+
+The install, approval, restart, and removal steps in this guide were executed
+against a live Strike48 Studio with the `0.1.10` image, and the log lines shown
+are what that run printed. The proxy and private-CA sections describe behaviour
+read from the connector's source and were not exercised against an appliance.
+The network requirements (including IPv6, clock, endpoint security, virtual
+machine, and authorization), host networking, Docker Desktop on Windows, and
+what-leaves-your-network sections describe Docker's and hypervisors'
+documented behaviour, the connector's source, and operational guidance; they
+were not exercised in that run. The memory figures were measured separately
+against a single test target. The Studio steps in [5. Approve in Studio](#5-approve-in-studio)
+were written from the source of Studio's Gateways page, not from a new live
+run. The files this guide refers to
+live in this repository under [`deploy/docker/`](../deploy/docker/).
 
 ## Getting help
 
