@@ -28,6 +28,9 @@ const DESKTOP_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
 };
 
 fn main() {
+    // Windows leaves HOME unset; resolve it before anything reads ~/.strike48.
+    pentest_core::config::ensure_home_env();
+
     // Initialize logging: console + rolling JSON file (append, daily, 7 kept).
     // `None` means the file sink could not be opened; the warning that says
     // why is already on the console by the time we get here.
