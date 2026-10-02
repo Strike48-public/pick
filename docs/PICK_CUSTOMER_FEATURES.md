@@ -229,9 +229,9 @@ Deploy Pick wherever your security testing needs to happen:
 - On-device tool execution for physical security assessments
 - Perfect for WiFi surveys and network reconnaissance in the field
 
-**Terminal UI (TUI)**
-- Terminal-based interface for SSH/remote environments
-- Full functionality in console-only environments
+**Headless Mode**
+- Tools-only agent for SSH/remote and console-only environments
+- UI served over WebSocket; no local app UI
 
 ---
 

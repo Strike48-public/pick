@@ -10,7 +10,7 @@
 Pick is a multi-platform penetration testing connector that bridges Strike48 (orchestration control plane) with local security tools. Each Pick instance IS a connector - it registers with Strike48 and executes tools locally on the machine where it runs.
 
 **Architecture philosophy:**
-- Each app (desktop, mobile, headless) is an independent connector
+- Each app (desktop, web, mobile, headless) is an independent connector
 - Tools execute on the connector's host machine, not remotely
 - Evidence flows back to Strike48 for aggregation and analysis
 - Three-agent validation pipeline ensures evidence quality
@@ -29,18 +29,18 @@ Pick is a multi-platform penetration testing connector that bridges Strike48 (or
         │                 │                 │                 │
         ▼                 ▼                 ▼                 ▼
 ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
-│   Desktop     │ │     Web       │ │    Mobile     │ │     TUI       │
+│   Desktop     │ │     Web       │ │    Mobile     │ │   Headless    │
 │  (dioxus-     │ │  (dioxus-     │ │  (dioxus-     │ │  (dioxus-     │
-│   desktop)    │ │   liveview)   │ │   mobile)     │ │   tui)        │
+│   desktop)    │ │   liveview)   │ │   mobile)     │ │   liveview)   │
 ├───────────────┤ ├───────────────┤ ├───────────────┤ ├───────────────┤
-│ UI + Tools    │ │ UI + Tools    │ │ UI + Tools    │ │ UI + Tools    │
-│ run locally   │ │ run on server │ │ run on device │ │ run locally   │
+│ UI + Tools    │ │ UI + Tools    │ │ UI + Tools    │ │ Tools only    │
+│ run locally   │ │ run on server │ │ run on device │ │ no local UI   │
 └───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘
 ```
 
 ### Key Principles
 
-1. **Each app IS a connector** - Desktop, mobile, headless, TUI all register independently
+1. **Each app IS a connector** - Desktop, web, mobile, and headless all register independently
 2. **Local execution** - Tools run on the connector's host (not remote execution)
 3. **Evidence-based** - All tool output converted to validated evidence nodes
 4. **Multi-platform** - Same core logic across all platforms via Dioxus
@@ -60,7 +60,6 @@ pick/
     ├── headless/      # Headless agent (pentest-agent binary)
     ├── desktop/       # Desktop app (dioxus-desktop)
     ├── web/           # Web app (dioxus-liveview + axum)
-    ├── tui/           # Terminal app (dioxus-tui)
     └── mobile/        # Mobile app (dioxus-mobile)
 ```
 
@@ -254,12 +253,12 @@ Benchmarks:      benches/ directory (Criterion)
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| **Linux** | ✅ Full | Desktop + headless, BlackArch tools |
-| **macOS** | ✅ Full | Desktop + headless, limited tool support |
-| **Android** | ⚠️ Beta | Mobile app, root detection, limited tools |
-| **iOS** | 🚧 Alpha | Mobile app, sandboxed, very limited tools |
-| **Web** | ✅ Full | Server-side execution, all tools available |
-| **Windows** | ⚠️ WSL | Via WSL2, native support in progress |
+| **Linux** | Full | Desktop + headless, BlackArch tools |
+| **macOS** | Full | Desktop + headless, limited tool support |
+| **Android** | Beta | Mobile app, root detection, limited tools |
+| **iOS** | Alpha | Mobile app, sandboxed, very limited tools |
+| **Web** | Full | Server-side execution, all tools available |
+| **Windows** | WSL | Via WSL2, native support in progress |
 
 ---
 
