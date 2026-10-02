@@ -1320,7 +1320,15 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                     on_telemetry_change: move |v: bool| {
                                         let mut s = settings.write();
                                         s.telemetry_enabled = v;
-                                        let _ = save_settings(&s);
+                                        if let Err(e) = save_settings(&s) {
+                                            // Silent persistence failure on a
+                                            // privacy toggle is an audit gap
+                                            // (pick#458 review V8).
+                                            tracing::warn!(
+                                                "[ConnectorApp] failed to persist telemetry opt-out: {}",
+                                                e
+                                            );
+                                        }
                                         // Apply immediately: off disables the
                                         // Sentry client (no events/sessions),
                                         // on re-inits. No relaunch needed.
@@ -1557,10 +1565,18 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                                     on_telemetry_change: move |v: bool| {
                                         let mut s = settings.write();
                                         s.telemetry_enabled = v;
-                                        let _ = save_settings(&s);
-                                        // Apply immediately: on disables the
+                                        if let Err(e) = save_settings(&s) {
+                                            // Silent persistence failure on a
+                                            // privacy toggle is an audit gap
+                                            // (pick#458 review V8).
+                                            tracing::warn!(
+                                                "[ConnectorApp] failed to persist telemetry opt-out: {}",
+                                                e
+                                            );
+                                        }
+                                        // Apply immediately: off disables the
                                         // Sentry client (no events/sessions),
-                                        // off re-inits. No relaunch needed.
+                                        // on re-inits. No relaunch needed.
                                         pentest_core::telemetry::set_enabled(v);
                                     },
                                     easy_mode_on: easy_mode(),
