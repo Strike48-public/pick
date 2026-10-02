@@ -1924,7 +1924,7 @@ pub fn SettingsPage(
                     }
                     div { class: "settings-card-body",
                         p { class: "text-dim-s",
-                            "Pick writes one JSON log file per day and keeps the last {log_files_kept}. When reporting a problem, attach the file for the day it happened."
+                            "Pick writes one JSON log file per day and keeps up to {log_files_kept}. When reporting a problem, attach the file for the day it happened."
                         }
                         code { class: "text-dim-xs", "{log_dir}" }
                         if log_sink_failed {

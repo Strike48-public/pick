@@ -6,7 +6,7 @@
 //! The file sink is the artifact a customer hands to support after a failure,
 //! so it is built to survive the things that happen around a failure: it
 //! appends instead of truncating (a relaunch must not erase the evidence),
-//! rotates daily and keeps [`LOG_FILES_KEPT`] files, and writes JSON lines so
+//! rotates daily and keeps up to [`LOG_FILES_KEPT`] files, and writes JSON lines so
 //! a log can be filtered by `tool_call_id` with one command and parsed by the
 //! diagnostics export (pick#476).
 
@@ -19,8 +19,14 @@ use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter, Layer};
 
-/// Daily log files kept on disk before the oldest is pruned. A week bounds
-/// disk use while still covering a failure the customer only noticed later.
+/// Most daily log files kept on disk before the oldest is pruned. A week
+/// bounds disk use while still covering a failure the customer only noticed
+/// later.
+///
+/// This is a ceiling, not an exact count: `tracing_appender` prunes to one
+/// fewer than the limit to make room for the file it is about to create, and
+/// at start-up today's file already exists, so a start leaves one fewer file
+/// until the next midnight rollover brings the count back up.
 pub const LOG_FILES_KEPT: usize = 7;
 
 /// Rotated files are named `connector.<YYYY-MM-DD>.log`.
@@ -49,6 +55,7 @@ pub fn open_log_appender(log_dir: &Path) -> std::io::Result<RollingFileAppender>
     std::fs::create_dir_all(log_dir)?;
     restrict_to_owner(log_dir)?;
     precreate_todays_file(log_dir)?;
+    terminate_partial_line(&todays_log_file(log_dir))?;
     RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
         .filename_prefix(LOG_FILE_PREFIX)
@@ -85,11 +92,7 @@ fn restrict_to_owner(_log_dir: &Path) -> std::io::Result<()> {
 #[cfg(unix)]
 fn precreate_todays_file(log_dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let name = format!(
-        "{LOG_FILE_PREFIX}.{}.{LOG_FILE_SUFFIX}",
-        chrono::Utc::now().format("%Y-%m-%d")
-    );
-    let path = log_dir.join(name);
+    let path = todays_log_file(log_dir);
     std::fs::OpenOptions::new()
         .append(true)
         .create(true)
@@ -101,6 +104,44 @@ fn precreate_todays_file(log_dir: &Path) -> std::io::Result<()> {
 
 #[cfg(not(unix))]
 fn precreate_todays_file(_log_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Today's file, named the way the daily appender names it (UTC date).
+fn todays_log_file(log_dir: &Path) -> PathBuf {
+    log_dir.join(format!(
+        "{LOG_FILE_PREFIX}.{}.{LOG_FILE_SUFFIX}",
+        chrono::Utc::now().format("%Y-%m-%d")
+    ))
+}
+
+/// End a line an earlier process left cut off, so this process's first record
+/// starts on a fresh line instead of being fused onto the fragment.
+///
+/// [`FailLoud`] keeps records whole within one process; across a relaunch its
+/// state starts fresh, so the file itself is checked. A missing file is fine:
+/// there is nothing to terminate.
+fn terminate_partial_line(path: &Path) -> std::io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .append(true)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    if file.metadata()?.len() == 0 {
+        return Ok(());
+    }
+    file.seek(SeekFrom::End(-1))?;
+    let mut last = [0u8; 1];
+    file.read_exact(&mut last)?;
+    if last[0] != b'\n' {
+        // Append mode: the write lands at the end whatever the read position.
+        file.write_all(b"\n")?;
+    }
     Ok(())
 }
 
@@ -217,15 +258,31 @@ fn write_counted(w: &mut impl Write, buf: &[u8]) -> Result<(), (usize, std::io::
 ///
 /// The installed sink's handle is kept for the life of the process and read
 /// through [`file_sink_failed`], which the settings Logs card shows.
-#[derive(Default)]
 pub struct FileSinkHealth {
     failed: AtomicBool,
     reported: AtomicBool,
     /// A failed write left a partial line at the end of the file.
     fragment_open: Mutex<bool>,
+    /// Where the one-time failure line is printed: stderr in production.
+    console: Mutex<Box<dyn Write + Send>>,
+}
+
+impl Default for FileSinkHealth {
+    fn default() -> Self {
+        Self::with_console(Box::new(std::io::stderr()))
+    }
 }
 
 impl FileSinkHealth {
+    fn with_console(console: Box<dyn Write + Send>) -> Self {
+        Self {
+            failed: AtomicBool::new(false),
+            reported: AtomicBool::new(false),
+            fragment_open: Mutex::new(false),
+            console: Mutex::new(console),
+        }
+    }
+
     /// True once a write to the file sink has failed this process.
     pub fn has_failed(&self) -> bool {
         self.failed.load(Ordering::Relaxed)
@@ -234,9 +291,18 @@ impl FileSinkHealth {
     fn record_failure(&self, err: &std::io::Error) {
         self.failed.store(true, Ordering::Relaxed);
         if !self.reported.swap(true, Ordering::Relaxed) {
-            eprintln!(
+            let mut console = self
+                .console
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Not `eprintln!`, which panics when stderr cannot take the line
+            // (stderr redirected to the same full disk, a closed pipe). The
+            // report is best effort; the failure is still recorded above.
+            let _ = writeln!(
+                console,
                 "pick log file sink is failing (IO error: {err}); events are NOT reaching the log file until this resolves"
             );
+            let _ = console.flush();
         }
     }
 }
@@ -263,11 +329,18 @@ where
     W: for<'a> fmt::MakeWriter<'a> + 'static,
 {
     let health = Arc::new(FileSinkHealth::default());
-    let layer = json_layer(FailLoud {
+    (file_layer_with_health(writer, health.clone()), health)
+}
+
+fn file_layer_with_health<S, W>(writer: W, health: Arc<FileSinkHealth>) -> impl Layer<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+    W: for<'a> fmt::MakeWriter<'a> + 'static,
+{
+    json_layer(FailLoud {
         inner: writer,
-        health: health.clone(),
-    });
-    (layer, health)
+        health,
+    })
 }
 
 fn json_layer<S, W>(writer: W) -> impl Layer<S>
@@ -442,20 +515,68 @@ mod tests {
         health
     }
 
+    /// The production file layer with the failure line sent to `console`
+    /// instead of stderr.
+    fn with_file_layer_and_console(
+        disk: &FakeDisk,
+        console: impl Write + Send + 'static,
+        f: impl FnOnce(),
+    ) -> Arc<FileSinkHealth> {
+        let health = Arc::new(FileSinkHealth::with_console(Box::new(console)));
+        let layer = file_layer_with_health(disk.clone(), health.clone());
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, f);
+        health
+    }
+
+    /// Fill the disk after one record, then log 49 more.
+    fn log_through_a_full_disk(disk: &FakeDisk) {
+        tracing::info!(event = 0, "before the disk fills");
+        disk.fill_after(10);
+        for i in 1..50 {
+            tracing::info!(event = i, "survives sink failure");
+        }
+    }
+
+    /// A console that keeps what is printed to it.
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("capture poisoned")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A console that rejects every write, like stderr on a full disk.
+    struct BrokenConsole;
+
+    impl Write for BrokenConsole {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("stderr is full (simulated)"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other("stderr is full (simulated)"))
+        }
+    }
+
     /// The review's defect shape: the disk fills mid-record and stays full.
     /// The subscriber must not panic, must keep retrying every later record
-    /// (each one fails), and the failure must be observable.
+    /// (each one fails), the failure must be observable, and exactly one
+    /// console line must say so.
     #[test]
     fn write_failures_are_loud_and_never_panic() {
         let disk = FakeDisk::default();
+        let console = Capture::default();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            with_file_layer(&disk, || {
-                tracing::info!(event = 0, "before the disk fills");
-                disk.fill_after(10);
-                for i in 1..50 {
-                    tracing::info!(event = i, "survives sink failure");
-                }
-            })
+            with_file_layer_and_console(&disk, console.clone(), || log_through_a_full_disk(&disk))
         }));
         let health = result.expect("a failing file sink must never panic the process");
         assert!(
@@ -467,6 +588,25 @@ mod tests {
             49,
             "every record after the disk filled must be retried and fail"
         );
+        let printed = String::from_utf8(console.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(printed.lines().count(), 1, "one console line: {printed:?}");
+        assert!(
+            printed.contains("pick log file sink is failing"),
+            "the console line names the failure: {printed:?}"
+        );
+    }
+
+    /// The report is best effort: when the console cannot take the failure
+    /// line either (stderr on the same full disk), the sink still never
+    /// panics and the failure is still recorded.
+    #[test]
+    fn a_failing_console_never_panics_the_sink() {
+        let disk = FakeDisk::default();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_file_layer_and_console(&disk, BrokenConsole, || log_through_a_full_disk(&disk))
+        }));
+        let health = result.expect("a failing console must never panic the process");
+        assert!(health.has_failed(), "the failure is recorded regardless");
     }
 
     /// No corruption: a record cut short by a failed write must not swallow
@@ -557,6 +697,43 @@ mod tests {
             vec![1, 2],
             "second start must append after the first, not replace it"
         );
+    }
+
+    /// Relaunch after a mid-record failure: the previous process left today's
+    /// file ending in a cut-off fragment. The new process's first record must
+    /// start on its own line and parse, not be fused onto the fragment.
+    #[test]
+    fn a_relaunch_starts_after_a_cut_off_line() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let today = todays_log_file(tmp.path());
+        std::fs::write(&today, b"{\"earlier\":true}\n{\"cut off mid-rec").expect("seed file");
+
+        emit_one_round(tmp.path(), || tracing::info!(round = 1, "after relaunch"));
+
+        let contents = std::fs::read_to_string(&today).expect("log readable");
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 3, "file was:\n{contents}");
+        assert_eq!(lines[1], "{\"cut off mid-rec", "the fragment stays alone");
+        let record: serde_json::Value =
+            serde_json::from_str(lines[2]).expect("first record after relaunch is whole JSON");
+        assert_eq!(record["fields"]["round"], 1);
+    }
+
+    #[test]
+    fn terminate_partial_line_leaves_whole_and_empty_files_alone() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let whole = tmp.path().join("whole.log");
+        let empty = tmp.path().join("empty.log");
+        std::fs::write(&whole, b"{\"a\":1}\n").unwrap();
+        std::fs::write(&empty, b"").unwrap();
+
+        terminate_partial_line(&whole).unwrap();
+        terminate_partial_line(&empty).unwrap();
+        terminate_partial_line(&tmp.path().join("missing.log")).unwrap();
+
+        assert_eq!(std::fs::read(&whole).unwrap(), b"{\"a\":1}\n");
+        assert_eq!(std::fs::read(&empty).unwrap(), b"");
+        assert!(!tmp.path().join("missing.log").exists());
     }
 
     #[test]
