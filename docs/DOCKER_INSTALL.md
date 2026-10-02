@@ -522,13 +522,14 @@ container and checks the network mode.
          - <internal.example.com>
    ```
 
-3. **Docker uses the network mode your scans need.** The default bridge network
-   is enough for TCP and UDP scans of routed hosts. mDNS, SSDP, ARP discovery,
-   packet capture, and Wi-Fi scanning need host networking on a Linux host. See
+3. **Docker uses the network mode your scans need.** The Compose bridge network
+   (`pick-connector_default`) is enough for TCP and UDP scans of routed hosts.
+   mDNS, SSDP, ARP discovery, packet capture, and Wi-Fi scanning need host
+   networking on a Linux host. See
    [Scanning your local network](#scanning-your-local-network-host-networking)
    to choose.
 
-   | Scan type | Default bridge | Host networking (Linux) |
+   | Scan type | Compose bridge | Host networking (Linux) |
    | --- | --- | --- |
    | TCP/UDP port scans of routed hosts | yes, if the bridge subnet does not overlap your LAN | yes |
    | ICMP ping sweeps | yes | yes |
@@ -1077,7 +1078,7 @@ VPN, or, for names, DNS. For DNS, set your internal DNS servers with the
 | Logs say `Registered successfully` but nothing appears in Gateways | Wrong `STRIKE48_TENANT`, so it registered against another tenant | Confirm the UUID with Strike48, fix `.env`, `docker compose down -v`, `docker compose up -d` |
 | Registration fails right after start with a token in `.env` | The token expired, was already used, or the line is set but empty | Get a fresh token or comment the line out and approve by hand |
 | `PENTEST_ALLOW_PRIVATE_IPS is set to an unrecognized value` warning | The variable is set to something other than `true` or `1` | Set it to `true` or comment it out |
-| mDNS, SSDP, ARP, or Wi-Fi scans return nothing | The container is on the default bridge network, which multicast and layer 2 traffic do not cross | [Enable host networking](#enable-host-networking) on a Linux host |
+| mDNS, SSDP, ARP, or Wi-Fi scans return nothing | The container is on the Compose bridge network, which multicast and layer 2 traffic do not cross | [Enable host networking](#enable-host-networking) on a Linux host |
 | Every host in a known-live range looks down, including TCP ports you know are open | The bridge subnet overlaps your LAN, or Docker Desktop cannot reach the local network | Check the subnet as shown in [Scanning your local network](#scanning-your-local-network-host-networking); change the Docker address pool or enable host networking |
 | Scans of internal hostnames fail but the same targets work by IP | The host's DNS does not resolve internal names, so the container cannot either | Fix the host's DNS, or set `dns:` in an override. See [Network requirements for scanning](#network-requirements-for-scanning) |
 | The agent reports no live hosts on a network you know is up, or says a firewall is dropping ICMP | The container cannot reach or resolve the targets: wrong network mode, a subnet overlap, host DNS, or Docker Desktop's network limits. A scan that only times out is not evidence of a firewall | Run the host and in-container checks in [Network requirements for scanning](#network-requirements-for-scanning). On Windows, see [Docker Desktop on Windows](#docker-desktop-on-windows) |
