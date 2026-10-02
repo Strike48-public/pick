@@ -87,8 +87,13 @@ targetRules = ["generic-api-key"]
 paths = ['''^Cargo\.lock$''']
 
 # restty.js is a vendored bundled terminal library that inlines base64 binary
-# data; square-access-token matches an EAAA run inside that blob.
+# data; square-access-token matches one EAAA run inside that blob. Scoped AND to
+# the file, the rule and that exact run, so a regenerated bundle carrying the
+# same data stays quiet while any other square-access-token match in the file
+# still fires and gets triaged.
 [[allowlists]]
 description = "Base64 asset data in the vendored restty.js bundle"
 targetRules = ["square-access-token"]
+condition = "AND"
 paths = ['''^crates/ui/src/assets/restty\.js$''']
+regexes = ['''^EAAAAAAgIQuQQAAAADQEmNBAAAA$''']
