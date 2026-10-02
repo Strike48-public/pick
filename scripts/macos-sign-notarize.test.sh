@@ -5,7 +5,8 @@
 # secret, a certificate from the wrong team, a rejected notarization, or a
 # binary Gatekeeper does not see as notarized must each fail the release
 # rather than ship. Hermetic: no Apple secrets or network are used. The
-# notarytool calls are stubbed, and the codesign checks run against an
+# notarytool calls are stubbed, the team and hardened-runtime checks run
+# against a stubbed codesign, and the real codesign checks run against an
 # ad-hoc signed copy of a system binary, so it runs in CI on every PR.
 #
 # The codesign cases need macOS and are skipped elsewhere.
@@ -185,6 +186,45 @@ check "a bad signature stops before notarization" \
     "$(run_main verify_signature)"
 check "a missing identity stops before signing" \
     "setup_keychain resolve_identity exit=1 workdir=gone" "$(run_main resolve_identity)"
+
+# --- verify_signature with codesign stubbed (any OS) ---
+
+# stub_verify <flags> - run verify_signature against a codesign stub whose
+# --verify always passes and whose -dv reports CodeDirectory <flags>. The stub
+# records the -R requirement it was handed. Prints "<exit> <requirement>".
+stub_verify() {
+    local flags="$1"
+    (
+        req_file="$(mktemp)"
+        APPLE_TEAM_ID="$TEAM"
+        codesign() {
+            local arg
+            if [[ "$1" == "-dv" ]]; then
+                echo "CodeDirectory v=20500 size=1 flags=${flags} hashes=1+0 location=embedded" >&2
+                return 0
+            fi
+            for arg in "$@"; do
+                [[ "$arg" == -R=* ]] && printf '%s' "${arg#-R=}" >"$req_file"
+            done
+            return 0
+        }
+        verify_signature "$bin" >/dev/null 2>&1
+        rc=$?
+        echo "$rc $(cat "$req_file")"
+        rm -f "$req_file"
+    )
+}
+
+# The team clause cannot be evaluated without a Developer ID certificate from
+# a second team, so the requirement handed to codesign is pinned instead: it
+# must name exactly our team, not merely any Apple-anchored leaf.
+check "the signature requirement pins our team" \
+    "0 anchor apple generic and certificate leaf[subject.OU] = \"${TEAM}\"" \
+    "$(stub_verify '0x10000(runtime)')"
+check "a signature without the hardened runtime fails" "1" \
+    "$(stub_verify '0x2(adhoc)' | cut -d' ' -f1)"
+check "a signature with no flags fails" "1" \
+    "$(stub_verify '0x0(none)' | cut -d' ' -f1)"
 
 # --- Real codesign checks against an ad-hoc signed binary (macOS only) ---
 
