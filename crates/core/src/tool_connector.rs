@@ -455,13 +455,33 @@ mod tests {
         use crate::logging::test_support::Capture;
         use tracing_subscriber::{fmt, prelude::*};
 
-        let capture = Capture::default();
-        let subscriber = tracing_subscriber::registry().with(crate::logging::apply_span_policy(
-            fmt::layer().with_ansi(false).with_writer(capture.clone()),
-        ));
-        let _guard = tracing::subscriber::set_default(subscriber);
-
+        let make_subscriber = |capture: &Capture| {
+            tracing_subscriber::registry().with(crate::logging::apply_span_policy(
+                fmt::layer().with_ansi(false).with_writer(capture.clone()),
+            ))
+        };
         let connector = test_connector();
+
+        // failure_result_carries_the_full_cause_chain drives the same hop with
+        // no subscriber. If its thread registers the "tool execution failed"
+        // callsite first, the callsite caches Interest::NEVER and the failure
+        // line never reaches this capture (failed 40/40 with both tests in one
+        // binary). Run the hop once under this thread's subscriber so every
+        // callsite on the path is registered, then force an interest rebuild
+        // with a second set_default, the same remedy as pick_connector's
+        // liveview_hop_lines_carry_correlation_ids. The warm-up writes to its
+        // own capture so its lines cannot satisfy the assertions below.
+        let warmup = Capture::default();
+        let _warm_guard = tracing::subscriber::set_default(make_subscriber(&warmup));
+        let _ = connector
+            .execute_with_context(
+                serde_json::json!({"tool": "missing_tool", "parameters": {}}),
+                None,
+                &HashMap::new(),
+            )
+            .await;
+        let capture = Capture::default();
+        let _guard = tracing::subscriber::set_default(make_subscriber(&capture));
 
         let context: HashMap<String, String> = [
             ("request_id", "req-1"),
