@@ -2,7 +2,7 @@
 
 This file provides project-specific guidance for the Pick penetration testing connector.
 
-**Inherits from:** `/home/jtomek/Code/CLAUDE.md` (root configuration)
+**Inherits from:** `~/Code/CLAUDE.md` (root configuration)
 
 ---
 
@@ -346,4 +346,4 @@ If you find operator-specific content already in `CLAUDE.md`, move it to
 
 ---
 
-*This CLAUDE.md inherits from `/home/jtomek/Code/CLAUDE.md` for general patterns and adds Pick-specific guidance.*
+*This CLAUDE.md inherits from `~/Code/CLAUDE.md` for general patterns and adds Pick-specific guidance.*
