@@ -52,7 +52,7 @@ impl PentestTool for HttpRequestTool {
             .param(ToolParam::required(
                 "url",
                 ParamType::String,
-                "Target URL, e.g. 'http://10.10.0.14/' or 'https://host:8443/api/status'",
+                "Target URL, e.g. 'http://192.0.2.14/' or 'https://host:8443/api/status'",
             ))
             .param(ToolParam::optional(
                 "method",
