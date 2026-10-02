@@ -535,6 +535,7 @@ mod tests {
                 sample_device("192.168.1.50", ThreatLevel::Safe),
                 sample_device("192.168.1.66", ThreatLevel::Malicious),
             ],
+            sweep_truncated: None,
         };
         let report = format_report(&sample_result(SafetyStatus::Caution, Some(map)));
         assert!(report.contains("```mermaid"));
@@ -559,6 +560,7 @@ mod tests {
             gateway: sample_device("192.168.1.1", ThreatLevel::Safe),
             your_device: sample_device("192.168.1.2", ThreatLevel::Safe),
             other_devices: others,
+            sweep_truncated: None,
         };
         let report = format_report(&sample_result(SafetyStatus::Caution, Some(map)));
         // 30 devices, capped at 12 rendered -> a "+18 more" summary node.
