@@ -49,7 +49,9 @@ How it verifies (review #453, S4/F3):
 - `#[cfg(test)]` items and modules are removed before function bodies are
   extracted (for both anchored and anchored_every checks), so a same-named
   function inside a test module cannot stand in for the production one, and
-  a test-only seed-builder helper does not trip c1.2.
+  a test-only seed-builder helper does not trip c1.2. `#[cfg(test)]` text
+  inside a string literal is not treated as an attribute, so a planted
+  string cannot hide the production items that follow it.
 - `--self-test` exercises the evasion modes against throwaway fixtures,
   checks each check's pattern count against a pinned table, then knocks out
   every pattern of every check in turn and requires that check to fail, so
@@ -418,15 +420,37 @@ def _next_body_brace(text: str, start: int) -> int:
 _CFG_TEST = re.compile(r"#\[cfg\(\s*(?:all\(\s*)?test\b[^\]]*\]")
 
 
+def _literal_spans(text: str) -> list[tuple[int, int]]:
+    """(start, end) of every string/char/raw-string literal, found by the same
+    walk the bracket matcher uses, so a scan can skip literal text."""
+    spans: list[tuple[int, int]] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        lit_end = _skip_literal(text, i)
+        if lit_end is None:
+            i += 1
+            continue
+        spans.append((i, lit_end))
+        i = lit_end
+    return spans
+
+
 def _strip_cfg_test(text: str) -> str:
     """Remove every `#[cfg(test)]` (or `#[cfg(all(test, ...))]`) item from
     comment-stripped `text`: the attribute through the end of the item it
-    gates (its `{ ... }` body, or the `;` of a bodiless item)."""
+    gates (its `{ ... }` body, or the `;` of a bodiless item). Attribute text
+    inside a string literal is not an attribute and is left in place (review
+    #453 round 5: a planted `"#[cfg(test)] mod m {"` otherwise deleted every
+    item after it)."""
+    spans = _literal_spans(text)
     out: list[str] = []
     pos = 0
     for m in _CFG_TEST.finditer(text):
         if m.start() < pos:
             continue  # nested inside an item already removed
+        if any(s <= m.start() < e for s, e in spans):
+            continue  # attribute text inside a literal
         brace = _next_body_brace(text, m.end())
         if brace == -1:
             semi = text.find(";", m.end())
@@ -849,6 +873,31 @@ def _self_test() -> bool:
             encoding="utf-8",
         )
         expect(run(root), True, "build_validator_seed_message_v2 still wired")
+
+        # Round-5 review shape: `#[cfg(test)]` text inside a string literal
+        # with an unbalanced brace must not be read as an attribute, or the
+        # stripper deletes every item after it: placed after the gate, c1.2
+        # goes green with an unwired builder; placed first, c2.1 fails closed
+        # on an intact gate.
+        unwired_top_builder = (
+            "\npub fn build_future_seed_message(manifest: &Manifest) -> String {\n"
+            "    serde_json::to_string(manifest).unwrap_or_default()\n"
+            "}\n"
+        )
+        plain = 'const _: &str = "example: #[cfg(test)] mod m {";\n'
+        raw = 'const _: &str = r#"example: #[cfg(test)] mod m {"#;\n'
+        for mode, text, want, label in (
+            (14, orch_good + plain + unwired_top_builder, False,
+             "planted cfg(test) string before an unwired builder"),
+            (15, plain + orch_good, True,
+             "planted cfg(test) string before an intact gate"),
+            (16, orch_good + raw + unwired_top_builder, False,
+             "planted cfg(test) raw string before an unwired builder"),
+        ):
+            print(f"self-test {mode}: {label} must {'stay green' if want else 'fail'}")
+            _write_fixture(root)
+            orch.write_text(text, encoding="utf-8")
+            expect(run(root), want, label)
 
     return ok
 
