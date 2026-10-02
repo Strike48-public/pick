@@ -23,7 +23,7 @@ Pick and StrikeKit form a comprehensive penetration testing platform with multip
 4. **Secure Communication:** Strike48 Connector SDK (SDK-RS) for all C2 connections
 5. **Integration-First:** Manage/import from Nessus, Cobalt Strike, Metasploit, GoPhish, etc.
 6. **Flexible Deployment:** Pick (full tooling) OR lightweight agents depending on target constraints
-7. **Multi-Platform:** Pick runs on Desktop, Android, Web, TUI
+7. **Multi-Platform:** Pick runs on Desktop, Android, Web, Headless
 
 ---
 
@@ -92,7 +92,7 @@ Pick and StrikeKit form a comprehensive penetration testing platform with multip
 │              │   - Desktop (Linux/Mac/Win)                              │
 │              │   - Android             │                                │
 │              │   - Web (headless)      │                                │
-│              │   - TUI (terminal)      │                                │
+│              │   - Headless (liveview) │                                │
 │              │ • Tool Orchestration    │                                │
 │              │ • Evidence Generation   │                                │
 │              │                         │                                │
@@ -151,7 +151,7 @@ Pick and StrikeKit form a comprehensive penetration testing platform with multip
     │            Pick Instances           │
     │       (Tool Execution Agents)       │
     │  "Execute tools, generate evidence" │
-    │  Desktop | Android | Web | TUI    │
+    │  Desktop | Android | Web | Headless │
     └─────────────────────────────────────┘
 ```
 
@@ -159,7 +159,7 @@ Pick and StrikeKit form a comprehensive penetration testing platform with multip
 - **StrikeKit IS the orchestrator** (no separate Prospector Studio)
 - **StrikeKit can control Mythic C2** which then controls Pick agents
 - **All C2 communication uses Connector SDK (SDK-RS)** for secure, authenticated connections
-- **Pick has Android deployment** alongside Desktop, Web, TUI
+- **Pick has Android deployment** alongside Desktop, Web, Headless
 - Enterprise teams can use existing Mythic infrastructure while gaining StrikeKit's AI orchestration
 
 ---
@@ -236,7 +236,7 @@ Pick and StrikeKit form a comprehensive penetration testing platform with multip
   - Extensibility: Can integrate additional repositories (Kali, Parrot, custom)
   - Package Manager: pacman for on-demand installation
 - **Tool Execution:** 3000+ BlackArch tools on-demand, expandable
-- **Platform Abstraction:** Desktop, Android, Web, TUI
+- **Platform Abstraction:** Desktop, Android, Web, Headless
 - **Sandbox Management:** proot/bwrap isolated environments
 - **Native Mode:** Direct host execution for custom tools
 - **Evidence Generation:** Structured output parsing
@@ -255,7 +255,7 @@ Pick and StrikeKit form a comprehensive penetration testing platform with multip
 1. **Desktop:** Linux, macOS, Windows (via dioxus-desktop)
 2. **Android:** Native Android app with proot sandbox
 3. **Web:** Headless liveview deployment
-4. **TUI:** Terminal-based interface
+4. **Headless:** Tools-only agent (no local UI; UI served over WebSocket)
 
 **Execution Modes:**
 1. **Standalone:** Independent operation, no C2
@@ -1676,7 +1676,7 @@ type Subscription {
 | Tool Execution | Pick | Pick team | 3000+ BlackArch tools |
 | BlackArch Management | Pick | Pick team | On-demand installation |
 | Sandbox/Native Toggle | Pick | Pick team | proot/bwrap or host |
-| Multi-Platform Support | Pick | Pick team | Desktop/Android/Web/TUI |
+| Multi-Platform Support | Pick | Pick team | Desktop/Android/Web/Headless |
 | Evidence Generation | Pick | Pick team | Structured tool output |
 | Connector SDK Client | Pick | Pick team | Agent communication |
 | Metasploit Integration | Pick | Pick team | RPC API, module execution |

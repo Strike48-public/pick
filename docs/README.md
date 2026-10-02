@@ -103,12 +103,12 @@ cargo clippy -- -D warnings
         │                 │                 │                 │
         ▼                 ▼                 ▼                 ▼
 ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
-│   Desktop     │ │     Web       │ │    Mobile     │ │     TUI       │
+│   Desktop     │ │     Web       │ │    Mobile     │ │   Headless    │
 │  (dioxus-     │ │  (dioxus-     │ │  (dioxus-     │ │  (dioxus-     │
-│   desktop)    │ │   liveview)   │ │   mobile)     │ │   tui)        │
+│   desktop)    │ │   liveview)   │ │   mobile)     │ │   liveview)   │
 ├───────────────┤ ├───────────────┤ ├───────────────┤ ├───────────────┤
-│ UI + Tools    │ │ UI + Tools    │ │ UI + Tools    │ │ UI + Tools    │
-│ run locally   │ │ run on server │ │ run on device │ │ run locally   │
+│ UI + Tools    │ │ UI + Tools    │ │ UI + Tools    │ │ Tools only    │
+│ run locally   │ │ run on server │ │ run on device │ │ no local UI   │
 └───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘
 ```
 
