@@ -951,62 +951,85 @@ build-syscall-compat:
     done
     echo "Done! syscall_compat shims built in android-jniLibs/"
 
-# Termux package versions
+# Termux apt repository (termux-main, stable suite)
 #
-# CAUTION (#397): packages.termux.dev is a *rolling* pool — it only serves the
-# latest build of each package. When Termux supersedes a pinned version the
-# download URL 404s and `fetch-proot` fails (this has broken the Android CI
-# lane repeatedly: 5.1.107.91 -> .92 in #413, .92 -> .94 in #492, .94 -> .95
-# in #497, and earlier bumps). The sha256 pins
-# below catch silent in-place replacement of a pinned .deb; they do NOT fix
-# 404s. The durable fix is mirroring the .debs to an immutable location we
-# control (GitHub release assets, same pattern as #252) — until then, a 404
-# means: look up the current version in the pool index
-# (https://packages.termux.dev/apt/termux-main/pool/main/), bump the version
-# pin, download the new .deb, and refresh the checksum pin below.
-proot_version := "5.1.107.95"
-talloc_version := "2.4.3"
-busybox_version := "1.38.0-1"
-shmem_version := "0.7"
-termux_repo := "https://packages.termux.dev/apt/termux-main/pool/main"
-
-# sha256 pins for the exact .debs downloaded above, in `sha256sum -c` format
-# (filename must match the download name used in fetch-proot). Recompute with:
-#   curl -fsSL <url> | sha256sum
-# Verify on every download so a replaced/mismatched package fails loudly
-# instead of shipping different binaries in the APK (#372 integrity half).
-pkg_checksums := '''
-0a1b3d0f6ef76436c5ed924cd8e8f5a6b7186e99e1650eb2d9bc734e218a74cb  proot_5.1.107.95_aarch64.deb
-f63ce9bd0d38715eae0163a3772f3395913587444c7ce7232091c6d359afe3c3  proot_5.1.107.95_x86_64.deb
-ac81ad623d74c209718b9f3acb2dd702cc8a88c431e820d212229910b4db29da  libtalloc_2.4.3_aarch64.deb
-7ca2eaae2e53b28228a01301bc410b62845403d6317c25b8e0a7f40681de0628  libtalloc_2.4.3_x86_64.deb
-1bb7f1d4c00cadd0e1117b6dd7110311b8bf749ef00b486e96cfdc11c98f8fd9  busybox_1.38.0-1_aarch64.deb
-519b57623dd076b4d6cf6d389ed976dd222410e3a0b9b9b58c14d8535b6eef48  busybox_1.38.0-1_x86_64.deb
-0da3a24d558b93c92bcf8d611e0826a99ff96e396b148e6cdf33b47c47c57ff6  libandroid-shmem_0.7_aarch64.deb
-ffa9e4c87467b158b148d0ff92dda796aa038276c2075af3269cdcdb06f25797  libandroid-shmem_0.7_x86_64.deb
-'''
+# packages.termux.dev is a *rolling* pool: it only serves the latest build of
+# each package, so any hard-coded version 404s as soon as Termux publishes the
+# next one. That broke the Android lane four times (5.1.107.91 -> .92 in #413,
+# .92 -> .94 in #492, .94 -> .95 in #497, then .95 -> .96 with libtalloc
+# 2.4.3 -> 2.5.0). fetch-proot therefore resolves every package from the
+# repository's own per-arch `Packages` index at fetch time (#499): the index
+# gives the current `Filename` and its `SHA256`, and each .deb is verified
+# against that SHA256 before it is unpacked. The resolved version and hash are
+# printed so the CI log records exactly what went into the APK.
+#
+# Trust: the index and the .debs come from the same HTTPS origin, so this
+# catches truncated, corrupted or mismatched downloads but not a compromised
+# origin (the InRelease GPG signature is not checked here). Override for a
+# local mirror with `just termux_base=<url> fetch-proot`.
+termux_base := "https://packages.termux.dev/apt/termux-main"
 
 # Download Termux proot + dependencies for Android (x86_64 + arm64)
 # Uses official Termux packages which have proper --sysvipc support for pacman
-# Every download is sha256-verified against pkg_checksums (see note above; #397).
+# Every .deb is resolved and sha256-verified via the Packages index (#499).
 fetch-proot:
     #!/usr/bin/env bash
     set -euo pipefail
     TMP=$(mktemp -d)
     trap 'rm -rf "$TMP"' EXIT
+    base="{{termux_base}}"
 
-    # Materialize the checksum manifest (pkg_checksums above; #397/#372) and
-    # verify every download against it so a replaced/superseded pinned .deb
-    # fails loudly instead of silently shipping different binaries.
-    printf '%s' '{{pkg_checksums}}' > "$TMP/SHA256SUMS"
-    verify_sha() {
-        local f="$1"
-        grep -F " $f" "$TMP/SHA256SUMS" | (cd "$TMP" && sha256sum -c - >/dev/null) \
-            || { echo "ERROR: sha256 mismatch for $f - the pinned Termux .deb changed upstream; bump the version + checksum pins (see #397)" >&2; exit 1; }
+    # Print "<Filename> <SHA256> <Version>" for package $1 from index file $2.
+    # Fails unless exactly one stanza matches and its fields are well formed,
+    # since the index is external input.
+    resolve_pkg() {
+        local pkg="$1" index="$2" out filename sha version
+        out=$(awk -v pkg="$pkg" '
+            BEGIN { RS = ""; FS = "\n"; n = 0 }
+            {
+                name = ""; fn = ""; sha = ""; ver = ""
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^Package: /)  name = substr($i, 10)
+                    if ($i ~ /^Filename: /) fn   = substr($i, 11)
+                    if ($i ~ /^SHA256: /)   sha  = substr($i, 9)
+                    if ($i ~ /^Version: /)  ver  = substr($i, 10)
+                }
+                if (name == pkg) { n++; line = fn " " sha " " ver }
+            }
+            END { if (n != 1) exit 1; print line }
+        ' "$index") || { echo "ERROR: expected exactly one '$pkg' entry in $index" >&2; return 1; }
+        read -r filename sha version <<< "$out"
+        if ! [[ "$filename" =~ ^pool/[A-Za-z0-9._+/-]+\.deb$ ]] || [[ "$filename" == *..* ]]; then
+            echo "ERROR: unexpected Filename '$filename' for $pkg in $index" >&2; return 1
+        fi
+        if ! [[ "$sha" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "ERROR: missing or malformed SHA256 for $pkg in $index" >&2; return 1
+        fi
+        echo "$filename $sha $version"
+    }
+
+    # Resolve package $1 from index $2, download it to $TMP/<basename>,
+    # verify its SHA256 against the index, and print the local path.
+    # Called via $(...), where errexit is not inherited, so every step returns
+    # its failure explicitly.
+    fetch_deb() {
+        local pkg="$1" index="$2" resolved filename sha version deb
+        resolved=$(resolve_pkg "$pkg" "$index") || return 1
+        read -r filename sha version <<< "$resolved"
+        deb="$TMP/$(basename "$filename")"
+        echo "Downloading $pkg $version ($sha)..." >&2
+        curl -fsSL --retry 3 "$base/$filename" -o "$deb" || return 1
+        echo "$sha  $deb" | sha256sum -c - >/dev/null \
+            || { echo "ERROR: sha256 mismatch for $(basename "$filename"): the download does not match the Packages index (#499)" >&2; return 1; }
+        echo "$deb"
     }
 
     for arch in x86_64 aarch64; do
         echo "=== Downloading Termux packages for $arch ==="
+
+        # One index snapshot per arch, so all four packages resolve together.
+        index="$TMP/Packages_${arch}"
+        curl -fsSL --retry 3 "$base/dists/stable/main/binary-${arch}/Packages" -o "$index"
 
         # Map arch to Android ABI name
         if [ "$arch" = "aarch64" ]; then
@@ -1018,12 +1041,10 @@ fetch-proot:
         mkdir -p "$dest"
 
         # Download and extract proot
-        echo "Downloading proot {{proot_version}}..."
-        curl -fSL --retry 3 "{{termux_repo}}/p/proot/proot_{{proot_version}}_${arch}.deb" -o "$TMP/proot_{{proot_version}}_${arch}.deb"
-        verify_sha "proot_{{proot_version}}_${arch}.deb"
+        deb=$(fetch_deb proot "$index")
         mkdir -p "$TMP/proot_${arch}"
         cd "$TMP/proot_${arch}"
-        ar x "../proot_{{proot_version}}_${arch}.deb"
+        ar x "$deb"
         tar xf data.tar.xz
 
         cp -f "./data/data/com.termux/files/usr/bin/proot"              "$dest/libproot.so"
@@ -1032,12 +1053,10 @@ fetch-proot:
         echo "  -> libproot.so ($(wc -c < "$dest/libproot.so") bytes)"
 
         # Download and extract libtalloc (proot dependency)
-        echo "Downloading libtalloc {{talloc_version}}..."
-        curl -fSL --retry 3 "{{termux_repo}}/libt/libtalloc/libtalloc_{{talloc_version}}_${arch}.deb" -o "$TMP/libtalloc_{{talloc_version}}_${arch}.deb"
-        verify_sha "libtalloc_{{talloc_version}}_${arch}.deb"
+        deb=$(fetch_deb libtalloc "$index")
         mkdir -p "$TMP/talloc_${arch}"
         cd "$TMP/talloc_${arch}"
-        ar x "../libtalloc_{{talloc_version}}_${arch}.deb"
+        ar x "$deb"
         tar xf data.tar.xz
 
         # Android only packages lib*.so files, so rename libtalloc.so.2 -> libtalloc.so
@@ -1049,12 +1068,10 @@ fetch-proot:
         # bootstrap/extract the BlackArch rootfs; without libbusybox.so the shell
         # fails with "busybox binary not found". Packaged as lib*.so so the APK
         # ships it in jniLibs like proot.
-        echo "Downloading busybox {{busybox_version}}..."
-        curl -fSL --retry 3 "{{termux_repo}}/b/busybox/busybox_{{busybox_version}}_${arch}.deb" -o "$TMP/busybox_{{busybox_version}}_${arch}.deb"
-        verify_sha "busybox_{{busybox_version}}_${arch}.deb"
+        deb=$(fetch_deb busybox "$index")
         mkdir -p "$TMP/busybox_${arch}"
         cd "$TMP/busybox_${arch}"
-        ar x "../busybox_{{busybox_version}}_${arch}.deb"
+        ar x "$deb"
         tar xf data.tar.xz
         # Modern Termux busybox is split: usr/bin/busybox is a tiny (~4KB)
         # launcher stub, while the real ~870KB applet multiplexer lives at
@@ -1072,12 +1089,10 @@ fetch-proot:
         # IPC (shmget/shmat), which bare Android lacks; without it proot fails at
         # load with `library "libandroid-shmem.so" not found`. It is in proot's
         # ELF NEEDED list, so it must ship in jniLibs alongside libproot.so.
-        echo "Downloading libandroid-shmem {{shmem_version}}..."
-        curl -fSL --retry 3 "{{termux_repo}}/liba/libandroid-shmem/libandroid-shmem_{{shmem_version}}_${arch}.deb" -o "$TMP/libandroid-shmem_{{shmem_version}}_${arch}.deb"
-        verify_sha "libandroid-shmem_{{shmem_version}}_${arch}.deb"
+        deb=$(fetch_deb libandroid-shmem "$index")
         mkdir -p "$TMP/shmem_${arch}"
         cd "$TMP/shmem_${arch}"
-        ar x "../libandroid-shmem_{{shmem_version}}_${arch}.deb"
+        ar x "$deb"
         tar xf data.tar.xz
         cp -f "./data/data/com.termux/files/usr/lib/libandroid-shmem.so" "$dest/libandroid-shmem.so"
         echo "  -> libandroid-shmem.so ($(wc -c < "$dest/libandroid-shmem.so") bytes)"
@@ -1094,8 +1109,9 @@ fetch-proot:
             echo "  ⚠ WARNING: patchelf not found, libtalloc.so.2 symlink needed at runtime"
         fi
 
-        # Verify --sysvipc support
-        if strings "$dest/libproot.so" | grep -qF -- '--sysvipc'; then
+        # Verify --sysvipc support. No `grep -q`: it exits on the first match,
+        # `strings` then dies of SIGPIPE (141) and pipefail reports a miss.
+        if strings "$dest/libproot.so" | grep -F -- '--sysvipc' >/dev/null; then
             echo "  ✓ --sysvipc support confirmed"
         else
             echo "  ⚠ WARNING: --sysvipc not found in binary!"
