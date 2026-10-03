@@ -153,7 +153,9 @@ fn host_context() -> &'static str {
 /// Initialize telemetry at startup with the user's opt-out setting. Remembers
 /// the identity so a later runtime toggle (see [`set_enabled`]) can re-install
 /// with the same tags. Does nothing when the DSN is absent or the user has
-/// opted out (the env override or `enabled=false`).
+/// opted out (the env override or `enabled=false`). Every path logs exactly
+/// one info line with the resolved state so a silent install (e.g. headless)
+/// is diagnosable from its log file without a Sentry dashboard (#527).
 ///
 /// - `enabled`: the user's `telemetry_enabled` setting (opt-out).
 /// - `device_id`: the persistent anonymous install id.
@@ -165,8 +167,21 @@ pub fn init(enabled: bool, device_id: &str, easy_mode: bool) {
     if enabled {
         install(device_id, easy_mode);
     } else {
-        tracing::debug!("telemetry disabled at startup (opt-out)");
+        tracing::info!(
+            "telemetry disabled at startup (user opt-out, env={})",
+            environment()
+        );
     }
+}
+
+/// The `(device_id, easy_mode)` last passed to [`init`], or `None` if no
+/// entrypoint has called it yet. Exposed so startup paths can be regression
+/// tested for "telemetry was actually initialized with this identity": the
+/// #527 bug was the headless binary never calling `init` at all, which is
+/// otherwise unobservable in a no-DSN build (a no-op install and no install
+/// look identical from the outside).
+pub fn last_identity() -> Option<(String, bool)> {
+    IDENTITY.lock().ok().and_then(|g| g.clone())
 }
 
 /// Turn telemetry on or off at runtime (from the Settings toggle). Turning it
@@ -215,10 +230,22 @@ fn install(device_id: &str, easy_mode: bool) {
     let env_opt_out = std::env::var("STRIKE48_TELEMETRY")
         .map(|v| matches!(v.as_str(), "0" | "false" | "off" | "no"))
         .unwrap_or(false);
-    let dsn = match (!env_opt_out, DSN) {
-        (true, Some(dsn)) if !dsn.is_empty() => dsn,
+    if env_opt_out {
+        tracing::info!(
+            "telemetry not installed (STRIKE48_TELEMETRY kill-switch set, env={})",
+            environment()
+        );
+        return;
+    }
+    let dsn = match DSN {
+        Some(dsn) if !dsn.is_empty() => dsn,
         _ => {
-            tracing::debug!("telemetry not installed (env kill-switch or no DSN)");
+            // Info (not debug): this is the line that tells a maintainer a
+            // shipped build has no PICK_SENTRY_DSN baked in (#527).
+            tracing::info!(
+                "telemetry not installed (no DSN baked into this build, env={})",
+                environment()
+            );
             return;
         }
     };
