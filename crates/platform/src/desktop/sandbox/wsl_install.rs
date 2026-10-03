@@ -50,7 +50,11 @@ pub enum InstallOutcome {
 /// Host-side marker file the elevated child writes when it finishes, relative
 /// to `%LOCALAPPDATA%`. The non-elevated caller polls for this to learn the
 /// outcome of the elevated run.
-#[cfg(target_os = "windows")]
+///
+/// The elevated script and the poller must both derive their path from this
+/// constant: the poller once joined a bare `.wsl-install-result`, dropping the
+/// `pentest-sandbox` directory, so it never saw the child's result (pick#533).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const INSTALL_RESULT_MARKER: &str = r"pentest-sandbox\.wsl-install-result";
 
 /// Absolute path of the install-result marker (`%LOCALAPPDATA%\<marker>`).
@@ -58,7 +62,16 @@ const INSTALL_RESULT_MARKER: &str = r"pentest-sandbox\.wsl-install-result";
 fn install_result_marker_path() -> Option<std::path::PathBuf> {
     std::env::var("LOCALAPPDATA")
         .ok()
-        .map(|base| std::path::Path::new(&base).join(".wsl-install-result"))
+        .map(|base| marker_path_under(std::path::Path::new(&base)))
+}
+
+/// Resolve [`INSTALL_RESULT_MARKER`] under `base`, one component at a time so
+/// the result is the same on every OS (and testable off Windows).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn marker_path_under(base: &std::path::Path) -> std::path::PathBuf {
+    INSTALL_RESULT_MARKER
+        .split('\\')
+        .fold(base.to_path_buf(), |path, component| path.join(component))
 }
 
 /// Delete any stale install-result marker. Call before [`relaunch_elevated`] so
@@ -302,6 +315,31 @@ mod tests {
             ));
             assert!(relaunch_elevated().is_err());
         }
+    }
+
+    #[test]
+    fn marker_path_matches_the_directory_the_elevated_script_writes() {
+        // The elevated script creates `<LOCALAPPDATA>\pentest-sandbox` and
+        // writes `.wsl-install-result` inside it; the poller must read there.
+        let base = std::path::Path::new("local-app-data");
+        assert_eq!(
+            marker_path_under(base),
+            base.join("pentest-sandbox").join(".wsl-install-result")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn poller_reads_the_marker_under_pentest_sandbox() {
+        let base = std::env::var("LOCALAPPDATA").expect("LOCALAPPDATA is set on Windows");
+        assert_eq!(
+            install_result_marker_path(),
+            Some(
+                std::path::Path::new(&base)
+                    .join("pentest-sandbox")
+                    .join(".wsl-install-result")
+            )
+        );
     }
 
     #[test]

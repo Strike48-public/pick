@@ -174,6 +174,12 @@ xcode-select --install
 winget install Microsoft.VisualStudio.2022.BuildTools
 ```
 
+**Runtime behavior:** Windows does not set the `HOME` environment variable, so
+at startup Pick sets it to your user profile directory (`%USERPROFILE%`) before
+anything else reads the environment (`ensure_home_env` in
+crates/core/src/config.rs). Pick stores its keys and credentials under
+`%USERPROFILE%\.strike48\`, so your sign-in persists across restarts.
+
 ## Environment Configuration
 
 ### Required Variables

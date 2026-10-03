@@ -27,6 +27,9 @@ use pentest_ui::LiveViewConnector;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Windows leaves HOME unset; resolve it before anything reads ~/.strike48.
+    pentest_core::config::ensure_home_env();
+
     // Initialize logging: console plus the rolling JSON file under the local
     // data dir, so a failure in a customer install leaves a trail after the
     // process is gone (pick#476). A read-only filesystem degrades to console

@@ -737,6 +737,28 @@ impl ConnectorConfig {
     }
 }
 
+/// Point `HOME` at the user's profile directory when the OS left it unset.
+///
+/// Pick's credential helpers above and the SDK's `OttProvider` both locate
+/// `~/.strike48` through `HOME`. Windows does not set `HOME`, so a normal
+/// launch made the SDK write keys and credentials under the current working
+/// directory while [`ConnectorConfig::credentials_present`] reported nothing,
+/// forcing a fresh sign-in on every launch (pick#533). Setting it once at
+/// startup keeps every reader and writer on the same directory.
+///
+/// Call it first in `main`, before any other thread reads the environment.
+/// Returns the directory it set, or `None` when `HOME` was already set or no
+/// home directory could be resolved.
+pub fn ensure_home_env() -> Option<std::path::PathBuf> {
+    if std::env::var_os("HOME").is_some_and(|home| !home.is_empty()) {
+        return None;
+    }
+    let home = dirs::home_dir()?;
+    // SAFETY: documented precondition - runs before other threads exist.
+    unsafe { std::env::set_var("HOME", &home) };
+    Some(home)
+}
+
 /// Download state for BlackArch ISO
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -1429,6 +1451,44 @@ mod tests {
             None => unsafe { std::env::remove_var("HOME") },
         }
         assert_eq!(got.as_deref(), Some("019f4d37-0212-72cb-945a-f8d01726ebf5"));
+    }
+
+    #[test]
+    fn ensure_home_env_sets_home_to_the_profile_dir_when_unset() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("HOME").ok();
+        let expected = dirs::home_dir();
+
+        // Simulate a Windows launch, where HOME is not set at all.
+        unsafe { std::env::remove_var("HOME") };
+        let set = ensure_home_env();
+        let home_after = std::env::var("HOME").ok();
+        let second = ensure_home_env();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        assert!(expected.is_some(), "test host must resolve a home dir");
+        assert_eq!(set, expected);
+        assert_eq!(home_after.map(std::path::PathBuf::from), expected);
+        assert_eq!(second, None, "an existing HOME must be left alone");
+    }
+
+    #[test]
+    fn ensure_home_env_keeps_an_existing_home() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+        let set = ensure_home_env();
+        let home_after = std::env::var("HOME").ok();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(set, None);
+        assert_eq!(home_after.as_deref(), tmp.path().to_str());
     }
 
     #[test]
