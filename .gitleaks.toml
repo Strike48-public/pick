@@ -1,16 +1,99 @@
 # Gitleaks configuration for Pick
 # https://github.com/gitleaks/gitleaks
+#
+# This file EXTENDS the built-in default ruleset. Without the [extend] block,
+# any [[rules]] here would replace the defaults and gitleaks would scan for
+# almost nothing (pick#520).
+#
+# Allowlist policy: every entry below is scoped to the narrowest target that
+# works - a known placeholder value, a single file, and/or a single rule. Never
+# allowlist a broad directory (crates/, docs/) and never disable a default rule
+# without a written reason. A credential that might be real is never
+# allowlisted: rotate it and handle it separately.
 
 title = "Gitleaks config for Pick"
 
-# Allowlist test/example JWT tokens
-[[rules]]
-id = "jwt-test-tokens"
-description = "Allowlist for test/example JWT tokens"
-regex = '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJ(zdWIiOiIxMjM0NTY3ODkwIn0|leHAiOjEsImlhdCI6MH0)\.'''
-[rules.allowlist]
+[extend]
+useDefault = true
+
+# Test and example JWTs. Replaces the old `jwt-test-tokens` replacement rule.
+# Both are unsigned or carry a dummy signature: one is the expired-token test
+# fixture (exp=1), the other the public jwt.io example used by the CyberChef
+# "JWT Decode" recipe. Scoped to the three files that carry them AND to the two
+# exact header.payload prefixes, so a new JWT anywhere else still fires.
+[[allowlists]]
+description = "Test/example JWTs in the JWT validator tests and CyberChef examples"
+targetRules = ["jwt", "generic-api-key"]
+condition = "AND"
 paths = [
-    '''crates/core/src/jwt_validator\.rs''',
-    '''crates/cyberchef/src/recipes/library\.rs''',
-    '''crates/ui/src/components/cyberchef_page\.rs'''
+    '''^crates/core/src/jwt_validator\.rs$''',
+    '''^crates/cyberchef/src/recipes/library\.rs$''',
+    '''^crates/ui/src/components/cyberchef_page\.rs$''',
 ]
+regexes = [
+    '''^eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJ(zdWIiOiIxMjM0NTY3ODkwIn0|leHAiOjEsImlhdCI6MH0)\.''',
+]
+
+# The alg=none JWT in the web-app specialist prompt is a documented attack
+# payload ({"alg":"none"} / {"user":"admin"}, empty signature), not a credential.
+[[allowlists]]
+description = "alg=none JWT bypass example in specialist prompt docs"
+targetRules = ["jwt"]
+regexes = [
+    '''^eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0\.eyJ1c2VyIjoiYWRtaW4ifQ\.$''',
+]
+
+# Placeholder secrets used by the redaction/sanitizer unit tests and by doc
+# comments. Each is an obviously fake literal; matching is on the exact
+# extracted secret, so a real value in the same shape still fires.
+[[allowlists]]
+description = "Known-fake placeholder secrets in redaction tests and doc examples"
+regexes = [
+    '''^(admin:)?hunter2$''',
+    '''^sk-live-xyz-1234567890$''',
+    '''^sk-1234567890$''',
+    '''^(0123456789abcdef){3}$''',
+    '''^abc\.def\.ghi_SECRET_xyz$''',
+    '''^SEKRET_TOKEN$''',
+    '''^your-auth-token$''',
+    '''^abcdef123456$''',
+    '''^ott_hXg1Adwu12345$''',
+]
+
+# Historical copies of a captured Matrix pre-approval one-time token, introduced
+# by these two commits. The token was confirmed revoked server-side on
+# 2026-10-01 (pick#520), so it is no longer a usable credential; the copies in
+# the current tree are removed separately. Scoped to the two commits AND the two
+# files AND one rule, so the same value anywhere else, or any new commit, still
+# fires.
+[[allowlists]]
+description = "Revoked Matrix OTT in two historical commits (pick#520)"
+targetRules = ["generic-api-key"]
+condition = "AND"
+commits = [
+    "7e2cef39a0a1c2352bb21a408fb60698fa6ad506",
+    "f82397f2a22104c839b2c59bdca3ddf1e8b2c553",
+]
+paths = [
+    '''^crates/core/src/matrix/pre_approval\.rs$''',
+    '''^docs/superpowers/plans/2026-07-21-plg-connector-oauth-registration\.md$''',
+]
+
+# Cargo.lock holds crate names and checksums only; generic-api-key trips on
+# crate names such as objc2-authentication-services.
+[[allowlists]]
+description = "Crate names in Cargo.lock"
+targetRules = ["generic-api-key"]
+paths = ['''^Cargo\.lock$''']
+
+# restty.js is a vendored bundled terminal library that inlines base64 binary
+# data; square-access-token matches one EAAA run inside that blob. Scoped AND to
+# the file, the rule and that exact run, so a regenerated bundle carrying the
+# same data stays quiet while any other square-access-token match in the file
+# still fires and gets triaged.
+[[allowlists]]
+description = "Base64 asset data in the vendored restty.js bundle"
+targetRules = ["square-access-token"]
+condition = "AND"
+paths = ['''^crates/ui/src/assets/restty\.js$''']
+regexes = ['''^EAAAAAAgIQuQQAAAADQEmNBAAAA$''']
