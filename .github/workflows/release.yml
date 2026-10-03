@@ -260,8 +260,9 @@ jobs:
       # Build through the nix flake so CI uses the exact same toolchain, SDK/NDK,
       # dx CLI, build-tools and aapt2 as local `just build-android` — no drift.
       - uses: DeterminateSystems/nix-installer-action@main
-      # Cache the nix store (toolchain, Android SDK/NDK, dx) across release runs.
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      # No magic-nix-cache-action: as in ci.yml's android job, the GitHub
+      # Actions Cache throttles its Nix traffic (HTTP 418), so Nix substitutes
+      # directly from cache.nixos.org instead (#499).
       # Cache cargo downloads + the Android release cross-compile target dir.
       - uses: actions/cache@v4
         with:
