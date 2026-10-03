@@ -122,6 +122,16 @@ async fn seed_from_conversation(
             // agent server reporting IDLE (not ERROR) still carries
             // `metadata.stream_error`. Without this a crashed turn opens clean.
             if let Some(err) = state.stream_error {
+                // A hard crash reports IDLE, so apply_outcome's ERROR branch
+                // never sees this failure. Capture the coarse kind + a fixed
+                // non-PII reason (never the server-provided `err` text,
+                // which is free-form and not a safe value). Re-seeds of the
+                // same conversation re-capture; Sentry dedupes them into one
+                // issue.
+                pentest_core::telemetry::capture_agent_error(
+                    "stream_error",
+                    "agent turn died mid-stream",
+                );
                 error_msg.set(Some(err));
             }
         }
@@ -158,6 +168,12 @@ async fn apply_outcome(
         // Richer notice (token/rate-limit classification) via the Studio usage
         // stats query, same as the old poller surfaced.
         let notice = build_error_notice(client).await;
+        // Real agent-turn failures otherwise only reach Sentry as traces (the
+        // tracing layer ignores events), so capture the coarse failure as an
+        // issue here. Only a stable kind + a short non-PII reason are passed
+        // (never a host, argument, or scan output).
+        let (kind, detail) = notice.kind.telemetry();
+        pentest_core::telemetry::capture_agent_error(kind, detail);
         chat_notice.set(Some(notice));
     }
 
@@ -1150,6 +1166,11 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             chat_notice.set(None);
 
             spawn(async move {
+                // Telemetry (#278): time the user's "send" action as a ui.action
+                // span with a real duration. Only the action name and a coarse
+                // outcome are recorded — never the message text (user content,
+                // not a safe value).
+                let span = pentest_core::telemetry::start_ui_span("send_message");
                 let existing_id: Option<String> = conversation_id.peek().clone();
                 let conv_id: String = match existing_id {
                     Some(id) => id,
@@ -1169,6 +1190,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         Err(e) => {
                             error_msg.set(Some(format!("Failed to create conversation: {}", e)));
                             is_sending.set(false);
+                            span.finish("error");
                             return;
                         }
                     },
@@ -1200,10 +1222,12 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         agent_thinking.set(true);
                         agent_status_text.set("Thinking...".to_string());
                         is_sending.set(false);
+                        span.finish("ok");
                     }
                     Err(e) => {
                         error_msg.set(Some(format!("Failed to send: {}", e)));
                         is_sending.set(false);
+                        span.finish("error");
                     }
                 }
             });

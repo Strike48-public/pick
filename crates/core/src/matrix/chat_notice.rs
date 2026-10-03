@@ -18,6 +18,19 @@ pub enum ChatNoticeKind {
     UpstreamError,
 }
 
+impl ChatNoticeKind {
+    /// Coarse Sentry classifier and a short, non-PII reason for
+    /// [`crate::telemetry::capture_agent_error`]. Both are stable, enum-like
+    /// strings: the reason is written to the persistent local log, so it must
+    /// never carry a host, argument, or scan output.
+    pub fn telemetry(self) -> (&'static str, &'static str) {
+        match self {
+            ChatNoticeKind::TokenLimit => ("token_limit", "token or rate limit reached"),
+            ChatNoticeKind::UpstreamError => ("upstream", "agent backend error, no reply produced"),
+        }
+    }
+}
+
 /// A small, less-shouty status message rendered inline near the chat input.
 ///
 /// Polling produces these when it observes `AgentStatus::Error`. The actual
@@ -182,6 +195,20 @@ mod tests {
         assert_eq!(format_with_commas(1_234), "1,234");
         assert_eq!(format_with_commas(1_080_000), "1,080,000");
         assert_eq!(format_with_commas(-1_234), "-1,234");
+    }
+
+    #[test]
+    fn telemetry_kind_is_coarse_and_stable() {
+        // The classifier must stay a coarse, stable, non-PII string: it tags
+        // the Sentry issue and is written to the persistent local log.
+        assert_eq!(
+            ChatNoticeKind::TokenLimit.telemetry(),
+            ("token_limit", "token or rate limit reached")
+        );
+        assert_eq!(
+            ChatNoticeKind::UpstreamError.telemetry(),
+            ("upstream", "agent backend error, no reply produced")
+        );
     }
 
     #[test]

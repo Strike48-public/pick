@@ -396,7 +396,9 @@ pub fn set_plg_identity(tenant_id: &str) {
 /// events, so real failures like an agent-turn error would otherwise never reach
 /// Sentry. `kind` is a coarse classifier (e.g. "token_limit" / "upstream" /
 /// "stream_error"); `detail` MUST be non-PII (a short reason string, never a
-/// host, argument, or scan output). No-op when telemetry is disabled.
+/// host, argument, or scan output). `detail` is also written to the persistent
+/// local log via `tracing::warn!`, so treat it like any other on-disk value:
+/// coarse and PII-free. No-op when telemetry is disabled.
 pub fn capture_agent_error(kind: &str, detail: &str) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
@@ -714,6 +716,29 @@ mod tests {
         // Not initialized in tests -> ENABLED is false -> record must not panic.
         record(Activity::ScanStart, &[("k", "v")]);
         set_plg_identity("tenant-x");
+    }
+
+    #[test]
+    fn ui_span_is_noop_when_disabled() {
+        // Not initialized in tests -> ENABLED is false -> start_ui_span must
+        // return a cheap no-op handle, and finish() must not panic. The UI
+        // (chat send, share link) opens one of these per action and relies on
+        // this staying safe when telemetry is off or the DSN is absent.
+        let span = start_ui_span("send_message");
+        span.finish("ok");
+        let span = start_ui_span("create_share_link");
+        span.finish("error");
+    }
+
+    #[test]
+    fn capture_agent_error_is_noop_when_disabled() {
+        // Not initialized in tests -> ENABLED is false -> capture_agent_error
+        // must return before the tracing::warn! (no Sentry client, no log).
+        // The chat panel calls it on every agent-turn failure boundary, so it
+        // must stay safe when telemetry is off or the DSN is absent.
+        capture_agent_error("token_limit", "token or rate limit reached");
+        capture_agent_error("upstream", "agent backend error, no reply produced");
+        capture_agent_error("stream_error", "agent turn died mid-stream");
     }
 
     #[test]
