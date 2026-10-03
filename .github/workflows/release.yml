@@ -9,12 +9,13 @@ on:
       version:
         description: 'Version to release (e.g., 0.1.0)'
         required: true
-      # TEMPORARY: macOS signing disabled by default during Apple developer account suspension.
-      # TODO: Change default back to true once account is restored.
+      # Tag pushes always sign and notarize (scripts/macos-sign-notarize.sh
+      # fails the release if the Apple secrets are missing). This input only
+      # lets a manual dispatch produce an unsigned test build.
       macos_signing:
-        description: 'Enable macOS code signing & notarization (default: false due to account suspension)'
+        description: 'Sign and notarize the macOS binaries (Strike48 Developer ID)'
         required: true
-        default: false
+        default: true
         type: boolean
 
 permissions:
@@ -149,59 +150,18 @@ jobs:
           STRIKE48_HOST: https://studio.strike48.com
         run: cargo build --locked --package pentest-desktop --release --target ${{ matrix.target }} --features pentest-platform/desktop-pcap
 
-      - name: Import Apple certificate
-        if: inputs.macos_signing
+      # On a tag push `inputs` is empty, so the event check is what makes every
+      # tagged release signed; the input only opts a manual dispatch out.
+      - name: Sign and notarize macOS binary
+        if: github.event_name == 'push' || inputs.macos_signing
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
-          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > $RUNNER_TEMP/certificate.p12
-          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security import $RUNNER_TEMP/certificate.p12 -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security list-keychains -d user -s $KEYCHAIN_PATH login.keychain-db
-
-      - name: Sign macOS binary
-        if: inputs.macos_signing
-        env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          codesign --force --options runtime \
-            --entitlements entitlements.plist \
-            --sign "Developer ID Application: Devo Inc. ($APPLE_TEAM_ID)" \
-            target/${{ matrix.target }}/release/pentest-connector
-
-      - name: Notarize macOS binary
-        if: inputs.macos_signing
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          ditto -c -k --keepParent target/${{ matrix.target }}/release/pentest-connector $RUNNER_TEMP/pentest-connector.zip
-          for attempt in 1 2 3; do
-            echo "Notarization attempt $attempt..."
-            if xcrun notarytool submit $RUNNER_TEMP/pentest-connector.zip \
-              --apple-id "$APPLE_ID" \
-              --password "$APPLE_APP_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" \
-              --wait --timeout 30m; then
-              echo "Notarization succeeded."
-              break
-            fi
-            if [ "$attempt" -lt 3 ]; then
-              echo "Notarization failed, retrying in 30s..."
-              sleep 30
-            else
-              echo "Notarization failed after $attempt attempts."
-              exit 1
-            fi
-          done
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: scripts/macos-sign-notarize.sh target/${{ matrix.target }}/release/pentest-connector
 
       - name: Package
         run: |
@@ -328,10 +288,11 @@ jobs:
   # ===========================================
   build-ios:
     name: iOS
-    # Disabled: blocked on Apple Developer signing (account suspended, see the
-    # macos_signing note above). The build environment now exists — the flake's
-    # aarch64-darwin devShell + `just build-ios` — so re-enable this (as a
-    # simulator/unsigned build first) once signing is available.
+    # Disabled. The Strike48 Apple Developer account now exists, but iOS needs
+    # its own distribution certificate and provisioning profile, which the
+    # macOS Developer ID signing above does not provide. The build environment
+    # exists (the flake's aarch64-darwin devShell + `just build-ios`), so
+    # re-enable this (as a simulator/unsigned build first) once those are set up.
     if: false
     runs-on: macos-latest
     steps:
@@ -477,59 +438,17 @@ jobs:
           PICK_EASY_MODE: "true"
         run: cargo build --locked --package pentest-headless --release --target ${{ matrix.target }} --features pentest-platform/desktop-pcap
 
-      - name: Import Apple certificate
-        if: inputs.macos_signing
+      # Same gate as the desktop macOS job: every tag push signs.
+      - name: Sign and notarize macOS binary
+        if: github.event_name == 'push' || inputs.macos_signing
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
-          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > $RUNNER_TEMP/certificate.p12
-          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security import $RUNNER_TEMP/certificate.p12 -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security list-keychains -d user -s $KEYCHAIN_PATH login.keychain-db
-
-      - name: Sign macOS binary
-        if: inputs.macos_signing
-        env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          codesign --force --options runtime \
-            --entitlements entitlements.plist \
-            --sign "Developer ID Application: Devo Inc. ($APPLE_TEAM_ID)" \
-            target/${{ matrix.target }}/release/pentest-agent
-
-      - name: Notarize macOS binary
-        if: inputs.macos_signing
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          ditto -c -k --keepParent target/${{ matrix.target }}/release/pentest-agent $RUNNER_TEMP/pentest-agent.zip
-          for attempt in 1 2 3; do
-            echo "Notarization attempt $attempt..."
-            if xcrun notarytool submit $RUNNER_TEMP/pentest-agent.zip \
-              --apple-id "$APPLE_ID" \
-              --password "$APPLE_APP_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" \
-              --wait --timeout 30m; then
-              echo "Notarization succeeded."
-              break
-            fi
-            if [ "$attempt" -lt 3 ]; then
-              echo "Notarization failed, retrying in 30s..."
-              sleep 30
-            else
-              echo "Notarization failed after $attempt attempts."
-              exit 1
-            fi
-          done
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: scripts/macos-sign-notarize.sh target/${{ matrix.target }}/release/pentest-agent
 
       - name: Package
         run: |
@@ -551,11 +470,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Build provenance attestation (actions/attest): mint the Sigstore OIDC
+      # token, persist the attestation, and record the artifact metadata.
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    # Every action in this job is pinned to a commit SHA: the job can mint
+    # attestations under this workflow's identity, so a moved tag must not be
+    # able to change the code that runs here.
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
 
@@ -582,11 +509,17 @@ jobs:
 
           ls -la release/
 
+      # The dispatch input reaches the shell through env, never through
+      # ${{ }} in the script, so a crafted version string cannot run commands
+      # in a job that can mint attestations.
       - name: Get version
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
           else
             echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
           fi
@@ -617,10 +550,21 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      # SLSA build provenance for every asset in SHA256SUMS.txt. A checksum
+      # published beside the asset only proves the download is intact; the
+      # Sigstore-signed attestation proves it was built by this workflow from
+      # this repo, and is checked with `gh attestation verify`.
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: release/SHA256SUMS.txt
+
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           tag_name: v${{ steps.version.outputs.version }}
+          # An unsigned manual test build must never become "latest".
+          prerelease: ${{ github.event_name != 'push' && !inputs.macos_signing }}
           name: Pentest Connector v${{ steps.version.outputs.version }}
           files: |
             release/*
@@ -661,7 +605,19 @@ jobs:
             before install, and `pick-docker-agent-setup.md` is a runbook an
             AI coding agent can follow to do the install with you.
 
-            ### Checksums
+            ### Verifying a download
+
+            The macOS binaries are ${{ (github.event_name == 'push' || inputs.macos_signing) && 'signed with the Strike48 Developer ID and notarized by Apple' || 'NOT signed (manual test build)' }}.
+
+            Every asset except `SHA256SUMS.txt` carries a signed build provenance
+            attestation. To confirm a file was built by this repository's release
+            workflow from this release's tag:
+
+            ```
+            gh attestation verify <file> --repo Strike48-public/pick \
+              --signer-workflow Strike48-public/pick/.github/workflows/release.yml \
+              --source-ref refs/tags/v${{ steps.version.outputs.version }}
+            ```
 
             See `SHA256SUMS.txt` for file checksums.
 
