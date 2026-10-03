@@ -98,6 +98,29 @@ fn environment() -> String {
 /// capture everything when debugging.
 const DEFAULT_TRACES_SAMPLE_RATE: f32 = 0.1;
 
+/// The op under which UI-action transactions are started (see
+/// [`start_ui_span`]). Their *names* are arbitrary action verbs ("send",
+/// "load_conversation", ...), so the op is what identifies them for sampling.
+const UI_ACTION_OP: &str = "ui.action";
+
+/// Business-event transaction names (see [`Activity`]) that are ALWAYS sampled
+/// at 1.0, regardless of the baseline traces sample rate. These are the low-
+/// volume PLG funnel events (#278); sampling them at 0.1 under-counts scans
+/// and tool runs 10x (Strike48-public/pick#528).
+const BUSINESS_EVENT_NAMES: &[&str] = &["scan.start", "tool.run", "network.check"];
+
+/// Decide the sample rate for one transaction: business events (an activity
+/// name, or a `ui.action` transaction) are kept at 1.0; everything else falls
+/// back to the baseline [`traces_sample_rate`]. Pure function so the decision
+/// is unit-testable without a live Sentry client.
+fn sample_rate_for(name: &str, op: &str) -> f32 {
+    if op == UI_ACTION_OP || BUSINESS_EVENT_NAMES.contains(&name) {
+        1.0
+    } else {
+        traces_sample_rate()
+    }
+}
+
 fn traces_sample_rate() -> f32 {
     fn parse(v: &str) -> Option<f32> {
         v.trim()
@@ -265,14 +288,18 @@ fn install(device_id: &str, easy_mode: bool) {
             // Release-health sessions power DAU/WAU + crash-free rate.
             auto_session_tracking: true,
             session_mode: sentry::SessionMode::Application,
-            // Span sampling for activity transactions (see `record`). Defaults to
-            // DEFAULT_TRACES_SAMPLE_RATE and is overridable via
-            // STRIKE48_SENTRY_TRACES_SAMPLE_RATE (build-time or runtime). Was 1.0
-            // (100%), which exhausted the Sentry spans quota and paused ingestion
-            // — a connector emits a span per tool run / network check. A rate of
-            // 0.0 disables span sampling entirely (start_transaction is sampled
-            // out and nothing reaches Traces); set 1.0 to capture everything.
-            traces_sample_rate: traces_sample_rate(),
+            // Per-transaction sampling (see `sample_rate_for`). Business events
+            // (scan.start / tool.run / network.check and ui.action transactions)
+            // are kept at 1.0 because they are the low-volume PLG funnel signal;
+            // a flat rate (this was 1.0, then a flat 0.1) either burned the
+            // Sentry spans quota or dropped 9 out of 10 of them client-side
+            // (Strike48-public/pick#528). Everything else uses
+            // traces_sample_rate(): DEFAULT_TRACES_SAMPLE_RATE, overridable via
+            // STRIKE48_SENTRY_TRACES_SAMPLE_RATE (build-time or runtime). A
+            // baseline of 0.0 disables sampling entirely for those transactions.
+            traces_sampler: Some(std::sync::Arc::new(|ctx: &sentry::TransactionContext| {
+                sample_rate_for(ctx.name(), ctx.operation())
+            })),
             // Never attach the connecting server URL or request bodies.
             send_default_pii: false,
             // Defense-in-depth scrub of anything credential-shaped that slips
@@ -554,6 +581,25 @@ mod tests {
     }
 
     #[test]
+    fn sample_rate_for_business_events_is_always_one() {
+        // Business events must be sampled at 1.0 regardless of the baseline
+        // rate, so a PLG funnel never under-counts. No env access on this path,
+        // so the test is safe to run in parallel with siblings. Uses op
+        // "activity" for the named events (what `record`/`start_tool_span`
+        // start) and the ui.action op with an arbitrary action name (what
+        // `start_ui_span` starts).
+        for name in BUSINESS_EVENT_NAMES {
+            assert_eq!(sample_rate_for(name, "activity"), 1.0, "name={name}");
+        }
+        assert_eq!(sample_rate_for("send", UI_ACTION_OP), 1.0);
+        assert_eq!(sample_rate_for("create_share_link", UI_ACTION_OP), 1.0);
+        // Even a business name under a different op is still a business event
+        // (name-based identity), and a ui.action op with a business-like name
+        // is exempt too (op-based identity).
+        assert_eq!(sample_rate_for("scan.start", "custom"), 1.0);
+    }
+
+    #[test]
     fn traces_sample_rate_default_override_and_clamp() {
         // One test so the shared env var can't race parallel siblings. Restore
         // prior state at the end. (option_env! baked value is None in tests, so
@@ -562,19 +608,40 @@ mod tests {
 
         std::env::remove_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE");
         assert_eq!(traces_sample_rate(), DEFAULT_TRACES_SAMPLE_RATE);
+        // Non-business transactions follow the same resolution through the
+        // sampler (the 90% that the flat rate used to drop 10x).
+        assert_eq!(
+            sample_rate_for("bridge.request", "queue"),
+            DEFAULT_TRACES_SAMPLE_RATE
+        );
 
         std::env::set_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE", "1.0");
         assert_eq!(traces_sample_rate(), 1.0);
+        assert_eq!(sample_rate_for("bridge.request", "queue"), 1.0);
 
         std::env::set_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE", "0");
         assert_eq!(traces_sample_rate(), 0.0);
+        assert_eq!(sample_rate_for("bridge.request", "queue"), 0.0);
 
         // Out-of-range and unparseable fall back to the default (never panics the
         // sentry builder, whose setter rejects values outside [0,1]).
         std::env::set_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE", "5");
         assert_eq!(traces_sample_rate(), DEFAULT_TRACES_SAMPLE_RATE);
+        assert_eq!(
+            sample_rate_for("bridge.request", "queue"),
+            DEFAULT_TRACES_SAMPLE_RATE
+        );
         std::env::set_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE", "nope");
         assert_eq!(traces_sample_rate(), DEFAULT_TRACES_SAMPLE_RATE);
+        assert_eq!(
+            sample_rate_for("bridge.request", "queue"),
+            DEFAULT_TRACES_SAMPLE_RATE
+        );
+
+        // Business events are exempt from ALL of the above: even with the
+        // baseline at 0.0 or unparseable, they stay at 1.0.
+        assert_eq!(sample_rate_for("tool.run", "activity"), 1.0);
+        assert_eq!(sample_rate_for("send", UI_ACTION_OP), 1.0);
 
         match prior {
             Some(v) => std::env::set_var("STRIKE48_SENTRY_TRACES_SAMPLE_RATE", v),
