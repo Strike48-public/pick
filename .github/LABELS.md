@@ -70,4 +70,4 @@ The issue type does not replace any label: `product/*`, `priority/*` and `size/*
 Two repo caveats (verified 2026-10-01 with `gh api orgs/Strike48-public/issue-types`):
 
 1. **Only `Bug`, `Feature` and `Task` exist here.** The Strike48-public org defines no other type, so the API rejects the rest. Every issue must carry the type its `type/*` label maps to when that type is `Bug`, `Feature` or `Task`. Issues labeled `type/epic` (maps to `Epic`) or `type/research` (maps to `Spike`) stay untyped until those types exist.
-2. **Nothing sets the type automatically here.** This repo has no issue templates (see pick#480, still open), so set the type manually when filing (`gh issue create --type` or the type picker) - do not assume template auto-selection.
+2. **Nothing sets the type automatically here.** The issue forms under `.github/ISSUE_TEMPLATE/` (added in pick#480) apply labels but do not set an issue type, so set the type manually when filing (`gh issue create --type` or the type picker) - do not assume template auto-selection.
