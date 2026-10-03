@@ -955,7 +955,7 @@ build-syscall-compat:
 #
 # packages.termux.dev is a *rolling* pool: it only serves the latest build of
 # each package, so any hard-coded version 404s as soon as Termux publishes the
-# next one. That broke the Android lane four times (5.1.107.91 -> .92 in #413,
+# next one. That broke the Android build four times (5.1.107.91 -> .92 in #413,
 # .92 -> .94 in #492, .94 -> .95 in #497, then .95 -> .96 with libtalloc
 # 2.4.3 -> 2.5.0). fetch-proot therefore resolves every package from the
 # repository's own per-arch `Packages` index at fetch time (#499): the index
@@ -1116,6 +1116,26 @@ fetch-proot:
         else
             echo "  ⚠ WARNING: --sysvipc not found in binary!"
         fi
+
+        # Versions now float with the Termux index (#499), so a new upstream
+        # build could add a shared-library dependency the APK does not ship and
+        # still build green. Fail instead: every NEEDED entry of what this
+        # recipe ships must be shipped alongside it or be an Android system
+        # library. libtalloc.so.2 is covered by the runtime symlink in
+        # crates/platform/src/android/proot/mod.rs when patchelf was missing.
+        # libandroid-selinux.so (libbusybox.so) is a known gap, see #540.
+        allowed=" libtalloc.so libtalloc.so.2 libandroid-shmem.so libc.so libm.so libdl.so liblog.so libandroid-selinux.so "
+        for lib in libproot.so libproot_loader.so libproot_loader32.so libtalloc.so libbusybox.so libandroid-shmem.so; do
+            [ -f "$dest/$lib" ] || continue
+            needed=$(readelf -d "$dest/$lib" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
+            for n in $needed; do
+                case "$allowed" in
+                    *" $n "*) ;;
+                    *) echo "ERROR: $abi/$lib needs $n, which fetch-proot does not ship (#499)" >&2; exit 1 ;;
+                esac
+            done
+        done
+        echo "  ✓ shared-library dependencies all shipped"
 
         cd - > /dev/null
     done
