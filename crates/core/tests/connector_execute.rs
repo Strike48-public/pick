@@ -2,6 +2,7 @@
 //!
 //! Request format: { "tool": "<name>", "parameters": { ... } }
 
+use pentest_core::budget::{BudgetConfig, SessionBudget, DEFAULT_MAX_RESETS};
 use pentest_core::connector::PentestConnector;
 use serde_json::{json, Value};
 use strike48_connector::BaseConnector;
@@ -13,6 +14,12 @@ fn make_connector() -> PentestConnector {
     pentest_platform::set_use_sandbox(false);
     let registry = pentest_tools::create_tool_registry();
     PentestConnector::new(registry, None)
+}
+
+fn make_connector_with_budget(budget: SessionBudget) -> PentestConnector {
+    pentest_platform::set_use_sandbox(false);
+    let registry = pentest_tools::create_tool_registry();
+    PentestConnector::new(registry, None).with_budget(budget)
 }
 
 /// Helper: call execute and return the parsed result
@@ -175,6 +182,58 @@ async fn execute_leaves_benign_stdout_untouched() {
     );
 }
 
+// ── session budget enforcement seam (#452, C3) ───────────────────────
+//
+// The budget unit tests in `budget.rs` prove the envelope logic; this
+// proves it is actually wired into `PentestConnector::execute` — the
+// enforcement seam the review (#452, Foundation 8) flagged as untested.
+
+#[tokio::test]
+async fn execute_refuses_tool_calls_once_budget_exhausted() {
+    // Cap the envelope at a single execution, then prove the SECOND call is
+    // refused at the connector boundary with the wind-down payload.
+    let c = make_connector_with_budget(SessionBudget::new(BudgetConfig {
+        max_executions: 1,
+        stall_threshold: 8,
+        max_resets: DEFAULT_MAX_RESETS,
+    }));
+
+    // First call consumes the single budget unit.
+    let first = exec(
+        &c,
+        json!({
+            "tool": "execute_command",
+            "parameters": { "command": "echo", "args": ["one"] }
+        }),
+    )
+    .await;
+    assert!(is_success(&first), "first call should run: {first}");
+
+    // Second call must be refused BEFORE dispatch with the exhausted payload.
+    let second = exec(
+        &c,
+        json!({
+            "tool": "execute_command",
+            "parameters": { "command": "echo", "args": ["two"] }
+        }),
+    )
+    .await;
+    assert!(
+        !is_success(&second),
+        "second call must be refused once the budget is exhausted: {second}"
+    );
+    let error = get_error(&second).unwrap_or_default();
+    assert!(
+        error.contains("budget exhausted") && error.contains("1/1"),
+        "expected the budget-exhausted refusal payload, got: {error}"
+    );
+    // The refused call must not have dispatched the tool.
+    assert!(
+        get_stdout(&second).is_none(),
+        "a refused call must not run the tool: {second}"
+    );
+}
+
 // ── device_info (no params) ──────────────────────────────────────────
 
 #[tokio::test]
@@ -255,5 +314,61 @@ fn execute_command_schema_has_command_property() {
     assert!(
         required_names.contains(&"command"),
         "command not in required: {required_names:?}"
+    );
+}
+
+// ── error chain envelope (pick#476) ────────────────────────────────────
+
+/// Fails the way a real tool does when its binary is missing: a classified
+/// error with the io cause attached (mirrors tool_connector's FailingTool),
+/// so the envelope test can check the whole cause chain reaches the agent.
+struct FailingTool;
+
+#[async_trait::async_trait]
+impl pentest_core::tools::PentestTool for FailingTool {
+    fn name(&self) -> &str {
+        "failing_tool"
+    }
+    fn description(&self) -> &str {
+        "A tool that always fails with a cause attached"
+    }
+    fn schema(&self) -> pentest_core::tools::ToolSchema {
+        pentest_core::tools::ToolSchema::new("failing_tool", "A tool that always fails")
+    }
+    async fn execute(
+        &self,
+        _params: Value,
+        _ctx: &pentest_core::tools::ToolContext,
+    ) -> pentest_core::error::Result<pentest_core::tools::ToolResult> {
+        Err(
+            pentest_core::error::Error::ToolExecution("nmap failed".into()).with_source(
+                std::io::Error::new(std::io::ErrorKind::NotFound, "nmap: command not found"),
+            ),
+        )
+    }
+}
+
+/// The agent-facing envelope on the Err arm must carry the full cause chain,
+/// same as the ToolEvent emitted alongside it. Reverting the `e.chain()` in
+/// the Err arm to `e.to_string()` turns this red (the top-line alone drops
+/// the root cause).
+#[tokio::test]
+async fn failure_result_carries_the_full_cause_chain() {
+    pentest_platform::set_use_sandbox(false);
+    let mut registry = pentest_core::tools::ToolRegistry::new();
+    registry.register(FailingTool);
+    let connector = PentestConnector::new(registry, None);
+
+    let result = exec(
+        &connector,
+        json!({"tool": "failing_tool", "parameters": {}}),
+    )
+    .await;
+
+    assert_eq!(result["success"], false);
+    let error = get_error(&result).expect("error string on failure");
+    assert_eq!(
+        error, "Tool execution error: nmap failed: nmap: command not found",
+        "agent-facing envelope must carry the full cause chain: {error}"
     );
 }

@@ -16,12 +16,12 @@ A multiplatform penetration testing connector built with [Dioxus](https://dioxus
         │                 │                 │                 │
         ▼                 ▼                 ▼                 ▼
 ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
-│   Desktop     │ │     Web       │ │    Mobile     │ │     TUI       │
+│   Desktop     │ │     Web       │ │    Mobile     │ │   Headless    │
 │  (dioxus-     │ │  (dioxus-     │ │  (dioxus-     │ │  (dioxus-     │
-│   desktop)    │ │   liveview)   │ │   mobile)     │ │   tui)        │
+│   desktop)    │ │   liveview)   │ │   mobile)     │ │   liveview)   │
 ├───────────────┤ ├───────────────┤ ├───────────────┤ ├───────────────┤
-│ UI + Tools    │ │ UI + Tools    │ │ UI + Tools    │ │ UI + Tools    │
-│ run locally   │ │ run on server │ │ run on device │ │ run locally   │
+│ UI + Tools    │ │ UI + Tools    │ │ UI + Tools    │ │ Tools only    │
+│ run locally   │ │ run on server │ │ run on device │ │ no local UI   │
 └───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘
 ```
 
@@ -34,7 +34,6 @@ A multiplatform penetration testing connector built with [Dioxus](https://dioxus
 | **Web** | dioxus-liveview + axum | Server hosting the app |
 | **Android** | dioxus-mobile | Android device |
 | **iOS** | dioxus-mobile | iOS device |
-| **TUI** | dioxus-tui | Local machine (terminal) |
 
 ## Features
 
@@ -79,6 +78,24 @@ Evidence quality assurance through specialized agents:
 - **Validator Agent** - Quality verification and validation
 - **Report Agent** - Finding synthesis and reporting
 
+### Why Agent Hardening (Attacks & Aislop)
+
+Autonomous agents that execute attacker-influenced content need defense against two failure modes: **attacks** (adversarial content hijacking the agent) and **aislop** (AI-generated noise and decoys that grind an agent down, burning tokens on dead ends until it gets stuck in the mud).
+
+We borrowed the defensive playbook from [honeyslop](https://github.com/gadievron/honeyslop): self-identifying markers that make forged output instantly triageable, layered defense-in-depth, provenance consistency checks, bounded iteration budgets, and a CI "doctor" that re-verifies every control on every PR. Pick adopts that playbook incrementally: each control below is marked shipped or planned, and the CI doctor (C4) is not shipped yet.
+
+In short: agent output must be triageable, agent context must be sanitized, agent work must be budgeted, and agent controls must be CI-verified.
+
+- **C1: Seed-channel fail-closed sanitization** - neutralize injection before Validator/Report seeds *(shipped in v0.1.11)*
+- **C2: Injection-flag publish gate** - findings flagged for injected-instruction markers at ingestion are refused at the report boundary; webwright severity hygiene (explicit info stays Info, unlabeled descends to Low, same-title duplicates merge) *(provenance-consistency checking is planned, not shipped)*
+- **C3: Session budget envelope + stall detector** - per-engagement tool-spend cap with a wind-down refusal, advisory stall detection, and a bounded `begin_scan` reset so an agent cannot restart its own envelope *(advisory only - the stall detector warns, it does not yet kill dead-end loops)*
+- **C4: Doctor-style CI validator** - re-verify every control on every PR *(planned; tracked in pick#453, not shipped in v0.1.11)*
+- **C5: Canary markers + triage gate** - per-engagement nonces make forged output self-identify *(planned)*
+- **C6-C8: Handoff hygiene, target scope fence, persona distrust boundary** (P1)
+- **C9-C10: Marker rotation, evidence flood control + loop breaker** (P2)
+
+Full rationale, the attack-surface analysis behind these choices, and the trade-off decisions are in [`docs/AGENT_HARDENING_REVIEW.md`](docs/AGENT_HARDENING_REVIEW.md).
+
 ### Recent Features
 
 - **Android Root Detection** (PR #123) - Detect rooted Android devices
@@ -99,7 +116,6 @@ pick/
 │   ├── headless/      # Headless agent (pentest-agent binary)
 │   ├── desktop/       # Desktop app (dioxus-desktop)
 │   ├── web/           # Web app (dioxus-liveview + axum)
-│   ├── tui/           # Terminal app (dioxus-tui)
 │   └── mobile/        # Mobile app (dioxus-mobile)
 ```
 
@@ -166,16 +182,6 @@ cargo run --package pentest-web
 cargo build --release --package pentest-web
 ```
 
-### TUI
-
-```bash
-# Development
-cargo run --package pentest-tui
-
-# Release build
-cargo build --release --package pentest-tui
-```
-
 ### Mobile (requires additional setup)
 
 ```bash
@@ -210,9 +216,9 @@ Environment variables:
 
 ## How It Works
 
-1. You run one of the apps (desktop, web, tui, mobile)
+1. You run one of the apps (desktop, web, headless, mobile)
 2. The app connects to the Strike48 backend and registers as a connector
-3. The app presents a UI for manual tool execution
+3. Apps with a UI (desktop, web, mobile) present it for manual tool execution; headless has no local UI
 4. Tools can also be triggered remotely via the Strike48 API (e.g., by an AI agent)
 5. All tool execution happens locally on the machine running the app
 
@@ -238,7 +244,7 @@ Pick is a native app that is both a UI and a connector - the same architecture p
 
 For WiFi scanning and pentesting features, we recommend using a dedicated external WiFi adapter. This prevents disconnection issues when your primary adapter enters monitor mode.
 
-### ⚠️ Important: Avoid Connection Loss
+### Important: Avoid Connection Loss
 
 If you're connected to the internet via WiFi and try to scan with your built-in adapter:
 1. Your adapter enters monitor mode
@@ -303,7 +309,10 @@ This tool is designed for authorized penetration testing and security research. 
 
 ## License
 
-MIT License - See LICENSE file for details.
+Mozilla Public License 2.0 (MPL-2.0) - See the LICENSE file for details. The
+vendored `strike48-connector` and `strike48-proto` SDK crates are Strike48
+proprietary components distributed under their own license
+(`vendor/strike48-connector/LICENSE`) and are outside the MPL-2.0 grant.
 
 ## Credits
 

@@ -52,7 +52,7 @@ impl PentestTool for HttpRequestTool {
             .param(ToolParam::required(
                 "url",
                 ParamType::String,
-                "Target URL, e.g. 'http://10.10.0.14/' or 'https://host:8443/api/status'",
+                "Target URL, e.g. 'http://192.0.2.14/' or 'https://host:8443/api/status'",
             ))
             .param(ToolParam::optional(
                 "method",
@@ -125,7 +125,9 @@ impl PentestTool for HttpRequestTool {
                 // other outbound scanners against *.test / lab hosts).
                 .danger_accept_invalid_certs(true)
                 .build()
-                .map_err(|e| Error::ToolExecution(format!("HTTP client build failed: {e}")))?;
+                .map_err(|e| {
+                    Error::ToolExecution(format!("HTTP client build failed: {e}")).with_source(e)
+                })?;
 
             let mut req = client.request(http_method, &url);
 
@@ -149,7 +151,7 @@ impl PentestTool for HttpRequestTool {
             let resp = req
                 .send()
                 .await
-                .map_err(|e| Error::ToolExecution(format!("request failed: {e}")))?;
+                .map_err(|e| Error::ToolExecution(format!("request failed: {e}")).with_source(e))?;
 
             let status = resp.status();
             let status_code = status.as_u16();
@@ -165,10 +167,9 @@ impl PentestTool for HttpRequestTool {
             }
 
             // Read a bounded body.
-            let full = resp
-                .bytes()
-                .await
-                .map_err(|e| Error::ToolExecution(format!("reading body failed: {e}")))?;
+            let full = resp.bytes().await.map_err(|e| {
+                Error::ToolExecution(format!("reading body failed: {e}")).with_source(e)
+            })?;
             let truncated = full.len() > MAX_BODY_BYTES;
             let slice = &full[..full.len().min(MAX_BODY_BYTES)];
             let body_text = String::from_utf8_lossy(slice).into_owned();

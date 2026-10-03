@@ -129,13 +129,13 @@ pub async fn pre_approve(api_url: &str, jwt: &str, connector_type: &str) -> Resu
         .json(&serde_json::json!({ "connector_type": connector_type }))
         .send()
         .await
-        .map_err(|e| Error::Matrix(format!("pre-approve request failed: {e}")))?;
+        .map_err(|e| Error::Matrix(format!("pre-approve request failed: {e}")).with_source(e))?;
 
     let status = resp.status();
     let body = resp
         .text()
         .await
-        .map_err(|e| Error::Matrix(format!("pre-approve body read failed: {e}")))?;
+        .map_err(|e| Error::Matrix(format!("pre-approve body read failed: {e}")).with_source(e))?;
 
     if !status.is_success() {
         return Err(Error::Matrix(format!(
@@ -159,9 +159,9 @@ mod tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     const SAMPLE_201: &str = r#"{
-        "token": "ott_8Ucs8wG8RRMX-YEm2un24D4MrOiiF7tGaj5cArlwSN0",
-        "tenant_id": "019f86b4-d2bf-7f56-89cf-30485d8a956b",
-        "keycloak_url": "https://auth.strike48.test/realms/personal-f668ca45dbb0",
+        "token": "ott_TEST_FIXTURE_TOKEN_NOT_A_REAL_CREDENTIAL",
+        "tenant_id": "00000000-0000-0000-0000-000000000000",
+        "keycloak_url": "https://auth.strike48.test/realms/personal-test-realm",
         "connector_type": "pentest-connector",
         "expires_at": "2026-07-21T22:32:42Z",
         "matrix_grpc_url": "grpc://localhost:50061",
@@ -172,11 +172,11 @@ mod tests {
     fn parses_token_tenant_keycloak_fields() {
         let api_base = "https://plg.strike48.test";
         let ott = parse_pre_approve_response(SAMPLE_201, api_base).expect("should parse");
-        assert_eq!(ott.token, "ott_8Ucs8wG8RRMX-YEm2un24D4MrOiiF7tGaj5cArlwSN0");
-        assert_eq!(ott.tenant_id, "019f86b4-d2bf-7f56-89cf-30485d8a956b");
+        assert_eq!(ott.token, "ott_TEST_FIXTURE_TOKEN_NOT_A_REAL_CREDENTIAL");
+        assert_eq!(ott.tenant_id, "00000000-0000-0000-0000-000000000000");
         assert_eq!(
             ott.keycloak_url,
-            "https://auth.strike48.test/realms/personal-f668ca45dbb0"
+            "https://auth.strike48.test/realms/personal-test-realm"
         );
         assert_eq!(ott.matrix_url, api_base);
     }
@@ -196,13 +196,13 @@ mod tests {
         // "missing field `matrix_wss_url`".
         let body = r#"{
             "token": "ott_abc",
-            "tenant_id": "019f86b4-d2bf-7f56-89cf-30485d8a956b",
+            "tenant_id": "00000000-0000-0000-0000-000000000000",
             "keycloak_url": "https://auth.strike48.com/realms/personal-x"
         }"#;
         let ott = parse_pre_approve_response(body, "https://studio.strike48.com")
             .expect("must parse without matrix_wss_url");
         assert_eq!(ott.token, "ott_abc");
-        assert_eq!(ott.tenant_id, "019f86b4-d2bf-7f56-89cf-30485d8a956b");
+        assert_eq!(ott.tenant_id, "00000000-0000-0000-0000-000000000000");
         assert_eq!(ott.matrix_url, "https://studio.strike48.com");
     }
 
@@ -223,7 +223,7 @@ mod tests {
         let ott = pre_approve(&server_uri, "jwt-abc", "pentest-connector")
             .await
             .expect("pre_approve should succeed");
-        assert_eq!(ott.tenant_id, "019f86b4-d2bf-7f56-89cf-30485d8a956b");
+        assert_eq!(ott.tenant_id, "00000000-0000-0000-0000-000000000000");
         // matrix_url should be the normalized api_url we called, not the wss response value
         let normalized = super::super::normalize_url(&server_uri);
         assert_eq!(ott.matrix_url, normalized);

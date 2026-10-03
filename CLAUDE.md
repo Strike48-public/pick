@@ -2,7 +2,7 @@
 
 This file provides project-specific guidance for the Pick penetration testing connector.
 
-**Inherits from:** `/home/jtomek/Code/CLAUDE.md` (root configuration)
+**Inherits from:** `~/Code/CLAUDE.md` (root configuration)
 
 ---
 
@@ -264,8 +264,8 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`
 ### Customer Data
 
 Customer/tenant names are PII. Never reference them in public artifacts:
-- ❌ "Fixed issue for <customer-name> deployment"
-- ✅ "Fixed deployment issue in production environment"
+- No: "Fixed issue for <customer-name> deployment"
+- Yes: "Fixed deployment issue in production environment"
 
 ---
 
@@ -346,4 +346,4 @@ If you find operator-specific content already in `CLAUDE.md`, move it to
 
 ---
 
-*This CLAUDE.md inherits from `/home/jtomek/Code/CLAUDE.md` for general patterns and adds Pick-specific guidance.*
+*This CLAUDE.md inherits from `~/Code/CLAUDE.md` for general patterns and adds Pick-specific guidance.*

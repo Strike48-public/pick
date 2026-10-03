@@ -11,7 +11,7 @@
 
 ## Issue #90 Task Completion
 
-### ✅ Task 1: android-lib Module Injection
+### Task 1: android-lib Module Injection
 
 **Status**: PASSED
 
@@ -23,7 +23,7 @@ Verified integration:
 
 The `just _inject-android-lib` script works correctly with the dx-generated project structure.
 
-### ✅ Task 2: ARM64 Build Verification
+### Task 2: ARM64 Build Verification
 
 **Status**: PASSED
 
@@ -35,7 +35,7 @@ ARM64 library compiled and included:
 
 No additional build step needed - default `just build-android` already compiles for all architectures including ARM64.
 
-### ✅ Task 3: Physical Device Deployment
+### Task 3: Physical Device Deployment
 
 **Status**: PASSED
 
@@ -59,7 +59,7 @@ adb shell dumpsys package com.strike48.pentest_connector
 # flags=[ DEBUGGABLE HAS_CODE ALLOW_CLEAR_USER_DATA ALLOW_BACKUP ]
 ```
 
-### ✅ Task 4: Build Documentation
+### Task 4: Build Documentation
 
 **Status**: PASSED
 
@@ -71,7 +71,7 @@ Created comprehensive documentation:
 
 ## Functional Test Checklist
 
-### App Launch ✅
+### App Launch
 
 - [x] App launches without crashing
 - [x] Process running: `com.strike48.pentest_connector` (PID 10854)
@@ -83,7 +83,7 @@ Created comprehensive documentation:
 - MainActivity launched and stayed in resumed state
 - No AndroidRuntime errors or FATAL crashes detected
 
-### JNI Bridge Initialization ✅
+### JNI Bridge Initialization
 
 - [x] JNI library loaded successfully (arm64-v8a)
 - [x] No "Library not found" errors
@@ -94,7 +94,7 @@ Created comprehensive documentation:
 - No JNI-related errors in system logs
 - App process memory footprint: ~43 MB resident
 
-### UI Rendering ✅
+### UI Rendering
 
 - [x] UI renders correctly
 - [x] Screenshot captured successfully (1080x2410 PNG)
@@ -107,7 +107,7 @@ file /tmp/pick-android-screenshot.png
 # PNG image data, 1080 x 2410, 8-bit/color RGBA
 ```
 
-### Rotation Handling ✅
+### Rotation Handling
 
 - [x] App survives rotation to landscape
 - [x] App survives rotation back to portrait
@@ -128,7 +128,7 @@ adb shell ps | grep pentest_connector
 # u0_a319  10854  993  ... S com.strike48.pentest_connector
 ```
 
-### Background/Foreground Transitions ✅
+### Background/Foreground Transitions
 
 - [x] App survives backgrounding (HOME key)
 - [x] App returns to foreground successfully
@@ -164,7 +164,7 @@ adb shell dumpsys activity activities | grep pentest_connector
 
 ## Known Issues
 
-### ⚠️ Warnings (Non-Blocking)
+### Warnings (Non-Blocking)
 
 1. **extractNativeLibs deprecation**
    ```
@@ -203,9 +203,9 @@ All success criteria met:
 
 **All blockers resolved:**
 
-- ✅ `just _inject-android-lib` script works with current dx output structure
-- ✅ No signing requirements for debug builds on Pixel 10
-- ✅ Jailbroken device works without special ADB permissions
+- `just _inject-android-lib` script works with current dx output structure
+- No signing requirements for debug builds on Pixel 10
+- Jailbroken device works without special ADB permissions
 
 ## Next Steps
 
@@ -237,7 +237,7 @@ Per issue #90, after successful build pipeline validation:
 
 ## Conclusion
 
-**Status**: ✅ ALL TASKS COMPLETE
+**Status**: ALL TASKS COMPLETE
 
 The Android build pipeline is fully functional and validated on a physical Pixel 10 Pro device. All core requirements from issue #90 are satisfied:
 

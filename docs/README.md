@@ -87,11 +87,11 @@ cargo clippy -- -D warnings
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| Linux | ✓ Full Support | Debian/Ubuntu, Fedora/RHEL |
-| macOS | ✓ Full Support | Intel and Apple Silicon |
-| Windows | ✓ Via WSL | Native support in progress |
-| Android | ⚠ Experimental | Requires cargo-mobile2 |
-| iOS | ⚠ Experimental | Requires Xcode |
+| Linux | Full Support | Debian/Ubuntu, Fedora/RHEL |
+| macOS | Full Support | Intel and Apple Silicon |
+| Windows | Via WSL | Native support in progress |
+| Android | Experimental | Requires cargo-mobile2 |
+| iOS | Experimental | Requires Xcode |
 
 ## Architecture
 
@@ -103,12 +103,12 @@ cargo clippy -- -D warnings
         │                 │                 │                 │
         ▼                 ▼                 ▼                 ▼
 ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
-│   Desktop     │ │     Web       │ │    Mobile     │ │     TUI       │
+│   Desktop     │ │     Web       │ │    Mobile     │ │   Headless    │
 │  (dioxus-     │ │  (dioxus-     │ │  (dioxus-     │ │  (dioxus-     │
-│   desktop)    │ │   liveview)   │ │   mobile)     │ │   tui)        │
+│   desktop)    │ │   liveview)   │ │   mobile)     │ │   liveview)   │
 ├───────────────┤ ├───────────────┤ ├───────────────┤ ├───────────────┤
-│ UI + Tools    │ │ UI + Tools    │ │ UI + Tools    │ │ UI + Tools    │
-│ run locally   │ │ run on server │ │ run on device │ │ run locally   │
+│ UI + Tools    │ │ UI + Tools    │ │ UI + Tools    │ │ Tools only    │
+│ run locally   │ │ run on server │ │ run on device │ │ no local UI   │
 └───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘
 ```
 
@@ -126,4 +126,4 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for contribution guidelines (if availa
 
 ## License
 
-MIT License - See [LICENSE](../LICENSE) file for details.
+Mozilla Public License 2.0 (MPL-2.0) - See the [LICENSE](../LICENSE) file for details.

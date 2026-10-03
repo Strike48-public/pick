@@ -68,7 +68,7 @@ Once all findings are validated (no `Pending` or `NeedsReview` statuses), you ca
 
 ## Validation Statuses Explained
 
-### ✅ Confirmed
+### Confirmed
 
 **Meaning:** Finding is accurate and exploitable.
 
@@ -84,7 +84,7 @@ Rationale: Nmap response shows "OpenSSH 7.4" running on port 22.
           Severity High is appropriate for remote administration exposure.
 ```
 
-### ❌ FalsePositive
+### FalsePositive
 
 **Meaning:** Finding looks like an issue but isn't exploitable.
 
@@ -100,7 +100,7 @@ Rationale: Response shows "404 Not Found" - no vulnerable endpoint.
           No path traversal confirmed.
 ```
 
-### ⚠️ NeedsReview
+### NeedsReview
 
 **Meaning:** Validator uncertain - requires your judgment.
 

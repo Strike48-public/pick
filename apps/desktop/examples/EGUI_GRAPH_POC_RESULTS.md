@@ -10,7 +10,7 @@ The POC loads the same Knowledge Graph data from `MockEvidenceClient` that the c
 
 ## Results
 
-- **Status**: ✅ SUCCESSFUL
+- **Status**:  SUCCESSFUL
 - **Nodes Rendered**: 7 (Evidence, Hypothesis, ExploitAttempt, Finding)
 - **Edges Rendered**: 6 (showing relationships between nodes)
 - **Performance**: Running smoothly with 34.5% CPU usage
@@ -146,4 +146,4 @@ The egui_graphs POC successfully demonstrates that a pure Rust solution can repl
 
 **Date**: 2026-04-14
 **Author**: Claude Sonnet 4.5 + Jonathan Tomek
-**Status**: POC COMPLETE ✅
+**Status**: POC COMPLETE 

@@ -7,7 +7,7 @@
 
 ---
 
-> **⚠️ Vision / Roadmap — not current-state.** This document describes the aspirational
+> **Vision / Roadmap - not current-state.** This document describes the aspirational
 > Pick + StrikeKit ecosystem architecture, including integrations and components that are
 > planned but not yet implemented. For the authoritative description of what Pick actually
 > does today, see [ARCHITECTURE.md](../ARCHITECTURE.md) at the repository root.
@@ -23,7 +23,7 @@ Pick and StrikeKit form a comprehensive penetration testing platform with multip
 4. **Secure Communication:** Strike48 Connector SDK (SDK-RS) for all C2 connections
 5. **Integration-First:** Manage/import from Nessus, Cobalt Strike, Metasploit, GoPhish, etc.
 6. **Flexible Deployment:** Pick (full tooling) OR lightweight agents depending on target constraints
-7. **Multi-Platform:** Pick runs on Desktop, Android, Web, TUI
+7. **Multi-Platform:** Pick runs on Desktop, Android, Web, Headless
 
 ---
 
@@ -92,11 +92,11 @@ Pick and StrikeKit form a comprehensive penetration testing platform with multip
 │              │   - Desktop (Linux/Mac/Win)                              │
 │              │   - Android             │                                │
 │              │   - Web (headless)      │                                │
-│              │   - TUI (terminal)      │                                │
+│              │   - Headless (liveview) │                                │
 │              │ • Tool Orchestration    │                                │
 │              │ • Evidence Generation   │                                │
 │              │                         │                                │
-│              │ LICENSE: MIT            │                                │
+│              │ LICENSE: MPL-2.0        │                                │
 │              └─────────────────────────┘                                │
 │                          │                                               │
 └──────────────────────────┼───────────────────────────────────────────────┘
@@ -151,7 +151,7 @@ Pick and StrikeKit form a comprehensive penetration testing platform with multip
     │            Pick Instances           │
     │       (Tool Execution Agents)       │
     │  "Execute tools, generate evidence" │
-    │  Desktop | Android | Web | TUI    │
+    │  Desktop | Android | Web | Headless │
     └─────────────────────────────────────┘
 ```
 
@@ -159,7 +159,7 @@ Pick and StrikeKit form a comprehensive penetration testing platform with multip
 - **StrikeKit IS the orchestrator** (no separate Prospector Studio)
 - **StrikeKit can control Mythic C2** which then controls Pick agents
 - **All C2 communication uses Connector SDK (SDK-RS)** for secure, authenticated connections
-- **Pick has Android deployment** alongside Desktop, Web, TUI
+- **Pick has Android deployment** alongside Desktop, Web, Headless
 - Enterprise teams can use existing Mythic infrastructure while gaining StrikeKit's AI orchestration
 
 ---
@@ -236,7 +236,7 @@ Pick and StrikeKit form a comprehensive penetration testing platform with multip
   - Extensibility: Can integrate additional repositories (Kali, Parrot, custom)
   - Package Manager: pacman for on-demand installation
 - **Tool Execution:** 3000+ BlackArch tools on-demand, expandable
-- **Platform Abstraction:** Desktop, Android, Web, TUI
+- **Platform Abstraction:** Desktop, Android, Web, Headless
 - **Sandbox Management:** proot/bwrap isolated environments
 - **Native Mode:** Direct host execution for custom tools
 - **Evidence Generation:** Structured output parsing
@@ -249,13 +249,13 @@ Pick and StrikeKit form a comprehensive penetration testing platform with multip
 - BlackArch repository enabled (3000+ pentesting tools)
 - Support for additional repositories (Kali, Parrot, custom)
 - Platform-specific implementations (desktop, android)
-- MIT license (tool execution)
+- MPL-2.0 license (tool execution)
 
 **Platform Support:**
 1. **Desktop:** Linux, macOS, Windows (via dioxus-desktop)
 2. **Android:** Native Android app with proot sandbox
 3. **Web:** Headless liveview deployment
-4. **TUI:** Terminal-based interface
+4. **Headless:** Tools-only agent (no local UI; UI served over WebSocket)
 
 **Execution Modes:**
 1. **Standalone:** Independent operation, no C2
@@ -1495,11 +1495,11 @@ pub enum ApprovalStatus {
 **Goal:** Demonstrate autonomous pentesting + integrations
 
 **Deliverables:**
-1. ✅ **Prospector Studio API:** Basic task graph generation, LLM integration
-2. ✅ **Pick:** Task graph execution, evidence generation, 5 tool integrations
-3. ✅ **StrikeKit:** Nessus XML import, Cobalt Strike log import, basic findings
-4. ✅ **Demo Flow:** Nessus → Prospector → Pick → StrikeKit (end-to-end)
-5. ✅ **XBOW:** 70%+ success on subset of benchmark
+1. **Prospector Studio API:** Basic task graph generation, LLM integration
+2. **Pick:** Task graph execution, evidence generation, 5 tool integrations
+3. **StrikeKit:** Nessus XML import, Cobalt Strike log import, basic findings
+4. **Demo Flow:** Nessus → Prospector → Pick → StrikeKit (end-to-end)
+5. **XBOW:** 70%+ success on subset of benchmark
 
 **Team:**
 - Month 1: 5-6 developers
@@ -1596,12 +1596,12 @@ pub enum ApprovalStatus {
 **Goal:** 85%+ XBOW success, feature parity with LuaN1ao/Shannon
 
 **Deliverables:**
-1. ✅ Multi-agent P-E-R architecture (Planner, Executor, Reflector)
-2. ✅ Browser automation (Playwright integration)
-3. ✅ RAG knowledge base (ExploitDB, PayloadsAllTheThings)
-4. ✅ Dynamic replanning (adapt to discoveries)
-5. ✅ Mythic agent mode (Pick as Mythic agent)
-6. ✅ Real-time Nessus/CS integration (API sync)
+1. Multi-agent P-E-R architecture (Planner, Executor, Reflector)
+2. Browser automation (Playwright integration)
+3. RAG knowledge base (ExploitDB, PayloadsAllTheThings)
+4. Dynamic replanning (adapt to discoveries)
+5. Mythic agent mode (Pick as Mythic agent)
+6. Real-time Nessus/CS integration (API sync)
 
 ---
 
@@ -1610,10 +1610,10 @@ pub enum ApprovalStatus {
 **Goal:** 90%+ XBOW success, public validation
 
 **Deliverables:**
-1. ✅ XBOW optimization (weekly testing, iteration)
-2. ✅ Cost optimization (model selection, caching)
-3. ✅ Speed optimization (parallel execution tuning)
-4. ✅ Public benchmark results, blog post, case studies
+1. XBOW optimization (weekly testing, iteration)
+2. Cost optimization (model selection, caching)
+3. Speed optimization (parallel execution tuning)
+4. Public benchmark results, blog post, case studies
 
 ---
 
@@ -1622,13 +1622,13 @@ pub enum ApprovalStatus {
 **Goal:** 5-10 enterprise pilots, full integration suite
 
 **Deliverables:**
-1. ✅ Metasploit RPC API integration
-2. ✅ Burp Suite REST API integration
-3. ✅ AWS Security Hub integration
-4. ✅ Azure/GCP cloud security integrations
-5. ✅ BloodHound Neo4j integration
-6. ✅ Splunk/ELK SIEM integration
-7. ✅ Comprehensive documentation
+1. Metasploit RPC API integration
+2. Burp Suite REST API integration
+3. AWS Security Hub integration
+4. Azure/GCP cloud security integrations
+5. BloodHound Neo4j integration
+6. Splunk/ELK SIEM integration
+7. Comprehensive documentation
 
 ---
 
@@ -1639,7 +1639,7 @@ pub enum ApprovalStatus {
 | Component | Tech Stack |
 |-----------|-----------|
 | **StrikeKit (Prospector Studio)** | Rust, Dioxus 0.7, PostgreSQL, Qdrant (RAG), GraphQL API, Matrix protocol, Strike48 Connector SDK (SDK-RS), AGPL-3.0 |
-| **Pick** | Rust, Dioxus (multi-platform), BlackArch Linux (3000+ tools), proot/bwrap sandbox, Connector SDK client, MIT license |
+| **Pick** | Rust, Dioxus (multi-platform), BlackArch Linux (3000+ tools), proot/bwrap sandbox, Connector SDK client, MPL-2.0 license |
 | **StrikeHub** | Rust, Dioxus 0.6, Wry webview, Unix domain sockets (IPC), OIDC auth, MPL-2.0 |
 | **Integrations** | HTTP/REST APIs, XML/JSON parsers, Connector SDK for C2 |
 | **C2 Infrastructure** | Strike48 Connector SDK (SDK-RS), TLS + authentication, agent registration, task dispatch |
@@ -1676,7 +1676,7 @@ type Subscription {
 | Tool Execution | Pick | Pick team | 3000+ BlackArch tools |
 | BlackArch Management | Pick | Pick team | On-demand installation |
 | Sandbox/Native Toggle | Pick | Pick team | proot/bwrap or host |
-| Multi-Platform Support | Pick | Pick team | Desktop/Android/Web/TUI |
+| Multi-Platform Support | Pick | Pick team | Desktop/Android/Web/Headless |
 | Evidence Generation | Pick | Pick team | Structured tool output |
 | Connector SDK Client | Pick | Pick team | Agent communication |
 | Metasploit Integration | Pick | Pick team | RPC API, module execution |

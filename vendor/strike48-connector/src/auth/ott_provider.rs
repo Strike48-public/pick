@@ -461,6 +461,15 @@ impl OttProvider {
     /// - When `configured` is `None` (dev / local CLI usage), a `warn!`
     ///   is emitted and validation is skipped. Production deployments
     ///   should always set `STRIKE48_API_URL`.
+    /// - A **loopback** `STRIKE48_API_URL` (`127.0.0.1`, `::1`, `localhost`)
+    ///   is an orchestrator-side proxy pin — e.g. StrikeHub points the env
+    ///   var at its local chat-panel proxy (`http://127.0.0.1:<port>`) while
+    ///   the platform API lives at the dialed/studio origin. Such a value can
+    ///   never be the credential destination, so enforcing against it would
+    ///   reject every legitimate locally-orchestrated deployment. It is
+    ///   treated like an unset allowlist (warn + skip); the destination is
+    ///   still bounded by the resolved callback-base checks and the
+    ///   operator-staged OTT blob.
     pub(crate) fn validate_register_origin(target: &str, configured: Option<&str>) -> Result<()> {
         let configured = match configured {
             Some(c) if !c.trim().is_empty() => c,
@@ -474,6 +483,17 @@ impl OttProvider {
                 return Ok(());
             }
         };
+        if let Some((_, host, _)) = parse_origin(configured) {
+            if Self::is_loopback_host(&host) {
+                tracing::warn!(
+                    "STRIKE48_API_URL {configured:?} is a loopback origin (local \
+                     orchestrator proxy); skipping the OTT register-URL allowlist \
+                     check against it. Set a non-loopback STRIKE48_API_URL to pin \
+                     the platform origin explicitly."
+                );
+                return Ok(());
+            }
+        }
         Self::enforce_same_origin(target, configured, "STRIKE48_API_URL")
     }
 
@@ -1390,6 +1410,43 @@ mod tests {
             .expect("no allowlist => allow");
         OttProvider::validate_register_origin("https://api.example.com/x", Some("   "))
             .expect("blank allowlist => allow");
+    }
+
+    #[test]
+    fn validate_register_origin_loopback_allowlist_skips() {
+        // A loopback STRIKE48_API_URL is a local orchestrator's proxy pin
+        // (StrikeHub points the connector chat panel at its own
+        // http://127.0.0.1:<port> proxy). It can never be the platform API
+        // origin, so it must not act as the credential allowlist — the
+        // register URL targets the dialed/studio origin and must be allowed.
+        OttProvider::validate_register_origin(
+            "https://studio.strike48.com/api/connectors/register-with-ott",
+            Some("http://127.0.0.1:50176"),
+        )
+        .expect("loopback proxy pin must not block platform registration");
+        OttProvider::validate_register_origin(
+            "https://studio.strike48.com/api/connectors/register-with-ott",
+            Some("http://localhost:8080"),
+        )
+        .expect("localhost proxy pin must not block platform registration");
+        OttProvider::validate_register_origin(
+            "https://studio.strike48.com/api/connectors/register-with-ott",
+            Some("http://[::1]:9090"),
+        )
+        .expect("::1 proxy pin must not block platform registration");
+    }
+
+    #[test]
+    fn validate_register_origin_loopback_target_still_guarded_by_resolved_base() {
+        // The exemption only relaxes the ENV pin. A loopback register URL is
+        // still rejected when the allowlist is a real (non-loopback) origin —
+        // creds must never go to the connector's own host.
+        let err = OttProvider::validate_register_origin(
+            "http://127.0.0.1:9999/api/connectors/register-with-ott",
+            Some("https://api.matrix.example.com"),
+        )
+        .expect_err("loopback target vs real allowlist must be rejected");
+        assert!(matches!(err, ConnectorError::InvalidConfig(_)));
     }
 
     // =========================================================================

@@ -1,0 +1,119 @@
+name: label-guard
+
+on:
+  issues:
+    types: [opened, edited, reopened, labeled, unlabeled]
+
+permissions:
+  issues: write
+
+# Serialize runs per issue so near-simultaneous events (labeled + unlabeled
+# during triage) cannot both miss the marker comment and double-post.
+concurrency:
+  group: label-guard-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            // Canonical schema: .github/LABELS.md (keep these lists in sync
+            // when LABELS.md changes). Exactly ONE label per required family,
+            // and the value must be one of the listed forms.
+            const REQUIRED = {
+              'product/': ['product/pick', 'product/strikekit', 'product/matrix'],
+              'type/': ['type/bug', 'type/feature', 'type/enhancement', 'type/epic',
+                        'type/docs', 'type/chore', 'type/refactor', 'type/research',
+                        'type/technical-debt', 'type/test'],
+              'priority/': ['priority/P0', 'priority/P1', 'priority/P2', 'priority/P3', 'priority/P4'],
+              'size/': ['size/XS', 'size/S', 'size/M', 'size/L', 'size/XL'],
+            };
+            // Family -> GitHub issue type. pick only enables Bug/Feature/Task,
+            // so mirroring is enforced only where the mapped type exists here;
+            // a type/epic label with no Epic issue type is not a mismatch yet.
+            const TYPE_MIRROR = {
+              'type/bug': 'Bug',
+              'type/feature': 'Feature',
+              'type/enhancement': 'Feature',
+              'type/epic': 'Epic',
+              'type/research': 'Spike',
+              'type/docs': 'Task',
+              'type/chore': 'Task',
+              'type/refactor': 'Task',
+              'type/test': 'Task',
+              'type/technical-debt': 'Task',
+            };
+            const ENABLED_TYPES = new Set(['Bug', 'Feature', 'Task']);
+
+            if (context.payload.issue.state === 'closed') return;
+            const { data: fresh } = await github.rest.issues.get({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number });
+            const labels = (fresh.labels || [])
+              .map(l => (typeof l === 'string' ? l : l && l.name))
+              .filter(Boolean);
+
+            const missing = [];
+            const problems = [];
+            for (const [fam, values] of Object.entries(REQUIRED)) {
+              const inFamily = labels.filter(l => l.startsWith(fam));
+              if (inFamily.length === 0) {
+                missing.push(fam);
+                continue;
+              }
+              if (inFamily.length > 1) {
+                problems.push(`${fam} has ${inFamily.length} labels (${inFamily.join(', ')}) - exactly one required`);
+              }
+              const unknown = inFamily.filter(l => !values.includes(l));
+              if (unknown.length) {
+                problems.push(`${fam} value not in the canonical schema: ${unknown.join(', ')}`);
+              }
+            }
+
+            // Issue type presence and label/type mirroring. Both are enforced
+            // only when the mapped issue type is one this repo enables; a
+            // type/epic or type/research issue may stay untyped until Epic and
+            // Spike exist. With no canonical type/* label there is nothing to
+            // map, so an issue type is simply required.
+            const typeLabel = labels.find(l => Object.keys(TYPE_MIRROR).includes(l));
+            const issueType = fresh.type && fresh.type.name;
+            const expected = typeLabel ? TYPE_MIRROR[typeLabel] : null;
+            const typeRequired = !typeLabel || ENABLED_TYPES.has(expected);
+            if (!issueType) {
+              if (typeRequired) {
+                missing.push(expected ? `issue type (${expected})` : 'issue type (Bug / Feature / Task)');
+              }
+            } else if (typeLabel && expected !== issueType && ENABLED_TYPES.has(expected)) {
+              problems.push(`issue type '${issueType}' does not mirror '${typeLabel}' (expected '${expected}')`);
+            }
+
+            const marker = '<!-- label-guard -->';
+            let body = marker + '\n### Label guard\n\n';
+            if (missing.length || problems.length) {
+              const parts = [];
+              if (missing.length) parts.push('Missing: ' + missing.map(m => '`' + m + '`').join(', '));
+              parts.push(...problems.map(p => '- ' + p));
+              body += parts.join('\n') + '\n\nSee [.github/LABELS.md](https://github.com/Strike48-public/pick/blob/main/.github/LABELS.md) for the canonical schema. '
+                + 'Required: exactly one canonical label each from `product/`, `type/`, `priority/` and `size/`, plus the issue type '
+                + 'the `type/*` label maps to when that type is Bug, Feature or Task (the only types this repo has; '
+                + '`type/epic` and `type/research` issues may stay untyped). '
+                + '`area/*` and `feature/*` are optional but encouraged. `status/triage` and `status/backlog` are matrix-only, '
+                + 'and the legacy `status/*` labels here are deprecated.';
+            } else {
+              body += 'All required label families carry exactly one canonical value, and the issue type is set and mirrors the `type/*` label where this repo supports it. Thank you.';
+            }
+
+            // Paginate: the marker comment may sit past the first page.
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number, per_page: 100 });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              if (existing.body.trim() !== body.trim()) {
+                await github.rest.issues.updateComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body });
+              }
+            } else {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body });
+            }

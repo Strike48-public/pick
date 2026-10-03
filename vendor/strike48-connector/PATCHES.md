@@ -52,6 +52,67 @@ that release.
 `tests/`, `examples/` are not vendored (they are never built through the patch).
 Upstream remains the source of truth for them.
 
+## runner-exposes-jwt-presence
+
+**Files:** `src/connector.rs`
+
+**Problem.** The runner writes the connector JWT into its private config after
+the startup OTT exchange and after the post-approval `credentials_issued`
+round-trip, but exposes nothing about it: `get_stats()` reports transport
+health only, and no callback fires toward embedding frontends. The pick
+desktop UI therefore cannot tell "transport up, admin approval still pending"
+from "registered and usable", and (before pick#292) flipped to a
+non-functional Dashboard on a 3-second timer while authorization was still
+outstanding.
+
+**Change.** Add `ConnectorRunner::has_auth_token(&self) -> bool`, a read-only
+accessor over `config.auth_token`. Poll-only by design — no callback surface,
+no state duplication: the runner's config remains the single source of truth
+for JWT presence.
+
+**Tracking:** local to this vendored fork (pick#292). Candidate for an
+upstream `sdk-rs` PR.
+
+**Drop when:** an equivalent accessor lands upstream and pick moves to that
+release.
+
+## loopback-api-url-is-not-an-allowlist
+
+**Files:** `src/auth/ott_provider.rs`
+
+**Problem.** StrikeHub sets `STRIKE48_API_URL=http://127.0.0.1:<port>` on the
+connector process so the workspace chat panel routes API calls through its
+local proxy (`sh-ui/src/app.rs` connector-start env). `OttProvider` read the
+same variable as the *origin allowlist* for OTT credential registration
+(`validate_register_origin`). The register URL — derived from the dialed
+transport host / the operator-staged OTT blob (`matrix_url`) — is the real
+platform origin (`https://studio.strike48.com`), which never matches the
+loopback proxy pin, so every auto-registration under StrikeHub failed with
+`OTT register URL origin ... does not match STRIKE48_API_URL origin ...;
+refusing to send credentials to an unapproved host`. The connector then never
+registered: StrikeHub's health check evicted it, rotated the instance ID and
+respawned in an endless loop (Strike48/project-management#373, "Pick never
+comes online"). The agent's own stdout/stderr stay empty because it logs to
+`%LOCALAPPDATA%\pentest-connector\logs`, which made the failure invisible in
+the `connector-*.log` StrikeHub surfaces.
+
+**Change.** `validate_register_origin` treats a loopback `STRIKE48_API_URL`
+(`127.0.0.1`, `::1`, `localhost`) like an unset allowlist: warn and skip. A
+loopback value can never be the credential destination, so it carries no
+allowlist information; enforcing against it only rejected legitimate
+locally-orchestrated deployments. Non-loopback pins keep their exact
+meaning, and a loopback *target* against a real allowlist is still rejected
+(`validate_register_origin_loopback_target_still_guarded_by_resolved_base`).
+
+**Tests:** `validate_register_origin_loopback_allowlist_skips`,
+`validate_register_origin_loopback_target_still_guarded_by_resolved_base`.
+
+**Tracking:** local to this vendored fork. Candidate for an upstream
+`sdk-rs` PR; `PATCHES.md` diff-audit applies as usual.
+
+**Drop when:** upstream sdk-rs exempts loopback allowlist pins and pick
+moves to that release.
+
 ## never-blank-failure
 
 **Files:** `src/utils.rs`, `src/connector.rs`, `src/multi/ws_multiplex.rs`,

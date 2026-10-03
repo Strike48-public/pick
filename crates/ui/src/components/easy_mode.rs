@@ -10,7 +10,7 @@ use super::icons::{
 };
 use crate::components::documents_panel::sev_badge_class;
 use crate::components::{ChatPanel, ConversationDocs, DocumentViewer, DocumentsPanel};
-use pentest_core::settings::{load_settings, save_settings};
+use pentest_core::settings::load_settings;
 
 /// The canned chat message the Easy Mode "Scan" button sends. It instructs the
 /// server-side agent to enumerate local interfaces, scan the local subnet, and
@@ -71,6 +71,15 @@ pub struct EasyModeShellProps {
     /// Fired when the user changes shell mode in easy-mode Settings.
     #[props(default)]
     pub on_shell_mode_change: EventHandler<pentest_core::config::ShellMode>,
+    /// Fired when the user toggles usage analytics in easy-mode Settings.
+    /// The parent (which owns the authoritative `AppSettings` signal) persists
+    /// the change and applies it to the telemetry core; see the expert-mode
+    /// toggle in `SettingsPage` for the same pattern. Easy Mode itself must
+    /// NOT persist via a detached `load_settings() -> save_settings()`: that
+    /// write gets clobbered by the next signal-based save (which still holds
+    /// the stale `telemetry_enabled`), silently re-enabling telemetry (#373).
+    #[props(default)]
+    pub on_telemetry_change: EventHandler<bool>,
 }
 
 /// The simplified Easy Mode screen: a scan action card above a full-page chat.
@@ -113,6 +122,7 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     let mut telemetry_on = use_signal(|| load_settings().telemetry_enabled);
     let on_logout = props.on_logout;
     let on_easy_mode_change = props.on_easy_mode_change;
+    let on_telemetry_change = props.on_telemetry_change;
 
     // When embedded in StrikeHub (it spawns us with STRIKEHUB_SOCKET set and
     // injects the session), the user's identity is owned by the wrapper. A
@@ -416,10 +426,13 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                             onclick: move |_| {
                                 let on = !telemetry_on();
                                 telemetry_on.set(on);
-                                pentest_core::telemetry::set_enabled(on);
-                                let mut s = load_settings();
-                                s.telemetry_enabled = on;
-                                let _ = save_settings(&s);
+                                // Persist through the parent's authoritative
+                                // AppSettings signal. A detached
+                                // load_settings() -> save_settings() here was
+                                // clobbered by the next signal-based save
+                                // (stale signal still had telemetry on),
+                                // silently re-enabling telemetry (#373).
+                                on_telemetry_change.call(on);
                             },
                             span { class: "easy-toggle-track" }
                         }

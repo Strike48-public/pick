@@ -39,7 +39,12 @@ pub async fn discover_with_outcome(
     // Nothing to wait for -> no recv loop, return immediately (also avoids a
     // zero deadline that would exit the loop before the first recv anyway).
     if timeout_ms == 0 {
-        return (Vec::new(), ProbeOutcome::Skipped("zero timeout".into()));
+        return (
+            Vec::new(),
+            ProbeOutcome::Skipped {
+                reason: "zero timeout".into(),
+            },
+        );
     }
 
     // The recv loop is a blocking UDP read; run it on a blocking thread so it
@@ -51,7 +56,9 @@ pub async fn discover_with_outcome(
             Err(e) => {
                 return (
                     Vec::new(),
-                    ProbeOutcome::Skipped(format!("bind failed: {e}")),
+                    ProbeOutcome::Skipped {
+                        reason: format!("bind failed: {e}"),
+                    },
                 )
             }
         };
@@ -64,7 +71,9 @@ pub async fn discover_with_outcome(
             // Without a read timeout the recv loop would block past the deadline.
             return (
                 Vec::new(),
-                ProbeOutcome::Skipped(format!("set_read_timeout failed: {e}")),
+                ProbeOutcome::Skipped {
+                    reason: format!("set_read_timeout failed: {e}"),
+                },
             );
         }
 
@@ -72,7 +81,9 @@ pub async fn discover_with_outcome(
         if let Err(e) = socket.send_to(&query, MDNS_MULTICAST_ADDR) {
             return (
                 Vec::new(),
-                ProbeOutcome::Skipped(format!("send failed: {e}")),
+                ProbeOutcome::Skipped {
+                    reason: format!("send failed: {e}"),
+                },
             );
         }
 
@@ -98,7 +109,9 @@ pub async fn discover_with_outcome(
     .unwrap_or_else(|_| {
         (
             Vec::new(),
-            ProbeOutcome::Skipped("probe task panicked".into()),
+            ProbeOutcome::Skipped {
+                reason: "probe task panicked".into(),
+            },
         )
     })
 }
@@ -487,7 +500,7 @@ mod tests {
         assert!(svcs.is_empty());
         assert!(matches!(
             outcome,
-            crate::common::probe::ProbeOutcome::Skipped(_)
+            crate::common::probe::ProbeOutcome::Skipped { .. }
         ));
     }
 }

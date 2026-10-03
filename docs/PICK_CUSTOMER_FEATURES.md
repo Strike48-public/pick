@@ -229,9 +229,9 @@ Deploy Pick wherever your security testing needs to happen:
 - On-device tool execution for physical security assessments
 - Perfect for WiFi surveys and network reconnaissance in the field
 
-**Terminal UI (TUI)**
-- Terminal-based interface for SSH/remote environments
-- Full functionality in console-only environments
+**Headless Mode**
+- Tools-only agent for SSH/remote and console-only environments
+- UI served over WebSocket; no local app UI
 
 ---
 
@@ -263,8 +263,10 @@ Pick's multi-agent architecture enables adaptive decision-making:
 
 ### Open Source & Auditable
 
-Pick is fully open source and auditable:
-- Complete source code available on GitHub
+Pick is open source and auditable:
+- Complete source code available on GitHub under MPL-2.0 (the vendored
+  `strike48-connector`/`strike48-proto` SDK crates are Strike48 proprietary
+  and outside the MPL grant)
 - Review agent decision-making logic and tool orchestration
 - Contribute integrations, improvements, and bug fixes
 - No proprietary "black box" decision-making
@@ -444,9 +446,11 @@ helm install pick pick/pick-connector
 
 ## Open Source
 
-Pick is MIT licensed and fully open source:
+Pick is licensed under the Mozilla Public License 2.0 (MPL-2.0):
 - **Repository:** https://github.com/Strike48-public/pick
-- **License:** MIT
+- **License:** MPL-2.0 (see the LICENSE file); the vendored
+  `strike48-connector` and `strike48-proto` SDK crates are Strike48
+  proprietary components and are outside the MPL-2.0 grant
 - **Contributing:** Pull requests welcome
 
 **Why Open Source?**

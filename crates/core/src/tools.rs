@@ -646,6 +646,37 @@ impl ToolResult {
     }
 }
 
+/// Reclassify a completed discovery run from the platform probe outcome (#309).
+///
+/// The shared mDNS and SSDP implementations degrade an unsendable probe
+/// (blocked sandbox, no available socket) to an empty result rather than an
+/// error. `data.probe` carries the probe outcome; a `skipped` status downgrades
+/// the result to [`ToolOutcome::Skipped`] (`with_outcome` also clears
+/// `success`), so the model and the report gate read it as "the probe never
+/// ran", never as evidence of a clean network. A `Ran` result (including a
+/// truthful zero-finding sweep) passes through unchanged.
+///
+/// One policy shared by `network_discover` and `ssdp_discover` so the two
+/// cannot drift.
+pub fn classify_probe_outcome(result: ToolResult) -> ToolResult {
+    // Only a `Ran` result needs reclassification; anything the tool body
+    // already marked Failed/Skipped passes through.
+    if result.outcome != ToolOutcome::Ran {
+        return result;
+    }
+    match probe_status(&result.data) {
+        Some("skipped") => result.with_outcome(ToolOutcome::Skipped),
+        _ => result,
+    }
+}
+
+/// The `status` tag of the `probe` outcome recorded in a tool payload, if any.
+fn probe_status(data: &Value) -> Option<&str> {
+    data.get("probe")
+        .and_then(|p| p.get("status"))
+        .and_then(Value::as_str)
+}
+
 /// Execute an async tool body, automatically timing the execution and wrapping
 /// the result in a `ToolResult` with the elapsed duration.
 pub async fn execute_timed<F, Fut>(f: F) -> Result<ToolResult>
@@ -659,7 +690,7 @@ where
             let duration_ms = start.elapsed().as_millis() as u64;
             Ok(ToolResult::success_with_duration(data, duration_ms))
         }
-        Err(e) => Ok(ToolResult::error(e.to_string())),
+        Err(e) => Ok(ToolResult::error(e.chain())),
     }
 }
 
@@ -678,7 +709,7 @@ where
             let duration_ms = start.elapsed().as_millis() as u64;
             Ok(ToolResult::success_with_duration(data, duration_ms).with_provenance(provenance))
         }
-        Err(e) => Ok(ToolResult::error(e.to_string())),
+        Err(e) => Ok(ToolResult::error(e.chain())),
     }
 }
 
@@ -944,7 +975,12 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Execute a tool by name
+    /// Execute a tool by name.
+    ///
+    /// Runs inside its own `tool.registry` span so the tool's own run time is
+    /// separable from the connector hop around it (context build, evidence
+    /// drain, artifact upload) when reading the close events (pick#476).
+    #[tracing::instrument(name = "tool.registry", skip_all, fields(tool = %name))]
     pub async fn execute(
         &self,
         name: &str,
@@ -1250,6 +1286,34 @@ mod tool_outcome_tests {
         .unwrap();
         assert_eq!(r.outcome, ToolOutcome::Failed);
         assert!(!r.success);
+    }
+
+    /// `ToolRegistry::execute` runs under its own `tool.registry` span so the
+    /// tool's run time can be read apart from the connector hop around it
+    /// (pick#476). Dropping the `#[tracing::instrument]` turns this red.
+    #[tokio::test]
+    async fn registry_execute_emits_its_own_close_event() {
+        use crate::logging::test_support::Capture;
+        use tracing_subscriber::{fmt, prelude::*};
+
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::registry().with(crate::logging::apply_span_policy(
+            fmt::layer().with_ansi(false).with_writer(capture.clone()),
+        ));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let registry = ToolRegistry::new();
+        registry
+            .execute("missing_tool", json!({}), &ToolContext::default())
+            .await
+            .expect_err("unknown tool must fail");
+
+        let output = capture.contents();
+        let close_line = output
+            .lines()
+            .find(|l| l.contains("close") && l.contains("tool.registry{tool=missing_tool}"))
+            .unwrap_or_else(|| panic!("no tool.registry close event in {output:?}"));
+        assert!(close_line.contains("time.busy="), "{close_line}");
     }
 }
 

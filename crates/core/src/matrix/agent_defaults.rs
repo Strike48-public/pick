@@ -5,6 +5,7 @@
 //! passed in explicitly rather than read from a UI session global, so it can
 //! be called from any context.
 
+use crate::config::CONNECTOR_TYPE;
 use crate::matrix::CreateAgentInput;
 
 /// Build a tool_configs JSON object that auto-approves every tool in `names`.
@@ -97,12 +98,18 @@ fn system_message_with_available_tools(tool_names: &[String], active_subnets: &[
 /// Build the default CreateAgentInput for auto-creating a pentest-connector persona.
 ///
 /// `tenant_id` is the tenant/realm name (e.g. "non-prod") used to build the
-/// connector address pattern `{tenant}.{connector_name}.*` so the Matrix
-/// backend can match registered connector tools to this agent.
+/// connector address pattern `{tenant}.{CONNECTOR_TYPE}.*` so the Matrix
+/// backend can match registered connector tools to this agent. The key uses
+/// the SDK wire type (#386), not the persona `connector_name`: the platform
+/// matches it against `RegisterConnectorRequest.connector_type`, which is
+/// always [`CONNECTOR_TYPE`].
 ///
-/// `connector_name` controls the gateway identity. Instances sharing the same
-/// name are round-robin'd; use a unique name (e.g. `pentest-connector-<hostname>`)
-/// to get a dedicated agent view.
+/// The gateway/registration identity is the wire type ([`CONNECTOR_TYPE`], #386)
+/// plus the per-instance `instance_id`; `connector_name` is display/agent
+/// naming only. All pick instances in a tenant that register with the same
+/// connector type join one round-robin agent pool keyed by
+/// `{tenant}.{CONNECTOR_TYPE}.*` — a unique name does NOT give an instance a
+/// dedicated agent view or per-instance isolation.
 ///
 /// `tool_names` are the registered tool names to auto-approve, and
 /// `active_subnets` are the connector's live subnet CIDRs injected into the
@@ -114,7 +121,11 @@ pub fn default_pentest_agent_input(
     tool_names: &[String],
     active_subnets: &[String],
 ) -> CreateAgentInput {
-    let connector_key = format!("{}.{}.*", tenant_id, connector_name);
+    // The connector key must be the SDK wire type (#386), not the persona
+    // `connector_name`: the platform matches it against the
+    // `RegisterConnectorRequest.connector_type` the connector registered with.
+    // `connector_name` stays for agent naming/logs only.
+    let connector_key = format!("{tenant_id}.{CONNECTOR_TYPE}.*");
     tracing::info!(
         "default_pentest_agent_input: tenant={}, connector_name={}, connector_key={}, tool_names({})={:?}",
         tenant_id,
@@ -678,9 +689,9 @@ CORRECT: | Success Rate | &gt; 90% |
 
 **Self-serve report format (only when saving a report via `document_write`, e.g. easy-mode network scans):**
 
-- Scan efficiently — batch tool calls instead of looping one host at a time. `port_scan` accepts a whole `subnet` (CIDR, e.g. "10.10.0.0/24") or a `hosts` list in one call; `service_banner` accepts a `targets` list of {host, port} objects in one call. Use those batch forms so a scan is a few calls, not dozens.
+- Scan efficiently — batch tool calls instead of looping one host at a time. `port_scan` accepts a whole `subnet` (CIDR, e.g. "192.0.2.0/24") or a `hosts` list in one call; `service_banner` accepts a `targets` list of {host, port} objects in one call. Use those batch forms so a scan is a few calls, not dozens.
 - Save via `document_write` (NOT `write_file`), titled like "Network Discovery Report", body in GitHub-flavored Markdown (tables are great for host/service breakdowns).
-- At the very top of the document content, before the Markdown body, include a YAML frontmatter block fenced with lines of three dashes (`---`). All fields optional; include what you know: `scope` (subnet/target scanned, e.g. "10.10.0.0/24"), `source` (this device's hostname), `hosts` (integer count that responded), `services` (integer count enumerated), `severity` (a map of integer counts for any of critical/high/medium/low/info — use those exact lowercase words), and `findings` (a short list, ≤8, each with `severity`, `title`, and a one-to-two-sentence `body`). After the closing `---`, write the Markdown summary.
+- At the very top of the document content, before the Markdown body, include a YAML frontmatter block fenced with lines of three dashes (`---`). All fields optional; include what you know: `scope` (subnet/target scanned, e.g. "192.0.2.0/24"), `source` (this device's hostname), `hosts` (integer count that responded), `services` (integer count enumerated), `severity` (a map of integer counts for any of critical/high/medium/low/info — use those exact lowercase words), and `findings` (a short list, ≤8, each with `severity`, `title`, and a one-to-two-sentence `body`). After the closing `---`, write the Markdown summary.
 - ✅ **DO** narrate what you just did, what you found, and what the next step is in plain chat prose.
 - ✅ **DO** emit mid-engagement mermaid diagrams to explain attack chains and topology as you discover them — those help the operator follow along and feed directly into the Report Agent's final diagram.
 - ✅ **DO** record findings with clear severity, affected target, and supporting evidence so the Validator can confirm them and the Report Agent can render them.
@@ -714,11 +725,18 @@ mod tests {
 
     #[test]
     fn default_pentest_agent_input_is_pure_and_well_formed() {
-        let input =
-            default_pentest_agent_input("non-prod", "pentest-connector", &["foo".into()], &[]);
+        // Persona name deliberately differs from CONNECTOR_TYPE so the test
+        // proves the connector key uses the SDK wire type (#386), not the
+        // persona name.
+        let input = default_pentest_agent_input(
+            "non-prod",
+            "pentest-connector-web-app",
+            &["foo".into()],
+            &[],
+        );
 
         // Name matches the connector name.
-        assert_eq!(input.name, "pentest-connector");
+        assert_eq!(input.name, "pentest-connector-web-app");
 
         // System message mentions the red team (case-insensitive).
         let sys = input.system_message.as_deref().unwrap_or_default();
@@ -736,7 +754,7 @@ mod tests {
         let connector_key = "non-prod.pentest-connector.*";
         let connector = connectors
             .get(connector_key)
-            .expect("connector_key present");
+            .expect("connector_key present (built from CONNECTOR_TYPE, not the persona name)");
 
         // The passed tool name appears under the connector's tool_configs.
         let tool_configs = connector

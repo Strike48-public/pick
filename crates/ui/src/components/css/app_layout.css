@@ -137,6 +137,28 @@
     overflow: hidden;
 }
 
+/* --- Large-screen content cap (#398) ---
+
+   On wide monitors the page roots used to stretch edge-to-edge. Cap them at
+   --content-max-width and center horizontally. Because max-width only
+   constrains above the cap, mobile/tablet layouts are unchanged. Full-bleed
+   surfaces (shell terminal, file browser, logs, CyberChef) are intentionally
+   not capped. Page roots keep transparent backgrounds, so the centered
+   column leaves no visible edge against the app background. */
+
+:root {
+    --content-max-width: 1600px;
+}
+
+.content-area .dashboard,
+.content-area .tools-page,
+.content-area .settings-page,
+.content-area .licenses-page {
+    width: 100%;
+    max-width: var(--content-max-width);
+    margin-inline: auto;
+}
+
 /* Workspace pane (used in WorkspaceApp for Files/Shell views) */
 .workspace-pane {
     position: absolute;

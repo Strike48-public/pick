@@ -18,7 +18,7 @@ async-trait = { workspace = true }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yml = { workspace = true }
+serde_norway = { workspace = true }
 
 # Time
 chrono = { workspace = true }
@@ -30,6 +30,7 @@ anyhow = { workspace = true }
 # Logging
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
 
 # Telemetry
 sentry = { workspace = true }
@@ -73,6 +74,8 @@ pentest-tools = { path = "../tools", default-features = false }
 pentest-platform = { path = "../platform", features = ["desktop"] }
 tempfile = "3"
 wiremock = "0.6"
+# Digest matching in tests/internal_references_scrub.rs (already in the lock graph).
+sha2 = { workspace = true }
 # `test-util` (for `tokio::time::pause`/`start_paused`) is NOT part of tokio's
 # `full` feature, so enable it here for deterministic time in async tests.
 tokio = { workspace = true, features = ["test-util"] }

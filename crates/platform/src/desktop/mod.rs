@@ -326,6 +326,18 @@ impl CommandExec for DesktopPlatform {
     ) -> Result<CommandResult> {
         command::execute_command_in_dir(cmd, args, timeout, working_dir).await
     }
+
+    async fn execute_command_with_secret(
+        &self,
+        cmd: &str,
+        args: &[&str],
+        timeout: Duration,
+        working_dir: Option<&std::path::Path>,
+        known_secret: Option<&str>,
+    ) -> Result<CommandResult> {
+        command::execute_command_in_dir_redacted(cmd, args, timeout, working_dir, known_secret)
+            .await
+    }
 }
 
 impl PlatformProvider for DesktopPlatform {}

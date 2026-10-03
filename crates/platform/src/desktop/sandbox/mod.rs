@@ -422,15 +422,21 @@ impl SandboxManager {
     }
 
     /// Execute a command in the sandbox
+    ///
+    /// `known_secret` (a credential injected into `cmd` by a differential-authz
+    /// identity run, pick#314) is threaded through so executors that log the
+    /// inner command can redact it BY VALUE from their tracing output (pick#335).
+    /// It does not affect execution.
     pub async fn execute(
         &self,
         cmd: &str,
         timeout: Duration,
         working_dir: Option<&Path>,
+        known_secret: Option<&str>,
     ) -> SandboxResult<CommandResult> {
         tracing::debug!(
             "[SandboxManager::execute] Ensuring rootfs is ready for command: {}",
-            cmd
+            pentest_core::provenance::redact_arg(cmd, known_secret)
         );
         self.ensure_ready().await?;
 
@@ -445,20 +451,28 @@ impl SandboxManager {
         match backend {
             SandboxBackend::Bwrap => {
                 let executor = bwrap::BwrapExecutor::new(self.config.clone());
-                executor.execute(cmd, timeout, working_dir).await
+                executor
+                    .execute(cmd, timeout, working_dir, known_secret)
+                    .await
             }
             SandboxBackend::Proot => {
                 let proot_path = proot::ProotExecutor::get_proot_path(&self.config).await?;
                 let executor = proot::ProotExecutor::new(self.config.clone(), proot_path);
-                executor.execute(cmd, timeout, working_dir).await
+                executor
+                    .execute(cmd, timeout, working_dir, known_secret)
+                    .await
             }
             SandboxBackend::Wsl => {
                 let executor = wsl::WslExecutor::new(self.config.clone());
-                executor.execute(cmd, timeout, working_dir).await
+                executor
+                    .execute(cmd, timeout, working_dir, known_secret)
+                    .await
             }
             SandboxBackend::Docker => {
                 let executor = docker::DockerExecutor::new(self.config.clone());
-                executor.execute(cmd, timeout, working_dir).await
+                executor
+                    .execute(cmd, timeout, working_dir, known_secret)
+                    .await
             }
         }
     }
