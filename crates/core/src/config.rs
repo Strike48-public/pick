@@ -1455,7 +1455,6 @@ mod tests {
 
     #[test]
     fn ensure_home_env_sets_home_to_the_profile_dir_when_unset() {
-        // Serialise with every other env-mutating config test (sets HOME). See ENV_LOCK.
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("HOME").ok();
         let expected = dirs::home_dir();
@@ -1478,7 +1477,6 @@ mod tests {
 
     #[test]
     fn ensure_home_env_keeps_an_existing_home() {
-        // Serialise with every other env-mutating config test (sets HOME). See ENV_LOCK.
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         let prev = std::env::var("HOME").ok();
