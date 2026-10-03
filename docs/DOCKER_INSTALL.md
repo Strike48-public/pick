@@ -15,24 +15,41 @@ If Windows is all you have, read
 [Docker Desktop on Windows](#docker-desktop-on-windows) first to see what it
 cannot do.
 
-**The short version:** install Docker, download two files, fill in four
-values, start the container, and approve it in Studio. Steps
-[0 to 6 under Install](#install) walk through each one. Then work through
+**The short version:** install Docker, download the files, run the preflight
+check, fill in four values, start the container, and approve it in Studio.
+Steps [0 to 7 under Install](#install) walk through each one, with the output
+you should see after every command. Then work through
 [Before your first scan](#before-your-first-scan): a connector that shows as
 online in Studio can still be unable to see the network you want to test.
+To have an AI coding agent do the install with you, see
+[Install with an AI coding agent](#install-with-an-ai-coding-agent).
+
+## Choose your setup
+
+Pick the row that matches the machine that will run the connector:
+
+| Machine | Use | Why |
+| --- | --- | --- |
+| A Linux server or virtual machine on the network you will test | **Docker, with this guide** | The container reaches the network through the host, and host networking gives it the host's own interfaces for discovery scans |
+| A Windows or macOS laptop | **The native Pick app** from the [releases page](https://github.com/Strike48-public/pick/releases) | Docker Desktop runs containers in a virtual machine. Its host networking is layer 4 only, so ICMP, ARP, mDNS, packet capture and Wi-Fi scans cannot reach your network |
+| A Windows laptop, where TCP scans of routed hosts are enough | Docker Desktop, with [Docker Desktop on Windows](#docker-desktop-on-windows) | Works for TCP connect scans; local discovery does not |
+
+If you are not sure, the preflight check in [step 2](#2-check-the-host)
+tells you what your host can do.
 
 ## Downloads
 
 | What | Where |
 | --- | --- |
-| Docker image | `ghcr.io/strike48-public/pick:0.1.10` ([package page](https://github.com/orgs/Strike48-public/packages/container/package/pick)) |
-| Install files for this version | [Pick v0.1.10 release](https://github.com/Strike48-public/pick/releases/tag/v0.1.10), assets `pick-docker-compose.yml` and `pick-docker.env.example` |
+| Docker image | `ghcr.io/strike48-public/pick:0.1.11` ([package page](https://github.com/orgs/Strike48-public/packages/container/package/pick)) |
+| Install files for this version | [Pick v0.1.11 release](https://github.com/Strike48-public/pick/releases/tag/v0.1.11), assets `pick-docker-compose.yml` and `pick-docker.env.example` |
+| Preflight check and agent runbook | the same release, assets `pick-docker-preflight.sh` and `pick-docker-agent-setup.md` |
 | Newest release | [github.com/Strike48-public/pick/releases/latest](https://github.com/Strike48-public/pick/releases/latest) |
 
-You do not pull the image by hand; step 3 does it for you. Use the version
+You do not pull the image by hand; step 4 does it for you. Use the version
 number, not `latest`: the `latest` and `main` tags on the image are
 development builds that have not been released. If the newest release is
-newer than `0.1.10`, check with your Strike48 contact that it is approved for
+newer than `0.1.11`, check with your Strike48 contact that it is approved for
 customer use, then use its number in step 1.
 
 ## What you are installing
@@ -89,7 +106,7 @@ On the host that will run the connector:
 | Docker Compose | v2 plugin (`docker compose`, not the 1.x `docker-compose`; tested with 5.5) | `docker compose version` |
 | Outbound HTTPS to Studio | 443 to your Studio hostname | `curl -sS -o /dev/null -w '%{http_code}\n' https://<your-studio-host>/` prints `302` or `200` |
 | Outbound HTTPS to authentication | 443 to your Strike48 authentication hostname | `curl -sS -o /dev/null -w '%{http_code}\n' https://<your-auth-host>/` prints a 2xx or 3xx code |
-| Outbound HTTPS to the image registry | 443 to `ghcr.io` and `pkg-containers.githubusercontent.com`, which serves the image layers | `docker pull ghcr.io/strike48-public/pick:0.1.10` |
+| Outbound HTTPS to the image registry | 443 to `ghcr.io` and `pkg-containers.githubusercontent.com`, which serves the image layers | `docker pull ghcr.io/strike48-public/pick:0.1.11` |
 | Outbound HTTPS to GitHub, install time and at run time | 443 to `github.com` and `release-assets.githubusercontent.com`, which the release download redirects to; nuclei downloads its templates from GitHub at run time (see [What leaves your network](#what-leaves-your-network)) | the `curl` commands in step 1 succeed; nuclei template updates work |
 | Disk | 8 GB free | `df -h /var/lib/docker` (the `0.1.10` image is about 1.2 GB to download on arm64 and 1.4 GB on amd64, and about 5 GB once unpacked) |
 | Memory | 2 GB (recommended floor), 4 GB comfortable | `free -h`. Guidance, not a measured minimum. Measured with the `0.1.10` image against one web target: a full-port nmap scan with version detection peaked at 42 MB, and nuclei with its default templates at about 850 MB, including its first template download. Tools the agent runs in parallel add up, and nuclei grows with concurrency and target count |
@@ -135,25 +152,53 @@ Skip this step if `docker compose version` already prints a version.
    docker ps
    ```
 
+   Expected output. Your version numbers will differ; the `docker ps` header
+   line with no rows under it means Docker works and nothing is running yet:
+
+   ```
+   Docker version 29.8.1, build 4a63305
+   Docker Compose version v5.5.1
+   CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
+   ```
+
+   `permission denied while trying to connect to the Docker daemon socket`
+   means the log out and back in has not happened yet.
+
 Membership of the `docker` group is equivalent to root on that host, so only
 add users who should have it.
 
 ### 1. Get the bundle
 
-Two files: a compose file you do not edit and an environment template you copy.
-Both ship as assets of the release you are installing, so the bundle, this
-guide, and the image are pinned to the same version. `0.1.10` is the release
-approved for customer use.
+Four files: a compose file you do not edit, an environment template you copy,
+a preflight check script, and a runbook for an AI coding agent. All four ship
+as assets of the release you are installing, so the bundle, this guide, and
+the image are pinned to the same version. `0.1.11` is the release approved for
+customer use.
 
 ```bash
-PICK_VERSION=0.1.10
+PICK_VERSION=0.1.11
 mkdir pick-connector && cd pick-connector
-curl -fsSL "https://github.com/Strike48-public/pick/releases/download/v${PICK_VERSION}/pick-docker-compose.yml" -o docker-compose.yml
-curl -fsSL "https://github.com/Strike48-public/pick/releases/download/v${PICK_VERSION}/pick-docker.env.example" -o .env.example
+base="https://github.com/Strike48-public/pick/releases/download/v${PICK_VERSION}"
+curl -fsSL "$base/pick-docker-compose.yml" -o docker-compose.yml
+curl -fsSL "$base/pick-docker.env.example" -o .env.example
+curl -fsSL "$base/pick-docker-preflight.sh" -o preflight.sh
+curl -fsSL "$base/pick-docker-agent-setup.md" -o AGENT_SETUP.md
+chmod +x preflight.sh
+ls -a
 ```
 
+Expected output. The `curl` commands print nothing when they succeed, and
+`ls -a` lists the four files:
+
+```
+.  ..  .env.example  AGENT_SETUP.md  docker-compose.yml  preflight.sh
+```
+
+`curl: (22) The requested URL returned error: 404` means that version number
+has no such file; check `PICK_VERSION` against the releases page.
+
 The compose file from a release defaults to that release's image tag, so you
-do not set the tag anywhere. The source of both files is
+do not set the tag anywhere. The source of all four files is
 [`deploy/docker/`](../deploy/docker/) in this repository; the release copy of
 the compose file differs only in that default.
 
@@ -162,7 +207,65 @@ Run every `docker compose` command in this guide from inside this
 current folder, so the same command run elsewhere fails with
 `no configuration file provided: not found`.
 
-### 2. Configure
+### 2. Check the host
+
+The preflight script checks what makes a first install fail: the Docker
+version, the host architecture, outbound connections to Studio, your
+authentication host and the image registry, internal DNS, reachability of a
+target, and whether Docker's network overlaps yours. It changes nothing on the
+host. Give it your Studio and authentication hostnames, and, if you have them,
+one internal hostname and one known-live target with an open TCP port:
+
+```bash
+./preflight.sh --studio studio.example.com --auth auth.example.com \
+  --resolve <internal-hostname> --target <known-live-ip>:<open-port>
+```
+
+Add `--discovery` if you plan mDNS, SSDP, ARP, packet capture or Wi-Fi scans.
+`./preflight.sh --help` lists every option.
+
+Expected output, ending with no failures. Each line is `PASS`, `WARN`, `FAIL`
+or `SKIP`:
+
+```
+== Host and Docker
+PASS  Host operating system is Linux
+PASS  Docker daemon is running and your user can use it
+PASS  Docker Engine 29.5.2 (Ubuntu 24.04.4 LTS)
+PASS  Docker Compose 5.5.1
+PASS  Architecture x86_64 is supported
+PASS  84 GB free under /var/lib/docker
+PASS  System clock is synchronised
+
+== Configuration (.env)
+SKIP  .env checks (no ./.env here yet)
+
+== Outbound connections
+PASS  Outbound 443 to studio.example.com (Studio) answered HTTP 302
+PASS  Outbound 443 to auth.example.com (authentication) answered HTTP 200
+PASS  Outbound 443 to ghcr.io (image registry) answered HTTP 301
+PASS  Outbound 443 to pkg-containers.githubusercontent.com (image layers) answered HTTP 400
+PASS  Outbound 443 to github.com (release downloads and nuclei templates) answered HTTP 200
+
+== Internal names and targets
+PASS  This host resolves intranet.example.com
+PASS  This host reaches 10.20.0.9 port 22
+
+== Docker networking
+SKIP  Network mode (no pick-connector container yet; run preflight again after 'docker compose up')
+PASS  No Docker subnet overlaps a host route or a target
+
+15 passed, 0 warnings, 0 failed.
+No blocking problems found.
+```
+
+Any HTTP code on an outbound line is a pass: it proves the connection got
+through. Every `WARN` and `FAIL` line is followed by a `Fix:` line saying what
+to change; fix each `FAIL` and run the script again before you go on. Run it
+again at any time, for example after [step 5](#5-check-the-logs) to repeat the
+network checks from inside the container.
+
+### 3. Configure
 
 ```bash
 cp .env.example .env
@@ -195,13 +298,37 @@ same `.env` between them unchanged. Two connectors with the same instance id
 compete for one identity in Studio, and Studio can show the connector as
 offline or fail to open its app.
 
-### 3. Start
+Save the file, then check it. With a `.env` present, preflight reads the
+Studio hostname from it, so `--studio` is not needed:
+
+```bash
+./preflight.sh --auth auth.example.com
+```
+
+Expected, in the `Configuration (.env)` section:
+
+```
+PASS  .env has the four required values in the expected shapes
+```
+
+A `FAIL` here names the key that is wrong, for example
+`FAIL  STRIKE48_TENANT in .env still has the example value`. Preflight never
+prints the values themselves.
+
+### 4. Start
 
 ```bash
 docker compose up -d
 ```
 
-The first start pulls the image, which takes a minute or two. A missing
+The first start pulls the image, which takes a minute or two. Expected, as the
+last line:
+
+```
+ Container pick-connector Started
+```
+
+In an interactive terminal the line starts with a check mark. A missing
 required value aborts immediately with a message naming it, for example:
 
 ```
@@ -209,7 +336,7 @@ error while interpolating services.pick.environment.STRIKE48_TENANT:
 required variable STRIKE48_TENANT is missing a value: set STRIKE48_TENANT in .env to your tenant UUID
 ```
 
-### 4. Check the logs
+### 5. Check the logs
 
 ```bash
 docker compose logs --no-color
@@ -234,7 +361,7 @@ Registered successfully: matrix:0192a7c4-3f5e-7b21-9d4a-6e8f0c1b2a3d:pentest-con
 `Registered` here means the connector has announced itself and is waiting. It
 is not approved yet and cannot run tools.
 
-### 5. Approve in Studio
+### 6. Approve in Studio
 
 You need a Studio account with Gateways permission for this step. If you do
 not have one, send your Studio administrator the instance id you set in
@@ -264,7 +391,7 @@ If the connector has not reconnected after about 20 seconds, the card turns
 red and says it has not reconnected yet. That means the connector is not running or cannot reach Studio: check the logs in the next
 step and the [Troubleshooting](#troubleshooting) table.
 
-### 6. Confirm
+### 7. Confirm
 
 Approval reaches the connector over the connection it already holds. Within a
 few seconds the log shows:
@@ -289,6 +416,35 @@ line no longer appears, and Studio keeps showing the connector as active.
 
 Online is not the same as ready to scan. Continue with
 [Before your first scan](#before-your-first-scan) before the first engagement.
+
+## Install with an AI coding agent
+
+An AI coding agent such as Claude Code, run on the host, can do the install
+with you. `AGENT_SETUP.md`, downloaded in [step 1](#1-get-the-bundle), is a
+runbook written for the agent. Open the agent in the `pick-connector` folder
+and give it this prompt:
+
+```
+Read AGENT_SETUP.md in this folder and follow it to install the Pick connector with me. Explain each command before you run it.
+```
+
+The runbook holds the agent to these rules:
+
+- It explains each command before running it, and runs preflight first.
+- It never prints or reads back `.env`. You type the tenant UUID and any
+  registration token into `.env` yourself, in your own editor. Do not paste
+  them into the chat.
+- It stops and waits while you, or your Studio administrator, approve the
+  connector in Studio.
+- It confirms success from the log lines shown in steps 5 and 7.
+- It never changes the pinned security values `DISABLE_SANDBOX` and
+  `MATRIX_TLS_INSECURE`.
+- It enables host networking or `PENTEST_ALLOW_PRIVATE_IPS` only after you
+  confirm it is in your rules of engagement, and it asks before any command
+  that uses `sudo` or restarts Docker.
+
+You stay responsible for what the agent runs on your host. Read each
+explanation before you let it go ahead.
 
 ## Before your first scan
 
@@ -321,7 +477,10 @@ separate requirements, and they are all properties of the Docker host: the
 container reaches your targets through the host's network and resolves names
 through the host's DNS configuration. If the host cannot reach or resolve a
 target, neither can Pick. Run these checks on the host; they work the same
-before or after the connector is installed.
+before or after the connector is installed. The preflight script from
+[step 2](#2-check-the-host) runs checks 1 and 2 for you with `--target` and
+`--resolve`, and once the container exists it also runs them from inside the
+container and checks the network mode.
 
 1. **The host is on the network you want to scan.** Connect it to the VLAN or
    segment in scope, and confirm it can reach a known-live target:
@@ -868,7 +1027,7 @@ these equivalents. Use `curl.exe`, not `curl`: in Windows PowerShell 5.1,
 `curl` is an alias for `Invoke-WebRequest` and rejects the flags below.
 
 ```powershell
-$PICK_VERSION = "0.1.10"
+$PICK_VERSION = "0.1.11"
 mkdir pick-connector; cd pick-connector
 curl.exe -fsSL "https://github.com/Strike48-public/pick/releases/download/v$PICK_VERSION/pick-docker-compose.yml" -o docker-compose.yml
 curl.exe -fsSL "https://github.com/Strike48-public/pick/releases/download/v$PICK_VERSION/pick-docker.env.example" -o .env.example
@@ -878,7 +1037,7 @@ notepad .env
 
 In Notepad, fill in the required values and save. Make sure the file is still
 named `.env`, not `.env.txt`, and save it as UTF-8 rather than "UTF-8 with
-BOM". Then continue with [3. Start](#3-start); the `docker compose` and
+BOM". Then continue with [4. Start](#4-start); the `docker compose` and
 `docker exec` commands are the same in PowerShell.
 
 ### Check your network from Windows
@@ -909,6 +1068,7 @@ VPN, or, for names, DNS. For DNS, set your internal DNS servers with the
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
+| You are not sure what is wrong | Any of the rows below | Run `./preflight.sh` from the `pick-connector` folder with `--auth`, and `--resolve` and `--target` for an internal name and a known-live target. Each `FAIL` comes with a fix |
 | `required variable ... is missing a value` at `up` | A required line in `.env` is blank or still commented out | Fill it in and run `docker compose up -d` again |
 | `Connecting to wss://...` repeats with connection errors | Egress to the Studio host on 443 is blocked, or a proxy is required | Allow outbound 443 to the Studio hostname; set `HTTPS_PROXY` |
 | Approved in Studio, but the connector never comes online after a restart | Egress to the authentication host on 443 is blocked | Allow outbound 443 to the authentication hostname Strike48 gave you |
@@ -955,7 +1115,7 @@ an untrusted channel.
   token exchange described in [Security notes](#security-notes). No scan data.
 - **Usage telemetry.** The connector's code includes optional, pseudonymous
   usage telemetry (an install id, platform, and event names; no targets,
-  commands, or results). The `0.1.10` image is built without a telemetry
+  commands, or results). The `0.1.11` image is built without a telemetry
   endpoint, so it sends none. To keep it off in any build, set
   `STRIKE48_TELEMETRY=0` in `.env`.
 - **Tool data.** Some tools fetch their own data at run time. nuclei downloads
@@ -991,9 +1151,19 @@ machine, and authorization), host networking, Docker Desktop on Windows, and
 what-leaves-your-network sections describe Docker's and hypervisors'
 documented behaviour, the connector's source, and operational guidance; they
 were not exercised in that run. The memory figures were measured separately
-against a single test target. The Studio steps in [5. Approve in Studio](#5-approve-in-studio)
+against a single test target. The Studio steps in
+[6. Approve in Studio](#6-approve-in-studio)
 were written from the source of Studio's Gateways page, not from a new live
-run. The files this guide refers to
+run. The preflight check was run on a Linux Docker Engine 29.5 host, healthy
+and then with each fault injected (public-only DNS, blocked Studio egress, a
+Docker subnet overlapping a route and a target, the container on the bridge
+with discovery requested, and Compose 2.2.3); the preflight output in
+[step 2](#2-check-the-host) is representative of that healthy run. The
+`docker compose up -d` line was captured from Compose 5.5.1. The agent runbook
+was followed twice by a fresh agent on a Linux Docker host up to
+`docker compose up`, and the problems those runs hit were fixed; the steps
+after it have not yet been run by an agent against a live Studio. The files this guide
+refers to
 live in this repository under [`deploy/docker/`](../deploy/docker/).
 
 ## Getting help
