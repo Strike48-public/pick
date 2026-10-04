@@ -126,6 +126,7 @@ pick/
 - Rust 1.92+ (with `cargo`)
 - For desktop: Native development tools for your OS
 - For mobile: `cargo-mobile2` and platform SDKs
+- Linux builds target glibc >= 2.35 (Ubuntu 22.04 / Debian 12+).
 
 ### Headless Agent (Pick)
 
