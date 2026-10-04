@@ -41,7 +41,12 @@ jobs:
   # ===========================================
   build-desktop-linux:
     name: Desktop (Linux)
-    runs-on: ubuntu-latest
+    # ubuntu-22.04 (not ubuntu-latest): glibc is not bundled, so the runner's
+    # glibc sets the distro floor. 24.04 (glibc 2.39) silently produced
+    # artifacts that failed on Ubuntu 22.04/Debian 12 (QA: GLIBC_2.38 not
+    # found); 22.04 floors them at glibc 2.35. The "Verify glibc/libstdc++
+    # floor" step below fails the build on any drift (strikehub#90 precedent).
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -68,6 +73,14 @@ jobs:
           mkdir -p dist
           cp target/release/pentest-connector dist/
           cd dist && tar -czvf pick-linux-x86_64.tar.gz pentest-connector
+
+      - name: Verify glibc/libstdc++ floor
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          tar -xzf dist/pick-linux-x86_64.tar.gz -C "$tmp"
+          scripts/check-glibc-floor.sh "$tmp" 2.35 3.4.30
+          rm -rf "$tmp"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -223,7 +236,9 @@ jobs:
   # ===========================================
   build-web:
     name: Web (Liveview)
-    runs-on: ubuntu-latest
+    # ubuntu-22.04 keeps the glibc floor at 2.35 for Ubuntu 22.04/Debian 12
+    # (same rationale as build-desktop-linux); enforced by the guard step below.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -242,6 +257,14 @@ jobs:
           mkdir -p dist
           cp target/release/pentest-web dist/
           cd dist && tar -czvf ../pick-web.tar.gz pentest-web
+
+      - name: Verify glibc/libstdc++ floor
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          tar -xzf pick-web.tar.gz -C "$tmp"
+          scripts/check-glibc-floor.sh "$tmp" 2.35 3.4.30
+          rm -rf "$tmp"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -385,7 +408,9 @@ jobs:
   # ===========================================
   build-headless-linux:
     name: Headless (Linux x86_64)
-    runs-on: ubuntu-latest
+    # ubuntu-22.04 keeps the glibc floor at 2.35 for Ubuntu 22.04/Debian 12
+    # (same rationale as build-desktop-linux); enforced by the guard step below.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -412,6 +437,14 @@ jobs:
           mkdir -p dist
           cp target/release/pentest-agent dist/
           cd dist && tar -czvf pick-agent-linux-x86_64.tar.gz pentest-agent
+
+      - name: Verify glibc/libstdc++ floor
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          tar -xzf dist/pick-agent-linux-x86_64.tar.gz -C "$tmp"
+          scripts/check-glibc-floor.sh "$tmp" 2.35 3.4.30
+          rm -rf "$tmp"
 
       - uses: actions/upload-artifact@v4
         with:
