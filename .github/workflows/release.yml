@@ -298,6 +298,17 @@ jobs:
           STRIKE48_HOST: https://studio.strike48.com
         run: nix develop --command just build-android-release
 
+      # Stage the unsigned APK out of the Gradle build tree NOW. The next step's
+      # `just bundle-android` runs `./gradlew clean bundleRelease` in the SAME
+      # dx-generated project (target/dx/pick/release/android/app); the `clean`
+      # deletes app/build/ — including this APK — and only rebuilds the AAB,
+      # so the APK was gone by the time Package ran (issue #543).
+      - name: Stage unsigned APK
+        run: |
+          mkdir -p dist
+          cp target/dx/pick/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk \
+             dist/pick-android-arm64.apk
+
       # AAB is the Play-distribution deliverable (issue #279). It is UNSIGNED —
       # release signing needs the Play upload key we do not have yet; wire that
       # in here once the key exists. The universal APK is converted from the AAB
@@ -313,8 +324,6 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          cp target/dx/pick/release/android/app/app/build/outputs/apk/release/app-release-unsigned.apk \
-             dist/pick-android-arm64.apk
           cp target/dx/pick/release/android/app/app/build/outputs/bundle/release/app-release.aab \
              dist/pick-android-release-unsigned.aab
           cp target/dx/pick/release/android/pick-android-universal.apk \
