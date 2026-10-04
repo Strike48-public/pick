@@ -6914,6 +6914,7 @@ dependencies = [
  "pentest-platform",
  "pentest-tools",
  "pentest-ui",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",

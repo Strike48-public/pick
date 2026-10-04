@@ -1,3 +1,8 @@
 # Cargo configuration
 # On NixOS, the Nix devshell (flake.nix) provides all native deps and correct linker paths.
 # No manual linker overrides needed.
+
+# Link the MSVC C runtime statically so the shipped Windows exes do not depend
+# on VCRUNTIME140*.dll, which a clean Windows install may lack (pick#533).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

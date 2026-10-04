@@ -223,7 +223,7 @@ Do NOT open public GitHub issues for security vulnerabilities.
 
 ## Getting Help
 
-- **Questions?** Open a [GitHub Discussion](https://github.com/Strike48-public/pick/discussions)
+- **Questions?** Open a [GitHub Issue](https://github.com/Strike48-public/pick/issues/new/choose) (a blank issue is fine)
 - **Bug reports?** Open a [GitHub Issue](https://github.com/Strike48-public/pick/issues)
 - **Documentation:** See [docs/README.md](docs/README.md)
 

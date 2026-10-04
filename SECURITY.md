@@ -281,7 +281,7 @@ Pick processes security testing data that may include:
 ## Security Contacts
 
 - **Vulnerability Reports:** security@strike48.com
-- **General Security Questions:** GitHub Discussions
+- **General Security Questions:** open a [GitHub Issue](https://github.com/Strike48-public/pick/issues) (never for vulnerabilities; report those to security@strike48.com)
 - **Strike48 Support:** Contact your administrator
 
 ---
