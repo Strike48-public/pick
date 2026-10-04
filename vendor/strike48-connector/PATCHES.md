@@ -48,6 +48,10 @@ both ends agree on the same host algebra.
 **Drop when:** the equivalent lands upstream in Strike48/sdk-rs and pick moves to
 that release.
 
+**Vendoring scope:** only what `[patch.crates-io]` actually compiles - the lib.
+`tests/`, `examples/` are not vendored (they are never built through the patch).
+Upstream remains the source of truth for them.
+
 ## runner-exposes-jwt-presence
 
 **Files:** `src/connector.rs`
@@ -71,11 +75,6 @@ upstream `sdk-rs` PR.
 
 **Drop when:** an equivalent accessor lands upstream and pick moves to that
 release.
-
-**Vendoring scope:** only what `[patch.crates-io]` actually compiles — the lib.
-`tests/`, `test_fixtures/` and `examples/` are not vendored (they are never built
-through the patch, and the unit tests for this change live inline in
-`src/auth/ott_provider.rs`). Upstream remains the source of truth for them.
 
 ## loopback-api-url-is-not-an-allowlist
 
@@ -113,3 +112,47 @@ meaning, and a loopback *target* against a real allowlist is still rejected
 
 **Drop when:** upstream sdk-rs exempts loopback allowlist pins and pick
 moves to that release.
+
+## never-blank-failure
+
+**Files:** `src/utils.rs`, `src/connector.rs`, `src/multi/ws_multiplex.rs`,
+`src/multi/registration_runner.rs`, `src/client.rs`
+
+**Problem.** A tool result that reports failure with a blank `error` crossed
+the wire as `ExecuteResponse { success: true, error: "" }`, leaving the agent
+"diagnosing blind" (Strike48/matrix#4715, defect 2).
+
+**Change.** New `utils::sanitize_failure_payload` patches the payload's `error`
+with an actionable message (naming the tool) and returns it so the caller can
+mirror it into the envelope's `error` field. Wired at ALL THREE `execute` hops:
+`ConnectorRunner::handle_request` (`connector.rs`),
+`multi::ws_multiplex::handle_execute`, and
+`multi::registration_runner::handle_execute`. Successes and failures that
+already carry a message pass through untouched.
+
+**Tests.** Unit tests for the sanitizer live inline in `src/utils.rs`
+(`#[cfg(test)]`); each wire hop carries a `handle_*_patches_blank_failure`
+test that fails if the envelope mirror is reverted to `String::new()` or the
+sanitize call is dropped. Run them with `cargo test --lib` from inside
+`vendor/strike48-connector`. Two pieces make that possible:
+
+- The vendored `Cargo.toml` gains an empty `[workspace]` table. This is a
+  pick-local addition, not an upstream file: it makes the directory its own
+  workspace root so cargo will build its tests standalone.
+- `test_fixtures/legacy_rsa_key.pem` is vendored. It is an upstream file,
+  byte-identical to `crates/connector/test_fixtures/legacy_rsa_key.pem` in
+  Strike48/sdk-rs (added in sdk-rs 3f12918) and to the copy in the published
+  crates.io package (sha256 `9fdc9d50...0f539369`). It is a test-only RSA
+  key read by two `#[cfg(test)]` tests in `src/auth/ott_provider.rs` through
+  `include_str!`, so without it the lib tests do not compile. It is not a
+  credential for any live system. `.gitleaks.toml` exempts this one path.
+
+No CI job runs these tests: the package is not a workspace member, so the
+root `cargo test --workspace` compiles only its lib, through the patch. Run
+them by hand after changing anything in this directory.
+
+**Tracking:** Strike48/matrix#4715 (defect 2). No upstream PR yet; file one
+against Strike48/sdk-rs when landing this there.
+
+**Drop when:** the equivalent lands upstream in Strike48/sdk-rs and pick moves to
+that release.

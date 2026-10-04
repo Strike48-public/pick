@@ -5,7 +5,10 @@ use crate::logger::Logger;
 use crate::transport::TransportType;
 use crate::types::*;
 use crate::url_parser::parse_url;
-use crate::utils::{deserialize_payload, error_response, sanitize_identifier, serialize_payload};
+use crate::utils::{
+    deserialize_payload, error_response, sanitize_failure_payload, sanitize_identifier,
+    serialize_payload,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1702,6 +1705,15 @@ impl ConnectorRunner {
                     .await
                 {
                     Ok(response_data) => {
+                        // Never put a blank failure on the wire (Strike48/matrix#4715,
+                        // defect 2): if the tool result inside the payload reports a
+                        // failure with a blank `error`, patch the payload and mirror
+                        // the actionable message into the envelope's `error` field.
+                        let (response_data, failure_error) = sanitize_failure_payload(
+                            &response_data,
+                            request.capability_id.as_deref(),
+                        );
+
                         match serialize_payload(&response_data, PayloadEncoding::Json) {
                             Ok(payload) => {
                                 let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -1716,7 +1728,7 @@ impl ConnectorRunner {
                                     success: true,
                                     payload,
                                     payload_encoding: PayloadEncoding::Json,
-                                    error: String::new(),
+                                    error: failure_error.unwrap_or_default(),
                                     duration_ms,
                                 }
                             }
@@ -2419,6 +2431,7 @@ pub(crate) use strike48_proto::proto;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
 
     #[test]
     fn test_with_heartbeat_roundtrip() {
@@ -2916,6 +2929,112 @@ mod tests {
                 assert!(!caps.behaviors.is_empty());
             }
             other => panic!("Expected RegisterRequest, got {:?}", other),
+        }
+    }
+
+    /// Connector whose tool result is an explicit failure carrying a blank
+    /// `error` - the exact wire defect from Strike48/matrix#4715 (defect 2).
+    struct BlankFailureConn;
+
+    impl BaseConnector for BlankFailureConn {
+        fn connector_type(&self) -> &str {
+            "blank-failure"
+        }
+        fn version(&self) -> &str {
+            "0.0.0"
+        }
+        fn execute(
+            &self,
+            _request: serde_json::Value,
+            _capability_id: Option<&str>,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + '_>>
+        {
+            Box::pin(async {
+                unreachable!("SDK must dispatch through execute_with_context, not bare execute")
+            })
+        }
+        fn execute_with_context<'a>(
+            &'a self,
+            _request: serde_json::Value,
+            _capability_id: Option<&'a str>,
+            _context: &'a HashMap<String, String>,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                Ok(serde_json::json!({
+                    "success": false,
+                    "data": serde_json::Value::Null,
+                    "error": "",
+                    "outcome": "failed",
+                }))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_request_patches_blank_failure_into_envelope() {
+        // The handle_request hop must honor the never-blank contract: a tool
+        // result that reports failure with a blank `error` gets a patched
+        // payload and a mirrored, actionable envelope error. Reverting the
+        // envelope mirror to `String::new()` (or dropping the sanitize call)
+        // turns this red.
+        let client = ConnectorClient::new("127.0.0.1:1".to_string(), false);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ProtoStreamMessage>();
+        client.set_message_tx_for_tests(tx).await;
+
+        let payload =
+            serialize_payload(&serde_json::json!({"request": "in"}), PayloadEncoding::Json)
+                .expect("serialize request payload");
+        let request = ExecuteRequest {
+            request_id: "req-blank-1".into(),
+            payload,
+            payload_encoding: PayloadEncoding::Json,
+            context: HashMap::new(),
+            capability_id: Some("nmap".into()),
+        };
+
+        let connector: Arc<dyn BaseConnector> = Arc::new(BlankFailureConn);
+        let metrics = Arc::new(RwLock::new(ConnectorMetrics::default()));
+        let logger = Logger::new("test/blank-failure");
+
+        ConnectorRunner::handle_request(
+            connector,
+            request,
+            Arc::new(RwLock::new(Some(client))),
+            metrics,
+            logger,
+        )
+        .await
+        .expect("handle_request should succeed");
+
+        let msg = rx
+            .try_recv()
+            .expect("ExecuteResponse must be sent to the client");
+        match msg.message {
+            Some(strike48_proto::proto::stream_message::Message::ExecuteResponse(r)) => {
+                assert!(
+                    r.success,
+                    "envelope success reflects transport, not the tool outcome"
+                );
+                assert!(
+                    !r.error.trim().is_empty(),
+                    "a blank payload failure must never leave a blank envelope error"
+                );
+                assert!(
+                    r.error.contains("nmap"),
+                    "message should name the tool: {}",
+                    r.error
+                );
+                let patched: serde_json::Value =
+                    deserialize_payload(&r.payload, r.payload_encoding.into())
+                        .expect("deserialize patched payload");
+                assert_eq!(
+                    patched["error"], r.error,
+                    "payload error and envelope error must mirror"
+                );
+                assert_eq!(patched["outcome"], "failed");
+            }
+            other => panic!("expected ExecuteResponse, got {other:?}"),
         }
     }
 }

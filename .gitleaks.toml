@@ -34,6 +34,16 @@ regexes = [
     '''^eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJ(zdWIiOiIxMjM0NTY3ODkwIn0|leHAiOjEsImlhdCI6MH0)\.''',
 ]
 
+# Test-only RSA private key, vendored byte-identical from the upstream SDK
+# (Strike48/sdk-rs crates/connector/test_fixtures/legacy_rsa_key.pem, also
+# shipped in the public strike48-connector crates.io package). It is read only
+# by two #[cfg(test)] tests in vendor/strike48-connector/src/auth/ott_provider.rs
+# and is not a credential for any live system. Scoped to this single file; it
+# does not exempt any other path. See vendor/strike48-connector/PATCHES.md.
+[[allowlists]]
+description = "Vendored SDK test-only RSA key fixture"
+paths = ['''^vendor/strike48-connector/test_fixtures/legacy_rsa_key\.pem$''']
+
 # The alg=none JWT in the web-app specialist prompt is a documented attack
 # payload ({"alg":"none"} / {"user":"admin"}, empty signature), not a credential.
 [[allowlists]]

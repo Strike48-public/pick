@@ -135,152 +135,43 @@ impl PentestTool for NmapTool {
             // Ensure nmap is installed
             ensure_tool_installed(&platform, "nmap", "nmap").await?;
 
-            // Extract and validate target parameter
-            let target = param_str_or(&params, "target", "");
-            if target.is_empty() {
-                return Err(pentest_core::error::Error::InvalidParams(
-                    "target parameter is required".into(),
-                ));
-            }
-
-            // Validate target format (IP, hostname, or CIDR)
-            let target = validate_target(&target)?;
-
-            let scan_type = param_str_or(&params, "scan_type", "connect");
-            let ports = param_str_or(&params, "ports", "top1000");
-            let service_detection = param_bool(&params, "service_detection", false);
-            let os_detection = param_bool(&params, "os_detection", false);
-            let aggressive = param_bool(&params, "aggressive", false);
-            let timing = param_u64(&params, "timing", 3).clamp(0, 5);
-            let no_ping = param_bool(&params, "no_ping", false);
-
-            // Calculate smart timeout based on scan parameters
-            // If user provided explicit timeout, use it. Otherwise calculate.
-            let timeout = if params.get("timeout").and_then(|v| v.as_u64()).is_some() {
-                param_u64(&params, "timeout", 300) // User-provided
-            } else {
-                calculate_timeout(
-                    &target,
-                    &ports,
-                    &scan_type,
-                    timing,
-                    service_detection || aggressive,
-                )
-            };
-
-            // Build nmap command
-            let mut builder = CommandBuilder::new();
-
-            // Scan type
-            match scan_type.as_str() {
-                "syn" => builder = builder.flag("-sS"), // SYN stealth scan (requires root)
-                "connect" => builder = builder.flag("-sT"), // TCP connect scan
-                "udp" => builder = builder.flag("-sU"), // UDP scan
-                "ping" => builder = builder.flag("-sn"), // Ping scan only
-                _ => {
-                    return Err(pentest_core::error::Error::InvalidParams(format!(
-                        "Invalid scan_type: {}",
-                        scan_type
-                    )))
-                }
-            }
-
-            // Port specification (skip for ping scan)
-            if scan_type != "ping" {
-                for (flag, value) in resolve_port_args(&ports)? {
-                    builder = match value {
-                        Some(v) => builder.arg(flag, &v),
-                        None => builder.flag(flag),
-                    };
-                }
-            }
-
-            // Service/OS detection
-            if aggressive {
-                builder = builder.flag("-A"); // Enable everything
-            } else {
-                if service_detection {
-                    builder = builder.flag("-sV");
-                }
-                if os_detection {
-                    builder = builder.flag("-O");
-                }
-            }
-
-            // Timing template
-            builder = builder.arg("-T", &timing.to_string());
-
             // If we lack raw socket privileges, force --unprivileged so nmap
             // uses connect() for everything and doesn't error with
             // "Couldn't open a raw socket or eth handle."
             let unprivileged = !has_raw_socket_privilege();
-            if unprivileged {
-                builder = builder.flag("--unprivileged");
-            }
 
-            // Host discovery: add -Pn (skip discovery, treat all hosts as online)
-            // when explicitly requested, or when we must because privileged ICMP
-            // isn't available — but NEVER for a "ping" (host-discovery) scan.
-            // See should_force_pn/3 for the reasoning behind the #219 fix.
-            if should_force_pn(no_ping, unprivileged, &scan_type) {
-                builder = builder.flag("-Pn");
-            }
+            // Everything derived from the params (target, model-shaped
+            // ports/timeout/timing, argv, timeout) is planned by ONE pure
+            // production function. The tests drive it, so they pin the exact
+            // argv and timeout this call runs with (Strike48/matrix#4715,
+            // defect 2), not a re-implementation of these lines.
+            let NmapInvocation {
+                target,
+                args,
+                timeout_secs,
+                scripts,
+            } = plan_nmap_invocation(&params, unprivileged)?;
 
-            // NSE scripts - validate before running
-            if let Some(scripts) = param_str_opt(&params, "scripts") {
-                if !scripts.is_empty() {
-                    // First, validate script names to prevent path injection
-                    // Allow: alphanumeric, hyphens, underscores, commas, wildcards (*?), dots
-                    // Block: slashes (path separators), shell metacharacters
-                    for script in scripts.split(',') {
-                        let script = script.trim();
-                        if script.is_empty() {
-                            continue;
-                        }
-                        if !script.chars().all(|c| {
-                            c.is_alphanumeric() || c == '-' || c == '_' || c == '*' || c == '?' || c == '.'
-                        }) {
-                            return Err(pentest_core::error::Error::InvalidParams(
-                                format!("Invalid NSE script name '{}' - only alphanumeric, hyphens, underscores, wildcards, and dots allowed", script)
-                            ));
-                        }
-                    }
-
-                    // Then validate scripts exist before running nmap
-                    if let Err(invalid) = validate_nse_scripts(&platform, &scripts).await {
-                        return Err(pentest_core::error::Error::InvalidParams(format!(
-                            "Invalid NSE script(s): {}. Use 'nmap --script-help <pattern>' to list available scripts.",
-                            invalid
-                        )));
-                    }
-
-                    builder = builder.arg("--script", &scripts);
+            // The plan validated the script NAMES; check they exist before
+            // running nmap.
+            if let Some(scripts) = scripts {
+                if let Err(invalid) = validate_nse_scripts(&platform, &scripts).await {
+                    return Err(pentest_core::error::Error::InvalidParams(format!(
+                        "Invalid NSE script(s): {}. Use 'nmap --script-help <pattern>' to list available scripts.",
+                        invalid
+                    )));
                 }
             }
 
-            // Exclude list (issue #2524): out-of-scope hosts the scan must skip.
-            // Validated as IP/CIDR/hostname to prevent injection via this param.
-            if let Some(exclude) = param_exclude_list(&params, "exclude")? {
-                builder = builder.arg("--exclude", &exclude);
-            }
-
-            // Output format: XML for parsing
-            let output_file = "/tmp/nmap-output.xml";
-            builder = builder.arg("-oX", output_file);
-
-            // Add target
-            builder = builder.positional(&target);
-
-            let args = builder.build();
             let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
             // Execute nmap
             let result = platform
-                .execute_command("nmap", &args_refs, Duration::from_secs(timeout))
+                .execute_command("nmap", &args_refs, Duration::from_secs(timeout_secs))
                 .await?;
 
             // Read XML output
-            let xml_output = super::runner::read_sandbox_file(&platform, output_file).await?;
+            let xml_output = super::runner::read_sandbox_file(&platform, NMAP_XML_OUTPUT).await?;
 
             // Provenance: exact arguments + parsed XML form the reproducible
             // record. The XML is richer than stdout for nmap, so it's the
@@ -482,6 +373,241 @@ async fn validate_nse_scripts<P: CommandExec>(
         Ok(())
     } else {
         Err(invalid_scripts.join(", "))
+    }
+}
+
+/// Where nmap writes its XML report; `execute` reads it back after the scan.
+const NMAP_XML_OUTPUT: &str = "/tmp/nmap-output.xml";
+
+/// Everything `execute` derives from the params before it touches the
+/// platform: the validated target, the full argv, the scan timeout and the
+/// (name-validated) NSE scripts whose existence `execute` still checks.
+struct NmapInvocation {
+    target: String,
+    args: Vec<String>,
+    timeout_secs: u64,
+    scripts: Option<String>,
+}
+
+/// Plan the nmap invocation `execute` runs. Pure (no platform access), so the
+/// tests pin the exact argv and timeout for a model-shaped call instead of
+/// re-deriving them (Strike48/matrix#4715, defect 2).
+fn plan_nmap_invocation(params: &Value, unprivileged: bool) -> Result<NmapInvocation> {
+    let target = param_str_or(params, "target", "");
+    if target.is_empty() {
+        return Err(pentest_core::error::Error::InvalidParams(
+            "target parameter is required".into(),
+        ));
+    }
+    // Validate target format (IP, hostname, or CIDR)
+    let target = validate_target(&target)?;
+
+    let scan_type = param_str_or(params, "scan_type", "connect");
+    let resolved = resolve_scan_params(params);
+
+    // Smart timeout: an explicit timeout (in any shape the model emits) wins;
+    // otherwise size it from the scan parameters.
+    let timeout_secs = if resolved.explicit_timeout > 0 {
+        resolved.explicit_timeout
+    } else {
+        calculate_timeout(
+            &target,
+            &resolved.ports,
+            &scan_type,
+            resolved.timing,
+            resolved.service_detection || resolved.aggressive,
+        )
+    };
+
+    let mut builder = scan_args(&scan_type, &resolved, unprivileged)?;
+    let scripts = nse_scripts_param(params)?;
+    if let Some(scripts) = &scripts {
+        builder = builder.arg("--script", scripts);
+    }
+
+    // Exclude list (issue #2524): out-of-scope hosts the scan must skip.
+    // Validated as IP/CIDR/hostname to prevent injection via this param.
+    if let Some(exclude) = param_exclude_list(params, "exclude")? {
+        builder = builder.arg("--exclude", &exclude);
+    }
+
+    // Output format: XML for parsing, then the target.
+    let args = builder
+        .arg("-oX", NMAP_XML_OUTPUT)
+        .positional(&target)
+        .build();
+
+    Ok(NmapInvocation {
+        target,
+        args,
+        timeout_secs,
+        scripts,
+    })
+}
+
+/// Scan type, ports, detection, timing and host-discovery flags.
+fn scan_args(
+    scan_type: &str,
+    resolved: &ResolvedScanParams,
+    unprivileged: bool,
+) -> Result<CommandBuilder> {
+    let mut builder = CommandBuilder::new();
+
+    match scan_type {
+        "syn" => builder = builder.flag("-sS"), // SYN stealth scan (requires root)
+        "connect" => builder = builder.flag("-sT"), // TCP connect scan
+        "udp" => builder = builder.flag("-sU"), // UDP scan
+        "ping" => builder = builder.flag("-sn"), // Ping scan only
+        _ => {
+            return Err(pentest_core::error::Error::InvalidParams(format!(
+                "Invalid scan_type: {}",
+                scan_type
+            )))
+        }
+    }
+
+    // Port specification (skip for ping scan)
+    if scan_type != "ping" {
+        for (flag, value) in resolve_port_args(&resolved.ports)? {
+            builder = match value {
+                Some(v) => builder.arg(flag, &v),
+                None => builder.flag(flag),
+            };
+        }
+    }
+
+    // Service/OS detection
+    if resolved.aggressive {
+        builder = builder.flag("-A"); // Enable everything
+    } else {
+        if resolved.service_detection {
+            builder = builder.flag("-sV");
+        }
+        if resolved.os_detection {
+            builder = builder.flag("-O");
+        }
+    }
+
+    // Timing template
+    builder = builder.arg("-T", &resolved.timing.to_string());
+
+    if unprivileged {
+        builder = builder.flag("--unprivileged");
+    }
+
+    // Host discovery: add -Pn (skip discovery, treat all hosts as online)
+    // when explicitly requested, or when we must because privileged ICMP
+    // isn't available — but NEVER for a "ping" (host-discovery) scan.
+    // See should_force_pn/3 for the reasoning behind the #219 fix.
+    if should_force_pn(resolved.no_ping, unprivileged, scan_type) {
+        builder = builder.flag("-Pn");
+    }
+
+    Ok(builder)
+}
+
+/// The `scripts` param, with every script name validated to prevent path
+/// injection. Allows alphanumerics, hyphens, underscores, commas, wildcards
+/// (`*?`) and dots; blocks slashes and shell metacharacters. Whether the
+/// scripts exist is checked against the platform by `execute`.
+fn nse_scripts_param(params: &Value) -> Result<Option<String>> {
+    let Some(scripts) = param_str_opt(params, "scripts").filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    for script in scripts.split(',') {
+        let script = script.trim();
+        if script.is_empty() {
+            continue;
+        }
+        if !script.chars().all(|c| {
+            c.is_alphanumeric() || c == '-' || c == '_' || c == '*' || c == '?' || c == '.'
+        }) {
+            return Err(pentest_core::error::Error::InvalidParams(format!(
+                "Invalid NSE script name '{}' - only alphanumeric, hyphens, underscores, wildcards, and dots allowed",
+                script
+            )));
+        }
+    }
+    Ok(Some(scripts))
+}
+
+/// Resolved scan parameters, in every shape the model emits.
+///
+/// Single source of truth for the model-shaped coercion `execute` applies
+/// (Strike48/matrix#4715, defect 2). The tests drive THIS function, not a
+/// re-implementation of its lines, so a regression in the coercion or the
+/// timeout detection fails the suite instead of passing green beside the
+/// duplicated literals.
+struct ResolvedScanParams {
+    ports: String,
+    service_detection: bool,
+    os_detection: bool,
+    aggressive: bool,
+    timing: u64,
+    no_ping: bool,
+    explicit_timeout: u64,
+}
+
+fn resolve_scan_params(params: &Value) -> ResolvedScanParams {
+    // The advertised schema declares `ports` as a String, but model callers
+    // frequently emit a JSON array ("80", ["80","443"], [80,443]) - coerce
+    // the array shapes onto the comma-joined string the port resolver already
+    // validates, instead of failing the call.
+    let params = coerce_ports_param(params);
+    // Detect the user timeout value in EVERY shape the model emits (60, 60.0,
+    // "60", "60.0"): an `as_u64()`-only check silently drops float and
+    // float-string timeouts and falls back to the auto-calculation (which can
+    // be far longer than what was asked for).
+    ResolvedScanParams {
+        ports: param_str_or(&params, "ports", "top1000"),
+        service_detection: param_bool(&params, "service_detection", false),
+        os_detection: param_bool(&params, "os_detection", false),
+        aggressive: param_bool(&params, "aggressive", false),
+        timing: param_u64(&params, "timing", 3).clamp(0, 5),
+        no_ping: param_bool(&params, "no_ping", false),
+        explicit_timeout: param_u64(&params, "timeout", 0),
+    }
+}
+
+/// Coerce `ports` onto the string form the port resolver expects.
+///
+/// The advertised schema declares `ports` as a String, but model callers
+/// frequently emit JSON arrays — `["80", "443"]`, `[80, 443]`, or a
+/// single-element array — by analogy with other list-shaped params. Without
+/// coercion the string parser never sees the value and the scan silently
+/// falls back to the default port set (or the call fails fast with an empty
+/// error in older builds). This joins numeric/string array items with commas
+/// (the same syntax `validate_port_spec` accepts) and passes everything else
+/// through untouched (Strike48/matrix#4715, defect 2).
+fn coerce_ports_param(params: &Value) -> Value {
+    let Value::Object(obj) = params else {
+        return params.clone();
+    };
+
+    let Some(Value::Array(items)) = obj.get("ports") else {
+        return params.clone();
+    };
+
+    let joined: Vec<String> = items
+        .iter()
+        .filter_map(|item| {
+            item.as_str()
+                .map(|s| s.trim().to_string())
+                .or_else(|| item.as_u64().map(|n| n.to_string()))
+                .filter(|s| !s.is_empty())
+        })
+        .collect();
+
+    if joined.is_empty() {
+        // Nothing usable inside the array — drop it so the default port set
+        // applies, and keep the original params otherwise intact.
+        let mut out = obj.clone();
+        out.remove("ports");
+        Value::Object(out)
+    } else {
+        let mut out = obj.clone();
+        out.insert("ports".to_string(), json!(joined.join(",")));
+        Value::Object(out)
     }
 }
 
@@ -1771,5 +1897,162 @@ mod tests {
         let args = build_discovery_args("connect", false, true);
         assert!(args.iter().any(|a| a == "-sT"));
         assert!(args.iter().any(|a| a == "-Pn"));
+    }
+
+    // ========================================
+    // Model-shaped param alignment (Strike48/matrix#4715, defect 2)
+    // ========================================
+
+    #[test]
+    fn coerce_ports_param_joins_string_arrays() {
+        let params = json!({
+            "target": "192.0.2.105",
+            "ports": ["80", "443"],
+        });
+        let coerced = coerce_ports_param(&params);
+        assert_eq!(coerced["ports"], "80,443");
+        assert_eq!(coerced["target"], "192.0.2.105");
+    }
+
+    #[test]
+    fn coerce_ports_param_joins_numeric_arrays() {
+        let params = json!({"ports": [80, 8081]});
+        assert_eq!(coerce_ports_param(&params)["ports"], "80,8081");
+    }
+
+    #[test]
+    fn coerce_ports_param_drops_unusable_arrays_to_default() {
+        // An array with nothing usable must be dropped so the tool's default
+        // port set applies — not passed through as garbage to the resolver.
+        let params = json!({"ports": [null, ""]});
+        let coerced = coerce_ports_param(&params);
+        assert!(coerced.get("ports").is_none());
+    }
+
+    #[test]
+    fn coerce_ports_param_passes_scalar_and_range_strings_through() {
+        assert_eq!(
+            coerce_ports_param(&json!({"ports": "8081"}))["ports"],
+            "8081"
+        );
+        assert_eq!(
+            coerce_ports_param(&json!({"ports": "1-1000"}))["ports"],
+            "1-1000"
+        );
+        assert_eq!(
+            coerce_ports_param(&json!({"ports": "top100"}))["ports"],
+            "top100"
+        );
+        // Absent ports is untouched.
+        assert!(coerce_ports_param(&json!({})).get("ports").is_none());
+    }
+
+    #[test]
+    fn model_shaped_params_resolve_to_intended_values() {
+        // The exact param shape the engagement agent emitted in the DVWA run
+        // (issue comment 5807990952): no_ping, ports as a string, scan_type,
+        // timeout and timing as FLOAT-STRINGS. Every field must resolve to the
+        // value the model asked for - previously the float-strings silently
+        // coerced to the defaults (timing 3 instead of 5, auto timeout
+        // instead of 60s) and the deployed build rejected the shape with an
+        // EMPTY error string. Drives the production `resolve_scan_params`
+        // helper (the same one `execute` calls), not a re-implementation.
+        let params = json!({
+            "no_ping": true,
+            "ports": "8081",
+            "scan_type": "connect",
+            "target": "192.0.2.105",
+            "timeout": "60.0",
+            "timing": "5.0",
+        });
+
+        let resolved = resolve_scan_params(&params);
+        assert_eq!(resolved.ports, "8081");
+        assert!(resolved.no_ping);
+        assert_eq!(resolved.timing, 5, "float-string timing must coerce");
+        assert_eq!(
+            resolved.explicit_timeout, 60,
+            "float-string timeout must be honored"
+        );
+
+        // Array-shaped ports coerce onto the joined string.
+        let resolved = resolve_scan_params(&json!({"ports": [80, 443]}));
+        assert_eq!(resolved.ports, "80,443");
+
+        // Bare-number and negative timeouts/timings behave deterministically:
+        // bare 60.0 is honored, negatives fall back to the defaults (never 0).
+        let resolved = resolve_scan_params(&json!({"timeout": 60.0, "timing": -1}));
+        assert_eq!(resolved.explicit_timeout, 60);
+        assert_eq!(
+            resolved.timing, 3,
+            "negative timing must fall back to default"
+        );
+    }
+
+    /// The value that follows `flag` in `args`, if any.
+    fn arg_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1))
+            .map(String::as_str)
+    }
+
+    #[test]
+    fn execute_plan_carries_model_shaped_params_into_argv_and_timeout() {
+        // Drives `plan_nmap_invocation`, the function `execute` calls to get
+        // the argv and timeout it hands to the platform. Model-shaped input:
+        // array `ports` (mixed string/number), float-string `timeout` and
+        // `timing`. Previously these were dropped to the defaults (no -p,
+        // -T3, auto timeout) at the execute layer with nothing failing. The
+        // timeout is 900s on purpose: the auto-calculation for this scan
+        // gives the 60s floor, so a 60s request could not tell the two apart.
+        let params = json!({
+            "target": "192.0.2.105",
+            "ports": ["445", 139],
+            "scan_type": "connect",
+            "timeout": "900.0",
+            "timing": "5.0",
+            "no_ping": true,
+        });
+
+        let plan = plan_nmap_invocation(&params, false).expect("plan");
+
+        assert_eq!(
+            plan.timeout_secs, 900,
+            "float-string timeout must reach execute"
+        );
+        assert_eq!(arg_after(&plan.args, "-p"), Some("445,139"));
+        assert_eq!(arg_after(&plan.args, "-T"), Some("5"));
+        assert!(plan.args.iter().any(|a| a == "-sT"));
+        assert!(plan.args.iter().any(|a| a == "-Pn"));
+        assert_eq!(arg_after(&plan.args, "-oX"), Some(NMAP_XML_OUTPUT));
+        assert_eq!(plan.args.last().map(String::as_str), Some("192.0.2.105"));
+        assert_eq!(plan.target, "192.0.2.105");
+        assert!(plan.scripts.is_none());
+    }
+
+    #[test]
+    fn execute_plan_auto_sizes_timeout_when_none_is_given() {
+        // Without an explicit timeout the plan must size one from the scan
+        // (never 0, which nmap's Duration would treat as an instant kill).
+        let plan = plan_nmap_invocation(&json!({"target": "192.0.2.105", "ports": "all"}), false)
+            .expect("plan");
+        assert!(plan.timeout_secs >= 60, "got {}", plan.timeout_secs);
+        assert!(plan.args.iter().any(|a| a == "-p-"));
+    }
+
+    #[test]
+    fn execute_plan_rejects_bad_input_before_touching_the_platform() {
+        assert!(plan_nmap_invocation(&json!({}), false).is_err());
+        assert!(plan_nmap_invocation(
+            &json!({"target": "192.0.2.105", "scan_type": "bogus"}),
+            false
+        )
+        .is_err());
+        assert!(plan_nmap_invocation(
+            &json!({"target": "192.0.2.105", "scripts": "../evil"}),
+            false
+        )
+        .is_err());
     }
 }
