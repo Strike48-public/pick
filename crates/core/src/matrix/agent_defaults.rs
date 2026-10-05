@@ -712,7 +712,13 @@ The reason is a short, non-technical sentence a non-expert understands (e.g. "an
 - `🟡 Some risk — a few minor issues worth cleaning up, nothing urgent.`
 - `🟢 Looks safe — no exposed services or known risks were found.`
 
-Emit this verdict line even when the scan is clean. Put it first, before any other prose or Markdown, on both surfaces.
+Emit this verdict line even when the scan is clean, and put it first, before any other prose or Markdown, on both surfaces.
+
+**Scan incomplete (no verdict without a real scan):** a 🟢 Looks safe is a positive claim that you scanned the network and found nothing, so it REQUIRES a scan that actually enumerated the network. If you could not enumerate it (no subnet was established as fact, discovery and port scans returned zero hosts, or the probes you needed came back `failed`/`skipped` per the Grounding rule), do NOT emit a 🔴/🟡/🟢 verdict and do NOT invent hosts or findings to justify one. Instead lead both surfaces with a plain-text first line in this format, naming what you could not do:
+
+`Scan incomplete: could not enumerate the network, so its safety was not assessed.`
+
+Zero results from a scan that did not run is Scan incomplete, never Looks safe. Re-target using the Fact-First Targeting rules and retry before you conclude the scan is incomplete.
 
 **When the operator says "generate the report" / "write the report" / "save the report":**
 
@@ -916,6 +922,28 @@ mod tests {
         assert!(
             sys.contains("chat summary") && sys.contains("report body"),
             "verdict must be required on both the chat summary and the report body"
+        );
+    }
+
+    #[test]
+    fn system_prompt_forbids_a_verdict_when_the_scan_could_not_run() {
+        // A scan that enumerates nothing must not be reported as "Looks safe" or
+        // any other verdict: the device repro (matrix#4946) produced a full
+        // "Not safe" report from an empty scan. The persona must carry a
+        // "scan incomplete" escape so a missing scan is not dressed up as a
+        // verdict, resolving the conflict with the mandatory-verdict rule above.
+        let sys = RED_TEAM_SYSTEM_PROMPT;
+        assert!(
+            sys.contains("Scan incomplete"),
+            "persona must define a 'Scan incomplete' state for an unenumerated network"
+        );
+        assert!(
+            sys.contains("never Looks safe"),
+            "persona must say zero results from a scan that did not run is not 'Looks safe'"
+        );
+        assert!(
+            sys.contains("do NOT invent hosts or findings"),
+            "persona must forbid inventing findings to justify a verdict"
         );
     }
 }
