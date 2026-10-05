@@ -613,7 +613,7 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
-          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.apk" \) -exec cp {} release/ \;
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.apk" -o -name "*.AppImage" \) -exec cp {} release/ \;
 
           # Backward-compatible headless-agent asset names. Deployed StrikeHub
           # versions fetch the agent as `pentest-agent-{os}-{arch}` (Pick's
@@ -661,6 +661,31 @@ jobs:
           sed "s/^PICK_VERSION=.*/PICK_VERSION=${VERSION}/" \
             deploy/docker/AGENT_SETUP.md > release/pick-docker-agent-setup.md
           grep -qx "PICK_VERSION=${VERSION}" release/pick-docker-agent-setup.md
+
+      - name: Verify emitted AppImages do not require libfuse.so.2 (static FUSE-3 runtime)
+        run: |
+          set -euo pipefail
+          # Pick's own Linux artifacts are tarballs, but pick's Linux payload
+          # ships to end users inside the StrikeHub AppImage — which until
+          # now carried the legacy AppImageKit runtime that dlopens
+          # libfuse.so.2 at launch. Stock Ubuntu 24.04+ ships FUSE 3 only, so
+          # the AppImage died at launch, silently from the app grid
+          # (Strike48/project-management#377 finding 2, BLOCKER; #382). The
+          # runtime swap (pinned static FUSE-3 type2-runtime) lands in the
+          # strikehub pipeline; this guard enforces the same property here —
+          # analogous to the ldd-based bundle guards (#553) — over every
+          # AppImage this pipeline emits. Today pick emits none (the step
+          # logs and passes); from the day an AppImage is emitted, a FUSE-2
+          # runtime fails the release.
+          shopt -s nullglob
+          images=("$release"/*.AppImage)
+          if [ "${#images[@]}" -eq 0 ]; then
+            echo "no AppImage artifacts in this release — nothing to verify"
+          else
+            for ai in "${images[@]}"; do
+              scripts/check-appimage-fuse.sh "$ai"
+            done
+          fi
 
       - name: Generate checksums
         working-directory: release

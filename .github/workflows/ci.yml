@@ -129,6 +129,22 @@ jobs:
       # self-test pattern, exercises the exported decision + cache logic.
       - run: node crates/ui/src/assets/viz_streaming.test.js
 
+  # AppImage FUSE-3 guard (project-management#382, parent #377 finding 2
+  # BLOCKER): scripts/check-appimage-fuse.sh asserts an AppImage's embedded
+  # runtime does not require libfuse.so.2 — the legacy AppImageKit runtime's
+  # failure class, which stock Ubuntu 24.04+ (FUSE 3 only) hits silently.
+  # Pick's release pipeline emits no AppImage today (the guard is wired into
+  # release.yml's release job, which logs and passes until one is emitted);
+  # this job keeps the guard itself regression-tested on every PR, via its
+  # hermetic --self-test (synthetic good/dynamic/dlopen/NEEDED runtimes —
+  # same dependency-free self-test pattern as chart-xss-guard above).
+  appimage-fuse-guard:
+    name: AppImage FUSE-3 Guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: scripts/check-appimage-fuse.sh --self-test
+
   check-macos:
     name: Check (macOS)
     runs-on: macos-latest
