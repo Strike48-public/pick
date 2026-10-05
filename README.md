@@ -35,6 +35,12 @@ A multiplatform penetration testing connector built with [Dioxus](https://dioxus
 | **Android** | dioxus-mobile | Android device |
 | **iOS** | dioxus-mobile | iOS device |
 
+## Install
+
+- **Docker (Linux host):** follow [docs/DOCKER_INSTALL.md](docs/DOCKER_INSTALL.md). It starts with a setup choice, runs a preflight check, and has a section for installing with an AI coding agent.
+- **Native app (macOS, Windows, Linux):** download it from the [releases page](https://github.com/Strike48-public/pick/releases).
+- **From source:** see [docs/INSTALLATION.md](docs/INSTALLATION.md) and [Building](#building) below.
+
 ## Features
 
 ### UI Customization
