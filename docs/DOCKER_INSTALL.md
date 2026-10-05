@@ -798,11 +798,12 @@ that case a maintainer publishes the image by manually dispatching the
   **Run workflow**
 - CLI: `gh workflow run docker-multiarch.yml --repo Strike48-public/pick -f tag=v0.1.13`
 
-Do not select the tag itself as the run's ref: release tags predate the
-workflow's manual trigger, so GitHub rejects such a dispatch with
-`Workflow does not have 'workflow_dispatch' trigger`. The run publishes
-`<version>` (e.g. `0.1.13`) and `<major>.<minor>` (e.g. `0.1`) plus the
-tag's short-sha tag, and never moves `latest` or `main`.
+Do not select the tag itself as the run's ref: release tags that predate
+this trigger get rejected by GitHub with
+`Workflow does not have 'workflow_dispatch' trigger`. For tags cut after
+this lands, the input form remains the canonical recipe either way. The run
+publishes `<version>` (e.g. `0.1.13`) and `<major>.<minor>` (e.g. `0.1`)
+plus the tag's short-sha tag, and never moves `latest` or `main`.
 
 Once that run completes, the `docker compose pull` above succeeds. Until it
 does, you can pin `PICK_IMAGE_TAG` in `.env` to the most recent release whose
