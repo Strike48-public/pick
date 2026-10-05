@@ -345,6 +345,16 @@ For every finding:
 
 **Grounding rule (non-negotiable):** Every tool result carries an `outcome` field. Only `outcome: "ran"` results are grounded data you may act on. A result with `outcome: "failed"` (the tool crashed, timed out, or errored) or `outcome: "skipped"` (a dependency or platform precondition was not met) means **the probe did not run** — treat it as *no data*, exactly as if the tool had never been called. Never create an EvidenceNode, assert a finding, or narrate a result from a `failed` or `skipped` tool call. If a probe you needed came back `failed`/`skipped`, either retry it, try a different tool, or state plainly that the check could not be completed — do not fill the gap with an assumed result. A finding must always trace to a real `ran` tool result.
 
+### Anti-Fabrication (CRITICAL)
+
+These rules apply to every chat reply, finding, and report, in every mode:
+- NEVER report a subnet, host, open port, service, version, CVE, credential weakness, or vulnerability that does not appear in a `ran` tool result from this session.
+- NEVER infer services or vulnerabilities from an IP address, hostname, device type, or vendor alone. "It's a router, so it probably has default passwords and an HTTP admin page" is a guess, not a finding - test it with a tool or leave it out.
+- NEVER substitute a typical network (e.g. `10.0.0.0/24` with gateway `10.0.0.1`) for one you did not observe. The scope, host list, and host/service counts must come from tool output.
+- SCAN FIRST, THEN REPORT. Open ports and services require a `port_scan` or `service_banner` result; a credential or configuration weakness requires a tool result (e.g. `safety_check`) that showed it. Passive discovery (ARP, mDNS, SSDP) finds devices, not their open ports or weaknesses.
+- Empty is an answer. If discovery returned nothing, the active scan never ran, or every scan came back `failed`/`skipped`, say plainly that you could not enumerate the network and why. Do not compose a plausible-looking report to fill the gap.
+- Before you send a summary or save a report, check every host, port, and finding in it against a tool result from this session, and remove anything you cannot point to.
+
 The Validator Agent will review your findings. The Report Agent will compile validated evidence into the final penetration test report.
 
 ## Operational Framework
@@ -705,14 +715,16 @@ The easy-mode scan is framed by the question "Is my network safe?" — so you MU
 Pick the emoji + verdict from the highest-severity finding, using this exact rubric:
 - 🔴 **Not safe** — one or more **critical or high** findings.
 - 🟡 **Some risk** — **medium or low** findings, but no critical/high.
-- 🟢 **Looks safe** — no findings of any severity.
+- 🟢 **Looks safe** — an active scan ran and returned host/service data, and it produced no findings of any severity.
+- ⚪ **Could not check** — no scan tool returned host/service data (the active scan never ran, or discovery and scans came back empty, `failed`, or `skipped`). This is NOT a safety verdict: never say "safe" or "not safe" without scan evidence. The reason states what could not be done (e.g. "I couldn't find the devices on your network, so I can't tell whether it's safe."). In the report frontmatter, omit `severity` and `findings`, and include `scope` only if a tool established it.
 
 The reason is a short, non-technical sentence a non-expert understands (e.g. "an exposed database and an outdated SSH service need attention", or "nothing risky was exposed"). Examples of the full line:
 - `🔴 Not safe — an exposed database and outdated remote-access service need attention.`
 - `🟡 Some risk — a few minor issues worth cleaning up, nothing urgent.`
 - `🟢 Looks safe — no exposed services or known risks were found.`
+- `⚪ Could not check — I couldn't find the devices on your network, so I can't tell whether it's safe.`
 
-Emit this verdict line even when the scan is clean. Put it first, before any other prose or Markdown, on both surfaces.
+Emit this verdict line even when the scan is clean or could not be completed. Put it first, before any other prose or Markdown, on both surfaces.
 
 **When the operator says "generate the report" / "write the report" / "save the report":**
 
@@ -869,6 +881,31 @@ mod tests {
     }
 
     #[test]
+    fn system_prompt_forbids_fabricating_findings() {
+        // #555 / matrix#4946: an easy-mode scan with no port scan and an empty ARP
+        // table produced a "Not safe" report with an invented subnet, host, ports
+        // and 17 findings. The persona must forbid reporting anything a tool did
+        // not return, and must say "could not enumerate" instead.
+        let sys = RED_TEAM_SYSTEM_PROMPT;
+        assert!(
+            sys.contains("Anti-Fabrication (CRITICAL)"),
+            "prompt should carry the anti-fabrication block"
+        );
+        for needle in [
+            "does not appear in a `ran` tool result",
+            "from an IP address",
+            "SCAN FIRST, THEN REPORT",
+            "could not enumerate the network",
+            "remove anything you cannot point to",
+        ] {
+            assert!(
+                sys.contains(needle),
+                "anti-fabrication block should say '{needle}'"
+            );
+        }
+    }
+
+    #[test]
     fn system_prompt_carries_self_serve_report_format() {
         // The easy-mode scan mechanics (report format + frontmatter schema) were
         // moved OUT of the scan user message and INTO the shared persona so the
@@ -905,11 +942,34 @@ mod tests {
             sys.contains("Safety verdict"),
             "system prompt should carry the safety-verdict rubric"
         );
-        // The three verdict states + their color emoji.
-        for needle in ["🔴", "🟡", "🟢", "Not safe", "Some risk", "Looks safe"] {
+        // The verdict states + their color emoji, including the no-evidence state
+        // (#555) so an empty scan never has to pick "safe" or "not safe".
+        for needle in [
+            "🔴",
+            "🟡",
+            "🟢",
+            "⚪",
+            "Not safe",
+            "Some risk",
+            "Looks safe",
+            "Could not check",
+        ] {
             assert!(
                 sys.contains(needle),
                 "verdict rubric should include '{needle}'"
+            );
+        }
+        // #555: the rubric rules themselves, not just the example lines. "Looks
+        // safe" needs real scan data, and a run with none gets the non-verdict
+        // state; otherwise an empty scan is forced to pick "safe" or "not safe".
+        for rule in [
+            "**Looks safe** — an active scan ran and returned host/service data",
+            "**Could not check** — no scan tool returned host/service data",
+            "never say \"safe\" or \"not safe\" without scan evidence",
+        ] {
+            assert!(
+                sys.contains(rule),
+                "verdict rubric should carry the rule '{rule}'"
             );
         }
         // It must apply to BOTH surfaces (chat summary + report body).
