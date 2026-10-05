@@ -130,24 +130,40 @@ pick/
 
 ### Linux runtime requirements (release binaries)
 
-The Linux release tarballs are self-contained for their small
-dependencies: every non-glibc shared library a binary links —
-`libpcap`, OpenSSL 3 (`libssl`/`libcrypto`), `libxcb` (agent, web and
-desktop tarballs) and `libXdo` (desktop tarball) — is bundled inside the
-tarball under `lib/` and resolved through an `$ORIGIN/lib` rpath baked
-into the binaries at link time. The release pipeline enforces this with
-`scripts/check-linux-deps.sh` (no unresolved `ldd` entries, rpath
-present, glibc floor held). What a host must still provide:
+The Linux release tarballs are self-contained for their shared-library
+dependencies: every shared library a binary links other than the
+desktop's webkit stack is bundled inside the tarball under `lib/` and
+resolved through an `$ORIGIN/lib` rpath baked into the binaries at link
+time. That includes the **transitive closure of each bundled library**,
+not just the direct links — `libpcap` (agent, web, desktop), OpenSSL 3
+(`libssl`/`libcrypto`; agent, web, desktop), `libxcb` (agent, web,
+desktop) and `libxdo` (desktop) drag along the libdbus → libsystemd →
+lzma/zstd/lz4/gcrypt/gpg-error/cap stack and libXau/libXdmcp →
+libbsd/libmd. The closure is the difference between "resolves on the
+release runner" and "resolves on NixOS or in a minimal container". The
+release pipeline enforces this with `scripts/check-linux-deps.sh`
+(every `ldd` resolution must land in `lib/` or be a base-system/allowed
+library, whole-entry rpath present, glibc floor held). What a host must
+still provide:
 
 | Requirement | Applies to | Where it comes from |
 |-------------|-----------|---------------------|
-| glibc >= 2.35 (Ubuntu 22.04 / Debian 12+) plus the libgcc runtime | All Linux binaries | Host base system (glibc floor guarded by `scripts/check-glibc-floor.sh`) |
-| `libwebkit2gtk-4.1-0` | Desktop app only — the web engine behind the UI, intentionally not bundled (50MB+ with helper processes) | `sudo apt install libwebkit2gtk-4.1-0` (Fedora: `sudo dnf install webkit2gtk4.1`) |
-| everything else | — | Bundled in the tarball's `lib/`, or carried by the `libwebkit2gtk-4.1-0` package's dependency closure (GTK/X11 stack) on the desktop |
+| glibc >= 2.35 (Ubuntu 22.04 / Debian 12+) plus the libgcc runtime | All Linux binaries | Host base system (floor enforced by `scripts/check-glibc-floor.sh`) |
+| `libwebkit2gtk-4.1-0` **and its package dependencies** | Desktop app only — the web engine behind the UI plus the GTK/X11 stack it pulls (libgtk-3, libX11, …); intentionally not bundled (50MB+ with helper processes) | `sudo apt install libwebkit2gtk-4.1-0` (Fedora: `sudo dnf install webkit2gtk4.1`) — one package pulls the whole closure |
+| everything else | — | Bundled in the tarball's `lib/` (the desktop's X11 libraries are carried by the `libwebkit2gtk-4.1-0` closure, so no second copy is bundled — except `libXtst`, which libxdo needs but the closure does not ship, so it is bundled) |
+
+License attribution for the redistributed libraries (BSD-3-clause,
+Apache-2.0/OpenSSL dual, MIT/X11) ships inside each Linux tarball as
+`THIRD-PARTY-NOTICES.md`.
 
 The headless agent (`pick-agent-linux-x86_64.tar.gz`) has **no host
 library dependencies** beyond the glibc/libgcc base system — the binary
-and the bundled `lib/` are enough on any glibc-2.35+ host.
+and the bundled `lib/` are enough on any glibc-2.35+ host, including
+NixOS and minimal containers. One caveat for consumers: StrikeHub's
+fetch path currently stages only the binary and drops the sibling
+`lib/`, so a strikehub-fetched agent is still affected on minimal hosts
+until https://github.com/Strike48-public/strikehub/issues/108 lands;
+extract the tarball directly in the meantime.
 
 The desktop tarball's entry point is the `pentest-connector` launcher
 (next to the real `pentest-connector-bin`). Because the binary links
@@ -160,8 +176,18 @@ discarded by its supervisor):
 
     error while loading shared libraries: libpcap.so.0.8
 
-`libpcap` is now bundled; any remaining host gap on the desktop app is
-WebKit2GTK, which the launcher names by its exact apt package.
+`libpcap` is now bundled; the only remaining host gap on the desktop
+app is the WebKit2GTK stack (the web engine plus its GTK/X11 package
+closure), which the launcher names by its exact apt package.
+
+Two notes about the bundled OpenSSL: the `$ORIGIN/lib` rpath makes the
+bundled `libcrypto`/`libssl` win over any host copy (rpath is searched
+before `LD_LIBRARY_PATH` and the default directories), so OpenSSL
+security fixes reach users through Pick releases rather than host
+package updates. And legacy OpenSSL *provider* operations (e.g. legacy
+PKCS#12/RC4 paths) are dlopen'd from the host's compiled-in
+`ossl-modules` directory; a host that needs them must ship the
+`libssl3`/`openssl` package's module directory alongside.
 
 ### Headless Agent (Pick)
 
