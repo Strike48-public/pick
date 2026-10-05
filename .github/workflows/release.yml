@@ -598,7 +598,13 @@ jobs:
   # ===========================================
   release:
     name: Create Release
-    needs: [build-desktop-linux, build-desktop-windows, build-desktop-macos, build-web, build-headless-linux, build-headless-windows, build-headless-macos]
+    # build-android MUST be in needs: without it the release publishes while
+    # the Android build is still in progress, and its assets (2/3 of the
+    # android table, plus the .aab) arrive after the release exists (v0.1.12
+    # and v0.1.13 both shipped android-incomplete and needed a manual
+    # Create-Release rerun). build-ios is intentionally NOT listed: it is
+    # `if: false`, and a skipped needs would skip the release itself.
+    needs: [build-desktop-linux, build-desktop-windows, build-desktop-macos, build-web, build-android, build-headless-linux, build-headless-windows, build-headless-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -613,7 +619,10 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
-          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.apk" \) -exec cp {} release/ \;
+          # .aab is the Play-store bundle listed in the release body's android
+          # table (pick-android-release-unsigned.aab); without it v0.1.13
+          # shipped 2/3 android assets deterministically.
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.apk" -o -name "*.aab" \) -exec cp {} release/ \;
 
           # Backward-compatible headless-agent asset names. Deployed StrikeHub
           # versions fetch the agent as `pentest-agent-{os}-{arch}` (Pick's
