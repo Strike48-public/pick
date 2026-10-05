@@ -959,6 +959,19 @@ mod tests {
                 "verdict rubric should include '{needle}'"
             );
         }
+        // #555: the rubric rules themselves, not just the example lines. "Looks
+        // safe" needs real scan data, and a run with none gets the non-verdict
+        // state; otherwise an empty scan is forced to pick "safe" or "not safe".
+        for rule in [
+            "**Looks safe** — an active scan ran and returned host/service data",
+            "**Could not check** — no scan tool returned host/service data",
+            "never say \"safe\" or \"not safe\" without scan evidence",
+        ] {
+            assert!(
+                sys.contains(rule),
+                "verdict rubric should carry the rule '{rule}'"
+            );
+        }
         // It must apply to BOTH surfaces (chat summary + report body).
         assert!(
             sys.contains("chat summary") && sys.contains("report body"),
