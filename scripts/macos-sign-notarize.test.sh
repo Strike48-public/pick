@@ -138,9 +138,14 @@ run_notarize() {
 
 accepted='{"id":"a","status":"Accepted"}'
 invalid='{"id":"a","status":"Invalid"}'
+rejected='{"id":"a","status":"Rejected"}'
+in_progress='{"id":"a","status":"In Progress"}'
 transient='Error: network connection was lost'
 check "Accepted on first try passes after one submit" "0 1" "$(run_notarize "$accepted")"
 check "Invalid fails at once without resubmitting" "1 1" "$(run_notarize "$invalid")"
+check "Rejected fails at once without resubmitting" "1 1" "$(run_notarize "$rejected")"
+check "In Progress (a --wait timeout) is retried, never treated as Accepted" "1 3" \
+    "$(run_notarize "$in_progress" "$in_progress" "$in_progress")"
 check "transient errors are retried until Accepted" "0 3" \
     "$(run_notarize "$transient" "$transient" "$accepted")"
 check "persistent transient errors fail after 3 submits" "1 3" \
@@ -215,9 +220,10 @@ stub_verify() {
     )
 }
 
-# The team clause cannot be evaluated without a Developer ID certificate from
-# a second team, so the requirement handed to codesign is pinned instead: it
-# must name exactly our team, not merely any Apple-anchored leaf.
+# The requirement string handed to codesign is pinned here: it must name
+# exactly our team, not merely any Apple-anchored leaf. Whether codesign
+# actually enforces that clause is checked against a real third-party
+# Developer ID binary further down.
 check "the signature requirement pins our team" \
     "0 anchor apple generic and certificate leaf[subject.OU] = \"${TEAM}\"" \
     "$(stub_verify '0x10000(runtime)')"
@@ -232,11 +238,44 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     cp -f /bin/ls "$bin"
     # Ad-hoc WITH the hardened runtime, so only the team requirement can reject it.
     codesign --remove-signature "$bin" && codesign --force --sign - --options runtime "$bin" 2>/dev/null
+    # Without a valid ad-hoc signature the next two cases would pass vacuously.
+    check "the ad-hoc test binary carries a valid signature" "0" \
+        "$(codesign --verify --strict "$bin" >/dev/null 2>&1 && echo 0 || echo 1)"
     check "an ad-hoc signature fails the team check" "1" \
         "$(APPLE_TEAM_ID="$TEAM" verify_signature "$bin" >/dev/null 2>&1 && echo 0 || echo 1)"
     check "an ad-hoc binary is not seen as notarized" "1" \
         "$(MACOS_SIGN_TICKET_ATTEMPTS=1 MACOS_SIGN_TICKET_RETRY_DELAY=0 bash -c \
             "source '$SUBJECT'; verify_notarized '$bin'" >/dev/null 2>&1 && echo 0 || echo 1)"
+
+    # The team clause against a real Developer ID signature from another team.
+    # GitHub's macOS runners ship these browsers; a developer Mac usually has
+    # one of them too.
+    third_party=""
+    third_party_team=""
+    for candidate in \
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" \
+        "/Applications/Firefox.app/Contents/MacOS/firefox" \
+        "/Applications/1Password.app/Contents/MacOS/1Password"; do
+        [[ -x "$candidate" ]] || continue
+        team_line="$(codesign -dv "$candidate" 2>&1 | grep '^TeamIdentifier=' || true)"
+        team_id="${team_line#TeamIdentifier=}"
+        if [[ -n "$team_id" && "$team_id" != "not set" ]]; then
+            third_party="$candidate"
+            third_party_team="$team_id"
+            break
+        fi
+    done
+    if [[ -n "$third_party" ]]; then
+        check "a Developer ID binary passes the check for its own team" "0" \
+            "$(APPLE_TEAM_ID="$third_party_team" verify_signature "$third_party" >/dev/null 2>&1 && echo 0 || echo 1)"
+        check "a Developer ID binary of another team fails our team check" "1" \
+            "$(APPLE_TEAM_ID="$TEAM" verify_signature "$third_party" >/dev/null 2>&1 && echo 0 || echo 1)"
+    elif [[ -n "${CI:-}" ]]; then
+        check "a third-party Developer ID binary is available for the team check" "found" "none"
+    else
+        printf 'skip - no third-party Developer ID app found for the real team check\n'
+    fi
 else
     printf 'skip - codesign checks need macOS\n'
 fi

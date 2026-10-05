@@ -518,9 +518,12 @@ jobs:
 
           ls -la release/
 
-      # The dispatch input reaches the shell through env, never through
-      # ${{ }} in the script, so a crafted version string cannot run commands
-      # in a job that can mint attestations.
+      # The version, from the dispatch input or the tag, flows into later
+      # steps: sed in "Add Docker bundle" (where GNU sed's `e` command would
+      # run shell), asset names and release notes, in a job that can mint
+      # attestations. Passing it through env stops ${{ }} script injection in
+      # this step only, so the value is also validated as semver here, before
+      # any step can use it.
       - name: Get version
         id: version
         env:
@@ -528,10 +531,17 @@ jobs:
           INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
+            version="$INPUT_VERSION"
           else
-            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+            version="${GITHUB_REF#refs/tags/v}"
           fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            # The rejected value is not echoed: it is untrusted, and a newline in
+            # it could smuggle a workflow command into the log.
+            echo "::error::release version is not semver (MAJOR.MINOR.PATCH[-PRERELEASE])" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Add Docker bundle
         # The customer compose bundle (deploy/docker, docs/DOCKER_INSTALL.md)
@@ -625,12 +635,12 @@ jobs:
 
             Every asset except `SHA256SUMS.txt` carries a signed build provenance
             attestation. To confirm a file was built by this repository's release
-            workflow from this release's tag:
+            workflow from the ref this release was built from (`${{ github.ref }}`):
 
             ```
             gh attestation verify <file> --repo Strike48-public/pick \
               --signer-workflow Strike48-public/pick/.github/workflows/release.yml \
-              --source-ref refs/tags/v${{ steps.version.outputs.version }}
+              --source-ref ${{ github.ref }}
             ```
 
             See `SHA256SUMS.txt` for file checksums.

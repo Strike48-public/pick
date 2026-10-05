@@ -63,10 +63,12 @@ workflow.
 ## Checking a release
 
 ```bash
-# Built by this repository's release workflow, from the release tag?
-# --repo alone also accepts an unsigned manual test build (attested from a
-# branch); --signer-workflow and --source-ref pin the tagged release run.
-# Use the tag of the release the file came from.
+# Built by this repository's release workflow, from the expected ref?
+# The attestation records the ref the release run started from: the tag for
+# a tag push (refs/tags/v0.1.12), the branch for a manual dispatch
+# (refs/heads/main), whether or not that dispatch signed. The release notes
+# print the exact --source-ref for that release. --repo alone accepts any
+# workflow run in the repository.
 gh attestation verify pick-macos-aarch64.tar.gz --repo Strike48-public/pick \
     --signer-workflow Strike48-public/pick/.github/workflows/release.yml \
     --source-ref refs/tags/v0.1.12
@@ -79,10 +81,14 @@ codesign --verify --strict --check-notarization -R='notarized' pentest-connector
 
 ## Known limits
 
-- **Who can trigger a signing run.** Anyone who can push a `v*` tag runs the
-  signing step with the Developer ID certificate and the API key. Recommended
-  admin follow-up: a tag ruleset that limits who may create `v*` tags, and a
-  GitHub Environment with required reviewers holding the Apple secrets.
+- **Who can reach the Apple secrets.** The Developer ID certificate and the
+  API key are repository secrets, and this workflow does not use a GitHub
+  Environment. So anyone with write access can reach them: by pushing a `v*`
+  tag, by dispatching a release, or by pushing a branch whose workflow reads
+  them. A tag ruleset alone does not close this. The fix is an admin
+  follow-up: move the Apple secrets into a GitHub Environment with required
+  reviewers and point the signing steps at it. A `v*` tag ruleset on top of
+  that limits who can start a tagged release.
 
 - **No stapled ticket.** The macOS assets are bare executables in a `.tar.gz`,
   and Apple cannot staple a notarization ticket to a bare executable. On first
@@ -91,7 +97,7 @@ codesign --verify --strict --check-notarization -R='notarized' pentest-connector
   `.dmg` would allow stapling.
 - **Certificate lifetime.** A Developer ID certificate is valid for up to five
   years, but no later than its issuing intermediate (the current G2
-  intermediate expires 2031-09-16), so read the expiry date off the issued
+  intermediate expires 2031-09-17), so read the expiry date off the issued
   certificate. Binaries signed before it expires stay valid because the
   signature is timestamped, but releases fail at the signing step once it
   lapses, so renew it ahead of time and update `APPLE_CERTIFICATE_P12`.

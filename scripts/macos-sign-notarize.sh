@@ -130,14 +130,16 @@ sign_binary() {
         "$binary"
 }
 
-# verify_signature - the binary must carry a valid Apple-anchored Developer ID
-# signature from OUR team with the hardened runtime that notarization requires.
+# verify_signature - the binary must carry a valid Apple-anchored signature from
+# OUR team with the hardened runtime that notarization requires. The requirement
+# pins anchor and team only: a same-team Development certificate would pass here
+# and then fail at notarization, which accepts Developer ID signatures only.
 verify_signature() {
     local binary="$1"
     local requirement="anchor apple generic and certificate leaf[subject.OU] = \"${APPLE_TEAM_ID}\""
     local details
     if ! codesign --verify --strict --verbose=2 -R="$requirement" "$binary"; then
-        err "${binary} is not signed by a Developer ID certificate of team ${APPLE_TEAM_ID}"
+        err "${binary} is not signed with an Apple-issued certificate of team ${APPLE_TEAM_ID}"
         return 1
     fi
     # Captured first: piping into `grep -q` can SIGPIPE codesign under pipefail.
