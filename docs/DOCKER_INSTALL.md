@@ -25,14 +25,14 @@ online in Studio can still be unable to see the network you want to test.
 
 | What | Where |
 | --- | --- |
-| Docker image | `ghcr.io/strike48-public/pick:0.1.10` ([package page](https://github.com/orgs/Strike48-public/packages/container/package/pick)) |
-| Install files for this version | [Pick v0.1.10 release](https://github.com/Strike48-public/pick/releases/tag/v0.1.10), assets `pick-docker-compose.yml` and `pick-docker.env.example` |
+| Docker image | `ghcr.io/strike48-public/pick:0.1.13` ([package page](https://github.com/orgs/Strike48-public/packages/container/package/pick)) |
+| Install files for this version | [Pick v0.1.13 release](https://github.com/Strike48-public/pick/releases/tag/v0.1.13), assets `pick-docker-compose.yml` and `pick-docker.env.example` |
 | Newest release | [github.com/Strike48-public/pick/releases/latest](https://github.com/Strike48-public/pick/releases/latest) |
 
 You do not pull the image by hand; step 3 does it for you. Use the version
 number, not `latest`: the `latest` and `main` tags on the image are
 development builds that have not been released. If the newest release is
-newer than `0.1.10`, check with your Strike48 contact that it is approved for
+newer than `0.1.13`, check with your Strike48 contact that it is approved for
 customer use, then use its number in step 1.
 
 ## What you are installing
@@ -89,7 +89,7 @@ On the host that will run the connector:
 | Docker Compose | v2 plugin (`docker compose`, not the 1.x `docker-compose`; tested with 5.5) | `docker compose version` |
 | Outbound HTTPS to Studio | 443 to your Studio hostname | `curl -sS -o /dev/null -w '%{http_code}\n' https://<your-studio-host>/` prints `302` or `200` |
 | Outbound HTTPS to authentication | 443 to your Strike48 authentication hostname | `curl -sS -o /dev/null -w '%{http_code}\n' https://<your-auth-host>/` prints a 2xx or 3xx code |
-| Outbound HTTPS to the image registry | 443 to `ghcr.io` and `pkg-containers.githubusercontent.com`, which serves the image layers | `docker pull ghcr.io/strike48-public/pick:0.1.10` |
+| Outbound HTTPS to the image registry | 443 to `ghcr.io` and `pkg-containers.githubusercontent.com`, which serves the image layers | `docker pull ghcr.io/strike48-public/pick:0.1.13` |
 | Outbound HTTPS to GitHub, install time and at run time | 443 to `github.com` and `release-assets.githubusercontent.com`, which the release download redirects to; nuclei downloads its templates from GitHub at run time (see [What leaves your network](#what-leaves-your-network)) | the `curl` commands in step 1 succeed; nuclei template updates work |
 | Disk | 8 GB free | `df -h /var/lib/docker` (the `0.1.10` image is about 1.2 GB to download on arm64 and 1.4 GB on amd64, and about 5 GB once unpacked) |
 | Memory | 2 GB (recommended floor), 4 GB comfortable | `free -h`. Guidance, not a measured minimum. Measured with the `0.1.10` image against one web target: a full-port nmap scan with version detection peaked at 42 MB, and nuclei with its default templates at about 850 MB, including its first template download. Tools the agent runs in parallel add up, and nuclei grows with concurrency and target count |
@@ -142,11 +142,11 @@ add users who should have it.
 
 Two files: a compose file you do not edit and an environment template you copy.
 Both ship as assets of the release you are installing, so the bundle, this
-guide, and the image are pinned to the same version. `0.1.10` is the release
+guide, and the image are pinned to the same version. `0.1.13` is the release
 approved for customer use.
 
 ```bash
-PICK_VERSION=0.1.10
+PICK_VERSION=0.1.13
 mkdir pick-connector && cd pick-connector
 curl -fsSL "https://github.com/Strike48-public/pick/releases/download/v${PICK_VERSION}/pick-docker-compose.yml" -o docker-compose.yml
 curl -fsSL "https://github.com/Strike48-public/pick/releases/download/v${PICK_VERSION}/pick-docker.env.example" -o .env.example
@@ -868,7 +868,7 @@ these equivalents. Use `curl.exe`, not `curl`: in Windows PowerShell 5.1,
 `curl` is an alias for `Invoke-WebRequest` and rejects the flags below.
 
 ```powershell
-$PICK_VERSION = "0.1.10"
+$PICK_VERSION = "0.1.13"
 mkdir pick-connector; cd pick-connector
 curl.exe -fsSL "https://github.com/Strike48-public/pick/releases/download/v$PICK_VERSION/pick-docker-compose.yml" -o docker-compose.yml
 curl.exe -fsSL "https://github.com/Strike48-public/pick/releases/download/v$PICK_VERSION/pick-docker.env.example" -o .env.example
