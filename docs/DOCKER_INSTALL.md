@@ -782,6 +782,33 @@ docker compose up -d
 Setting `PICK_IMAGE_TAG` in `.env` also works, but then the compose file and
 the image are no longer from the same release.
 
+### If the release's image is not on ghcr yet
+
+Each release's image is built and pushed by the repository's `Multi-Arch
+Docker` GitHub Actions workflow, which normally runs when the release tag is
+pushed. Tags created by GitHub's `GITHUB_TOKEN` (how the release workflow
+creates its tags) do not fire that push trigger, so a release can exist whose
+image was never published (`docker pull` fails with `manifest unknown`). In
+that case a maintainer publishes the image by manually dispatching the
+`Multi-Arch Docker` workflow on `main`, passing the release tag as the
+`tag` input (the run checks the tag out internally):
+
+- UI: Actions → `Multi-Arch Docker` → **Run workflow** (branch: `main`) →
+  enter the release tag (e.g. `v0.1.13`) in the `tag` field →
+  **Run workflow**
+- CLI: `gh workflow run docker-multiarch.yml --repo Strike48-public/pick -f tag=v0.1.13`
+
+Do not select the tag itself as the run's ref: release tags that predate
+this trigger get rejected by GitHub with
+`Workflow does not have 'workflow_dispatch' trigger`. For tags cut after
+this lands, the input form remains the canonical recipe either way. The run
+publishes `<version>` (e.g. `0.1.13`) and `<major>.<minor>` (e.g. `0.1`)
+plus the tag's short-sha tag, and never moves `latest` or `main`.
+
+Once that run completes, the `docker compose pull` above succeeds. Until it
+does, you can pin `PICK_IMAGE_TAG` in `.env` to the most recent release whose
+image is published (e.g. `0.1.11` for releases 0.1.12/0.1.13).
+
 Stop without losing the approval:
 
 ```bash
