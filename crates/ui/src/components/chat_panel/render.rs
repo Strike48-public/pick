@@ -898,8 +898,9 @@ fn load_screenshots_from_result(result_json: &str) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_markdown, render_markdown_streaming, trailing_viz_fence_lang,
-        webwright_display_name};
+    use super::{
+        render_markdown, render_markdown_streaming, trailing_viz_fence_lang, webwright_display_name,
+    };
 
     // Security (#365): the chat renderer must route through the shared markdown
     // sanitizer. These guard the chat sink specifically (the file-viewer sink is

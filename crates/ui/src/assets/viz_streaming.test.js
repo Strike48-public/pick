@@ -29,11 +29,8 @@ global.window = {};
 
 const { fnv1a, makeVizCaches, openVizAction } = require('./chart_processor.js');
 
-let passed = 0;
 function check(name, fn) {
     fn();
-    passed++;
-    console.log('  ok - ' + name);
 }
 
 // --- fnv1a: canonical FNV-1a 32-bit ------------------------------------------
@@ -168,5 +165,3 @@ check('a full stream renders exactly twice (first frame + final), holds the rest
     );
     assert.strictEqual(caches.hasHeld(key), false, 'streaming cache freed after the final render');
 });
-
-console.log('\nviz streaming (flicker fix): ' + passed + ' checks passed');
