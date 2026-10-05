@@ -6,6 +6,27 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]
+  # Manual trigger for (re)publishing the image of an already-released tag.
+  #
+  # Why this exists: GitHub suppresses workflow runs for events triggered by
+  # GITHUB_TOKEN (token-recursion protection). Release tags are created by
+  # softprops/action-gh-release using GITHUB_TOKEN, so the tag-push event for
+  # such tags never fires and this workflow never runs for them. v0.1.12 and
+  # v0.1.13 were released without their ghcr.io/strike48-public/pick images
+  # ever being published (manifest 404), even though the
+  # pick-docker-compose.yml shipped with each release pins them — the easy-mode
+  # docker install was broken for both releases. Tags pushed by a human over
+  # git/ssh DO fire the push event, which is why e.g. v0.1.11 got its image.
+  #
+  # To publish the image for an existing tag, dispatch this workflow with that
+  # tag as the ref (UI: Actions -> Multi-Arch Docker -> Run workflow -> select
+  # the tag; or `gh workflow run docker-multiarch.yml --repo
+  # Strike48-public/pick --ref v0.1.13`). No inputs are needed: the run checks
+  # out the dispatch ref (the tag's commit) and docker/metadata-action derives
+  # the version tag from GITHUB_REF, so the image is built from the tag itself
+  # and pushed as <version> (plus <major>.<minor> and the short-sha tag, as on
+  # any tag push). See docs/DOCKER_INSTALL.md for the operator-facing notes.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
