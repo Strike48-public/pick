@@ -124,6 +124,10 @@ jobs:
       # sanitizer (#371). No JS toolchain otherwise exists here; this is a
       # dependency-free `node` self-test, so it needs no install step.
       - run: node crates/ui/src/assets/chart_processor.test.js
+      # Behavioral regression guard for the mermaid streaming-flicker fix
+      # (render-once / hydrate-on-complete): same dependency-free `node`
+      # self-test pattern, exercises the exported decision + cache logic.
+      - run: node crates/ui/src/assets/viz_streaming.test.js
 
   check-macos:
     name: Check (macOS)
