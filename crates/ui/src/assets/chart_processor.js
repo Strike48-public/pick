@@ -15,20 +15,87 @@
         div.appendChild(note);
     }
 
-    // Last-good rendered SVG per streaming viz block, keyed by the stable
-    // data-viz-key that Rust stamps on an open (still-streaming) fence. While a
-    // mermaid block streams in it is re-parsed every tick; the intermediate text
-    // often isn't valid yet, so on a parse failure we show the last frame that
-    // DID parse (from here) instead of flashing an error. Cleared when the block
-    // finally renders successfully closed. Bounded so a long session can't grow
-    // it without limit.
-    var vizLastGood = (window.__vizLastGood = window.__vizLastGood || {});
-    function rememberGood(key, svg) {
-        if (!key) return;
-        vizLastGood[key] = svg;
-        var keys = Object.keys(vizLastGood);
-        if (keys.length > 64) delete vizLastGood[keys[0]];
+    // ── Rendered-frame caches (survive the bubble's innerHTML rebuild) ──
+    // The chat bubble's HTML is rebuilt on EVERY stream tick: render.rs
+    // replaces the whole `dangerous_inner_html` subtree, tearing down whatever
+    // the renderer produced. Without a frame that survives the rebuild, the
+    // raw <pre> paints on every tick and the diagram flickers while the agent
+    // generates it (the "mermaid is flickering" bug). These caches keep the
+    // last rendered frame so it can be re-injected — synchronously, BEFORE
+    // paint, by the MutationObserver at the bottom of this file — instead of
+    // re-rendering from scratch.
+    //
+    //   held   — open (still-streaming) blocks, keyed by the stable
+    //            data-viz-key Rust stamps on the open fence. The first parse
+    //            success is held as the visible frame for the rest of the
+    //            stream (render-once); released when the fence closes.
+    //   closed — final renders, keyed by a hash of the diagram text. A
+    //            closed fence's content never changes, so the cached frame
+    //            is valid for the lifetime of the content; later bubble
+    //            rebuilds restore it instead of re-rendering.
+    // Both are bounded so a long session cannot grow them without limit.
+
+    // FNV-1a 32-bit — small deterministic content hash for closed blocks.
+    function fnv1a(str) {
+        var h = 0x811c9dc5;
+        for (var i = 0; i < str.length; i++) {
+            h ^= str.charCodeAt(i);
+            h = Math.imul(h, 0x01000193) >>> 0;
+        }
+        return h.toString(16);
     }
+
+    function makeVizCaches(limit) {
+        var held = {}, heldOrder = [];
+        var closed = {}, closedOrder = [];
+        function trim(map, order) {
+            while (order.length > limit) {
+                delete map[order.shift()];
+            }
+        }
+        return {
+            // Open (still-streaming) frames, keyed by the stable data-viz-key.
+            setHeld: function (key, svg) {
+                if (!key) return;
+                if (!(key in held)) heldOrder.push(key);
+                held[key] = svg;
+                trim(held, heldOrder);
+            },
+            getHeld: function (key) {
+                return key ? held[key] : null;
+            },
+            hasHeld: function (key) {
+                return !!(key && held[key]);
+            },
+            releaseHeld: function (key) {
+                if (!key) return;
+                delete held[key];
+                heldOrder = heldOrder.filter(function (k) { return k !== key; });
+            },
+            // Closed (final) frames, keyed by content hash.
+            rememberClosed: function (codeText, html) {
+                var k = fnv1a(codeText);
+                if (!(k in closed)) closedOrder.push(k);
+                closed[k] = html;
+                trim(closed, closedOrder);
+            },
+            lookupClosed: function (codeText) {
+                return closed[fnv1a(codeText)] || null;
+            }
+        };
+    }
+
+    // Decision: what a processing pass does for a STILL-STREAMING (open) viz
+    // block. 'hold' — a rendered frame already exists; keep showing it and do
+    // NOT re-invoke the renderer (re-rendering the full diagram on every
+    // stream tick was the flicker). 'render' — no frame yet; one optimistic
+    // attempt at the partial content, retried on later ticks until it parses
+    // or the fence closes.
+    function openVizAction(hasHeldFrame) {
+        return hasHeldFrame ? 'hold' : 'render';
+    }
+
+    var vizCaches = makeVizCaches(64);
 
     // CDN dependencies. Pinned to exact versions with Subresource Integrity so a
     // compromised or swapped CDN artifact fails closed instead of executing in the
@@ -81,13 +148,19 @@
         }
     }
 
-    // Node/test bootstrap: expose the sanitizer to the regression test and skip
-    // the browser wiring below. In the browser there is no CommonJS `module`
-    // (Pick injects this file as a raw <script> via include_str!, no bundler), so
-    // this is a no-op and rendering proceeds normally. Keeps stripHtmlSinks under
-    // test so a future edit that reopens the XSS fails CI (#371 review).
+    // Node/test bootstrap: expose the pure logic to the regression tests and
+    // skip the browser wiring below. In the browser there is no CommonJS
+    // `module` (Pick injects this file as a raw <script> via include_str!, no
+    // bundler), so this is a no-op and rendering proceeds normally. Keeps the
+    // XSS sanitizer and the streaming render-once/hold logic under test so a
+    // future edit that reopens them fails CI (#371 review, flicker fix).
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { stripHtmlSinks: stripHtmlSinks };
+        module.exports = {
+            stripHtmlSinks: stripHtmlSinks,
+            fnv1a: fnv1a,
+            makeVizCaches: makeVizCaches,
+            openVizAction: openVizAction
+        };
         return;
     }
 
@@ -340,50 +413,87 @@
 
         // Mermaid
         if (window.mermaid) {
-            // A block still streaming carries data-viz-open (Rust stamps it on
-            // the trailing OPEN fence). We render those too — optimistically —
-            // but must NOT mark them processed, so each streaming tick re-parses
-            // the grown text. Closed blocks lack the marker and render once.
+            // A block still streaming carries data-viz-open + a stable
+            // data-viz-key (Rust stamps both on the trailing OPEN fence).
+            //
+            // Render-once / hydrate-on-complete: an open block renders at most
+            // ONCE (first parse success); while the fence stays open the held
+            // frame is shown and the renderer is NOT re-invoked per stream
+            // tick (the old full re-render per update made the diagram flicker
+            // during generation). When the fence closes the block renders once
+            // more (final) and the result is cached by content hash, so later
+            // bubble rebuilds restore the frame instead of re-rendering.
             var blocks = container.querySelectorAll('pre code.language-mermaid:not([data-processed])');
             blocks.forEach(function(block, idx) {
                 var isOpen = block.getAttribute('data-viz-open') === 'true';
                 var vizKey = block.getAttribute('data-viz-key') || '';
                 var pre = block.closest('pre') || block;
                 var code = block.textContent || block.innerText;
+                if (!pre.parentNode) return; // torn down by a concurrent pass/restore
+
+                if (isOpen && openVizAction(vizCaches.hasHeld(vizKey)) === 'hold') {
+                    // Held frame for this block exists. The pre-paint observer
+                    // normally re-injects it already after each bubble rebuild;
+                    // mount it here as the fallback (idempotent: a no-op when a
+                    // frame for this content is already parked).
+                    mountCachedFrame(pre, vizCaches.getHeld(vizKey), fnv1a(code));
+                    return;
+                }
 
                 // Only closed blocks are terminal — mark them so we don't
-                // re-render. Open blocks stay unprocessed for the next tick.
-                if (!isOpen) block.setAttribute('data-processed', 'true');
+                // re-render. Open blocks stay unprocessed until they close.
+                if (!isOpen) {
+                    block.setAttribute('data-processed', 'true');
+                    // A cached frame may already be parked ahead of the pre by
+                    // the pre-paint observer. When the FINAL frame is what's
+                    // parked (closed-cache hit), there is nothing left to
+                    // render — the block is done. A parked HELD frame (the
+                    // fence just closed) is not final: the final render below
+                    // still has to run and will swap it out.
+                    var parked = pre.previousElementSibling;
+                    if (parked && parked.classList && parked.classList.contains('chat-viz-block')
+                        && vizCaches.lookupClosed(code)) {
+                        return;
+                    }
+                }
 
                 var div = document.createElement('div');
                 div.className = 'chat-viz-block';
                 div.id = 'chat-mermaid-' + Date.now() + '-' + idx;
                 div.style.cssText = 'background:rgba(0,0,0,0.3);border-radius:6px;padding:12px;margin:8px 0;overflow:auto;width:100%;box-sizing:border-box;';
 
-                // Show the last good render immediately (if any) so an open block
-                // that currently fails to parse doesn't flash — it holds the
-                // previous frame until the new text parses or the fence closes.
-                var prior = vizKey ? vizLastGood[vizKey] : null;
-                if (prior) {
-                    div.innerHTML = prior;
-                    var pv = div.querySelector('svg');
-                    if (pv) { pv.style.display='block'; pv.style.width='100%'; pv.style.height='auto'; pv.style.minHeight='80px'; }
-                }
-
                 function onFail(msg) {
+                    if (!pre.parentNode) return; // stale: bubble rebuilt since
                     if (isOpen) {
-                        // Still streaming: keep the last-good frame (already in
-                        // `div` if we had one). With no prior render, leave the
-                        // raw code block untouched so nothing flashes — a later
-                        // tick (or the closing fence) will render it. Don't mark
-                        // processed; don't surface the error yet.
-                        if (!prior) return; // leave <pre> in place
-                        if (div.parentNode == null && pre.parentNode) pre.parentNode.replaceChild(div, pre);
+                        // Still streaming: surface no error. A held frame (if
+                        // any) stays visible — the pre-paint observer normally
+                        // keeps it in place; mount it here as the fallback.
+                        // With no frame yet, leave the raw code block in place
+                        // so nothing flashes — a later tick (or the closing
+                        // fence) renders it.
+                        mountCachedFrame(pre, vizCaches.getHeld(vizKey), fnv1a(code));
                         return;
                     }
                     // Closed and still failing: this is a real error — show it.
+                    // Release the held frame so the observer stops restoring
+                    // the last good (now stale) diagram over the error.
+                    vizCaches.releaseHeld(vizKey);
                     renderChartError(div, 'Mermaid error', msg);
-                    if (pre.parentNode) pre.parentNode.replaceChild(div, pre);
+                    if (pre.parentNode) {
+                        clearParkedFrame(pre);
+                        pre.parentNode.replaceChild(div, pre);
+                    } else {
+                        // The pre-paint observer may have swapped the pre for a
+                        // restored held frame between our render start and this
+                        // failure — swap that frame out instead so the error is
+                        // still surfaced.
+                        var restored = container.querySelector(
+                            '.chat-viz-block[data-viz-hash="' + fnv1a(code) + '"]'
+                        );
+                        if (restored && restored.parentNode) {
+                            restored.parentNode.replaceChild(div, restored);
+                        }
+                    }
                 }
 
                 try {
@@ -396,8 +506,36 @@
                         var svg = div.querySelector('svg');
                         if (svg) { svg.style.display='block'; svg.style.width='100%'; svg.style.height='auto'; svg.style.minHeight='80px'; }
                         makeExpandable(div);
-                        if (vizKey) rememberGood(vizKey, result.svg);
-                        if (pre.parentNode) pre.parentNode.replaceChild(div, pre);
+                        div.setAttribute('data-viz-hash', fnv1a(code));
+                        if (isOpen) {
+                            // First good frame: hold the COMPLETE block (styled
+                            // div + svg, not bare svg markup) so the pre-paint
+                            // restore can re-mount it as the same kind of node.
+                            vizCaches.setHeld(vizKey, div.outerHTML);
+                        } else {
+                            // Final render: cache it by content so later bubble
+                            // rebuilds restore it, and free the streaming cache.
+                            vizCaches.rememberClosed(code, div.outerHTML);
+                            vizCaches.releaseHeld(vizKey);
+                        }
+                        // Mount: normally our <pre> is still in place (possibly
+                        // hidden behind a frame the pre-paint observer parked
+                        // for a just-closed block — that parked frame gets
+                        // replaced by this fresh one). A genuinely torn-down
+                        // bubble leaves no pre: swap out a parked occupant if
+                        // one exists, otherwise this render is stale and
+                        // dropped.
+                        if (pre.parentNode) {
+                            clearParkedFrame(pre);
+                            pre.parentNode.replaceChild(div, pre);
+                        } else {
+                            var occupant = container.querySelector(
+                                '.chat-viz-block[data-viz-hash="' + fnv1a(code) + '"]'
+                            );
+                            if (occupant && occupant.parentNode) {
+                                occupant.parentNode.replaceChild(div, occupant);
+                            }
+                        }
                     }).catch(function(err) {
                         onFail(err && err.message);
                     });
@@ -411,6 +549,11 @@
         if (window.echarts) {
             var eblocks = container.querySelectorAll('pre code.language-echarts:not([data-processed]), pre code.language-echart:not([data-processed])');
             eblocks.forEach(function(block, idx) {
+                // While the fence is still streaming the JSON is incomplete:
+                // parsing it on every tick flashed an error div over the raw
+                // block (same flicker class as the mermaid path). Leave the raw
+                // block in place until the fence closes, then render once.
+                if (block.getAttribute('data-viz-open') === 'true') return;
                 block.setAttribute('data-processed', 'true');
                 var pre = block.closest('pre') || block;
                 var code = block.textContent || block.innerText;
@@ -442,4 +585,97 @@
             });
         }
     };
+
+    // ── Pre-paint frame restore ─────────────────────────────────────────
+    // Dioxus rebuilds each bubble's innerHTML on every stream tick (render.rs
+    // `dangerous_inner_html`), and the deferred __processChatCharts pass
+    // (rAF + 50 ms in utils.js) runs AFTER the browser has painted the raw
+    // <pre>. That raw-text paint on every tick IS the visible "mermaid is
+    // flickering during generation" bug. A MutationObserver callback runs as
+    // a microtask after the mutation and BEFORE the next paint, so restoring
+    // the cached frame here means the raw code is never painted: the held
+    // (open) or final (closed) diagram simply stays put across ticks.
+
+    // Park a cached rendered frame in place of `pre` WITHOUT removing the
+    // pre from the DOM: the deferred __processChatCharts pass still needs the
+    // <code> element to find the block and (for a just-closed fence) to start
+    // the final render. The raw code is hidden, so the user never sees it.
+    // `hashTag` (fnv1a of the block's current text) is recorded on the frame
+    // so render/error paths can find and swap out a parked frame. Returns the
+    // mounted div (or the already-mounted one — idempotent), or null when the
+    // cache was empty / the markup unusable.
+    function mountCachedFrame(pre, cachedHtml, hashTag) {
+        if (!pre || !pre.parentNode || !cachedHtml) return null;
+        var existing = pre.previousElementSibling;
+        // Idempotent: a frame already parked for this block + content (by the
+        // observer's own earlier fire or the pass fallback) wins.
+        if (existing && existing.getAttribute('data-viz-hash') === hashTag) {
+            return existing;
+        }
+        var holder = document.createElement('div');
+        holder.innerHTML = cachedHtml;
+        var div = holder.firstChild;
+        if (!div || div.nodeType !== 1) return null;
+        // Restored markup is inert — re-attach the tap-to-expand handler.
+        makeExpandable(div);
+        div.setAttribute('data-viz-hash', hashTag);
+        pre.style.display = 'none';
+        pre.parentNode.insertBefore(div, pre);
+        return div;
+    }
+
+    // Remove a frame previously parked ahead of `pre` (if any).
+    function clearParkedFrame(pre) {
+        var old = pre.previousElementSibling;
+        if (old && old.classList && old.classList.contains('chat-viz-block')) old.remove();
+    }
+
+    function restoreCachedVizFrames(scope) {
+        var blocks = scope.querySelectorAll('code.language-mermaid');
+        for (var i = 0; i < blocks.length; i++) {
+            var block = blocks[i];
+            var pre = block.closest ? (block.closest('pre') || block) : block;
+            if (!pre.parentNode) continue;
+            var isOpen = block.getAttribute('data-viz-open') === 'true';
+            var vizKey = block.getAttribute('data-viz-key') || '';
+            var code = block.textContent || '';
+            var cached;
+            if (isOpen) {
+                cached = vizCaches.getHeld(vizKey);
+            } else {
+                // Final renders restore from the closed cache. A block that
+                // JUST closed (fence closed this tick) has no closed-cache
+                // entry yet — fall back to the held streaming frame so the
+                // last good diagram stays on screen until the final render
+                // completes and swaps it (no raw-code flash at completion).
+                // Only just-closed blocks carry a data-viz-key, so history
+                // blocks (key-less) are unaffected.
+                cached = vizCaches.lookupClosed(code) || vizCaches.getHeld(vizKey);
+            }
+            mountCachedFrame(pre, cached, fnv1a(code));
+        }
+    }
+
+    function installRestoreObserver() {
+        if (!document.body) return; // no-op; install is retried below
+        var obs = new MutationObserver(function (muts) {
+            for (var i = 0; i < muts.length; i++) {
+                var target = muts[i].target;
+                if (!target || target.nodeType !== 1 || !target.closest) continue;
+                // Scope the scan to the bubble that was rewritten (cheap); the
+                // fallback to the mutated node also covers other surfaces that
+                // share this processor (e.g. the Easy Mode document viewer).
+                restoreCachedVizFrames(target.closest('.chat-bubble-text') || target);
+            }
+        });
+        obs.observe(document.body, { childList: true, subtree: true });
+    }
+
+    if (typeof MutationObserver !== 'undefined') {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', installRestoreObserver, { once: true });
+        } else {
+            installRestoreObserver();
+        }
+    }
 })();
