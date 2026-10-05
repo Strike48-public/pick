@@ -108,8 +108,8 @@ On the host that will run the connector:
 | Outbound HTTPS to authentication | 443 to your Strike48 authentication hostname | `curl -sS -o /dev/null -w '%{http_code}\n' https://<your-auth-host>/` prints a 2xx or 3xx code |
 | Outbound HTTPS to the image registry | 443 to `ghcr.io` and `pkg-containers.githubusercontent.com`, which serves the image layers | `docker pull ghcr.io/strike48-public/pick:0.1.13` |
 | Outbound HTTPS to GitHub, install time and at run time | 443 to `github.com` and `release-assets.githubusercontent.com`, which the release download redirects to; nuclei downloads its templates from GitHub at run time (see [What leaves your network](#what-leaves-your-network)) | the `curl` commands in step 1 succeed; nuclei template updates work |
-| Disk | 8 GB free | `df -h /var/lib/docker` (the `0.1.13` image is about 1.2 GB to download on arm64 and 1.4 GB on amd64, and about 5 GB once unpacked) |
-| Memory | 2 GB (recommended floor), 4 GB comfortable | `free -h`. Guidance, not a measured minimum. Measured with the `0.1.13` image against one web target: a full-port nmap scan with version detection peaked at 42 MB, and nuclei with its default templates at about 850 MB, including its first template download. Tools the agent runs in parallel add up, and nuclei grows with concurrency and target count |
+| Disk | 8 GB free | `df -h /var/lib/docker` (the `0.1.10` image is about 1.2 GB to download on arm64 and 1.4 GB on amd64, and about 5 GB once unpacked) |
+| Memory | 2 GB (recommended floor), 4 GB comfortable | `free -h`. Guidance, not a measured minimum. Measured with the `0.1.10` image against one web target: a full-port nmap scan with version detection peaked at 42 MB, and nuclei with its default templates at about 850 MB, including its first template download. Tools the agent runs in parallel add up, and nuclei grows with concurrency and target count |
 | CPU | 2 vCPUs or more | `nproc`. Not a hard minimum; scans take longer on fewer cores |
 | Clock | synchronised by NTP or your hypervisor's time sync | `timedatectl` shows `System clock synchronized: yes`. See [Keep the clock in sync](#keep-the-clock-in-sync) |
 | Privileges | member of the `docker` group, or root | `docker ps` |
@@ -1142,7 +1142,7 @@ an untrusted channel.
   token exchange described in [Security notes](#security-notes). No scan data.
 - **Usage telemetry.** The connector's code includes optional, pseudonymous
   usage telemetry (an install id, platform, and event names; no targets,
-  commands, or results). The `0.1.13` image is built without a telemetry
+  commands, or results). The `0.1.11` image is built without a telemetry
   endpoint, so it sends none. To keep it off in any build, set
   `STRIKE48_TELEMETRY=0` in `.env`.
 - **Tool data.** Some tools fetch their own data at run time. nuclei downloads
@@ -1170,7 +1170,7 @@ an untrusted channel.
 ## How this guide was tested
 
 The install, approval, restart, and removal steps in this guide were executed
-against a live Strike48 Studio with the `0.1.13` image, and the log lines shown
+against a live Strike48 Studio with the `0.1.10` image, and the log lines shown
 are what that run printed. The proxy and private-CA sections describe behaviour
 read from the connector's source and were not exercised against an appliance.
 The network requirements (including IPv6, clock, endpoint security, virtual
