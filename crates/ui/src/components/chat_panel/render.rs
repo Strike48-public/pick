@@ -287,49 +287,63 @@ fn unescape_code_fences(input: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
-/// Render markdown and annotate a still-streaming viz block so the chart
-/// post-processor (chart_processor.js) can render it optimistically without
-/// flashing a parse error. `key` must be STABLE across streaming ticks (the
-/// message text changes every tick, so it can't be content-derived) — the JS
-/// caches the last successful render under it and, while the fence is open,
-/// shows that cached frame instead of the error when the in-progress diagram
-/// doesn't yet parse. Once the fence closes the annotation is gone and a
-/// genuine error surfaces normally.
+/// Render markdown and annotate the trailing viz block so the chart
+/// post-processor (chart_processor.js) can hold its last-good render across
+/// the bubble's per-tick innerHTML rebuilds. `key` must be STABLE across
+/// streaming ticks (the message text changes every tick, so it can't be
+/// content-derived) — the JS caches the last successful render under it: while
+/// the fence is open it holds that frame instead of re-rendering (or flashing
+/// an error) on every tick, and when the fence closes the closed block still
+/// carries the key, so the held frame stays on screen until the final render
+/// swaps it in — no raw-code flash at completion.
 pub fn render_markdown_streaming(input: &str, key: &str) -> String {
     let mut html = render_markdown(input);
-    // Only the trailing fence can be open mid-stream (a later block requires the
-    // previous one to have closed), so the LAST viz code block of the open
-    // language is the one still streaming. pulldown-cmark renders an unclosed
-    // fence identically to a closed one, hence the Rust-side detection.
-    let token = match trailing_open_fence_lang(input).as_deref() {
-        Some("mermaid") => "language-mermaid",
-        Some("echarts") => "language-echarts",
-        Some("echart") => "language-echart",
+    // Only the trailing fence can be open mid-stream (a later block requires
+    // the previous one to have closed), so the LAST viz code block is the one
+    // still streaming (open) or the one that just closed. pulldown-cmark
+    // renders an unclosed fence identically to a closed one, hence the
+    // Rust-side detection.
+    let (lang, is_open) = match trailing_viz_fence_lang(input) {
+        Some(v) => v,
+        None => return html,
+    };
+    let token = match lang {
+        "mermaid" => "language-mermaid",
+        "echarts" => "language-echarts",
+        "echart" => "language-echart",
         _ => return html,
     };
-    annotate_last_open_viz(&mut html, token, key);
+    annotate_trailing_viz_block(&mut html, token, key, is_open);
     html
 }
 
-/// Mark the last `<code class="{token}">` as the open, still-streaming viz block
-/// by adding `data-viz-open` + a stable `data-viz-key`. No-op if absent.
-fn annotate_last_open_viz(html: &mut String, token: &str, key: &str) {
+/// Stamp the last `<code class="{token}">` with a stable `data-viz-key`, and —
+/// when the fence is still open — additionally `data-viz-open`. The key is
+/// stamped on the closed block too (trailing ones only): it is what lets the
+/// JS keep the held streaming frame on screen for the instant between the
+/// fence closing and the final render completing. No-op if absent.
+fn annotate_trailing_viz_block(html: &mut String, token: &str, key: &str, open: bool) {
     let needle = format!("<code class=\"{token}\">");
     if let Some(pos) = html.rfind(&needle) {
-        let repl =
-            format!("<code class=\"{token}\" data-viz-open=\"true\" data-viz-key=\"{key}\">");
+        let repl = if open {
+            format!("<code class=\"{token}\" data-viz-open=\"true\" data-viz-key=\"{key}\">")
+        } else {
+            format!("<code class=\"{token}\" data-viz-key=\"{key}\">")
+        };
         html.replace_range(pos..pos + needle.len(), &repl);
     }
 }
 
-/// The first word of the info string of the currently-open trailing fenced code
-/// block, lowercased, or `None` when the source ends outside any fence (all
-/// blocks closed) or the open block has no language. Used to tell whether a
-/// viz block is still streaming so it isn't rendered until its fence closes.
-fn trailing_open_fence_lang(src: &str) -> Option<String> {
-    // `open_lang` is `Some(lang)` while inside a fence, `None` when closed;
-    // `fence` remembers the opening fence char + length so we match its closer.
-    let mut open_lang: Option<Option<String>> = None;
+/// The language of the source's LAST fenced code block, paired with whether
+/// that fence is still open at end of input — but only for viz languages
+/// (mermaid/echarts/echart). `None` when there is no fence or the last fence
+/// is not a viz block. The annotation needs exactly this: the trailing block
+/// is either the one still streaming (open) or the one that just closed —
+/// both need the stable key, only the open one the marker.
+fn trailing_viz_fence_lang(src: &str) -> Option<(&'static str, bool)> {
+    // `last_lang` is the language of the most recent fence; `fence` remembers
+    // the opening fence char + length so we match its closer.
+    let mut last_lang: Option<&'static str> = None;
     let mut fence: Option<(char, usize)> = None;
 
     for line in src.lines() {
@@ -350,22 +364,30 @@ fn trailing_open_fence_lang(src: &str) -> Option<String> {
         match fence {
             None => {
                 // Opening fence: remember its first info word as the language.
-                let lang = info.split_whitespace().next().map(str::to_ascii_lowercase);
+                let lang = match info
+                    .split_whitespace()
+                    .next()
+                    .map(str::to_ascii_lowercase)
+                    .as_deref()
+                {
+                    Some("mermaid") => Some("mermaid"),
+                    Some("echarts") => Some("echarts"),
+                    Some("echart") => Some("echart"),
+                    _ => None,
+                };
                 fence = Some((first, run));
-                open_lang = Some(lang);
+                last_lang = lang;
             }
             Some((fc, flen)) => {
                 // A closing fence uses the same char, at least as long, no info.
                 if first == fc && run >= flen && info.is_empty() {
                     fence = None;
-                    open_lang = None;
                 }
-                // Otherwise it's just content inside the open block — ignore.
             }
         }
     }
 
-    open_lang.flatten()
+    last_lang.map(|lang| (lang, fence.is_some()))
 }
 
 /// JS snippet that loads mermaid + echarts CDN scripts and defines
@@ -876,10 +898,8 @@ fn load_screenshots_from_result(result_json: &str) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        render_markdown, render_markdown_streaming, trailing_open_fence_lang,
-        webwright_display_name,
-    };
+    use super::{render_markdown, render_markdown_streaming, trailing_viz_fence_lang,
+        webwright_display_name};
 
     // Security (#365): the chat renderer must route through the shared markdown
     // sanitizer. These guard the chat sink specifically (the file-viewer sink is
@@ -927,43 +947,6 @@ mod tests {
     }
 
     #[test]
-    fn open_mermaid_fence_is_detected_while_streaming() {
-        // Fence opened, no closing ``` yet — the block is still streaming.
-        let src = "Here is a diagram:\n```mermaid\ngraph TD\n  A --> B";
-        assert_eq!(trailing_open_fence_lang(src).as_deref(), Some("mermaid"));
-    }
-
-    #[test]
-    fn closed_mermaid_fence_is_not_flagged() {
-        // Fully streamed block: closing ``` present -> eligible to render.
-        let src = "```mermaid\ngraph TD\n  A --> B\n```";
-        assert_eq!(trailing_open_fence_lang(src), None);
-    }
-
-    #[test]
-    fn closed_block_then_open_block_flags_only_the_open_one() {
-        // A completed mermaid block, then a second block still streaming. Only
-        // the trailing open block should be neutralized; the first stays live.
-        let src = "```mermaid\ngraph TD\n  A --> B\n```\ntext\n```echarts\n{\"x\":";
-        assert_eq!(trailing_open_fence_lang(src).as_deref(), Some("echarts"));
-    }
-
-    #[test]
-    fn open_fence_without_language_returns_none() {
-        // A plain ``` fence carries no viz language, so nothing to hide.
-        let src = "```\nsome code\nmore code";
-        assert_eq!(trailing_open_fence_lang(src), None);
-    }
-
-    #[test]
-    fn prose_with_no_fence_returns_none() {
-        assert_eq!(
-            trailing_open_fence_lang("just some text\nno fences here"),
-            None
-        );
-    }
-
-    #[test]
     fn streaming_open_mermaid_is_annotated_with_stable_key() {
         // While open, the block keeps its live language class (so it still
         // renders optimistically) AND gains the open marker + stable key the JS
@@ -984,13 +967,19 @@ mod tests {
     }
 
     #[test]
-    fn closed_mermaid_is_not_annotated() {
-        // Once closed, no streaming annotation — a genuine parse error may
-        // surface normally.
+    fn closed_mermaid_carries_key_but_no_open_marker() {
+        // Once closed, the open marker is gone (a genuine parse error may
+        // surface normally), but the STABLE KEY stays on the trailing block:
+        // it is what lets the JS hold the streaming frame on screen for the
+        // instant between the fence closing and the final render swapping in.
         let closed = render_markdown_streaming("```mermaid\ngraph TD\n  A --> B\n```", "m1-0");
         assert!(
             closed.contains("class=\"language-mermaid\""),
             "closed fence carries the live class: {closed}"
+        );
+        assert!(
+            closed.contains("data-viz-key=\"m1-0\""),
+            "closed trailing fence keeps the stable key: {closed}"
         );
         assert!(
             !closed.contains("data-viz-open"),
@@ -999,9 +988,32 @@ mod tests {
     }
 
     #[test]
+    fn closed_mermaid_with_trailing_prose_still_carries_key() {
+        // The agent keeps streaming prose after the closed fence; the key must
+        // still land on the mermaid block so the JS can hold its frame.
+        let src = "```mermaid\ngraph TD\n  A --> B\n```\nMore analysis follows.";
+        let html = render_markdown_streaming(src, "m1-0");
+        assert!(
+            html.contains("data-viz-key=\"m1-0\""),
+            "closed block with trailing prose keeps the key: {html}"
+        );
+        assert!(!html.contains("data-viz-open"), "no open marker: {html}");
+    }
+
+    #[test]
+    fn trailing_plain_fence_leaves_viz_block_unannotated() {
+        // The last fence is a plain code block, not a viz block: nothing is
+        // annotated (the JS has no held frame to correlate with a key here).
+        let src = "```mermaid\ngraph TD\n  A --> B\n```\n```\nplain code\n```";
+        let html = render_markdown_streaming(src, "m1-0");
+        assert!(!html.contains("data-viz-key"), "no key: {html}");
+        assert!(!html.contains("data-viz-open"), "no open marker: {html}");
+    }
+
+    #[test]
     fn only_trailing_open_block_is_annotated() {
         // First mermaid block closed, second still streaming: only the second
-        // (trailing/open) one is annotated.
+        // (trailing/open) one is annotated — one open marker, one key.
         let src = "```mermaid\ngraph TD\n  A --> B\n```\ntext\n```mermaid\ngraph TD\n  C --> D";
         let html = render_markdown_streaming(src, "m1-0");
         assert_eq!(
@@ -1009,6 +1021,48 @@ mod tests {
             1,
             "exactly one (the trailing open) block is annotated: {html}"
         );
+        assert_eq!(
+            html.matches("data-viz-key").count(),
+            1,
+            "only the trailing block carries the key: {html}"
+        );
+    }
+
+    #[test]
+    fn trailing_viz_fence_lang_reports_open_and_closed() {
+        // Open trailing viz fence: language + open flag.
+        assert_eq!(
+            trailing_viz_fence_lang("```mermaid\ngraph TD"),
+            Some(("mermaid", true))
+        );
+        // Closed trailing viz fence: language + closed flag (the key-stamping
+        // case — the block just finished streaming).
+        assert_eq!(
+            trailing_viz_fence_lang("```mermaid\ngraph TD\n  A --> B\n```"),
+            Some(("mermaid", false))
+        );
+        // Closed viz fence followed by prose: still the trailing fence.
+        assert_eq!(
+            trailing_viz_fence_lang("```echarts\n{}\n```\nand more"),
+            Some(("echarts", false))
+        );
+        // Trailing non-viz fence: None.
+        assert_eq!(
+            trailing_viz_fence_lang("```mermaid\nx\n```\n```\ny\n```"),
+            None
+        );
+        // No fence at all: None.
+        assert_eq!(trailing_viz_fence_lang("plain text"), None);
+        // A completed viz block followed by a second, still-open viz block:
+        // only the trailing one is reported, as open.
+        assert_eq!(
+            trailing_viz_fence_lang(
+                "```mermaid\ngraph TD\n  A --> B\n```\ntext\n```echarts\n{\"x\":"
+            ),
+            Some(("echarts", true))
+        );
+        // An open fence without a language: not a viz block.
+        assert_eq!(trailing_viz_fence_lang("```\nsome code\nmore code"), None);
     }
 
     #[test]
