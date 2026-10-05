@@ -18,18 +18,39 @@ on:
   # docker install was broken for both releases. Tags pushed by a human over
   # git/ssh DO fire the push event, which is why e.g. v0.1.11 got its image.
   #
-  # To publish the image for an existing tag, dispatch this workflow with that
-  # tag as the ref (UI: Actions -> Multi-Arch Docker -> Run workflow -> select
-  # the tag; or `gh workflow run docker-multiarch.yml --repo
-  # Strike48-public/pick --ref v0.1.13`). No inputs are needed: the run checks
-  # out the dispatch ref (the tag's commit) and docker/metadata-action derives
-  # the version tag from GITHUB_REF, so the image is built from the tag itself
-  # and pushed as <version> (plus <major>.<minor> and the short-sha tag, as on
-  # any tag push). See docs/DOCKER_INSTALL.md for the operator-facing notes.
+  # How to (re)publish a release's image: dispatch THIS workflow on main (the
+  # default branch) and pass the release tag as the `tag` input:
+  #
+  #   UI:  Actions -> Multi-Arch Docker -> Run workflow -> tag: v0.1.13
+  #   CLI: gh workflow run docker-multiarch.yml --repo
+  #        Strike48-public/pick -f tag=v0.1.13
+  #
+  # The run then checks that tag out explicitly (actions/checkout with
+  # ref: ${{ inputs.tag }}) and pushes the image as <version> (0.1.13) plus
+  # <major>.<minor> (0.1) plus the tag commit's short sha - as on any tag
+  # push - and ONLY those tags: :latest and :main are explicitly gated to
+  # push events so a backfill can never move them. See docs/DOCKER_INSTALL.md
+  # for the operator-facing notes.
+  #
+  # Why not dispatch AT the tag ref? GitHub validates the workflow_dispatch
+  # trigger against the tree of the ref being dispatched. Release tags such
+  # as v0.1.13 predate this trigger (added by
+  # https://github.com/Strike48-public/pick/pull/551), so their trees have no
+  # workflow_dispatch block and dispatching them fails with HTTP 422 "Workflow
+  # does not have 'workflow_dispatch' trigger". main has the trigger, so the
+  # dispatch happens there and the tag travels as an input.
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to (re)publish, e.g. v0.1.13'
+        required: true
+        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Backfill dispatches all run at ref refs/heads/main, so the group must
+  # include the tag input: without it, backfilling v0.1.12 and v0.1.13 would
+  # cancel each other. Re-dispatching the same tag still coalesces.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.tag || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -60,9 +81,46 @@ jobs:
             runner: ubuntu-24.04-arm
     outputs:
       meta_version: ${{ steps.meta.outputs.version }}
+      # Short sha of the commit actually built. On workflow_dispatch this is
+      # NOT GITHUB_SHA (which is main's head, the dispatch ref): the vers
+      # step below runs after the tag checkout and reports the tag's commit.
+      # merge-manifests uses it for the sha tag on the backfill path.
+      dispatch_commit: ${{ steps.vers.outputs.commit }}
 
     steps:
+      # workflow_dispatch backfills check out the release tag being
+      # (re)published. On push/PR runs inputs.tag is empty and
+      # actions/checkout falls back to the event's own commit (unchanged).
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+
+      # docker/metadata-action's type=semver only engages on tag refs
+      # (GITHUB_REF=refs/tags/...); a backfill dispatch happens at
+      # refs/heads/main, so derive the version tags from inputs.tag here and
+      # apply them as type=raw lines (enabled for workflow_dispatch only) in
+      # the metadata steps below. Runs after checkout, so HEAD is the tag's
+      # commit.
+      - name: Derive backfill version from dispatch input
+        id: vers
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          TAG="${{ inputs.tag }}"
+          case "${TAG}" in
+            v[0-9]*.*) ;;
+            *)
+              echo "Invalid tag '${TAG}': expected a release tag like v0.1.13" >&2
+              exit 1
+              ;;
+          esac
+          VERSION="${TAG#v}"
+          MAJOR_MINOR="${VERSION%.*}"
+          COMMIT="$(git rev-parse --short=7 HEAD)"
+          {
+            echo "version=${VERSION}"
+            echo "major_minor=${MAJOR_MINOR}"
+            echo "commit=${COMMIT}"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -77,12 +135,26 @@ jobs:
         with:
           images: ${{ env.REGISTRY_IMAGE }}
           tags: |
-            type=ref,event=branch
+            # workflow_dispatch backfill: version tags derived from
+            # inputs.tag; never latest, never main.
+            type=raw,value=${{ steps.vers.outputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ steps.vers.outputs.major_minor }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ steps.vers.outputs.commit }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            # push/PR path (unchanged semantics).
+            # ref,event=branch is gated to push: metadata-action matches any
+            # refs/heads/ ref with no event check, so without the gate a
+            # dispatch at main would also tag :main.
+            type=ref,event=branch,enable=${{ github.event_name == 'push' }}
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
+            # On dispatch GITHUB_SHA is main's head, not the tag's commit;
+            # the backfill's sha tag is the raw line above instead.
+            type=sha,prefix=,enable=${{ github.event_name != 'workflow_dispatch' }}
+            # latest only on push to main. is_default_branch is NOT safe:
+            # it is also true for a workflow_dispatch at main, which would
+            # move :latest to whatever release is being backfilled.
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           flavor: |
             latest=false
 
@@ -123,6 +195,29 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-image]
     steps:
+      # Same derivation as in build-image. This job never checks out source
+      # (it only merges per-arch digests), so there is no git here: the short
+      # sha of the built commit comes from build-image's dispatch_commit
+      # output, where the tag was actually checked out.
+      - name: Derive backfill version from dispatch input
+        id: vers
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          TAG="${{ inputs.tag }}"
+          case "${TAG}" in
+            v[0-9]*.*) ;;
+            *)
+              echo "Invalid tag '${TAG}': expected a release tag like v0.1.13" >&2
+              exit 1
+              ;;
+          esac
+          VERSION="${TAG#v}"
+          MAJOR_MINOR="${VERSION%.*}"
+          {
+            echo "version=${VERSION}"
+            echo "major_minor=${MAJOR_MINOR}"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -143,12 +238,23 @@ jobs:
         with:
           images: ${{ env.REGISTRY_IMAGE }}
           tags: |
-            type=ref,event=branch
+            # workflow_dispatch backfill: version tags derived from
+            # inputs.tag; the sha tag is the tag's own commit (from
+            # build-image, which checked it out), never latest, never main.
+            # This job is where tags actually land: build-image pushes the
+            # per-arch images by digest and this job applies the tags via
+            # imagetools create.
+            type=raw,value=${{ steps.vers.outputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ steps.vers.outputs.major_minor }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ needs.build-image.outputs.dispatch_commit }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=ref,event=branch,enable=${{ github.event_name == 'push' }}
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=,enable=${{ github.event_name != 'workflow_dispatch' }}
+            # latest only on push to main (is_default_branch is also true
+            # for a workflow_dispatch at main - see build-image).
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           flavor: |
             latest=false
 
