@@ -45,7 +45,8 @@ jobs:
     # glibc sets the distro floor. 24.04 (glibc 2.39) silently produced
     # artifacts that failed on Ubuntu 22.04/Debian 12 (QA: GLIBC_2.38 not
     # found); 22.04 floors them at glibc 2.35. The "Verify glibc/libstdc++
-    # floor" step below fails the build on any drift (strikehub#90 precedent).
+    # floor + shared-library self-containment" step below fails the build on
+    # any drift (strikehub#90 precedent).
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -55,32 +56,127 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev protobuf-compiler libpcap-dev libxdo-dev
+          # -dev packages are the build toolchain; the RUNTIME packages
+          # provide the shared libraries the Package step bundles into the
+          # tarball: libpcap0.8 libxcb1 libxdo3 libssl3 plus the transitive
+          # closure of the bundled libraries (libdbus-1-3 libsystemd0
+          # liblzma5 libzstd1 liblz4-1 libgcrypt20 libgpg-error0 libcap2
+          # libxau6 libxdmcp6 libbsd0 libmd0) — named explicitly so the
+          # bundle step never silently depends on apt's transitive picks.
+          # libwebkit2gtk-4.1-dev supplies the webkit2gtk runtime, which is
+          # intentionally NOT bundled — see the launcher's header and
+          # docs/INSTALLATION.md.
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev protobuf-compiler libpcap-dev libxdo-dev libpcap0.8 libxcb1 libxdo3 libssl3 libdbus-1-3 libsystemd0 liblzma5 libzstd1 liblz4-1 libgcrypt20 libgpg-error0 libcap2 libxau6 libxdmcp6 libbsd0 libmd0 libxtst6
 
       # Desktop release binaries ship easy-mode-first: bake PICK_EASY_MODE and the
       # studio PLG host at build time (via option_env!) so a distributed binary
       # with no runtime .env boots into easy mode and auto-connects to studio,
       # matching the Android build. Web and headless deliberately stay neutral
       # (compiled easy_mode=false, host resolved from the runtime env).
+      #
+      # RUSTFLAGS bakes the $ORIGIN/lib rpath into the binary AT LINK TIME as
+      # a DT_RPATH (not RUNPATH): --disable-new-dtags forces the DT_RPATH tag
+      # deterministically on any binutils version, and DT_RPATH — unlike
+      # DT_RUNPATH — is used spec-mandatedly for transitive dependencies too
+      # (e.g. the bundled libssl resolving the bundled libcrypto), so the
+      # Package step's lib/ directory is found from wherever the tarball is
+      # extracted. Release jobs only — dev builds don't ship a lib/.
       - name: Build
         env:
           PICK_EASY_MODE: "true"
           STRIKE48_HOST: https://studio.strike48.com
+          RUSTFLAGS: "-C link-arg=-Wl,-rpath,$ORIGIN/lib -C link-arg=-Wl,--disable-new-dtags"
         run: cargo build --locked --package pentest-desktop --release --features pentest-platform/desktop-pcap
 
       - name: Package
         run: |
+          set -euo pipefail
           mkdir -p dist
-          cp target/release/pentest-connector dist/
-          cd dist && tar -czvf pick-linux-x86_64.tar.gz pentest-connector
+          # The real binary ships as pentest-connector-bin; the tarball's
+          # entry point is the pentest-connector launcher next to it. The
+          # binary links WebKit2GTK as a NEEDED library, so on a host
+          # without it the process dies in the dynamic loader before any
+          # of Pick's code can print an error — the launcher probes for
+          # that gap up front and prints the exact apt line instead.
+          cp target/release/pentest-connector dist/pentest-connector-bin
 
-      - name: Verify glibc/libstdc++ floor
+          # Bundle every shared library the binary links other than the
+          # WebKit2GTK stack — libpcap (scan tooling), libxcb + libxdo
+          # (screenshot/menu backends), OpenSSL 3 (native TLS) — plus the
+          # TRANSITIVE CLOSURE of each (libpcap NEEDs libdbus-1 →
+          # libsystemd → lzma/zstd/lz4/gcrypt/gpg-error/cap; libxcb NEEDs
+          # libXau/libXdmcp → libbsd/libmd). The closure is the point:
+          # NixOS/minimal-container hosts have none of it, and the
+          # Verify step's allowlist-strict check fails the release if any
+          # resolution escapes lib/. Deliberately NOT bundled: the
+          # WebKit2GTK stack (50MB+ with helper processes — the strikehub
+          # AppImage is the vehicle that bundles webkit, strikehub#102)
+          # and the X11 libraries behind it (libX11 et al. arrive with the
+          # libwebkit2gtk-4.1-0 package closure; bundling a second copy
+          # would load two libX11 instances in one process). Exception:
+          # libXtst — NEEDED by libxdo but NOT in the webkit closure,
+          # so it is bundled to keep the host line at exactly one package.
+          # scripts/bundle-linux-libs.sh sources the runner's runtime
+          # packages at the glibc floor (ubuntu-22.04), not -dev symlinks.
+          scripts/bundle-linux-libs.sh dist/lib \
+            libpcap0.8:libpcap.so.0.8 \
+            libdbus-1-3:libdbus-1.so.3 \
+            libsystemd0:libsystemd.so.0 \
+            liblzma5:liblzma.so.5 \
+            libzstd1:libzstd.so.1 \
+            liblz4-1:liblz4.so.1 \
+            libgcrypt20:libgcrypt.so.20 \
+            libgpg-error0:libgpg-error.so.0 \
+            libcap2:libcap.so.2 \
+            libssl3:libssl.so.3 \
+            libssl3:libcrypto.so.3 \
+            libxcb1:libxcb.so.1 \
+            libxau6:libXau.so.6 \
+            libxdmcp6:libXdmcp.so.6 \
+            libbsd0:libbsd.so.0 \
+            libmd0:libmd.so.0 \
+            libxtst6:libXtst.so.6 \
+            libxdo3:libxdo.so.3
+          install -m 0755 scripts/desktop-launcher.sh dist/pentest-connector
+
+          # License attribution for the redistributed libraries
+          # (BSD-3-clause, Apache-2.0/OpenSSL dual, MIT/X11 — the file has
+          # the full per-library list with the source copyright texts).
+          cp THIRD-PARTY-NOTICES.md dist/
+
+          cd dist && tar -czvf pick-linux-x86_64.tar.gz pentest-connector pentest-connector-bin THIRD-PARTY-NOTICES.md lib
+
+      - name: Verify glibc/libstdc++ floor + shared-library self-containment
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
           tar -xzf dist/pick-linux-x86_64.tar.gz -C "$tmp"
-          scripts/check-glibc-floor.sh "$tmp" 2.35 3.4.30
-          rm -rf "$tmp"
+          # Host-provided stack: everything `apt install libwebkit2gtk-4.1-0`
+          # provides (the web engine + its GTK/X11 package closure) is the
+          # one documented host line (README + docs/INSTALLATION.md). The
+          # soname list is computed from the runner's package metadata so
+          # it tracks the closure instead of being a hardcoded list that
+          # rots when the stack updates.
+          allow="$(mktemp)"
+          # Root package first: apt-cache depends lists only the DEPS of
+          # the named package, so the webkit library files themselves
+          # (shipped by libwebkit2gtk-4.1-0) would be missed otherwise.
+          { echo "libwebkit2gtk-4.1-0"; apt-cache depends --recurse --no-recommends --no-suggests \
+              --no-conflicts --no-breaks --no-replaces --no-enhances libwebkit2gtk-4.1-0 \
+            | sed -n 's/^[[:space:]]*Depends:[[:space:]]*//p'; } \
+            | sed -E 's/ \(.*$//' \
+            | sort -u \
+            | while IFS= read -r p; do
+                  if dpkg -s "$p" >/dev/null 2>&1; then dpkg -L "$p" 2>/dev/null; fi
+                done \
+            | grep -E '/[^/]+\.so(\.[0-9]+)*$' \
+            | xargs -r -n 1 basename | sort -u > "$allow"
+          [ -s "$allow" ] || { echo "webkit closure allowlist came back empty" >&2; exit 1; }
+          scripts/check-linux-deps.sh "$tmp" \
+            --allow-missing-file "$allow" \
+            --expect-file pentest-connector --expect-file pentest-connector-bin \
+            --glibc 2.35 --glibcxx 3.4.30
+          rm -rf "$tmp" "$allow"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -247,23 +343,71 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev protobuf-compiler libpcap-dev
+          # libpcap0.8 / libssl3 / libxcb1 are the RUNTIME packages providing
+          # the shared libraries the Package step bundles so the web binary is
+          # self-contained (it links the same host libs as the agent), plus
+          # the transitive closure of the bundled libraries (libdbus-1-3
+          # libsystemd0 liblzma5 libzstd1 liblz4-1 libgcrypt20 libgpg-error0
+          # libcap2 libxau6 libxdmcp6 libbsd0 libmd0), named explicitly so
+          # the bundle step never depends on apt's transitive picks. The
+          # -dev/webkit packages remain for the LiveView build toolchain.
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev protobuf-compiler libpcap-dev libpcap0.8 libssl3 libxcb1 libdbus-1-3 libsystemd0 liblzma5 libzstd1 liblz4-1 libgcrypt20 libgpg-error0 libcap2 libxau6 libxdmcp6 libbsd0 libmd0
 
       - name: Build
+        env:
+          # Bake the $ORIGIN/lib rpath at link time as DT_RPATH (spec-mandated
+          # for transitive deps too, unlike DT_RUNPATH) — see the desktop
+          # job's Build step for the full rationale. Release jobs only.
+          RUSTFLAGS: "-C link-arg=-Wl,-rpath,$ORIGIN/lib -C link-arg=-Wl,--disable-new-dtags"
         run: cargo build --locked --package pentest-web --release --features pentest-platform/desktop-pcap
 
       - name: Package
         run: |
+          set -euo pipefail
           mkdir -p dist
           cp target/release/pentest-web dist/
-          cd dist && tar -czvf ../pick-web.tar.gz pentest-web
 
-      - name: Verify glibc/libstdc++ floor
+          # Bundle every shared library the web binary links — libpcap
+          # (scan tooling), OpenSSL 3 (native TLS), libxcb (X11 screenshot
+          # backend) — plus the TRANSITIVE CLOSURE of each (libpcap NEEDs
+          # libdbus-1 → libsystemd → lzma/zstd/lz4/gcrypt/gpg-error/cap;
+          # libxcb NEEDs libXau/libXdmcp → libbsd/libmd). The closure is
+          # the difference between "resolves on the runner" and "resolves
+          # on NixOS": stock Ubuntu happens to carry it, minimal hosts
+          # don't. Nothing but the glibc/libgcc base system may come from
+          # the host — the Verify step fails the release otherwise.
+          scripts/bundle-linux-libs.sh dist/lib \
+            libpcap0.8:libpcap.so.0.8 \
+            libdbus-1-3:libdbus-1.so.3 \
+            libsystemd0:libsystemd.so.0 \
+            liblzma5:liblzma.so.5 \
+            libzstd1:libzstd.so.1 \
+            liblz4-1:liblz4.so.1 \
+            libgcrypt20:libgcrypt.so.20 \
+            libgpg-error0:libgpg-error.so.0 \
+            libcap2:libcap.so.2 \
+            libssl3:libssl.so.3 \
+            libssl3:libcrypto.so.3 \
+            libxcb1:libxcb.so.1 \
+            libxau6:libXau.so.6 \
+            libxdmcp6:libXdmcp.so.6 \
+            libbsd0:libbsd.so.0 \
+            libmd0:libmd.so.0
+
+          # License attribution for the redistributed libraries
+          # (see the file for the full per-library list).
+          cp THIRD-PARTY-NOTICES.md dist/
+
+          cd dist && tar -czvf ../pick-web.tar.gz pentest-web THIRD-PARTY-NOTICES.md lib
+
+      - name: Verify glibc/libstdc++ floor + shared-library self-containment
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
           tar -xzf pick-web.tar.gz -C "$tmp"
-          scripts/check-glibc-floor.sh "$tmp" 2.35 3.4.30
+          # The web binary must have NO host-provided shared libraries:
+          # nothing is allowed-missing here.
+          scripts/check-linux-deps.sh "$tmp" --expect-file pentest-web --glibc 2.35 --glibcxx 3.4.30
           rm -rf "$tmp"
 
       - uses: actions/upload-artifact@v4
@@ -419,7 +563,17 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler libpcap-dev
+          # libpcap0.8 / libssl3 are the RUNTIME packages providing the
+          # shared libraries the Package step bundles into the tarball so
+          # the agent has zero host library dependencies (field incident:
+          # released agent died on a NixOS host with
+          # `error while loading shared libraries: libpcap.so.0.8`), plus
+          # the transitive closure of the bundled libraries (libdbus-1-3
+          # libsystemd0 liblzma5 libzstd1 liblz4-1 libgcrypt20
+          # libgpg-error0 libcap2 — libpcap NEEDs libdbus-1 → libsystemd →
+          # lzma/zstd/lz4/gcrypt/gpg-error/cap), named explicitly so the
+          # bundle step never depends on apt's transitive picks.
+          sudo apt-get install -y protobuf-compiler libpcap-dev libpcap0.8 libssl3 libdbus-1-3 libsystemd0 liblzma5 libzstd1 liblz4-1 libgcrypt20 libgpg-error0 libcap2
 
       # Easy-mode-first: bake PICK_EASY_MODE so the served LiveView UI defaults to
       # easy mode (resolve_easy_mode: persisted setting > build-time PICK_EASY_MODE
@@ -430,20 +584,56 @@ jobs:
       - name: Build
         env:
           PICK_EASY_MODE: "true"
+          # Bake the $ORIGIN/lib rpath at link time as DT_RPATH (spec-mandated
+          # for transitive deps too, unlike DT_RUNPATH) — see the desktop
+          # job's Build step for the full rationale. Release jobs only.
+          RUSTFLAGS: "-C link-arg=-Wl,-rpath,$ORIGIN/lib -C link-arg=-Wl,--disable-new-dtags"
         run: cargo build --locked --package pentest-headless --release --features pentest-platform/desktop-pcap
 
       - name: Package
         run: |
+          set -euo pipefail
           mkdir -p dist
           cp target/release/pentest-agent dist/
-          cd dist && tar -czvf pick-agent-linux-x86_64.tar.gz pentest-agent
 
-      - name: Verify glibc/libstdc++ floor
+          # Bundle every shared library the agent links — libpcap (the
+          # desktop-pcap scan tooling) and OpenSSL 3 (libssl/libcrypto,
+          # native TLS in the auth stack) — plus the TRANSITIVE CLOSURE of
+          # each (libpcap NEEDs libdbus-1 → libsystemd → lzma/zstd/lz4/
+          # gcrypt/gpg-error/cap). glibc + libgcc_s are the host base
+          # system (the floor guard's premise) and are not bundled. The
+          # binary stays at the tarball root — StrikeHub extracts it by
+          # file name and execs that path directly, so no launcher is
+          # possible here; the rpath is inert (harmless) when a consumer
+          # extracts only the binary and fully self-contained when the
+          # whole archive is extracted.
+          scripts/bundle-linux-libs.sh dist/lib \
+            libpcap0.8:libpcap.so.0.8 \
+            libdbus-1-3:libdbus-1.so.3 \
+            libsystemd0:libsystemd.so.0 \
+            liblzma5:liblzma.so.5 \
+            libzstd1:libzstd.so.1 \
+            liblz4-1:liblz4.so.1 \
+            libgcrypt20:libgcrypt.so.20 \
+            libgpg-error0:libgpg-error.so.0 \
+            libcap2:libcap.so.2 \
+            libssl3:libssl.so.3 \
+            libssl3:libcrypto.so.3
+
+          # License attribution for the redistributed libraries
+          # (see the file for the full per-library list).
+          cp THIRD-PARTY-NOTICES.md dist/
+
+          cd dist && tar -czvf pick-agent-linux-x86_64.tar.gz pentest-agent THIRD-PARTY-NOTICES.md lib
+
+      - name: Verify glibc/libstdc++ floor + shared-library self-containment
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
           tar -xzf dist/pick-agent-linux-x86_64.tar.gz -C "$tmp"
-          scripts/check-glibc-floor.sh "$tmp" 2.35 3.4.30
+          # The agent must have NO host-provided shared libraries: nothing
+          # is allowed-missing here.
+          scripts/check-linux-deps.sh "$tmp" --expect-file pentest-agent --glibc 2.35 --glibcxx 3.4.30
           rm -rf "$tmp"
 
       - uses: actions/upload-artifact@v4
@@ -699,6 +889,48 @@ jobs:
             | Windows | x86_64 | `pick-agent-windows-x86_64.zip` |
             | macOS | x86_64 | `pick-agent-darwin-x86_64.tar.gz` |
             | macOS | Apple Silicon | `pick-agent-darwin-aarch64.tar.gz` |
+
+            #### Linux runtime requirements
+
+            The Linux tarballs are self-contained for their shared-library
+            dependencies: every shared library a binary links other than
+            the desktop's webkit stack — `libpcap`, OpenSSL 3
+            (`libssl`/`libcrypto`), `libxcb` (agent, web and desktop),
+            `libxdo` (desktop) and the **transitive closure of each**
+            (the libdbus/libsystemd/lzma/zstd/lz4/gcrypt/gpg-error/cap
+            stack behind `libpcap`, `libXau`/`libXdmcp`/`libbsd`/`libmd`
+            behind `libxcb`, and `libXtst` — needed by `libxdo` but not
+            carried by the webkit closure) — is bundled under `lib/`, resolved via an
+            `$ORIGIN/lib` rpath baked into the binaries and verified at
+            package time by `scripts/check-linux-deps.sh`, which fails the
+            release if any resolution escapes `lib/` onto an undocumented
+            host library. License attribution for the bundled libraries
+            ships as `THIRD-PARTY-NOTICES.md` inside each Linux tarball.
+            A host must provide only:
+
+            - **glibc >= 2.35** (Ubuntu 22.04 / Debian 12+) plus the
+              libgcc runtime — every binary.
+            - **`libwebkit2gtk-4.1-0` and its package dependencies** —
+              the desktop app only: `sudo apt install libwebkit2gtk-4.1-0`.
+              That one package pulls the whole GTK/X11 web-engine closure
+              (the web engine behind the UI plus libgtk-3, libX11 and
+              friends — everything except `libXtst`, which is bundled), which is deliberately not bundled (50MB+ with its
+              helper processes). Without it, the `pentest-connector`
+              launcher prints that exact line instead of the binary dying
+              in the dynamic loader before any of Pick's code can react.
+
+            The headless agent (`pick-agent-linux-x86_64.tar.gz`) has no
+            host library dependencies beyond the glibc/libgcc base system.
+
+            Note on the bundled OpenSSL: the `$ORIGIN/lib` rpath makes the
+            bundled `libcrypto`/`libssl` win over any host copy (rpath is
+            searched before `LD_LIBRARY_PATH` and the default dirs), so
+            OpenSSL security fixes reach users through Pick releases, not
+            host package updates — rebuild/rotate on OpenSSL advisories.
+            Legacy OpenSSL *provider* operations (e.g. legacy PKCS#12/RC4
+            paths) dlopen from the host's compiled-in `ossl-modules`
+            directory, so a host that needs them must ship the
+            `libssl3`/`openssl` package alongside.
 
             On Windows, Pick runs its tools inside a Linux sandbox, so it needs
             WSL 2 (Pick imports its own distro on first use) or Docker. Without

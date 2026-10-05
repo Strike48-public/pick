@@ -5,6 +5,7 @@ Complete installation guide for the Pick penetration testing connector.
 ## Table of Contents
 
 - [Quick Install](#quick-install)
+- [Linux Runtime Requirements (Release Binaries)](#linux-runtime-requirements-release-binaries)
 - [Manual Installation](#manual-installation)
 - [Platform-Specific Guides](#platform-specific-guides)
 - [Environment Configuration](#environment-configuration)
@@ -37,6 +38,54 @@ For the GUI desktop app instead of the headless agent:
 ```bash
 sudo cargo run --package pentest-desktop   # sudo needed for WiFi scanning
 ```
+
+## Linux Runtime Requirements (Release Binaries)
+
+If you install a **released tarball** (from the GitHub Releases page)
+instead of building from source, this is the complete list of what the
+host must provide. The tarballs are self-contained for their
+shared-library dependencies: every shared library a binary links other
+than the desktop's webkit stack — `libpcap`, OpenSSL 3
+(`libssl`/`libcrypto`), `libxcb` (agent, web, desktop) and `libxdo`
+(desktop), **plus the transitive closure of each** (libdbus →
+libsystemd → lzma/zstd/lz4/gcrypt/gpg-error/cap behind `libpcap`,
+libXau/libXdmcp → libbsd/libmd behind `libxcb`) — is bundled under
+`lib/` inside each tarball, and is resolved via an `$ORIGIN/lib` rpath
+baked in at link time (the release pipeline verifies this with
+`scripts/check-linux-deps.sh`).
+
+| Requirement | Applies to | Where it comes from |
+|-------------|-----------|---------------------|
+| glibc >= 2.35 (Ubuntu 22.04 / Debian 12+) plus the libgcc runtime | All Linux binaries | Host base system (floor enforced by `scripts/check-glibc-floor.sh`) |
+| `libwebkit2gtk-4.1-0` **and its package dependencies** | Desktop app only — the web engine behind the UI, and the GTK/X11 stack it pulls (libgtk-3, libX11, …); intentionally not bundled (50MB+ with helper processes) | `sudo apt install libwebkit2gtk-4.1-0` (Fedora: `sudo dnf install webkit2gtk4.1`) — one package pulls the whole closure |
+| everything else | — | Bundled in the tarball's `lib/` (the desktop's X11 libraries are carried by the `libwebkit2gtk-4.1-0` closure, so no second copy is bundled — except `libXtst`, which libxdo needs but the closure does not ship, so it is bundled) |
+
+License attribution for the redistributed libraries (BSD-3-clause,
+Apache-2.0/OpenSSL dual, MIT/X11) ships inside each Linux tarball as
+`THIRD-PARTY-NOTICES.md`.
+
+- **Headless agent** (`pick-agent-linux-x86_64.tar.gz`): no host library
+  dependencies beyond the glibc/libgcc base system — it runs on NixOS
+  and minimal containers too. Extract and run `./pentest-agent`. Note:
+  StrikeHub's fetch path currently stages only the binary and drops the
+  sibling `lib/`, so a strikehub-fetched agent is still affected on
+  minimal hosts until
+  https://github.com/Strike48-public/strikehub/issues/108 lands.
+- **Desktop** (`pick-linux-x86_64.tar.gz`): the entry point is the
+  `pentest-connector` launcher next to the real
+  `pentest-connector-bin`. It must stay in the same directory as
+  `pentest-connector-bin` and `lib/` (extract the tarball as-is). If
+  WebKit2GTK is missing from the host, the launcher prints the exact
+  install line for it **and its package dependencies** (the GTK/X11
+  web-engine stack) instead of the binary dying in the dynamic loader
+  (`error while loading shared libraries: ...`) before any of Pick's
+  code could react — the silent-death mode this fix exists to kill.
+  The motivating field example, verbatim (released agent on a NixOS
+  host, child stderr discarded by its supervisor):
+
+  ```text
+  error while loading shared libraries: libpcap.so.0.8
+  ```
 
 ## Manual Installation
 
