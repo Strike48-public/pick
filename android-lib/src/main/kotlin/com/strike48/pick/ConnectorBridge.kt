@@ -82,9 +82,16 @@ object ConnectorBridge {
         val latch = CountDownLatch(1)
         val discovered = mutableListOf<NsdServiceInfo>()
         val resolveLatch = CountDownLatch(1)
+        // #309: an NSD start failure must surface as an error, not as an empty
+        // success — a silent Ok([]) gets labeled "Ran" upstream and hides
+        // permission/system failures from the operator.
+        var startFailureErrorCode: Int? = null
 
         val discoveryListener = object : NsdManager.DiscoveryListener {
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                synchronized(discovered) {
+                    startFailureErrorCode = errorCode
+                }
                 latch.countDown()
             }
 
@@ -109,6 +116,11 @@ object ConnectorBridge {
 
         // Wait for the timeout period to collect services
         latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+
+        val startFailure = synchronized(discovered) { startFailureErrorCode }
+        if (startFailure != null) {
+            return """{"error":"nsd start failed: errorCode $startFailure"}"""
+        }
 
         try {
             nsdManager.stopServiceDiscovery(discoveryListener)

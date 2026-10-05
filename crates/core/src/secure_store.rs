@@ -87,8 +87,17 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
+    // BACKEND is a process-global; both tests below mutate it. Rust runs tests
+    // multi-threaded by default, so without serialization they race -
+    // registered_backend_round_trips can set the backend between the other
+    // test's clear and its !is_available() assert (observed flaking in CI).
+    // This lock forces the two to run one at a time. Mirrors the same guard in
+    // clipboard.rs. Recover from poisoning so one panic does not cascade.
+    static TEST_GUARD: Mutex<()> = Mutex::new(());
+
     #[test]
     fn unavailable_without_backend_by_default() {
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         // A fresh key that no test registered — behavior depends on global state,
         // so only assert the no-backend error shape via a scoped clear.
         if let Ok(mut g) = BACKEND.lock() {
@@ -101,6 +110,7 @@ mod tests {
 
     #[test]
     fn registered_backend_round_trips() {
+        let _guard = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let store: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let s1 = store.clone();
         let s2 = store.clone();

@@ -580,8 +580,7 @@ Check existing issues: https://github.com/Strike48-public/pick/issues
 
 ### 4. Ask for Help
 
-- **GitHub Discussions:** https://github.com/Strike48-public/pick/discussions
-- **Create an issue:** Include your `build-error.log` file
+- **Create an issue:** https://github.com/Strike48-public/pick/issues/new/choose - include your `build-error.log` file
 - **Include:**
   - OS and version (`uname -a`)
   - Rust version (`rustc --version`)

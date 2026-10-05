@@ -145,6 +145,33 @@ jobs:
       - name: Release signing script self-test
         run: scripts/macos-sign-notarize.test.sh
 
+  # Windows exes ship from release.yml, and before this job no PR ever compiled
+  # or ran the cfg(windows) code, so Windows-only bugs reached customers
+  # unnoticed (pick#533). Builds the two shipped packages with the release
+  # feature set (no desktop-pcap: it needs the Npcap SDK, which release.yml
+  # does not install), runs the platform/core unit tests, and checks the exes
+  # stay free of the dynamic VC++ runtime.
+  check-windows:
+    name: Check (Windows)
+    runs-on: windows-latest
+    # Same rationale as the Test job: no sandbox backend on the runner.
+    env:
+      DISABLE_SANDBOX: "true"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --package pentest-headless --package pentest-desktop --locked
+      - run: cargo test --package pentest-platform --package pentest-core --lib --locked
+      - name: Exes do not need the VC++ Redistributable
+        shell: pwsh
+        run: ./scripts/check-windows-crt.ps1 target/debug/pentest-agent.exe target/debug/pentest-connector.exe
+
   # Type-check the iOS build of pentest-platform. Its cfg(target_os = "ios")
   # code (crates/platform/src/ios/*) is compiled by NO other CI job — the
   # Linux/macOS-host jobs all target the host — so a workspace-wide change can
@@ -204,7 +231,8 @@ jobs:
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           tar -xzf gitleaks.tar.gz gitleaks
           sudo mv gitleaks /usr/local/bin/
-      - run: gitleaks detect --source . --verbose
+      # --redact: this is a public repo, so matched values must never reach the Actions log.
+      - run: gitleaks detect --source . --verbose --redact
 
   cargo-audit:
     name: Dependency Audit
@@ -256,14 +284,6 @@ jobs:
   android:
     name: Android Build
     runs-on: ubuntu-latest
-    # DISABLED 2026-09-25 — see issue #499. The job was red on every run:
-    # `just fetch-proot` downloads a hard-pinned Termux deb
-    # (proot_5.1.107.94_{x86_64,aarch64}.deb) that the Termux mirror rotated
-    # off → HTTP 404 / exit 22 in "Fetch Android proot runtime". Re-enable by
-    # removing this `if: false` ONLY after the rotation-proof fetch fix in
-    # #499 lands (plus the matching release.yml fix). actionlint will warn
-    # `if-cond` on this line — expected while disabled; drop both together.
-    if: false
     steps:
       - uses: actions/checkout@v5
       # Build through the nix flake so PR CI uses the exact same toolchain,

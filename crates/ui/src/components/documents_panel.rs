@@ -523,22 +523,32 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
             );
             share_open.set(false);
             spawn(async move {
+                // Telemetry (#278): time the user's "create share link" action
+                // as a ui.action span with a real duration. Only the action name
+                // and a coarse outcome are recorded — never the URL, document id,
+                // or report content.
+                let span = pentest_core::telemetry::start_ui_span("create_share_link");
                 let client = MatrixChatClient::new(a).with_auth_token(t);
-                match client.create_shared_link(&c, &d).await {
+                let outcome = match client.create_shared_link(&c, &d).await {
                     Ok(url) => match action {
                         ShareAction::Copy => {
                             copy_to_clipboard(&url).await;
                             toast.set(Some("Link copied".to_string()));
+                            "ok"
                         }
                         ShareAction::NativeSheet => {
                             copy_to_clipboard(&url).await;
                             let _ = pentest_core::share::share_text(&url);
+                            "ok"
                         }
                         ShareAction::OpenBrowser => {
                             if let Err(e) =
                                 pentest_core::matrix::open_url_in_browser(&preview_url(&url))
                             {
                                 toast.set(Some(format!("Couldn't open report: {e}")));
+                                "error"
+                            } else {
+                                "ok"
                             }
                         }
                         ShareAction::Social => {
@@ -549,17 +559,27 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
                                             pentest_core::matrix::open_url_in_browser(&intent)
                                         {
                                             toast.set(Some(format!("Couldn't open share: {e}")));
+                                            "error"
+                                        } else {
+                                            "ok"
                                         }
                                     }
                                     Err(e) => {
-                                        toast.set(Some(format!("Couldn't build share link: {e}")))
+                                        toast.set(Some(format!("Couldn't build share link: {e}")));
+                                        "error"
                                     }
                                 }
+                            } else {
+                                "ok"
                             }
                         }
                     },
-                    Err(e) => toast.set(Some(format!("Sharing unavailable: {e}"))),
-                }
+                    Err(e) => {
+                        toast.set(Some(format!("Sharing unavailable: {e}")));
+                        "error"
+                    }
+                };
+                span.finish(outcome);
             });
         }
     };

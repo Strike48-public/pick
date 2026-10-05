@@ -504,6 +504,16 @@ impl ConnectorClient {
             .ok_or_else(|| ConnectorError::StreamError("Stream not started".to_string()))
     }
 
+    /// Test-only: install a message sender so handle_request's envelope can be
+    /// observed without a live transport. Not compiled outside cfg(test).
+    #[cfg(test)]
+    pub(crate) async fn set_message_tx_for_tests(
+        &self,
+        tx: mpsc::UnboundedSender<ProtoStreamMessage>,
+    ) {
+        *self.request_tx.write().await = Some(tx);
+    }
+
     /// Prepare an invoke request: validate state, register the response channel,
     /// and send the request message. Returns the oneshot receiver to wait on
     /// (or `None` for fire-and-forget), the request ID, and the timeout.

@@ -101,11 +101,16 @@ impl BwrapExecutor {
     }
 
     /// Execute a command inside the bwrap sandbox
+    ///
+    /// `known_secret` is a credential injected into `cmd` by a differential-authz
+    /// identity run (pick#314); it is used ONLY to redact the inner-command log
+    /// line below by value (pick#335). It does not affect execution.
     pub async fn execute(
         &self,
         cmd: &str,
         timeout: Duration,
         working_dir: Option<&Path>,
+        known_secret: Option<&str>,
     ) -> SandboxResult<CommandResult> {
         let rootfs = self.config.rootfs_dir();
         if !rootfs.join("bin").join("sh").exists() {
@@ -188,9 +193,14 @@ impl BwrapExecutor {
         bwrap_args.push("-c".to_string());
         bwrap_args.push(cmd.to_string());
 
+        // pick#335: this line used to log the raw inner command at info, which
+        // on an identity run carried the injected credential VERBATIM into every
+        // log sink (this site predates the redaction added to command.rs and was
+        // missed by it). Redact by value when the secret is known, then by
+        // pattern as defense in depth; non-secret structure stays visible.
         tracing::info!(
-            "[bwrap::execute] inner cmd passed to /bin/bash -c: {:?}",
-            cmd
+            "[bwrap::execute] inner cmd passed to /bin/bash -c (redacted): {:?}",
+            pentest_core::provenance::redact_arg(cmd, known_secret)
         );
 
         let mut command = Command::new("bwrap");
@@ -204,13 +214,18 @@ impl BwrapExecutor {
         match tokio::time::timeout(timeout, crate::desktop::wait_for_child_output(child)).await {
             Ok(result) => {
                 let (stdout, stderr, exit_code) = result?;
+                // Redact captured child output before logging (pick#335 review:
+                // on an identity run curl -v reflects the injected Authorization
+                // header into stderr, landing in the same sinks as argv logs).
+                let stdout_head = &stdout[..stdout.len().min(500)];
+                let stderr_head = &stderr[..stderr.len().min(500)];
                 tracing::info!(
                     "[bwrap::execute] exit_code={} stdout_len={} stderr_len={} stdout={:?} stderr={:?}",
                     exit_code,
                     stdout.len(),
                     stderr.len(),
-                    &stdout[..stdout.len().min(500)],
-                    &stderr[..stderr.len().min(500)],
+                    pentest_core::provenance::redact_arg(stdout_head, known_secret),
+                    pentest_core::provenance::redact_arg(stderr_head, known_secret),
                 );
                 Ok(CommandResult::success(
                     stdout,

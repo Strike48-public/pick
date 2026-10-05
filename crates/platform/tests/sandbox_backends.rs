@@ -56,7 +56,7 @@ async fn working_backend_executes_and_reports_host_arch() {
         .await
         .expect("build sandbox manager");
     let out = mgr
-        .execute("uname -m", Duration::from_secs(900), None)
+        .execute("uname -m", Duration::from_secs(900), None, None)
         .await
         .expect("a Working sandbox must execute a command, not Exec-format-error");
 

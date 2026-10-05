@@ -68,10 +68,12 @@ pub struct ConnectorConfig {
     /// Instance ID for this connector (auto-generated if not provided)
     pub instance_id: String,
 
-    /// Connector name used as the gateway identity in Matrix.
-    /// Instances sharing the same connector_name are round-robin'd;
-    /// set a unique name (e.g. via CONNECTOR_NAME env var) to get a
-    /// dedicated agent view. Defaults to "pentest-connector".
+    /// Persona/display identity of this connector instance: reported to tool
+    /// contexts as the agent name, used by the chat panel when auto-creating
+    /// the agent persona, and shown in logs. Deliberately NOT the SDK
+    /// connector type (see [`CONNECTOR_TYPE`], #386): hosts mint pre-approved
+    /// OTTs for the type, never for a persona name, and the saved-credential
+    /// file name is type-scoped too. Defaults to "pentest-connector".
     #[serde(default = "default_connector_name")]
     pub connector_name: String,
 
@@ -94,8 +96,22 @@ pub struct ConnectorConfig {
     pub aggression_level: AggressionLevel,
 }
 
+/// SDK connector type Pick registers as: the value sent as `connector_type`
+/// to `/api/connectors/pre-approve` and `/api/connectors/register-with-ott`,
+/// the `connector_type` in the WebSocket `RegisterConnectorRequest`, and the
+/// prefix of the SDK's saved-credential / keypair file names
+/// (`{connector_type}_{instance_id}`).
+///
+/// Deliberately a constant, NOT [`ConnectorConfig::connector_name`]
+/// (#386): that field is the per-instance persona/display identity, and a
+/// host (e.g. StrikeHub) mints pre-approved OTTs for `pentest-connector`.
+/// Redeeming such a token with a persona name fails registration with a
+/// misleading "Invalid or expired OTT", and a persona-scoped credential
+/// file name would never match what the SDK's runner looks up.
+pub const CONNECTOR_TYPE: &str = "pentest-connector";
+
 fn default_connector_name() -> String {
-    "pentest-connector".to_string()
+    CONNECTOR_TYPE.to_string()
 }
 
 /// Whether the PLG easy-mode connect should sign in first or connect silently.
@@ -550,12 +566,16 @@ impl ConnectorConfig {
     /// Returns `None` when the file is missing, unreadable, or the
     /// `tenant_id` field is absent — callers should fall back to the
     /// user-supplied tenant string.
-    pub fn read_credentials_tenant_id(connector_name: &str, instance_id: &str) -> Option<String> {
+    ///
+    /// The file name is `{CONNECTOR_TYPE}_{instance_id}.json`, matching what
+    /// the SDK's `OttProvider` writes — the persona `connector_name` must not
+    /// leak into it (#386).
+    pub fn read_credentials_tenant_id(instance_id: &str) -> Option<String> {
         let home = std::env::var("HOME").ok()?;
         let path = std::path::PathBuf::from(home)
             .join(".strike48")
             .join("credentials")
-            .join(format!("{connector_name}_{instance_id}.json"));
+            .join(format!("{CONNECTOR_TYPE}_{instance_id}.json"));
         let content = std::fs::read_to_string(&path).ok()?;
         let value: serde_json::Value = serde_json::from_str(&content).ok()?;
         value
@@ -568,7 +588,10 @@ impl ConnectorConfig {
     /// True when the SDK has already persisted connector credentials for this
     /// identity (i.e. a prior OTT registration succeeded), so we can connect
     /// without signing in again.
-    pub fn credentials_present(connector_name: &str, instance_id: &str) -> bool {
+    ///
+    /// Same file-name algebra as [`Self::read_credentials_tenant_id`]: keyed
+    /// by [`CONNECTOR_TYPE`], not the persona `connector_name` (#386).
+    pub fn credentials_present(instance_id: &str) -> bool {
         let home = match std::env::var("HOME") {
             Ok(h) => h,
             Err(_) => return false,
@@ -576,7 +599,7 @@ impl ConnectorConfig {
         std::path::PathBuf::from(home)
             .join(".strike48")
             .join("credentials")
-            .join(format!("{connector_name}_{instance_id}.json"))
+            .join(format!("{CONNECTOR_TYPE}_{instance_id}.json"))
             .exists()
     }
 
@@ -584,14 +607,17 @@ impl ConnectorConfig {
     /// present. Used by "Log out" so the next launch does a fully fresh OTT
     /// registration rather than silently reconnecting the old connector.
     /// Best-effort: a missing file or unset HOME is a no-op.
-    pub fn clear_credentials(connector_name: &str, instance_id: &str) {
+    ///
+    /// Same file-name algebra as [`Self::read_credentials_tenant_id`]: keyed
+    /// by [`CONNECTOR_TYPE`], not the persona `connector_name` (#386).
+    pub fn clear_credentials(instance_id: &str) {
         let Ok(home) = std::env::var("HOME") else {
             return;
         };
         let path = std::path::PathBuf::from(home)
             .join(".strike48")
             .join("credentials")
-            .join(format!("{connector_name}_{instance_id}.json"));
+            .join(format!("{CONNECTOR_TYPE}_{instance_id}.json"));
         let _ = std::fs::remove_file(path);
     }
 
@@ -684,7 +710,7 @@ impl ConnectorConfig {
             host: self.host.clone(),
             tenant_id: self.tenant_id.clone(),
             instance_id: self.instance_id.clone(),
-            connector_type: self.connector_name.clone(),
+            connector_type: CONNECTOR_TYPE.to_string(),
             use_tls: self.use_tls,
             reconnect_enabled: self.reconnect_enabled,
             reconnect_delay_ms: self.reconnect_delay_ms,
@@ -709,6 +735,28 @@ impl ConnectorConfig {
 
         sdk_config
     }
+}
+
+/// Point `HOME` at the user's profile directory when the OS left it unset.
+///
+/// Pick's credential helpers above and the SDK's `OttProvider` both locate
+/// `~/.strike48` through `HOME`. Windows does not set `HOME`, so a normal
+/// launch made the SDK write keys and credentials under the current working
+/// directory while [`ConnectorConfig::credentials_present`] reported nothing,
+/// forcing a fresh sign-in on every launch (pick#533). Setting it once at
+/// startup keeps every reader and writer on the same directory.
+///
+/// Call it first in `main`, before any other thread reads the environment.
+/// Returns the directory it set, or `None` when `HOME` was already set or no
+/// home directory could be resolved.
+pub fn ensure_home_env() -> Option<std::path::PathBuf> {
+    if std::env::var_os("HOME").is_some_and(|home| !home.is_empty()) {
+        return None;
+    }
+    let home = dirs::home_dir()?;
+    // SAFETY: documented precondition - runs before other threads exist.
+    unsafe { std::env::set_var("HOME", &home) };
+    Some(home)
 }
 
 /// Download state for BlackArch ISO
@@ -1396,7 +1444,7 @@ mod tests {
         // SAFETY: single-threaded config tests, no other thread reads HOME here.
         let prev = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", tmp.path()) };
-        let got = ConnectorConfig::read_credentials_tenant_id("pentest-connector", "dev-abc");
+        let got = ConnectorConfig::read_credentials_tenant_id("dev-abc");
         // Restore before assertions so a failing test doesn't leak env state.
         match prev {
             Some(v) => unsafe { std::env::set_var("HOME", v) },
@@ -1406,18 +1454,101 @@ mod tests {
     }
 
     #[test]
+    fn ensure_home_env_sets_home_to_the_profile_dir_when_unset() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("HOME").ok();
+        let expected = dirs::home_dir();
+
+        // Simulate a Windows launch, where HOME is not set at all.
+        unsafe { std::env::remove_var("HOME") };
+        let set = ensure_home_env();
+        let home_after = std::env::var("HOME").ok();
+        let second = ensure_home_env();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        assert!(expected.is_some(), "test host must resolve a home dir");
+        assert_eq!(set, expected);
+        assert_eq!(home_after.map(std::path::PathBuf::from), expected);
+        assert_eq!(second, None, "an existing HOME must be left alone");
+    }
+
+    #[test]
+    fn ensure_home_env_keeps_an_existing_home() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+        let set = ensure_home_env();
+        let home_after = std::env::var("HOME").ok();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(set, None);
+        assert_eq!(home_after.as_deref(), tmp.path().to_str());
+    }
+
+    #[test]
     fn read_credentials_tenant_id_returns_none_when_missing() {
         // Serialise with every other env-mutating config test (sets HOME). See ENV_LOCK.
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         let prev = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", tmp.path()) };
-        let got = ConnectorConfig::read_credentials_tenant_id("pentest-connector", "never-ott");
+        let got = ConnectorConfig::read_credentials_tenant_id("never-ott");
         match prev {
             Some(v) => unsafe { std::env::set_var("HOME", v) },
             None => unsafe { std::env::remove_var("HOME") },
         }
         assert!(got.is_none());
+    }
+
+    /// Regression guard for #386: the persona `connector_name` must never
+    /// leak into OTT registration or the SDK credential file name. The SDK
+    /// saves credentials as `{CONNECTOR_TYPE}_{instance_id}.json`, so the
+    /// lookup must find that file even when the persona differs.
+    #[test]
+    fn read_credentials_tenant_id_ignores_persona_connector_name() {
+        // Serialise with every other env-mutating config test (sets HOME). See ENV_LOCK.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let creds_dir = tmp.path().join(".strike48").join("credentials");
+        std::fs::create_dir_all(&creds_dir).expect("mkdir creds");
+        // Exactly the file the SDK writes for a StrikeHub-minted OTT.
+        let file = creds_dir.join(format!("{CONNECTOR_TYPE}_dev-abc.json"));
+        std::fs::write(
+            &file,
+            r#"{"client_id":"matrix:connector:local:x:pentest-connector:dev-abc","keycloak_url":"https://auth.example","tenant_id":"019f4d37-0212-72cb-945a-f8d01726ebf5"}"#,
+        )
+        .expect("write creds");
+
+        // SAFETY: single-threaded config tests, no other thread reads HOME here.
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+        let got = ConnectorConfig::read_credentials_tenant_id("dev-abc");
+        match prev {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(got.as_deref(), Some("019f4d37-0212-72cb-945a-f8d01726ebf5"));
+    }
+
+    /// Regression guard for #386: the SDK config's `connector_type` is the
+    /// fixed SDK type, NOT the persona `connector_name` — a host mints
+    /// pre-approved OTTs for the type, and redeeming with a persona name
+    /// fails with a misleading "Invalid or expired OTT".
+    #[test]
+    fn to_sdk_config_connector_type_is_not_persona_name() {
+        let config = ConnectorConfig {
+            connector_name: "pentest-connector-web-app".to_string(),
+            ..ConnectorConfig::default()
+        };
+        let sdk = config.to_sdk_config();
+        assert_eq!(sdk.connector_type, CONNECTOR_TYPE);
+        assert_eq!(config.connector_name, "pentest-connector-web-app");
     }
 
     #[test]

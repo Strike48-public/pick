@@ -110,6 +110,16 @@ impl NetworkOps for AndroidPlatform {
         network::ssdp_discover(timeout_ms).await
     }
 
+    async fn ssdp_discover_with_outcome(
+        &self,
+        timeout_ms: u64,
+    ) -> Result<(Vec<SsdpDevice>, crate::common::probe::ProbeOutcome)> {
+        // The shared SSDP implementation degrades a blocked socket to an empty
+        // result; carry the probe outcome through so a skipped sweep cannot be
+        // rendered as a clean network (#309).
+        Ok(crate::common::ssdp::discover_with_outcome(timeout_ms).await)
+    }
+
     async fn mdns_discover(&self, service_type: &str, timeout_ms: u64) -> Result<Vec<MdnsService>> {
         mdns::mdns_discover(service_type, timeout_ms).await
     }
