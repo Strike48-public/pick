@@ -49,9 +49,17 @@ on:
 concurrency:
   # Backfill dispatches all run at ref refs/heads/main, so the group must
   # include the tag input: without it, backfilling v0.1.12 and v0.1.13 would
-  # cancel each other. Re-dispatching the same tag still coalesces.
+  # cancel each other. Re-dispatching the same tag queues instead of racing.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.tag || github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Only PR-scoped runs cancel their own stale predecessors (their group is
+  # PR-unique, so this only supersedes 'my older run for this PR'). main pushes
+  # and workflow_dispatch backfills QUEUE instead of racing: GitHub reruns of
+  # workflow_dispatch lose the `inputs` context, dropping a rerun into the bare
+  # `${ref}` group where it was repeatedly cancelled by (and cancelled) ordinary
+  # main-branch activity — killing the manifest-merge step after both arch
+  # builds succeeded (both arch Builds green, Merge cancelled). Queueing
+  # defuses that whole collision class; tag/PR/ref keying above is unchanged.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
