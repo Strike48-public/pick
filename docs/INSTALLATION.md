@@ -5,6 +5,7 @@ Complete installation guide for the Pick penetration testing connector.
 ## Table of Contents
 
 - [Quick Install](#quick-install)
+- [Linux Runtime Requirements (Release Binaries)](#linux-runtime-requirements-release-binaries)
 - [Manual Installation](#manual-installation)
 - [Platform-Specific Guides](#platform-specific-guides)
 - [Environment Configuration](#environment-configuration)
@@ -37,6 +38,42 @@ For the GUI desktop app instead of the headless agent:
 ```bash
 sudo cargo run --package pentest-desktop   # sudo needed for WiFi scanning
 ```
+
+## Linux Runtime Requirements (Release Binaries)
+
+If you install a **released tarball** (from the GitHub Releases page)
+instead of building from source, this is the complete list of what the
+host must provide. The tarballs are self-contained for their small
+dependencies: every non-glibc shared library a binary links —
+`libpcap`, OpenSSL 3 (`libssl`/`libcrypto`), `libxcb` (agent, web and
+desktop tarballs) and `libXdo` (desktop tarball) — is bundled inside each
+tarball under `lib/` and resolved through an `$ORIGIN/lib` rpath baked
+into the binaries at link time (the release pipeline verifies this with
+`scripts/check-linux-deps.sh`).
+
+| Requirement | Applies to | Where it comes from |
+|-------------|-----------|---------------------|
+| glibc >= 2.35 (Ubuntu 22.04 / Debian 12+) plus the libgcc runtime | All Linux binaries | Host base system (floor enforced by `scripts/check-glibc-floor.sh`) |
+| `libwebkit2gtk-4.1-0` | Desktop app only — the web engine behind the UI, intentionally not bundled (50MB+ with helper processes) | `sudo apt install libwebkit2gtk-4.1-0` (Fedora: `sudo dnf install webkit2gtk4.1`) |
+| everything else | — | Bundled in the tarball's `lib/`, or carried by the `libwebkit2gtk-4.1-0` package's dependency closure (GTK/X11 stack) on the desktop |
+
+- **Headless agent** (`pick-agent-linux-x86_64.tar.gz`): no host library
+  dependencies beyond the glibc/libgcc base system. Extract and run
+  `./pentest-agent`.
+- **Desktop** (`pick-linux-x86_64.tar.gz`): the entry point is the
+  `pentest-connector` launcher next to the real
+  `pentest-connector-bin`. It must stay in the same directory as
+  `pentest-connector-bin` and `lib/` (extract the tarball as-is). If
+  WebKit2GTK is missing from the host, the launcher prints the exact
+  install line instead of the binary dying in the dynamic loader
+  (`error while loading shared libraries: ...`) before any of Pick's
+  code could react — the silent-death mode this fix exists to kill.
+  The motivating field example, verbatim (released agent on a NixOS
+  host, child stderr discarded by its supervisor):
+
+  ```text
+  error while loading shared libraries: libpcap.so.0.8
+  ```
 
 ## Manual Installation
 

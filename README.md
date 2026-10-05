@@ -128,6 +128,41 @@ pick/
 - For mobile: `cargo-mobile2` and platform SDKs
 - Linux builds target glibc >= 2.35 (Ubuntu 22.04 / Debian 12+).
 
+### Linux runtime requirements (release binaries)
+
+The Linux release tarballs are self-contained for their small
+dependencies: every non-glibc shared library a binary links —
+`libpcap`, OpenSSL 3 (`libssl`/`libcrypto`), `libxcb` (agent, web and
+desktop tarballs) and `libXdo` (desktop tarball) — is bundled inside the
+tarball under `lib/` and resolved through an `$ORIGIN/lib` rpath baked
+into the binaries at link time. The release pipeline enforces this with
+`scripts/check-linux-deps.sh` (no unresolved `ldd` entries, rpath
+present, glibc floor held). What a host must still provide:
+
+| Requirement | Applies to | Where it comes from |
+|-------------|-----------|---------------------|
+| glibc >= 2.35 (Ubuntu 22.04 / Debian 12+) plus the libgcc runtime | All Linux binaries | Host base system (glibc floor guarded by `scripts/check-glibc-floor.sh`) |
+| `libwebkit2gtk-4.1-0` | Desktop app only — the web engine behind the UI, intentionally not bundled (50MB+ with helper processes) | `sudo apt install libwebkit2gtk-4.1-0` (Fedora: `sudo dnf install webkit2gtk4.1`) |
+| everything else | — | Bundled in the tarball's `lib/`, or carried by the `libwebkit2gtk-4.1-0` package's dependency closure (GTK/X11 stack) on the desktop |
+
+The headless agent (`pick-agent-linux-x86_64.tar.gz`) has **no host
+library dependencies** beyond the glibc/libgcc base system — the binary
+and the bundled `lib/` are enough on any glibc-2.35+ host.
+
+The desktop tarball's entry point is the `pentest-connector` launcher
+(next to the real `pentest-connector-bin`). Because the binary links
+WebKit2GTK as a `NEEDED` library, a host without it used to die inside
+the dynamic loader before any of Pick's own code could print an error.
+The launcher probes for that gap up front and turns it into an
+actionable message with the exact package line. The failure mode it
+replaces, verbatim from the field (released agent, NixOS host, stderr
+discarded by its supervisor):
+
+    error while loading shared libraries: libpcap.so.0.8
+
+`libpcap` is now bundled; any remaining host gap on the desktop app is
+WebKit2GTK, which the launcher names by its exact apt package.
+
 ### Headless Agent (Pick)
 
 The headless agent (`pentest-agent`) runs without a GUI and serves its workspace
