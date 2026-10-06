@@ -530,48 +530,40 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
                 let span = pentest_core::telemetry::start_ui_span("create_share_link");
                 let client = MatrixChatClient::new(a).with_auth_token(t);
                 let outcome = match client.create_shared_link(&c, &d).await {
-                    Ok(url) => match action {
-                        ShareAction::Copy => {
-                            copy_to_clipboard(&url).await;
-                            toast.set(Some("Link copied".to_string()));
-                            "ok"
-                        }
-                        ShareAction::NativeSheet => {
-                            copy_to_clipboard(&url).await;
-                            let _ = pentest_core::share::share_text(&url);
-                            "ok"
-                        }
-                        ShareAction::OpenBrowser => {
-                            if let Err(e) =
-                                pentest_core::matrix::open_url_in_browser(&preview_url(&url))
-                            {
-                                toast.set(Some(format!("Couldn't open report: {e}")));
-                                "error"
-                            } else {
+                    Ok(url) => match share_sink_url(action, network, &url, &title) {
+                        Ok(Some(target)) => match action {
+                            ShareAction::Copy => {
+                                copy_to_clipboard(&target).await;
+                                toast.set(Some("Link copied".to_string()));
                                 "ok"
                             }
-                        }
-                        ShareAction::Social => {
-                            if let Some(net) = network {
-                                match share_intent_url(net, &url, &title) {
-                                    Ok(intent) => {
-                                        if let Err(e) =
-                                            pentest_core::matrix::open_url_in_browser(&intent)
-                                        {
-                                            toast.set(Some(format!("Couldn't open share: {e}")));
-                                            "error"
-                                        } else {
-                                            "ok"
-                                        }
-                                    }
-                                    Err(e) => {
-                                        toast.set(Some(format!("Couldn't build share link: {e}")));
-                                        "error"
-                                    }
+                            ShareAction::NativeSheet => {
+                                copy_to_clipboard(&target).await;
+                                let _ = pentest_core::share::share_text(&target);
+                                "ok"
+                            }
+                            ShareAction::OpenBrowser => {
+                                if let Err(e) = pentest_core::matrix::open_url_in_browser(&target) {
+                                    toast.set(Some(format!("Couldn't open report: {e}")));
+                                    "error"
+                                } else {
+                                    "ok"
                                 }
-                            } else {
-                                "ok"
                             }
+                            ShareAction::Social => {
+                                if let Err(e) = pentest_core::matrix::open_url_in_browser(&target) {
+                                    toast.set(Some(format!("Couldn't open share: {e}")));
+                                    "error"
+                                } else {
+                                    "ok"
+                                }
+                            }
+                        },
+                        // Social with no network selected: no-op, as before.
+                        Ok(None) => "ok",
+                        Err(e) => {
+                            toast.set(Some(format!("Couldn't build share link: {e}")));
+                            "error"
                         }
                     },
                     Err(e) => {
@@ -687,6 +679,39 @@ enum ShareAction {
     Social,
 }
 
+/// The URL (or social intent) a share action hands to its sink — the thing a
+/// human actually receives, pastes, or taps.
+///
+/// Every sink (clipboard, native share sheet, browser open, social intent) is
+/// handed the `preview=1`-suffixed link, built through [`preview_url`] — the
+/// single owner of the `?`/`&` separator logic — so a copied or shared link
+/// opens the standalone preview directly, the same link the Open action has
+/// always opened. (Product ruling: links shared from Easy and Pick go straight
+/// to the preview; normal/studio links are unaffected.)
+///
+/// Returns `Ok(None)` for a Social action with no network selected: the menu
+/// only ever invokes Social with a concrete network, and that no-network path
+/// has always been a no-op. `Err` only if a social intent URL fails to parse
+/// (unreachable for the fixed intent hosts).
+fn share_sink_url(
+    action: ShareAction,
+    network: Option<SocialNetwork>,
+    url: &str,
+    title: &str,
+) -> Result<Option<String>, String> {
+    // One canonical outbound link: every human-facing sink below gets this
+    // same suffixed value.
+    let shared = preview_url(url);
+    let target = match action {
+        ShareAction::Copy | ShareAction::NativeSheet | ShareAction::OpenBrowser => Some(shared),
+        ShareAction::Social => match network {
+            Some(net) => Some(share_intent_url(net, &shared, title)?),
+            None => None,
+        },
+    };
+    Ok(target)
+}
+
 /// Share glyph (lucide "share-2") for the viewer titlebar + native-share item.
 const SHARE_ICON_SVG: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>"#;
 
@@ -725,6 +750,95 @@ mod tests {
         assert_eq!(
             preview_url("https://studio.example.test/s/tok?x=1"),
             "https://studio.example.test/s/tok?x=1&preview=1"
+        );
+    }
+
+    // -- ShareAction sinks: every link a human receives carries ?preview=1 --
+
+    #[test]
+    fn copy_sink_carries_preview_suffix() {
+        let out = share_sink_url(
+            ShareAction::Copy,
+            None,
+            "https://studio.example.test/s/tok",
+            "My scan",
+        )
+        .unwrap()
+        .expect("Copy always hands the clipboard a URL");
+        assert_eq!(out, "https://studio.example.test/s/tok?preview=1");
+    }
+
+    #[test]
+    fn native_sheet_sink_carries_preview_suffix() {
+        let out = share_sink_url(
+            ShareAction::NativeSheet,
+            None,
+            "https://studio.example.test/s/tok",
+            "My scan",
+        )
+        .unwrap()
+        .expect("NativeSheet always hands the share sheet a URL");
+        assert_eq!(out, "https://studio.example.test/s/tok?preview=1");
+    }
+
+    #[test]
+    fn open_browser_sink_keeps_preview_semantics() {
+        // Regression: the Open action's target is exactly the raw link through
+        // `preview_url` — the same suffix logic it used before the
+        // copy/share-suffix change.
+        let raw = "https://studio.example.test/s/tok";
+        let out = share_sink_url(ShareAction::OpenBrowser, None, raw, "t")
+            .unwrap()
+            .expect("OpenBrowser always hands the browser a URL");
+        assert_eq!(out, preview_url(raw));
+        assert_eq!(out, "https://studio.example.test/s/tok?preview=1");
+    }
+
+    #[test]
+    fn social_sink_intent_embeds_preview_link() {
+        // The intent's `url` param must be the raw link + "?preview=1",
+        // percent-encoded in the query string (? → %3F, = → %3D).
+        let intent = share_sink_url(
+            ShareAction::Social,
+            Some(SocialNetwork::X),
+            "https://studio.example.test/s/tok",
+            "My scan",
+        )
+        .unwrap()
+        .expect("Social with a network always hands the browser an intent URL");
+        assert!(intent.starts_with("https://twitter.com/intent/tweet?"));
+        assert!(
+            intent.contains("url=https%3A%2F%2Fstudio.example.test%2Fs%2Ftok%3Fpreview%3D1"),
+            "intent did not embed the suffixed link: {intent}"
+        );
+    }
+
+    #[test]
+    fn social_sink_intent_uses_ampersand_when_raw_url_has_query() {
+        // `preview_url` is authoritative for the separator: a raw link that
+        // already has a query keeps it and gains &preview=1 (encoded %26).
+        let intent = share_sink_url(
+            ShareAction::Social,
+            Some(SocialNetwork::X),
+            "https://studio.example.test/s/tok?x=1",
+            "t",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            intent
+                .contains("url=https%3A%2F%2Fstudio.example.test%2Fs%2Ftok%3Fx%3D1%26preview%3D1"),
+            "intent did not embed the ampersand-suffixed link: {intent}"
+        );
+    }
+
+    #[test]
+    fn social_sink_without_network_is_noop() {
+        // The menu only invokes Social with a concrete network; the no-network
+        // path must remain a no-op (no browser open, no URL handed out).
+        assert_eq!(
+            share_sink_url(ShareAction::Social, None, "https://s.test/s/tok", "t").unwrap(),
+            None
         );
     }
 }
