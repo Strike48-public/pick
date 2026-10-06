@@ -27,10 +27,27 @@ on:
   #
   # The run then checks that tag out explicitly (actions/checkout with
   # ref: ${{ inputs.tag }}) and pushes the image as <version> (0.1.13) plus
-  # <major>.<minor> (0.1) plus the tag commit's short sha - as on any tag
-  # push - and ONLY those tags: :latest and :main are explicitly gated to
-  # push events so a backfill can never move them. See docs/DOCKER_INSTALL.md
-  # for the operator-facing notes.
+  # the tag commit's short sha - and ONLY those tags. Tag-gating invariant
+  # (#563): floating tags move ONLY on stable tag-push events; dispatch
+  # publishes the exact input version only.
+  #
+  #   - :X.Y ({{major}}.{{minor}}) - push events with a stable ref_name
+  #     only (see the enable gates in the metadata steps below). A dispatch
+  #     runs at refs/heads/main, where ref_name is 'main' (no '-'), so the
+  #     #562 ref_name guard alone was OPEN on dispatch: an out-of-order
+  #     v0.1.12 backfill repointed :0.1 to 0.1.12's digest. The #551
+  #     dispatch float line is now locked to enable=false.
+  #   - :latest / :main - push events only, so a backfill can never move
+  #     them.
+  #
+  # Operator consequence: release tags created by action-gh-release
+  # (GITHUB_TOKEN) fire no push event, so after such a release the float
+  # lags at the last git-pushed stable tag until someone re-pushes the tag
+  # over git (git push origin :refs/tags/vX.Y.Z && git push origin vX.Y.Z),
+  # which fires the push event and moves the float. The backfill itself
+  # publishes the exact version + sha, which is what the released compose
+  # files pin by default. See docs/DOCKER_INSTALL.md for the
+  # operator-facing notes.
   #
   # Why not dispatch AT the tag ref? GitHub validates the workflow_dispatch
   # trigger against the tree of the ref being dispatched. Release tags such
@@ -125,6 +142,9 @@ jobs:
           # v0.1.13,latest passes it, and metadata-action's csv-parse would then
           # let a smuggled field overwrite value= (moving :latest from a backfill).
           [[ "${TAG}" =~ ^v[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "Invalid tag '${TAG}': comma-free vX.Y.Z required" >&2; exit 1; }
+          # The same regex rejects prerelease inputs (vX.Y.Z-rc.N): a rc
+          # backfill hard-fails before anything is published, so an rc
+          # input can never reach the float (#563).
           VERSION="${TAG#v}"
           MAJOR_MINOR="${VERSION%.*}"
           COMMIT="$(git rev-parse --short=7 HEAD)"
@@ -147,10 +167,19 @@ jobs:
         with:
           images: ${{ env.REGISTRY_IMAGE }}
           tags: |
+            # TAG-GATING INVARIANT (#563): floating tags move ONLY on
+            # stable tag-push events; workflow_dispatch backfills publish
+            # the exact input version + the tag's sha and nothing else.
+            #
             # workflow_dispatch backfill: version tags derived from
-            # inputs.tag; never latest, never main.
+            # inputs.tag; never latest, never main, never the float.
             type=raw,value=${{ steps.vers.outputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
-            type=raw,value=${{ steps.vers.outputs.major_minor }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            # LOCKED (enable=false, #563): this #551 line is the path that
+            # repointed :0.1 to 0.1.12's digest when the v0.1.12 backfill
+            # ran after v0.1.13's. The float now moves only via the gated
+            # semver line below, on a real stable tag push. Do not
+            # re-enable.
+            type=raw,value=${{ steps.vers.outputs.major_minor }},enable=false
             type=raw,value=${{ steps.vers.outputs.commit }},enable=${{ github.event_name == 'workflow_dispatch' }}
             # push/PR path (unchanged semantics).
             # ref,event=branch is gated to push: metadata-action matches any
@@ -158,12 +187,23 @@ jobs:
             # dispatch at main would also tag :main.
             type=ref,event=branch,enable=${{ github.event_name == 'push' }}
             type=ref,event=pr
+            # Exact version on tag pushes (stable and prerelease: an rc tag
+            # push publishes e.g. 0.1.14-rc.1, nothing floating). Inert on
+            # dispatch - GITHUB_REF is refs/heads/main, not a tag ref.
             type=semver,pattern={{version}}
-            # Floating major.minor ONLY for stable releases — prerelease tags
-            # (vX.Y.Z-rc.N) must never move :X.Y out from under consumers
-            # (compose defaults read {{major}}.{{minor}}). {{version}} still
-            # publishes the exact rc tag (e.g. 0.1.14-rc.1) for RC testing.
-            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            # Floating major.minor ONLY on real tag-push events carrying a
+            # STABLE tag. Both halves of the gate are load-bearing:
+            #   github.event_name == 'push' -> a dispatch at main has
+            #     ref_name 'main' (no '-') and would sail through the
+            #     contains() check below (#563: input-built images
+            #     repointed :0.1); on a dispatch GITHUB_REF is not a tag
+            #     ref so semver also emits nothing there - the event gate
+            #     is the hard closure, the ref check is defense in depth.
+            #   !contains(github.ref_name, '-') -> prerelease tags
+            #     (vX.Y.Z-rc.N) must never move :X.Y out from under
+            #     consumers (compose defaults read {{major}}.{{minor}});
+            #     {{version}} still publishes the exact rc tag (#562).
+            type=semver,pattern={{major}}.{{minor}},enable=${{ github.event_name == 'push' && !contains(github.ref_name, '-') }}
             # On dispatch GITHUB_SHA is main's head, not the tag's commit;
             # the backfill's sha tag is the raw line above instead.
             type=sha,prefix=,enable=${{ github.event_name != 'workflow_dispatch' }}
@@ -231,6 +271,9 @@ jobs:
           # v0.1.13,latest passes it, and metadata-action's csv-parse would then
           # let a smuggled field overwrite value= (moving :latest from a backfill).
           [[ "${TAG}" =~ ^v[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "Invalid tag '${TAG}': comma-free vX.Y.Z required" >&2; exit 1; }
+          # The same regex rejects prerelease inputs (vX.Y.Z-rc.N): a rc
+          # backfill hard-fails before anything is published, so an rc
+          # input can never reach the float (#563).
           VERSION="${TAG#v}"
           MAJOR_MINOR="${VERSION%.*}"
           {
@@ -258,23 +301,31 @@ jobs:
         with:
           images: ${{ env.REGISTRY_IMAGE }}
           tags: |
+            # Same tag-gating invariant as build-image (#563): floating
+            # tags move ONLY on stable tag-push events; workflow_dispatch
+            # backfills publish the exact input version + the tag's sha
+            # and nothing else.
+            #
             # workflow_dispatch backfill: version tags derived from
             # inputs.tag; the sha tag is the tag's own commit (from
-            # build-image, which checked it out), never latest, never main.
-            # This job is where tags actually land: build-image pushes the
-            # per-arch images by digest and this job applies the tags via
-            # imagetools create.
+            # build-image, which checked it out), never latest, never main,
+            # never the float. This job is where tags actually land:
+            # build-image pushes the per-arch images by digest and this job
+            # applies the tags via imagetools create.
             type=raw,value=${{ steps.vers.outputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
-            type=raw,value=${{ steps.vers.outputs.major_minor }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            # LOCKED (enable=false, #563): see the matching line in
+            # build-image. Do not re-enable.
+            type=raw,value=${{ steps.vers.outputs.major_minor }},enable=false
             type=raw,value=${{ needs.build-image.outputs.dispatch_commit }},enable=${{ github.event_name == 'workflow_dispatch' }}
             type=ref,event=branch,enable=${{ github.event_name == 'push' }}
             type=ref,event=pr
+            # Exact version on tag pushes (stable and prerelease); inert on
+            # dispatch - GITHUB_REF is refs/heads/main, not a tag ref.
             type=semver,pattern={{version}}
-            # Floating major.minor ONLY for stable releases — prerelease tags
-            # (vX.Y.Z-rc.N) must never move :X.Y out from under consumers
-            # (compose defaults read {{major}}.{{minor}}). {{version}} still
-            # publishes the exact rc tag (e.g. 0.1.14-rc.1) for RC testing.
-            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            # Floating major.minor ONLY on real tag-push events carrying a
+            # STABLE tag - both gate halves load-bearing, see the matching
+            # line in build-image (#563, #562).
+            type=semver,pattern={{major}}.{{minor}},enable=${{ github.event_name == 'push' && !contains(github.ref_name, '-') }}
             type=sha,prefix=,enable=${{ github.event_name != 'workflow_dispatch' }}
             # latest only on push to main (is_default_branch is also true
             # for a workflow_dispatch at main - see build-image).

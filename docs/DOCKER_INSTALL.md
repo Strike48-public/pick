@@ -802,8 +802,14 @@ Do not select the tag itself as the run's ref: release tags that predate
 this trigger get rejected by GitHub with
 `Workflow does not have 'workflow_dispatch' trigger`. For tags cut after
 this lands, the input form remains the canonical recipe either way. The run
-publishes `<version>` (e.g. `0.1.13`) and `<major>.<minor>` (e.g. `0.1`)
-plus the tag's short-sha tag, and never moves `latest` or `main`.
+publishes `<version>` (e.g. `0.1.13`) plus the tag's short-sha tag - and
+nothing else: it never moves the floating `<major>.<minor>` tag (e.g. `0.1`),
+`latest`, or `main`. Floating tags move only on stable tag-push events, so
+a backfill can no longer repoint them (see
+https://github.com/Strike48-public/pick/issues/563). Note that a release
+whose tag was created by the release workflow (GITHUB_TOKEN) fires no push
+event, so the float keeps pointing at the last git-pushed stable release
+until that tag is re-pushed over git.
 
 Once that run completes, the `docker compose pull` above succeeds. Until it
 does, you can pin `PICK_IMAGE_TAG` in `.env` to the most recent release whose
