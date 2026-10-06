@@ -2,9 +2,15 @@
 
 use super::jni_bridge::{check_permission, jstring_to_string, with_jni};
 use crate::traits::*;
-use jni::objects::JValue;
-use pentest_core::error::{Error, Result};
+use jni::objects::{JObject, JValue, JValueOwned};
+use jni::JNIEnv;
+use pentest_core::error::Result;
 use std::time::Duration;
+
+/// `NetworkCapabilities.TRANSPORT_*` values (public, stable since API 21).
+const TRANSPORT_WIFI: i32 = 1;
+const TRANSPORT_ETHERNET: i32 = 3;
+const TRANSPORT_VPN: i32 = 4;
 
 /// The active network's own link facts, read from Android's ConnectivityManager.
 ///
@@ -24,165 +30,198 @@ pub struct LinkInfo {
 }
 
 /// Read the active network's interface name, IPv4 link addresses and default
-/// gateway via ConnectivityManager. Best-effort: any failure yields an empty
-/// `LinkInfo` rather than erroring, mirroring `get_arp_table`'s degrade.
+/// gateway via ConnectivityManager. Best-effort: any failure, including a
+/// thrown Java exception, yields an empty `LinkInfo` rather than erroring,
+/// mirroring `get_arp_table`'s degrade.
+///
+/// Only a Wi-Fi or Ethernet network that is not a VPN is read. On cellular the
+/// "local subnet" is the carrier's network, and through a VPN it is the remote
+/// side's; neither is the operator's LAN, so both report "unknown" rather than
+/// hand the agent a subnet it must not sweep.
 pub fn active_link_info() -> LinkInfo {
-    with_jni(|env, ctx| {
-        // getActiveNetwork / getLinkProperties throw SecurityException without
-        // ACCESS_NETWORK_STATE, which would crash the app (a JNI-pending Java
-        // exception is not catchable in Rust). Check it first and degrade to
-        // empty, exactly as WiFi scanning guards ACCESS_FINE_LOCATION.
-        if !check_permission(env, ctx, "android.permission.ACCESS_NETWORK_STATE") {
-            tracing::warn!("active_link_info: ACCESS_NETWORK_STATE not granted");
-            return Ok(LinkInfo::default());
-        }
+    with_jni(|env, ctx| Ok(read_active_link(env, ctx).unwrap_or_default())).unwrap_or_default()
+}
 
-        let service = env
-            .new_string("connectivity")
-            .map_err(|e| Error::ToolExecution(format!("JNI new_string: {e}")))?;
-        let cm = env
-            .call_method(
-                ctx,
-                "getSystemService",
-                "(Ljava/lang/String;)Ljava/lang/Object;",
-                &[JValue::Object(&service.into())],
-            )
-            .and_then(|v| v.l())
-            .map_err(|e| Error::ToolExecution(format!("getSystemService(connectivity): {e}")))?;
-        if cm.is_null() {
-            return Ok(LinkInfo::default());
-        }
+fn read_active_link(env: &mut JNIEnv, ctx: &JObject) -> Option<LinkInfo> {
+    // getActiveNetwork / getLinkProperties throw SecurityException without
+    // ACCESS_NETWORK_STATE. `call` would clear that and degrade, but checking
+    // first keeps the expected case quiet, as WiFi scanning guards
+    // ACCESS_FINE_LOCATION.
+    if !check_permission(env, ctx, "android.permission.ACCESS_NETWORK_STATE") {
+        tracing::warn!("active_link_info: ACCESS_NETWORK_STATE not granted");
+        return None;
+    }
 
-        let network = env
-            .call_method(&cm, "getActiveNetwork", "()Landroid/net/Network;", &[])
-            .and_then(|v| v.l())
-            .map_err(|e| Error::ToolExecution(format!("getActiveNetwork: {e}")))?;
-        if network.is_null() {
-            return Ok(LinkInfo::default());
-        }
+    let service = env.new_string("connectivity").ok()?;
+    let cm = object(call(
+        env,
+        ctx,
+        "getSystemService",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        &[JValue::Object(&service.into())],
+    ))?;
+    let network = object(call(
+        env,
+        &cm,
+        "getActiveNetwork",
+        "()Landroid/net/Network;",
+        &[],
+    ))?;
+    if !is_lan_network(env, &cm, &network) {
+        tracing::info!(
+            "active_link_info: active network is not Wi-Fi/Ethernet, or is a VPN; subnet unknown"
+        );
+        return None;
+    }
+    let lp = object(call(
+        env,
+        &cm,
+        "getLinkProperties",
+        "(Landroid/net/Network;)Landroid/net/LinkProperties;",
+        &[JValue::Object(&network)],
+    ))?;
 
-        let lp = env
-            .call_method(
-                &cm,
-                "getLinkProperties",
-                "(Landroid/net/Network;)Landroid/net/LinkProperties;",
-                &[JValue::Object(&network)],
-            )
-            .and_then(|v| v.l())
-            .map_err(|e| Error::ToolExecution(format!("getLinkProperties: {e}")))?;
-        if lp.is_null() {
-            return Ok(LinkInfo::default());
-        }
+    let interface = object(call(
+        env,
+        &lp,
+        "getInterfaceName",
+        "()Ljava/lang/String;",
+        &[],
+    ))
+    .map(|o| jstring_to_string(env, &o))
+    .filter(|s| !s.is_empty());
 
-        let interface = env
-            .call_method(&lp, "getInterfaceName", "()Ljava/lang/String;", &[])
-            .and_then(|v| v.l())
-            .ok()
-            .map(|o| jstring_to_string(env, &o))
-            .filter(|s| !s.is_empty());
-
-        let addresses = read_link_addresses(env, &lp);
-        let gateway = read_default_gateway(env, &lp);
-
-        Ok(LinkInfo {
-            interface,
-            addresses,
-            gateway,
-        })
+    Some(LinkInfo {
+        interface,
+        addresses: read_link_addresses(env, &lp),
+        gateway: read_default_gateway(env, &lp),
     })
-    .unwrap_or_default()
+}
+
+/// Whether `network` is Wi-Fi or Ethernet and not a VPN, per its
+/// NetworkCapabilities. Unknown capabilities count as "not a LAN".
+fn is_lan_network(env: &mut JNIEnv, cm: &JObject, network: &JObject) -> bool {
+    let Some(caps) = object(call(
+        env,
+        cm,
+        "getNetworkCapabilities",
+        "(Landroid/net/Network;)Landroid/net/NetworkCapabilities;",
+        &[JValue::Object(network)],
+    )) else {
+        return false;
+    };
+    let mut has = |transport: i32| {
+        call(
+            env,
+            &caps,
+            "hasTransport",
+            "(I)Z",
+            &[JValue::Int(transport)],
+        )
+        .and_then(|v| v.z().ok())
+        .unwrap_or(false)
+    };
+    (has(TRANSPORT_WIFI) || has(TRANSPORT_ETHERNET)) && !has(TRANSPORT_VPN)
+}
+
+/// `env.call_method` that never leaves a Java exception pending. jni-rs reports
+/// a thrown exception as an `Err` but leaves it pending, and the next JNI call
+/// (or the return to the JVM) with one pending aborts the app, so clear it and
+/// degrade to `None`.
+fn call<'local>(
+    env: &mut JNIEnv<'local>,
+    obj: &JObject,
+    name: &str,
+    sig: &str,
+    args: &[JValue],
+) -> Option<JValueOwned<'local>> {
+    match env.call_method(obj, name, sig, args) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_clear();
+            }
+            tracing::debug!("JNI {name}{sig} failed: {e}");
+            None
+        }
+    }
+}
+
+/// The non-null object a JNI call returned, if any.
+fn object<'local>(value: Option<JValueOwned<'local>>) -> Option<JObject<'local>> {
+    value?.l().ok().filter(|o| !o.is_null())
 }
 
 /// Extract IPv4 addresses (with prefix) from LinkProperties.getLinkAddresses().
-fn read_link_addresses(env: &mut jni::JNIEnv, lp: &jni::objects::JObject) -> Vec<InterfaceAddr> {
-    let Ok(list) = env
-        .call_method(lp, "getLinkAddresses", "()Ljava/util/List;", &[])
-        .and_then(|v| v.l())
-    else {
+fn read_link_addresses(env: &mut JNIEnv, lp: &JObject) -> Vec<InterfaceAddr> {
+    let Some(list) = object(call(env, lp, "getLinkAddresses", "()Ljava/util/List;", &[])) else {
         return vec![];
     };
-    let count = env
-        .call_method(&list, "size", "()I", &[])
-        .and_then(|v| v.i())
-        .unwrap_or(0);
-
-    let mut out = Vec::new();
-    for i in 0..count {
-        let Ok(la) = env
-            .call_method(&list, "get", "(I)Ljava/lang/Object;", &[JValue::Int(i)])
-            .and_then(|v| v.l())
-        else {
-            continue;
-        };
-        let prefix = env
-            .call_method(&la, "getPrefixLength", "()I", &[])
-            .and_then(|v| v.i())
-            .unwrap_or(-1);
-        let addr = env
-            .call_method(&la, "getAddress", "()Ljava/net/InetAddress;", &[])
-            .and_then(|v| v.l());
-        let Ok(inet) = addr else { continue };
-        if let Some(a) = inet_to_ipv4_addr(env, &inet, prefix) {
-            out.push(a);
-        }
-    }
-    out
+    (0..list_size(env, &list))
+        .filter_map(|i| {
+            let la = list_item(env, &list, i)?;
+            let prefix = call(env, &la, "getPrefixLength", "()I", &[]).and_then(|v| v.i().ok())?;
+            let inet = object(call(
+                env,
+                &la,
+                "getAddress",
+                "()Ljava/net/InetAddress;",
+                &[],
+            ))?;
+            ipv4_interface_addr(&host_address(env, &inet)?, prefix)
+        })
+        .collect()
 }
 
-/// Find the IPv4 default-route gateway from LinkProperties.getRoutes().
-fn read_default_gateway(env: &mut jni::JNIEnv, lp: &jni::objects::JObject) -> Option<String> {
-    let list = env
-        .call_method(lp, "getRoutes", "()Ljava/util/List;", &[])
-        .and_then(|v| v.l())
-        .ok()?;
-    let count = env
-        .call_method(&list, "size", "()I", &[])
-        .and_then(|v| v.i())
-        .unwrap_or(0);
-
-    for i in 0..count {
-        let Ok(route) = env
-            .call_method(&list, "get", "(I)Ljava/lang/Object;", &[JValue::Int(i)])
-            .and_then(|v| v.l())
-        else {
-            continue;
-        };
-        let is_default = env
-            .call_method(&route, "isDefaultRoute", "()Z", &[])
-            .and_then(|v| v.z())
-            .unwrap_or(false);
+/// Find the IPv4 default-route gateway from LinkProperties.getRoutes(). A
+/// default route with no next hop (`0.0.0.0`) is not a gateway; see
+/// [`ipv4_gateway`].
+fn read_default_gateway(env: &mut JNIEnv, lp: &JObject) -> Option<String> {
+    let list = object(call(env, lp, "getRoutes", "()Ljava/util/List;", &[]))?;
+    (0..list_size(env, &list)).find_map(|i| {
+        let route = list_item(env, &list, i)?;
+        let is_default =
+            call(env, &route, "isDefaultRoute", "()Z", &[]).and_then(|v| v.z().ok())?;
         if !is_default {
-            continue;
+            return None;
         }
-        let Ok(gw) = env
-            .call_method(&route, "getGateway", "()Ljava/net/InetAddress;", &[])
-            .and_then(|v| v.l())
-        else {
-            continue;
-        };
-        if gw.is_null() {
-            continue;
-        }
-        if let Some(addr) = inet_to_ipv4_addr(env, &gw, 32) {
-            return Some(addr.ip);
-        }
-    }
-    None
+        let gw = object(call(
+            env,
+            &route,
+            "getGateway",
+            "()Ljava/net/InetAddress;",
+            &[],
+        ))?;
+        ipv4_gateway(&host_address(env, &gw)?)
+    })
 }
 
-/// Turn an InetAddress into an IPv4 `InterfaceAddr`, or `None` for IPv6/invalid.
-/// Delegates prefix+address parsing to the shared, tested `interface_addr_from_token`.
-fn inet_to_ipv4_addr(
-    env: &mut jni::JNIEnv,
-    inet: &jni::objects::JObject,
-    prefix: i32,
-) -> Option<InterfaceAddr> {
-    let host = env
-        .call_method(inet, "getHostAddress", "()Ljava/lang/String;", &[])
-        .and_then(|v| v.l())
-        .ok()
-        .map(|o| jstring_to_string(env, &o))?;
-    ipv4_interface_addr(&host, prefix)
+fn list_size(env: &mut JNIEnv, list: &JObject) -> i32 {
+    call(env, list, "size", "()I", &[])
+        .and_then(|v| v.i().ok())
+        .unwrap_or(0)
+}
+
+fn list_item<'local>(env: &mut JNIEnv<'local>, list: &JObject, i: i32) -> Option<JObject<'local>> {
+    object(call(
+        env,
+        list,
+        "get",
+        "(I)Ljava/lang/Object;",
+        &[JValue::Int(i)],
+    ))
+}
+
+/// `InetAddress.getHostAddress()`, or `None` if the call failed.
+fn host_address(env: &mut JNIEnv, inet: &JObject) -> Option<String> {
+    let host = object(call(
+        env,
+        inet,
+        "getHostAddress",
+        "()Ljava/lang/String;",
+        &[],
+    ))?;
+    Some(jstring_to_string(env, &host))
 }
 
 /// Perform a port scan

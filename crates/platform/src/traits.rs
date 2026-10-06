@@ -481,16 +481,25 @@ pub fn interface_addr_from_token(token: &str) -> InterfaceAddr {
 }
 
 /// Build an IPv4 [`InterfaceAddr`] from an address string and prefix length, or
-/// `None` for an IPv6 or malformed address (#549). Strips a zone id such as the
-/// `%wlan0` that `InetAddress.getHostAddress()` appends to a link-local address,
-/// and rejects a prefix outside `0..=32`. Pure, so the IPv4 filtering the
-/// Android ConnectivityManager path relies on is host-testable.
+/// `None` for an IPv6 or malformed address, or a prefix outside `0..=32` (#549).
+/// Pure, so the IPv4 filtering the Android ConnectivityManager path relies on
+/// is host-testable.
 pub fn ipv4_interface_addr(host: &str, prefix: i32) -> Option<InterfaceAddr> {
-    let host = host.split('%').next().unwrap_or(host);
-    if host.is_empty() || host.contains(':') || !(0..=32).contains(&prefix) {
-        return None;
-    }
-    Some(interface_addr_from_token(&format!("{host}/{prefix}")))
+    let ip: std::net::Ipv4Addr = host.parse().ok()?;
+    let prefix_len = u8::try_from(prefix).ok().filter(|p| *p <= 32)?;
+    Some(InterfaceAddr {
+        ip: ip.to_string(),
+        prefix_len: Some(prefix_len),
+    })
+}
+
+/// A usable IPv4 default-route gateway from an address string, or `None` (#549).
+/// Rejects IPv6, malformed input and the unspecified `0.0.0.0` that Android
+/// reports for a point-to-point default route with no next hop (cellular), so
+/// a caller never treats "no gateway" as a known one.
+pub fn ipv4_gateway(host: &str) -> Option<String> {
+    let ip: std::net::Ipv4Addr = host.parse().ok()?;
+    (!ip.is_unspecified()).then(|| ip.to_string())
 }
 
 /// Convert an IPv4 netmask (e.g. `255.255.252.0`) to a CIDR prefix length
@@ -769,23 +778,38 @@ mod tests {
 
     #[test]
     fn ipv4_interface_addr_filters_and_strips() {
-        // The motivating case (#549): a real Android LinkAddress.
-        let a = ipv4_interface_addr("10.0.40.102", 24).unwrap();
-        assert_eq!(a.ip, "10.0.40.102");
+        // The motivating case (#549): an Android LinkAddress.
+        let a = ipv4_interface_addr("192.0.2.102", 24).unwrap();
+        assert_eq!(a.ip, "192.0.2.102");
         assert_eq!(a.prefix_len, Some(24));
 
-        // IPv6 is rejected (we only model IPv4 subnets).
-        assert!(ipv4_interface_addr("fe80::1", 64).is_none());
+        // IPv6 is rejected (we only model IPv4 subnets), including at a prefix
+        // that is in range for IPv4 and with a getHostAddress zone id.
+        assert!(ipv4_interface_addr("2001:db8::1", 24).is_none());
+        assert!(ipv4_interface_addr("fe80::1%wlan0", 32).is_none());
 
-        // A link-local zone id from getHostAddress is stripped before the check.
-        assert!(ipv4_interface_addr("fe80::1%wlan0", 64).is_none());
+        // Malformed or empty hosts are rejected, no panic.
+        assert!(ipv4_interface_addr("garbage", 24).is_none());
+        assert!(ipv4_interface_addr("192.0.2.300", 24).is_none());
+        assert!(ipv4_interface_addr("", 24).is_none());
 
         // Out-of-range or sentinel prefixes are rejected, never guessed.
-        assert!(ipv4_interface_addr("10.0.40.102", -1).is_none());
-        assert!(ipv4_interface_addr("10.0.40.102", 33).is_none());
+        assert!(ipv4_interface_addr("192.0.2.102", -1).is_none());
+        assert!(ipv4_interface_addr("192.0.2.102", 33).is_none());
+        assert_eq!(
+            ipv4_interface_addr("192.0.2.102", 32).unwrap().prefix_len,
+            Some(32)
+        );
+    }
 
-        // Empty host -> None, no panic.
-        assert!(ipv4_interface_addr("", 24).is_none());
+    #[test]
+    fn ipv4_gateway_rejects_unspecified_ipv6_and_malformed() {
+        assert_eq!(ipv4_gateway("192.0.2.1").as_deref(), Some("192.0.2.1"));
+        // Cellular point-to-point default route: no next hop, not a gateway.
+        assert!(ipv4_gateway("0.0.0.0").is_none());
+        assert!(ipv4_gateway("2001:db8::1").is_none());
+        assert!(ipv4_gateway("garbage").is_none());
+        assert!(ipv4_gateway("").is_none());
     }
 
     #[test]
