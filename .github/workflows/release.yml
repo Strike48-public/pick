@@ -868,6 +868,7 @@ jobs:
           # logs and passes); from the day an AppImage is emitted, a FUSE-2
           # runtime fails the release.
           shopt -s nullglob
+          release="release"
           images=("$release"/*.AppImage)
           if [ "${#images[@]}" -eq 0 ]; then
             echo "no AppImage artifacts in this release — nothing to verify"
