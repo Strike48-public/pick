@@ -1,6 +1,6 @@
 //! Android network operations
 
-use super::jni_bridge::{jstring_to_string, with_jni};
+use super::jni_bridge::{check_permission, jstring_to_string, with_jni};
 use crate::traits::*;
 use jni::objects::JValue;
 use pentest_core::error::{Error, Result};
@@ -28,6 +28,15 @@ pub struct LinkInfo {
 /// `LinkInfo` rather than erroring, mirroring `get_arp_table`'s degrade.
 pub fn active_link_info() -> LinkInfo {
     with_jni(|env, ctx| {
+        // getActiveNetwork / getLinkProperties throw SecurityException without
+        // ACCESS_NETWORK_STATE, which would crash the app (a JNI-pending Java
+        // exception is not catchable in Rust). Check it first and degrade to
+        // empty, exactly as WiFi scanning guards ACCESS_FINE_LOCATION.
+        if !check_permission(env, ctx, "android.permission.ACCESS_NETWORK_STATE") {
+            tracing::warn!("active_link_info: ACCESS_NETWORK_STATE not granted");
+            return Ok(LinkInfo::default());
+        }
+
         let service = env
             .new_string("connectivity")
             .map_err(|e| Error::ToolExecution(format!("JNI new_string: {e}")))?;
