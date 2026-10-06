@@ -480,6 +480,19 @@ pub fn interface_addr_from_token(token: &str) -> InterfaceAddr {
     InterfaceAddr { ip, prefix_len }
 }
 
+/// Build an IPv4 [`InterfaceAddr`] from an address string and prefix length, or
+/// `None` for an IPv6 or malformed address (#549). Strips a zone id such as the
+/// `%wlan0` that `InetAddress.getHostAddress()` appends to a link-local address,
+/// and rejects a prefix outside `0..=32`. Pure, so the IPv4 filtering the
+/// Android ConnectivityManager path relies on is host-testable.
+pub fn ipv4_interface_addr(host: &str, prefix: i32) -> Option<InterfaceAddr> {
+    let host = host.split('%').next().unwrap_or(host);
+    if host.is_empty() || host.contains(':') || !(0..=32).contains(&prefix) {
+        return None;
+    }
+    Some(interface_addr_from_token(&format!("{host}/{prefix}")))
+}
+
 /// Convert an IPv4 netmask (e.g. `255.255.252.0`) to a CIDR prefix length
 /// (e.g. `22`).
 ///
@@ -752,6 +765,27 @@ mod tests {
         let d = interface_addr_from_token("10.0.0.5/notaprefix");
         assert_eq!(d.ip, "10.0.0.5");
         assert_eq!(d.prefix_len, None);
+    }
+
+    #[test]
+    fn ipv4_interface_addr_filters_and_strips() {
+        // The motivating case (#549): a real Android LinkAddress.
+        let a = ipv4_interface_addr("10.0.40.102", 24).unwrap();
+        assert_eq!(a.ip, "10.0.40.102");
+        assert_eq!(a.prefix_len, Some(24));
+
+        // IPv6 is rejected (we only model IPv4 subnets).
+        assert!(ipv4_interface_addr("fe80::1", 64).is_none());
+
+        // A link-local zone id from getHostAddress is stripped before the check.
+        assert!(ipv4_interface_addr("fe80::1%wlan0", 64).is_none());
+
+        // Out-of-range or sentinel prefixes are rejected, never guessed.
+        assert!(ipv4_interface_addr("10.0.40.102", -1).is_none());
+        assert!(ipv4_interface_addr("10.0.40.102", 33).is_none());
+
+        // Empty host -> None, no panic.
+        assert!(ipv4_interface_addr("", 24).is_none());
     }
 
     #[test]
