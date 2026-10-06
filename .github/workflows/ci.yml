@@ -160,6 +160,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --package pentest-headless --package pentest-platform --package pentest-core --locked --features pentest-platform/desktop-pcap
       - run: cargo test --package pentest-platform --package pentest-core --lib --locked --features pentest-platform/desktop-pcap,pentest-core/browser-auth
+      # The release signing script's fail-closed paths, on the same macOS
+      # substrate the release jobs sign on. Hermetic: no Apple secrets.
+      - name: Release signing script self-test
+        run: scripts/macos-sign-notarize.test.sh
 
   # Windows exes ship from release.yml, and before this job no PR ever compiled
   # or ran the cfg(windows) code, so Windows-only bugs reached customers
