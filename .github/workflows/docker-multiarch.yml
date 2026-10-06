@@ -159,7 +159,11 @@ jobs:
             type=ref,event=branch,enable=${{ github.event_name == 'push' }}
             type=ref,event=pr
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            # Floating major.minor ONLY for stable releases — prerelease tags
+            # (vX.Y.Z-rc.N) must never move :X.Y out from under consumers
+            # (compose defaults read {{major}}.{{minor}}). {{version}} still
+            # publishes the exact rc tag (e.g. 0.1.14-rc.1) for RC testing.
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
             # On dispatch GITHUB_SHA is main's head, not the tag's commit;
             # the backfill's sha tag is the raw line above instead.
             type=sha,prefix=,enable=${{ github.event_name != 'workflow_dispatch' }}
@@ -266,7 +270,11 @@ jobs:
             type=ref,event=branch,enable=${{ github.event_name == 'push' }}
             type=ref,event=pr
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            # Floating major.minor ONLY for stable releases — prerelease tags
+            # (vX.Y.Z-rc.N) must never move :X.Y out from under consumers
+            # (compose defaults read {{major}}.{{minor}}). {{version}} still
+            # publishes the exact rc tag (e.g. 0.1.14-rc.1) for RC testing.
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
             type=sha,prefix=,enable=${{ github.event_name != 'workflow_dispatch' }}
             # latest only on push to main (is_default_branch is also true
             # for a workflow_dispatch at main - see build-image).
