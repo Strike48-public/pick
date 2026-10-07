@@ -1,8 +1,8 @@
 //! Android network operations
 
-use super::jni_bridge::{check_permission, jstring_to_string, with_jni};
+use super::jni_bridge::{check_permission, with_jni};
 use crate::traits::*;
-use jni::objects::{JObject, JValue, JValueOwned};
+use jni::objects::{JObject, JString, JValue, JValueOwned};
 use jni::JNIEnv;
 use pentest_core::error::Result;
 use std::time::Duration;
@@ -88,7 +88,7 @@ fn read_active_link(env: &mut JNIEnv, ctx: &JObject) -> Option<LinkInfo> {
         "()Ljava/lang/String;",
         &[],
     ))
-    .map(|o| jstring_to_string(env, &o))
+    .and_then(|o| string(env, o))
     .filter(|s| !s.is_empty());
 
     Some(LinkInfo {
@@ -138,18 +138,37 @@ fn call<'local>(
     match env.call_method(obj, name, sig, args) {
         Ok(v) => Some(v),
         Err(e) => {
-            if env.exception_check().unwrap_or(false) {
-                let _ = env.exception_clear();
-            }
+            clear_exception(env);
             tracing::debug!("JNI {name}{sig} failed: {e}");
             None
         }
     }
 }
 
+/// Clear a pending Java exception, if any; see [`call`].
+fn clear_exception(env: &mut JNIEnv) {
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+}
+
 /// The non-null object a JNI call returned, if any.
 fn object<'local>(value: Option<JValueOwned<'local>>) -> Option<JObject<'local>> {
     value?.l().ok().filter(|o| !o.is_null())
+}
+
+/// A returned `java.lang.String` as a Rust string, without leaving a Java
+/// exception pending. `jstring_to_string` swallows a `get_string` error but
+/// does not clear the exception, which aborts the app on the next JNI call.
+fn string(env: &mut JNIEnv, obj: JObject) -> Option<String> {
+    match env.get_string(&JString::from(obj)) {
+        Ok(s) => Some(s.into()),
+        Err(e) => {
+            clear_exception(env);
+            tracing::debug!("JNI get_string failed: {e}");
+            None
+        }
+    }
 }
 
 /// Extract IPv4 addresses (with prefix) from LinkProperties.getLinkAddresses().
@@ -221,7 +240,7 @@ fn host_address(env: &mut JNIEnv, inet: &JObject) -> Option<String> {
         "()Ljava/lang/String;",
         &[],
     ))?;
-    Some(jstring_to_string(env, &host))
+    string(env, host)
 }
 
 /// Perform a port scan
