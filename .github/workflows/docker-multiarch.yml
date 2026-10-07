@@ -26,7 +26,7 @@ on:
   #        Strike48-public/pick -f tag=v0.1.13
   #
   # The run then checks that tag out explicitly (actions/checkout with
-  # ref: ${{ inputs.tag }}) and pushes the image as <version> (0.1.13) plus
+  # ref: ${{ inputs.tag }}) and pushes the image as <version> (0.1.14) plus
   # <major>.<minor> (0.1) plus the tag commit's short sha - as on any tag
   # push - and ONLY those tags: :latest and :main are explicitly gated to
   # push events so a backfill can never move them. See docs/DOCKER_INSTALL.md
