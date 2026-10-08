@@ -38,6 +38,12 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Log directory: {}", log_dir.display());
     }
 
+    // #510: if this connector runs in a Docker container on a bridged network,
+    // say so up front - otherwise the operator only discovers it when scans
+    // come back empty. One warning per process; host networking and bare-metal
+    // installs are silent.
+    pentest_tools::container_network::warn_if_bridged_container().await;
+
     // Usage telemetry (#278): initialize before anything can emit activity.
     // This binary previously called telemetry::flush() on exit without ever
     // calling telemetry::init, so no headless/server deployment could report
