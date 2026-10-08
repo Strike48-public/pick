@@ -37,27 +37,25 @@ pub async fn default_pentest_agent_input(
     tenant_id: &str,
     connector_name: &str,
 ) -> CreateAgentInput {
-    let active_subnets = active_subnet_cidrs().await;
+    let (active_subnets, network_advisory) = active_network_facts().await;
     pentest_core::matrix::default_pentest_agent_input(
         tenant_id,
         connector_name,
         &crate::session::get_tool_names(),
         &active_subnets,
+        network_advisory.as_deref(),
     )
 }
 
 /// Best-effort enumeration of the connector's active IPv4 subnets as CIDR
-/// strings, for injection into the agent persona (#347). A failure degrades to
-/// an empty list — the persona then steers the agent to `target="auto"` rather
-/// than guessing a range.
-async fn active_subnet_cidrs() -> Vec<String> {
-    match pentest_tools::network_context::network_context().await {
-        Ok(subnets) => subnets.into_iter().map(|s| s.cidr).collect(),
-        Err(e) => {
-            tracing::warn!("could not enumerate host subnets for agent context: {e}");
-            Vec::new()
-        }
-    }
+/// strings, plus the Docker-bridge advisory (#510), for injection into the
+/// agent persona (#347). Both come from one interface enumeration; a failure
+/// degrades to an empty list and no advisory — the persona then steers the
+/// agent to `target="auto"` rather than guessing a range.
+async fn active_network_facts() -> (Vec<String>, Option<String>) {
+    let (subnets, advisory) = pentest_tools::container_network::persona_network_facts().await;
+    let cidrs = subnets.into_iter().map(|s| s.cidr).collect();
+    (cidrs, advisory)
 }
 
 /// Suffix appended to the connector name to produce the Report Agent name.

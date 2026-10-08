@@ -6,6 +6,7 @@ pub mod arp_table;
 pub mod autopwn;
 pub mod begin_scan;
 pub mod catalog; // NEW: Tool catalog - discover, probe, and install external deps
+pub mod container_network; // Docker bridge-network detection + agent advisory (#510)
 pub mod credential_harvest;
 pub mod cve_lookup;
 pub mod default_creds;

@@ -95,6 +95,10 @@ const WEB_CONFIG: ConnectorAppConfig = ConnectorAppConfig {
 async fn main() {
     pentest_core::logging::init_logging("debug");
 
+    // #510: warn once if this web-served connector is confined to a Docker
+    // bridge network (host networking and bare metal stay silent).
+    pentest_tools::container_network::warn_if_bridged_container().await;
+
     tracing::info!("Starting Pentest Connector Web (Liveview)");
 
     let css = theme_css();
