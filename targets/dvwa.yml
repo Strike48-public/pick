@@ -1,4 +1,5 @@
-# DVWA scan target for the Pick demo (matrix#3207) — self-contained fragment.
+# DVWA scan target for the Pick demo
+# (https://github.com/Strike48/matrix/issues/3207) — self-contained fragment.
 #
 # NOT standalone: attach it to the base model by passing the FULL file set, in
 # this merge order:
@@ -14,9 +15,10 @@
 # file) — the existing targets never change.
 services:
   dvwa:
-    # The classic, anonymously-pullable DVWA image. (digininja's ghcr.io/digininja/dvwa
-    # named in matrix#3207 is not anonymously pullable — pull is "denied".) amd64-only,
-    # so it runs under emulation on arm64 hosts — fine for a demo target.
+    # The classic, anonymously-pullable DVWA image. (digininja's ghcr.io/digininja/dvwa,
+    # named in https://github.com/Strike48/matrix/issues/3207, is not anonymously pullable —
+    # pull is "denied".) amd64-only, so it runs under emulation on arm64 hosts — fine for a
+    # demo target.
     image: docker.io/vulnerables/web-dvwa:latest
     restart: unless-stopped
     networks:

@@ -129,7 +129,7 @@ run-headless-env *ARGS:
     set +a
     cargo run --package pentest-headless -- {{ARGS}} 2>&1 | tee -a ~/tmp/pentest.log
 
-# ============ StrikeKit scan-targets demo (matrix#3207) ============
+# ============ StrikeKit scan-targets demo (https://github.com/Strike48/matrix/issues/3207) ============
 
 # Compose model + its env for the Pick + scan-targets live demo (DVWA + OWASP
 # Juice Shop). The model is a MULTI-FILE merge: a target-agnostic base
