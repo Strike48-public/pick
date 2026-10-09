@@ -160,6 +160,69 @@ STRIKE48_TENANT=production just run-headless-dev
 
 ---
 
+## Demo Stack: Pick + Scan Targets (docker compose)
+
+`docker-compose.targets.yml` (the target-agnostic base) plus one fragment per
+scan target under `targets/` (`targets/dvwa.yml`, `targets/juice-shop.yml`) stand
+up the live demo: the headless Pick connector plus two deliberately vulnerable
+web apps, scanning over an isolated bridge and registering with a Strike48
+backend (Studio).
+
+```bash
+# One-time setup: copy the example and set STRIKE48_TENANT (the demo realm's
+# tenant UUID). The init-dev demo:pick tasks generate this file for you.
+cp .env.dvwa.example .env.dvwa
+
+just targets-up      # build + start detached
+just targets-check   # validate the merged model + isolation invariants (no daemon needed)
+just targets-down    # tear down (add --volumes to also drop the creds volume)
+```
+
+The recipes take `TARGETS_ENV` (falling back to the legacy `DVWA_ENV`, then
+`.env.dvwa`), so existing callers keep working; the old `dvwa-up` / `dvwa-down` /
+`dvwa-check` names remain as aliases.
+
+### Topology
+
+- **`scan-net`** - one shared, `internal: true` bridge pinned to `172.18.0.0/24`,
+  carrying pick and BOTH targets. Targets are published nowhere on the host, so
+  scan traffic stays contained on this bridge.
+- **`backend-net`** - plain bridge for pick's egress to the Strike48 backend
+  (registration + tool requests). No target is attached to it.
+
+Engagement URLs, as reached from pick over scan-net:
+
+| Target | URL |
+|--------|-----|
+| DVWA | `http://dvwa` |
+| Juice Shop | `http://juice-shop:3000` |
+
+### Startup ordering
+
+pick carries `depends_on` entries with `condition: service_healthy` for BOTH
+targets, so it starts only after DVWA and Juice Shop each pass their healthcheck
+(a PHP probe for DVWA, a `node -e` HTTP probe for Juice Shop; each probe uses an
+interpreter guaranteed present in its image, since curl/wget are not guaranteed
+in these images). A target that never turns healthy holds pick back rather than
+letting it scan a half-up target set.
+
+### Juice Shop state reset
+
+Juice Shop keeps its state (registered users, challenge progress) in an
+in-container sqlite file, so leftovers from a previous engagement can confuse
+the next one. Reset it by force-recreating just that service:
+
+```bash
+docker compose --env-file .env.dvwa \
+    -f docker-compose.targets.yml -f targets/dvwa.yml -f targets/juice-shop.yml \
+    up -d --force-recreate juice-shop
+```
+
+The `--env-file` is required: the compose model has mandatory `${VAR:?}`
+interpolations that would otherwise abort the command at parse time.
+
+---
+
 ## Troubleshooting
 
 ### "Operation not permitted" or WiFi tools don't work
@@ -291,4 +354,4 @@ See [docs/BWRAP_SUDO_EXPLAINED.md](docs/BWRAP_SUDO_EXPLAINED.md) for technical d
 
 ---
 
-**Last Updated**: 2026-03-05
+**Last Updated**: 2026-10-08

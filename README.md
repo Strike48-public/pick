@@ -41,6 +41,30 @@ A multiplatform penetration testing connector built with [Dioxus](https://dioxus
 - **Native app (macOS, Windows, Linux):** download it from the [releases page](https://github.com/Strike48-public/pick/releases).
 - **From source:** see [docs/INSTALLATION.md](docs/INSTALLATION.md) and [Building](#building) below.
 
+## Demo: Pick + vulnerable scan targets
+
+`docker-compose.targets.yml` (the target-agnostic base) plus one self-contained
+fragment per target under `targets/` stand up a self-contained demo: the
+headless Pick connector scanning two deliberately vulnerable web apps (DVWA and
+OWASP Juice Shop) and registering with a Strike48 backend.
+
+```bash
+just targets-check   # render the merged compose model + assert target isolation (no daemon needed)
+just targets-up      # build + start detached; pick starts only after both targets are healthy
+just targets-down    # tear down (add --volumes to also drop the creds volume)
+```
+
+Topology: one shared internal bridge network `scan-net` (pinned to
+`172.18.0.0/24`) carries pick and both targets; a second network `backend-net`
+carries pick's egress to the Strike48 backend. Targets are published nowhere on
+the host. Engagement URLs, as reached from pick over scan-net: `http://dvwa` and
+`http://juice-shop:3000`.
+
+Adding a future scan target is one new `targets/<name>.yml` fragment plus one
+more `-f` flag. The legacy `dvwa-up` / `dvwa-down` / `dvwa-check` recipe names
+still work as aliases. See [RUNNING.md](RUNNING.md) for the full walkthrough
+(env file, registration approval, Juice Shop state reset).
+
 ## Features
 
 ### UI Customization
