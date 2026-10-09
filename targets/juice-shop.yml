@@ -20,7 +20,13 @@
 # never change.
 services:
   juice-shop:
-    image: ghcr.io/juice-shop/juice-shop:latest
+    # Docker Hub (bkimminich/juice-shop) — the project's canonical, anonymously
+    # pullable image. (ghcr.io/juice-shop/juice-shop was tried first and is NOT
+    # publicly resolvable — pull failed "not found" even with ghcr credentials
+    # present; see the live bring-up in the multi-target work.) The image ships
+    # arm64 builds, so unlike the amd64-only dvwa image it runs natively (no
+    # emulation) on arm64 hosts.
+    image: bkimminich/juice-shop:latest
     restart: unless-stopped
     networks:
       - scan-net
