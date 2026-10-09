@@ -354,4 +354,46 @@ See [docs/BWRAP_SUDO_EXPLAINED.md](docs/BWRAP_SUDO_EXPLAINED.md) for technical d
 
 ---
 
-**Last Updated**: 2026-10-08
+
+
+---
+
+## Demo stack (docker compose) — scan targets
+
+The demo stack lives in `docker-compose.targets.yml` (base: pick + networks) plus
+one self-contained fragment per scan target under `targets/` (`dvwa.yml`,
+`juice-shop.yml`). Drive it with:
+
+```bash
+just targets-up      # up --build -d; pick starts only after EVERY target is healthy
+just targets-down    # compose down --remove-orphans (stub-env safe)
+just targets-check   # no-daemon invariant tripwire: no host ports, scan-net internal, pick gated
+```
+
+- `scan-net` is PINNED to `172.18.0.0/24` (`internal: true`) — a collision with an
+  existing network fails loudly at network-create time.
+- Engagement URLs from pick: `http://dvwa` and `http://juice-shop:3000` (service DNS
+  on scan-net; with a shared subnet, subnet-CIDR engagement scoping hits BOTH
+  targets — URL scoping is what distinguishes them).
+- Juice Shop state (registered users, mutated data) persists in the container layer;
+  reset with `up -d --force-recreate juice-shop` (keep the full `-f` file set and
+  `--env-file`).
+- The juice-shop image is distroless: no shell, and `node` resolves only at the
+  absolute entrypoint path `/nodejs/bin/node` — the healthcheck uses that path; a
+  bare `node` probe (or `docker exec sh`) fails by design of the image.
+- Expected scan-net warnings in juice-shop logs (alchemy.com, localhost:11434 LLM):
+  optional web3/LLM challenge integrations that cannot reach the internet from the
+  internal bridge. Not a health problem.
+
+### One-time migration note (pre-existing stacks)
+
+Stacks brought up BEFORE the scan-net subnet pin existed have an auto-assigned
+subnet. The first `targets-up` recreates the network to apply the pin; containers
+that predate that swap can come back with a stale DNS alias (service name SERVFAILs
+from peers despite a valid IP). Symptom: `curl http://dvwa` → 000 / "Could not
+resolve host" while `docker network inspect pick_scan-net` shows the container.
+Fix once, then never again: `up -d --force-recreate dvwa` (or all targets).
+
+---
+
+**Last Updated**: 2026-10-09
