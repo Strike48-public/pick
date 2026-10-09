@@ -32,18 +32,24 @@ services:
       - scan-net
     # No `ports:` — Juice Shop is reachable only by pick on scan-net, never the
     # host (targets-check asserts this for every non-pick service).
-    # Probe with node (guaranteed in the image — it IS a node app) rather than
-    # curl/wget, which are not guaranteed present in the juice-shop image — a
-    # healthcheck whose probe binary is missing would return 127 forever, keep
-    # the container `unhealthy`, and block pick's `depends_on` start. Probe
+    # Juice Shop's `latest` image is DISTROLESS: no shell, no curl/wget, and
+    # `node` is NOT on the exec PATH — it exists only at the image's own
+    # entrypoint path `/nodejs/bin/node` (verified live: a PATH-based `node`
+    # healthcheck fails with `exec: "node": executable file not found in $PATH`,
+    # and even `docker exec sh` fails). Probe with the ABSOLUTE entrypoint
+    # binary instead — it is the one executable guaranteed present. Probe
     # 127.0.0.1 so the check does not depend on the container's internal
     # DNS/hostname. Any HTTP 5xx counts as not-ready; connection refused (app
     # still booting) exits 1 and is retried. Exec form (CMD list) so no shell
-    # quoting is involved.
+    # is involved (there isn't one).
+    # NOTE: this couples the healthcheck to the image's internal node path. If a
+    # future juice-shop image relocates node, the healthcheck fails LOUDLY
+    # (container never goes healthy → pick never starts, by the depends_on
+    # gate below) instead of silently scanning an unhealthy target.
     healthcheck:
       test:
         - CMD
-        - node
+        - /nodejs/bin/node
         - -e
         - "require('http').get('http://127.0.0.1:3000', (r) => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"
       interval: 10s
