@@ -243,6 +243,25 @@ from peers despite a valid IP). Symptom: `curl http://dvwa` → 000 / "Could not
 resolve host" while `docker network inspect pick_scan-net` shows the container.
 Fix once, then never again: `up -d --force-recreate dvwa` (or all targets).
 
+### Cross-checkout hazard: never drive the runtime with an OLD checkout
+
+The compose project is keyed by NAME (the directory, `pick`) — so an OLD pick
+checkout (single-file `docker-compose.dvwa.yml`, pre-targets model) invoked
+against a runtime that the NEW model brought up will half-destroy it, exactly
+like this: the old model sees only `dvwa` + `pick`, classifies the running
+`juice-shop` container as an ORPHAN, stops the compose services, then — because
+the existing `scan-net` carries the new pinned subnet the old model doesn't
+declare — tries to REMOVE the network and fails with
+`network pick_scan-net has active endpoints (name:"pick-juice-shop-1")`,
+leaving dvwa/pick stopped, juice orphaned, and (worse) dvwa/pick endpoints
+released so service DNS dead-ends from pick after a plain restart.
+
+Recovery (new checkout): `up -d --force-recreate dvwa pick` (re-attaches the
+released endpoints; pick reconnects on its persisted JWT), then always drive
+the stack from the checkout that HOLDS the new model
+(`docker compose ls` → CONFIG FILES shows the `docker-compose.targets.yml` +
+`targets/*.yml` set).
+
 ---
 
 ## Troubleshooting
