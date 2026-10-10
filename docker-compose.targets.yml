@@ -1,44 +1,54 @@
-# StrikeKit live demo: Pick connector + DVWA target (matrix#3207).
+# StrikeKit live demo: Pick connector + vulnerable scan targets (matrix#3207).
 #
-# Brings up two containers:
-#   - dvwa: a deliberately vulnerable web app (the scan target)
-#   - pick: the headless pentest-agent connector that scans dvwa and registers
-#           with a Strike48 backend (Studio) as the "Pick" connector
+# Brings up the demo stack:
+#   - dvwa:        a deliberately vulnerable web app — the scan target living in
+#                  targets/dvwa.yml
+#   - juice-shop:  OWASP Juice Shop, a second deliberately vulnerable web app,
+#                  living in targets/juice-shop.yml
+#   - pick:        the headless pentest-agent connector that scans the targets
+#                  and registers with a Strike48 backend (Studio) as the "Pick"
+#                  connector
+#
+# STRUCTURE — base + one fragment per target. This base file carries everything
+# TARGET-AGNOSTIC: the pick connector and the network/volume definitions. Each
+# scan target is a self-contained fragment under targets/ that only defines its
+# own service and attaches it to scan-net. Adding a future target is one new
+# targets/<name>.yml fragment, one more -f flag (in targets_files in the
+# justfile + ci.yml's compose-lint), and one more pick.depends_on entry below —
+# the base file changes by that one entry, and the existing targets never
+# change. The full file set is merged by docker compose
+# as a plain multi-file merge (NOT compose `include:` — keep the merged model a
+# flat, greppable YAML):
+#
+#   docker compose -f docker-compose.targets.yml -f targets/dvwa.yml -f targets/juice-shop.yml ...
+#
+# (the targets-* just recipes pass exactly this set; the env file stays
+# .env.dvwa — historical name, its contents are target-agnostic.)
 #
 # Network topology (isolation is the point):
-#   - scan-net:    isolated bridge shared by pick + dvwa. Pick reaches DVWA by
-#                  service DNS (http://dvwa). DVWA is published NOWHERE else, so
-#                  scan traffic stays contained on this bridge.
+#   - scan-net:    ONE internal bridge shared by pick + all targets. Pick reaches
+#                  DVWA by service DNS (http://dvwa) and Juice Shop at
+#                  http://juice-shop:3000. Targets are published NOWHERE else, so
+#                  scan traffic stays contained on this bridge. The subnet is
+#                  PINNED (172.18.0.0/24, ipam below) so the demo bridge always
+#                  lands on the same documented range; if that range is already
+#                  taken, compose fails loudly at network-create time instead of
+#                  silently re-addressing.
 #   - backend-net: pick's egress to the Strike48 backend (Studio) to register.
-#                  DVWA is NOT on this network.
+#                  NO target is on this network.
 #
 # Pick is an OUTBOUND-only client — it exposes no inbound port. It connects out
 # to STRIKE48_HOST (gRPC) and MATRIX_API_URL (HTTP, for OTT registration).
 #
+# Pick starts only after EVERY target reports healthy: its depends_on below
+# gates on service_healthy for each target, so a half-up target set never
+# starts a scan.
+#
 # Configure via a .env file next to this compose file (see .env.dvwa.example);
-# `just dvwa-up` sources it. STRIKE48_TENANT must be the demo realm's tenant
+# `just targets-up` sources it. STRIKE48_TENANT must be the demo realm's tenant
 # UUID (not the realm name) — the init-dev `demo:pick:*` tasks resolve + inject it.
 
 services:
-  dvwa:
-    # The classic, anonymously-pullable DVWA image. (digininja's ghcr.io/digininja/dvwa
-    # named in matrix#3207 is not anonymously pullable — pull is "denied".) amd64-only,
-    # so it runs under emulation on arm64 hosts — fine for a demo target.
-    image: docker.io/vulnerables/web-dvwa:latest
-    restart: unless-stopped
-    networks:
-      - scan-net
-    # No `ports:` — DVWA is reachable only by pick on scan-net, never the host.
-    # Probe with PHP (guaranteed in the php-apache base image) rather than curl,
-    # which the digininja/dvwa image does not ship — a curl probe would return
-    # 127 forever, keep DVWA `unhealthy`, and block pick's `depends_on` start.
-    healthcheck:
-      test: ["CMD-SHELL", "php -r 'exit(@file_get_contents(\"http://localhost/login.php\")===false?1:0);'"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 20s
-
   pick:
     build:
       context: .
@@ -51,11 +61,18 @@ services:
       dockerfile: Dockerfile.scratch
     image: ghcr.io/strike48-public/pick:demo
     restart: unless-stopped
+    # Start only after EVERY scan target reports healthy (explicit demo decision):
+    # a half-up target set must not let a scan start, and each target's healthcheck
+    # (lives in its targets/ fragment) is what gates this. Adding a future target:
+    # add its fragment under targets/ AND a matching service_healthy entry here,
+    # then extend targets-check's depends_on assertion to match.
     depends_on:
       dvwa:
         condition: service_healthy
+      juice-shop:
+        condition: service_healthy
     networks:
-      - scan-net      # reach DVWA at http://dvwa
+      - scan-net      # reach the targets at http://dvwa and http://juice-shop:3000
       - backend-net   # egress to the Strike48 backend
     # Reach the Strike48 backend hostnames on the DOCKER HOST. On a local/newdev
     # cluster the backend is exposed on the host (lima/k3s forwards :80/:443/:50061;
@@ -129,7 +146,15 @@ services:
 networks:
   scan-net:
     driver: bridge
-    internal: true   # no external egress from the scan bridge — DVWA stays contained
+    internal: true   # no external egress from the scan bridge — targets stay contained
+    # Pinned (ipam) so the demo bridge always lands on the same documented subnet:
+    # operators can reason about the address space, and a collision with an
+    # existing network fails loudly at network-create time instead of silently
+    # re-addressing. Defined exactly ONCE, here — the targets/*.yml fragments only
+    # ATTACH their service to scan-net, they never redefine it.
+    ipam:
+      config:
+        - subnet: 172.18.0.0/24
   backend-net:
     driver: bridge
 

@@ -1,0 +1,35 @@
+# DVWA scan target for the Pick demo
+# (https://github.com/Strike48/matrix/issues/3207) — self-contained fragment.
+#
+# NOT standalone: attach it to the base model by passing the FULL file set, in
+# this merge order:
+#
+#   docker compose -f docker-compose.targets.yml -f targets/dvwa.yml -f targets/juice-shop.yml ...
+#
+# (see the base file header for the topology and the merge rationale). This
+# fragment only DEFINES the dvwa service; the scan-net network it attaches to is
+# defined once in the base file, never here.
+#
+# Why fragments instead of one big file: adding the next target is one new file
+# in this directory plus one -f flag (and one pick.depends_on entry in the base
+# file) — the existing targets never change.
+services:
+  dvwa:
+    # The classic, anonymously-pullable DVWA image. (digininja's ghcr.io/digininja/dvwa,
+    # named in https://github.com/Strike48/matrix/issues/3207, is not anonymously pullable —
+    # pull is "denied".) amd64-only, so it runs under emulation on arm64 hosts — fine for a
+    # demo target.
+    image: docker.io/vulnerables/web-dvwa:latest
+    restart: unless-stopped
+    networks:
+      - scan-net
+    # No `ports:` — DVWA is reachable only by pick on scan-net, never the host.
+    # Probe with PHP (guaranteed in the php-apache base image) rather than curl,
+    # which the digininja/dvwa image does not ship — a curl probe would return
+    # 127 forever, keep DVWA `unhealthy`, and block pick's `depends_on` start.
+    healthcheck:
+      test: ["CMD-SHELL", "php -r 'exit(@file_get_contents(\"http://localhost/login.php\")===false?1:0);'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s

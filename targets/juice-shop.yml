@@ -1,0 +1,64 @@
+# OWASP Juice Shop scan target for the Pick demo — self-contained fragment.
+#
+# NOT standalone: attach it to the base model by passing the FULL file set, in
+# this merge order:
+#
+#   docker compose -f docker-compose.targets.yml -f targets/dvwa.yml -f targets/juice-shop.yml ...
+#
+# (see the base file header for the topology and the merge rationale). This
+# fragment only DEFINES the juice-shop service; the scan-net network it attaches
+# to is defined once in the base file, never here.
+#
+# Juice Shop is a Node.js (Express/Angular) app listening on 3000 INSIDE the
+# container; pick reaches it at http://juice-shop:3000 over scan-net (DVWA sits
+# at http://dvwa — port 80 — on the same bridge). The image ships arm64 builds,
+# so unlike the amd64-only dvwa image it runs natively (no emulation) on arm64
+# hosts.
+#
+# Why fragments instead of one big file: adding the next target is one new file
+# in this directory plus one -f flag — the base file and the existing targets
+# never change.
+services:
+  juice-shop:
+    # Docker Hub (bkimminich/juice-shop) — the project's canonical, anonymously
+    # pullable image. (ghcr.io/juice-shop/juice-shop was tried first and is NOT
+    # publicly resolvable — pull failed "not found" even with ghcr credentials
+    # present; see the live bring-up in the multi-target work.) The image ships
+    # arm64 builds, so unlike the amd64-only dvwa image it runs natively (no
+    # emulation) on arm64 hosts.
+    image: bkimminich/juice-shop:latest
+    restart: unless-stopped
+    networks:
+      - scan-net
+    # No `ports:` — Juice Shop is reachable only by pick on scan-net, never the
+    # host (targets-check asserts this for every non-pick service).
+    # Juice Shop's `latest` image is DISTROLESS: no shell, no curl/wget, and
+    # `node` is NOT on the exec PATH — it exists only at the image's own
+    # entrypoint path `/nodejs/bin/node` (verified live: a PATH-based `node`
+    # healthcheck fails with `exec: "node": executable file not found in $PATH`,
+    # and even `docker exec sh` fails). Probe with the ABSOLUTE entrypoint
+    # binary instead — it is the one executable guaranteed present. Probe
+    # 127.0.0.1 so the check does not depend on the container's internal
+    # DNS/hostname. Any HTTP 5xx counts as not-ready; connection refused (app
+    # still booting) exits 1 and is retried. Exec form (CMD list) so no shell
+    # is involved (there isn't one).
+    # NOTE: this couples the healthcheck to the image's internal node path. If a
+    # future juice-shop image relocates node, the healthcheck fails LOUDLY
+    # (container never goes healthy → pick never starts, by the depends_on
+    # gate below) instead of silently scanning an unhealthy target.
+    healthcheck:
+      test:
+        - CMD
+        - /nodejs/bin/node
+        - -e
+        - "require('http').get('http://127.0.0.1:3000', (r) => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      # Juice Shop seeds its sqlite db + serves a bundled Angular bundle on first
+      # boot; give it a longer grace period than dvwa before retries count.
+      start_period: 30s
+    # Juice Shop is chunky (bundled frontend + sqlite). Cap it so a
+    # scan-flooded instance cannot starve the host — the demo box also runs the
+    # Strike48 backend stack.
+    mem_limit: 1g

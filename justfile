@@ -129,56 +129,94 @@ run-headless-env *ARGS:
     set +a
     cargo run --package pentest-headless -- {{ARGS}} 2>&1 | tee -a ~/tmp/pentest.log
 
-# ============ StrikeKit DVWA demo (matrix#3207) ============
+# ============ StrikeKit scan-targets demo (https://github.com/Strike48/matrix/issues/3207) ============
 
-# Compose file + its env for the Pick + DVWA live demo. Override DVWA_ENV to
-# point at a different env file (the init-dev demo:pick tasks generate .env.dvwa).
-dvwa_compose := "docker-compose.dvwa.yml"
-dvwa_env := env_var_or_default("DVWA_ENV", ".env.dvwa")
+# Compose model + its env for the Pick + scan-targets live demo (DVWA + OWASP
+# Juice Shop). The model is a MULTI-FILE merge: a target-agnostic base
+# (docker-compose.targets.yml) plus one self-contained fragment per target under
+# targets/ — see the base file header for the topology + merge rationale.
+# Override TARGETS_ENV to point at a different env file. It falls back to the
+# legacy DVWA_ENV, then .env.dvwa, so the init-dev demo:pick tasks (which set
+# DVWA_ENV) and old muscle memory keep working unchanged; the env file itself
+# keeps its historical .env.dvwa name and target-agnostic contents.
+targets_files := "-f docker-compose.targets.yml -f targets/dvwa.yml -f targets/juice-shop.yml"
+targets_env := env_var_or_default("TARGETS_ENV", env_var_or_default("DVWA_ENV", ".env.dvwa"))
 
-# Validate the compose file + assert the DVWA isolation invariant (no live daemon
-# needed beyond `docker compose config`). Cheap regression tripwire: fails if a
-# future edit re-exposes the deliberately-vulnerable DVWA — publishes a host port,
-# flips scan-net off `internal`, or attaches dvwa to the backend network.
-dvwa-check:
+# Validate the compose model + assert the demo isolation invariants (no live
+# daemon needed beyond `docker compose config`). Cheap regression tripwire:
+# fails if a future edit re-exposes a deliberately-vulnerable target — publishes
+# a host port, flips scan-net off `internal`, detaches a target from scan-net,
+# or attaches it to the backend network — and fails if pick's healthy-start gate
+# on the targets is lost. Services are enumerated GENERICALLY from the merged
+# model (everything but pick is a scan target), so a future targets/<name>.yml
+# fragment is covered by the same assertions with no edit here; only pick's
+# depends_on pair is asserted by name.
+targets-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Stub env so the mandatory ${VAR:?} interpolations resolve for a pure config render.
+    # Stub env so the mandatory ${VAR:?} interpolations resolve for a pure config
+    # render. Assign RENDERED on its own line, NOT as a `VAR=$(...) python3`
+    # prefix: in the prefix form a failing command substitution does not trip
+    # `set -e`, so a compose model that no longer renders (e.g. a renamed
+    # mandatory var) would reach python as an empty string and crash with a
+    # TypeError instead of reporting the real problem.
     RENDERED=$(STRIKE48_HOST=grpc://stub:80 STRIKE48_TENANT=stub MATRIX_API_URL=https://stub \
-        docker compose -f "{{dvwa_compose}}" config) \
+        docker compose {{targets_files}} config)
+    export RENDERED
     python3 -c '
     import os, sys, yaml
     d = yaml.safe_load(os.environ["RENDERED"])
+    # Guard explicitly: an empty/undefined render must be a clear failure, never
+    # an attribute error on None.
+    if not isinstance(d, dict):
+        print("targets-check FAILED:\n  - compose config produced no usable model (check the mandatory ${VAR:?} names)")
+        sys.exit(1)
     s, n = d["services"], d["networks"]
     # `docker compose config` renders service networks as a dict (name -> opts|None),
-    # not a list — normalize to the set of network names before asserting.
-    dvwa_nets = set(s["dvwa"]["networks"] or [])
+    # not a list — set() over a dict takes its keys, so this normalizes both shapes.
+    # GENERIC enumeration: every service except the pick connector is a scan target
+    # and must satisfy the same isolation contract (no host ports, scan-net only,
+    # scan-net internal). A future targets/<name>.yml fragment is covered with zero
+    # edits here; only pick is special-cased below.
     errs = []
-    if "ports" in s["dvwa"]: errs.append("dvwa publishes host ports (must not)")
-    if dvwa_nets != {"scan-net"}: errs.append("dvwa networks != {scan-net}: %s" % sorted(dvwa_nets))
-    if n["scan-net"].get("internal") is not True: errs.append("scan-net is not internal:true")
-    if "backend-net" in dvwa_nets: errs.append("dvwa attached to backend-net (must not)")
+    for name in sorted(k for k in s if k != "pick"):
+        svc = s[name]
+        nets = set(svc.get("networks") or [])
+        if "ports" in svc: errs.append("%s publishes host ports (must not)" % name)
+        if nets != {"scan-net"}: errs.append("%s networks != {scan-net}: %s" % (name, sorted(nets)))
+        if n["scan-net"].get("internal") is not True: errs.append("scan-net is not internal:true")
+    # pick: egress + scan membership, plus the healthy-start gate on BOTH targets.
+    # The depends_on pair is asserted BY NAME on purpose: it is pick wiring, not
+    # per-target isolation, so it does not generalize automatically — extend it
+    # when adding a target (same as the depends_on block in the base compose file).
+    pick_nets = set(s["pick"].get("networks") or [])
+    if pick_nets != {"scan-net", "backend-net"}: errs.append("pick networks != {scan-net, backend-net}: %s" % sorted(pick_nets))
+    deps = set(s["pick"].get("depends_on") or [])
+    for target in ("dvwa", "juice-shop"):
+        if target not in deps:
+            errs.append("pick depends_on missing %s (must start only after every target is healthy)" % target)
     if errs:
-        print("DVWA isolation FAILED:"); [print("  -", e) for e in errs]; sys.exit(1)
-    print("dvwa-check OK: config valid + DVWA isolated (no host ports, scan-net internal, off backend-net)")
+        print("targets isolation FAILED:"); [print("  -", e) for e in errs]; sys.exit(1)
+    print("targets-check OK: config valid + targets isolated (no host ports, scan-net internal, off backend-net) + pick gated on both targets")
     '
 
-# Bring up the Pick + DVWA demo stack (pick scans dvwa; registers with the backend)
-dvwa-up *ARGS:
+# Bring up the Pick + scan-targets demo stack (pick scans dvwa + juice-shop;
+# registers with the backend; starts only after BOTH targets are healthy)
+targets-up *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ ! -f "{{dvwa_env}}" ]]; then
-        echo "error: {{dvwa_env}} not found — copy .env.dvwa.example to {{dvwa_env}} and set STRIKE48_TENANT" >&2
+    if [[ ! -f "{{targets_env}}" ]]; then
+        echo "error: {{targets_env}} not found — copy .env.dvwa.example to {{targets_env}} and set STRIKE48_TENANT" >&2
         exit 1
     fi
-    docker compose --env-file "{{dvwa_env}}" -f "{{dvwa_compose}}" up --build -d {{ARGS}}
+    docker compose --env-file "{{targets_env}}" {{targets_files}} up --build -d {{ARGS}}
     # `up -d` returns once containers are STARTED, not proven healthy — pick has no
     # healthcheck (it's an outbound client), so confirm it didn't immediately exit
     # rather than blindly claiming success (a crash-on-boot would otherwise be hidden).
     # `ps --status running -q pick` prints the id only while pick is actually running.
     sleep 2
-    if [[ -z "$(docker compose --env-file "{{dvwa_env}}" -f "{{dvwa_compose}}" ps --status running -q pick)" ]]; then
-        echo "error: pick container is not running — check 'docker compose -f {{dvwa_compose}} logs pick'" >&2
+    if [[ -z "$(docker compose --env-file "{{targets_env}}" {{targets_files}} ps --status running -q pick)" ]]; then
+        echo "error: pick container is not running — check 'docker compose {{targets_files}} logs pick'" >&2
         exit 1
     fi
     # pick is running, but "running" is NOT proof it registered: the connector SDK
@@ -186,30 +224,39 @@ dvwa-up *ARGS:
     # backend), so it stays `running` while never appearing in Studio. Don't assert
     # PENDING here — tell the operator how to confirm it, so a silent registration
     # failure isn't masked as success.
-    echo "Pick + DVWA started (pick container running)."
-    echo "Confirm registration: 'docker compose -f {{dvwa_compose}} logs pick' should show a registration/pending line,"
+    echo "Pick + scan targets started (pick container running; started only after dvwa AND juice-shop reported healthy)."
+    echo "Engagement URLs from pick on scan-net: http://dvwa and http://juice-shop:3000."
+    echo "Confirm registration: 'docker compose {{targets_files}} logs pick' should show a registration/pending line,"
     echo "then approve the connector in Studio -> Gateways. If it never appears, check STRIKE48_TENANT and backend reachability."
 
-# Tear down the Pick + DVWA demo stack (add --volumes to also drop the creds volume)
-dvwa-down *ARGS:
+# Tear down the Pick + scan-targets demo stack (add --volumes to also drop the creds volume)
+targets-down *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
     # The compose model has mandatory ${VAR:?} interpolations; if they can't
-    # resolve, `down` aborts at model-parse time and leaves DVWA (a deliberately
-    # vulnerable app, restart: unless-stopped) running. `down` never USES these
+    # resolve, `down` aborts at model-parse time and leaves the targets (deliberately
+    # vulnerable apps, restart: unless-stopped) running. `down` never USES these
     # values (it identifies containers by compose project/service, not by env), so
     # default any that are unset to a stub — teardown then always succeeds even when
-    # {{dvwa_env}} is absent (deleted after up, or brought up via exported vars).
+    # {{targets_env}} is absent (deleted after up, or brought up via exported vars).
     # The `:-` only substitutes when a var is unset, so a real value already in the
     # shell env is preserved; --env-file is still passed when present. (Shell env
     # takes precedence over --env-file in compose, but for `down` neither matters.)
+    # Every ${VAR:?} in the compose files needs a stub here; missing one makes
+    # `down` abort and leaves the targets running.
     env_args=()
-    [[ -f "{{dvwa_env}}" ]] && env_args=(--env-file "{{dvwa_env}}")
+    [[ -f "{{targets_env}}" ]] && env_args=(--env-file "{{targets_env}}")
     STRIKE48_HOST="${STRIKE48_HOST:-stub}" \
     STRIKE48_TENANT="${STRIKE48_TENANT:-stub}" \
     MATRIX_API_URL="${MATRIX_API_URL:-stub}" \
-        docker compose "${env_args[@]}" -f "{{dvwa_compose}}" down --remove-orphans {{ARGS}}
+        docker compose "${env_args[@]}" {{targets_files}} down --remove-orphans {{ARGS}}
 
+# Legacy names from when DVWA was the only target. Thin aliases running the
+# targets-* recipes verbatim (including the TARGETS_ENV -> DVWA_ENV fallback),
+# so old callers and muscle memory keep working.
+alias dvwa-up := targets-up
+alias dvwa-down := targets-down
+alias dvwa-check := targets-check
 # ============ StrikeHub (PLG) demo (matrix#3519) ============
 
 # Compose file + its env for the Pick + DVWA StrikeHub (PLG) demo. Sibling of the

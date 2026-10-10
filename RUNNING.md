@@ -160,6 +160,110 @@ STRIKE48_TENANT=production just run-headless-dev
 
 ---
 
+## Demo Stack: Pick + Scan Targets (docker compose)
+
+`docker-compose.targets.yml` (the target-agnostic base) plus one fragment per
+scan target under `targets/` (`targets/dvwa.yml`, `targets/juice-shop.yml`) stand
+up the live demo: the headless Pick connector plus two deliberately vulnerable
+web apps, scanning over an isolated bridge and registering with a Strike48
+backend (Studio).
+
+```bash
+# One-time setup: copy the example and set STRIKE48_TENANT (the demo realm's
+# tenant UUID). The init-dev demo:pick tasks generate this file for you.
+cp .env.dvwa.example .env.dvwa
+
+just targets-up      # build + start detached
+just targets-check   # validate the merged model + isolation invariants (no daemon needed)
+just targets-down    # tear down (add --volumes to also drop the creds volume)
+```
+
+The recipes take `TARGETS_ENV` (falling back to the legacy `DVWA_ENV`, then
+`.env.dvwa`), so existing callers keep working; the old `dvwa-up` / `dvwa-down` /
+`dvwa-check` names remain as aliases.
+
+### Topology
+
+- **`scan-net`** - one shared, `internal: true` bridge pinned to `172.18.0.0/24`,
+  carrying pick and BOTH targets. Targets are published nowhere on the host, so
+  scan traffic stays contained on this bridge. The pin also means a collision
+  with an existing network fails loudly at network-create time instead of
+  silently re-addressing.
+- **`backend-net`** - plain bridge for pick's egress to the Strike48 backend
+  (registration + tool requests). No target is attached to it.
+
+Engagement URLs, as reached from pick over scan-net:
+
+| Target | URL |
+|--------|-----|
+| DVWA | `http://dvwa` |
+| Juice Shop | `http://juice-shop:3000` |
+
+### Startup ordering
+
+pick carries `depends_on` entries with `condition: service_healthy` for BOTH
+targets, so it starts only after DVWA and Juice Shop each pass their healthcheck
+(a PHP probe for DVWA, a `node -e` HTTP probe for Juice Shop; each probe uses an
+interpreter guaranteed present in its image, since curl/wget are not guaranteed
+in these images). A target that never turns healthy holds pick back rather than
+letting it scan a half-up target set.
+
+### Juice Shop state reset
+
+Juice Shop keeps its state (registered users, challenge progress) in an
+in-container sqlite file, so leftovers from a previous engagement can confuse
+the next one. Reset it by force-recreating just that service:
+
+```bash
+docker compose --env-file .env.dvwa \
+    -f docker-compose.targets.yml -f targets/dvwa.yml -f targets/juice-shop.yml \
+    up -d --force-recreate juice-shop
+```
+
+The `--env-file` is required: the compose model has mandatory `${VAR:?}`
+interpolations that would otherwise abort the command at parse time.
+
+### Operational notes
+
+- With a shared subnet, subnet-CIDR engagement scoping hits BOTH targets — URL
+  scoping is what distinguishes them.
+- The juice-shop image is distroless: no shell, and `node` resolves only at the
+  absolute entrypoint path `/nodejs/bin/node` — the healthcheck uses that path; a
+  bare `node` probe (or `docker exec sh`) fails by design of the image.
+- Expected scan-net warnings in juice-shop logs (alchemy.com, localhost:11434
+  LLM): optional web3/LLM challenge integrations that cannot reach the internet
+  from the internal bridge. Not a health problem.
+
+### One-time migration note (pre-existing stacks)
+
+Stacks brought up BEFORE the scan-net subnet pin existed have an auto-assigned
+subnet. The first `targets-up` recreates the network to apply the pin; containers
+that predate that swap can come back with a stale DNS alias (service name SERVFAILs
+from peers despite a valid IP). Symptom: `curl http://dvwa` → 000 / "Could not
+resolve host" while `docker network inspect pick_scan-net` shows the container.
+Fix once, then never again: `up -d --force-recreate dvwa` (or all targets).
+
+### Cross-checkout hazard: never drive the runtime with an OLD checkout
+
+The compose project is keyed by NAME (the directory, `pick`) — so an OLD pick
+checkout (single-file `docker-compose.dvwa.yml`, pre-targets model) invoked
+against a runtime that the NEW model brought up will half-destroy it, exactly
+like this: the old model sees only `dvwa` + `pick`, classifies the running
+`juice-shop` container as an ORPHAN, stops the compose services, then — because
+the existing `scan-net` carries the new pinned subnet the old model doesn't
+declare — tries to REMOVE the network and fails with
+`network pick_scan-net has active endpoints (name:"pick-juice-shop-1")`,
+leaving dvwa/pick stopped, juice orphaned, and (worse) dvwa/pick endpoints
+released so service DNS dead-ends from pick after a plain restart.
+
+Recovery (new checkout): `up -d --force-recreate dvwa pick` (re-attaches the
+released endpoints; pick reconnects on its persisted JWT), then always drive
+the stack from the checkout that HOLDS the new model
+(`docker compose ls` → CONFIG FILES shows the `docker-compose.targets.yml` +
+`targets/*.yml` set).
+
+---
+
 ## Troubleshooting
 
 ### "Operation not permitted" or WiFi tools don't work
@@ -291,4 +395,4 @@ See [docs/BWRAP_SUDO_EXPLAINED.md](docs/BWRAP_SUDO_EXPLAINED.md) for technical d
 
 ---
 
-**Last Updated**: 2026-03-05
+**Last Updated**: 2026-10-09
