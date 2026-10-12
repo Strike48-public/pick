@@ -1,7 +1,7 @@
 //! Container network awareness: is this connector running in a container that
 //! can only see a Docker bridge network?
 //!
-//! The failure mode (#510): the connector runs in Docker on the default bridge
+//! The failure mode (pick#510): the connector runs in Docker on the default bridge
 //! network, comes up online in Studio, scans Docker's private subnet
 //! (typically inside `172.16.0.0/12`), finds nothing, and reports an empty
 //! network - with nothing telling the operator or the agent why. Every "what
@@ -27,7 +27,7 @@
 //!    NIC's real MAC.
 //!
 //! The rule is deliberately asymmetric: a *false negative* (missed warning)
-//! is acceptable - the connector just behaves as it did before #510 - while a
+//! is acceptable - the connector just behaves as it did before pick#510 - while a
 //! *false positive* would cry wolf on healthy installs. Concretely:
 //!
 //! * No container marker -> bare metal, silent.
@@ -175,12 +175,13 @@ pub fn classify_container_networking(
 
 /// Enumerate the host's interfaces and default route once.
 ///
-/// `None` on enumeration failure - callers degrade silently (an inconclusive
+/// `Err` on enumeration failure - callers degrade silently (an inconclusive
 /// detection must not produce a warning).
-async fn host_network_snapshot() -> Option<(Vec<NetworkInterface>, Option<String>)> {
-    let interfaces = get_platform().get_network_interfaces().await.ok()?;
+async fn host_network_snapshot(
+) -> pentest_core::error::Result<(Vec<NetworkInterface>, Option<String>)> {
+    let interfaces = get_platform().get_network_interfaces().await?;
     let primary = default_net::get_default_interface().ok().map(|i| i.name);
-    Some((interfaces, primary))
+    Ok((interfaces, primary))
 }
 
 /// Enumerate the host and classify its container networking.
@@ -188,15 +189,18 @@ async fn host_network_snapshot() -> Option<(Vec<NetworkInterface>, Option<String
 /// I/O wrapper over [`classify_container_networking`]; enumeration failure
 /// yields `Other` (silent).
 pub async fn classify_current_host() -> ContainerNetworking {
-    let Some((interfaces, primary)) = host_network_snapshot().await else {
-        tracing::debug!("container network check: interface enumeration failed");
-        return ContainerNetworking::Other;
+    let (interfaces, primary) = match host_network_snapshot().await {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::debug!("container network check: interface enumeration failed: {e}");
+            return ContainerNetworking::Other;
+        }
     };
     classify_container_networking(in_container(), &interfaces, primary.as_deref())
 }
 
 /// At startup, log one warning if this connector is confined to a Docker
-/// bridge network (#510).
+/// bridge network (pick#510).
 ///
 /// Logs at most once per process regardless of how many startup paths call
 /// it. The warning names the visible subnet and points at the host-networking
@@ -222,7 +226,7 @@ pub async fn warn_if_bridged_container() {
     }
 }
 
-/// Persona-ready caveat for the agent's host-network facts (#510).
+/// Persona-ready caveat for the agent's host-network facts (pick#510).
 ///
 /// `Some` only for [`ContainerNetworking::Bridged`]: the agent gets told its
 /// subnets are the container's private bridge network so it reports "I can
@@ -245,16 +249,19 @@ pub fn bridged_network_advisory(classification: &ContainerNetworking) -> Option<
 }
 
 /// Enumerate this host's subnets and the container-bridge advisory in one
-/// pass, for injection into the agent persona (#347, #510).
+/// pass, for injection into the agent persona (pick#347, pick#510).
 ///
 /// One interface enumeration serves both outputs. Subnets degrade to an empty
 /// list on enumeration failure (the persona then steers the agent to
 /// `target="auto"`); the advisory degrades to `None` (inconclusive detection
 /// stays silent).
 pub async fn persona_network_facts() -> (Vec<Subnet>, Option<String>) {
-    let Some((interfaces, primary)) = host_network_snapshot().await else {
-        tracing::warn!("could not enumerate host subnets for agent context");
-        return (Vec::new(), None);
+    let (interfaces, primary) = match host_network_snapshot().await {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::warn!("could not enumerate host subnets for agent context: {e}");
+            return (Vec::new(), None);
+        }
     };
     let subnets = subnets_from_interfaces(&interfaces, primary.as_deref());
     let classification =
@@ -348,7 +355,7 @@ mod tests {
 
     #[test]
     fn host_mode_container_on_lan_is_silent() {
-        // #510 acceptance: `network_mode: host` must NOT warn. The container
+        // pick#510 acceptance: `network_mode: host` must NOT warn. The container
         // sees the host's real NIC (physical MAC, real LAN subnet).
         let ifaces = vec![iface(
             "enp3s0",
