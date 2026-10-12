@@ -71,7 +71,7 @@ pub fn subnet_cidr_v4(addr: Ipv4Addr, prefix_len: u8) -> String {
 /// a malformed address - never a guessed default. A known prefix is required
 /// because the whole point is to stop inventing subnet sizes.
 ///
-/// `pub(crate)` so container-network classification (#510) reuses the exact
+/// `pub(crate)` so container-network classification (pick#510) reuses the exact
 /// same derivation the scan-target path sees.
 pub(crate) fn subnet_for_ipv4(ip: &str, prefix_len: Option<u8>) -> Option<String> {
     let bare = ip.split('/').next().unwrap_or(ip);

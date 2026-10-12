@@ -38,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Log directory: {}", log_dir.display());
     }
 
-    // #510: if this connector runs in a Docker container on a bridged network,
+    // pick#510: if this connector runs in a Docker container on a bridged network,
     // say so up front - otherwise the operator only discovers it when scans
     // come back empty. One warning per process; host networking and bare-metal
     // installs are silent.

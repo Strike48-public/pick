@@ -51,7 +51,7 @@ fn available_tools_section(tool_names: &[String]) -> String {
 ///
 /// Lists the connector's active subnets so the agent targets them directly
 /// instead of guessing a home range (the `192.168.1.0/24`-on-a-`10.0.x`
-/// failure). `network_advisory` (#510) carries an optional caveat paragraph
+/// failure). `network_advisory` (pick#510) carries an optional caveat paragraph
 /// rendered after the subnet list - notably the Docker-bridge warning that the
 /// listed subnets are the container's private network, not the host LAN. The
 /// section is emitted when either input is present: subnets without an
@@ -132,7 +132,7 @@ fn system_message_with_available_tools(
 /// persona (#347). Callers pass both explicitly (the Dioxus app sources them
 /// from its session / `network_context`) so this builder stays pure.
 ///
-/// `network_advisory` (#510) is an optional caveat paragraph appended to the
+/// `network_advisory` (pick#510) is an optional caveat paragraph appended to the
 /// host-network-facts section - notably the Docker-bridge warning from
 /// `pentest_tools::container_network` that the subnets are the container's
 /// private network, not the host LAN. `None` keeps the persona unchanged.
@@ -875,7 +875,7 @@ mod tests {
     fn system_message_omits_host_facts_when_no_subnets() {
         // With no subnets enumerated and no advisory, no facts section is emitted
         // (the agent falls back to target="auto"/discovery per the prompt rule)
-        // — and an empty tools+subnets input still yields the bare persona.
+        // - and an empty tools+subnets input still yields the bare persona.
         let msg = system_message_with_available_tools(&["port_scan".into()], &[], None);
         assert!(
             !msg.contains("# Host network facts (live, this connector)"),
@@ -889,7 +889,7 @@ mod tests {
 
     #[test]
     fn system_message_appends_docker_bridge_advisory_to_facts() {
-        // #510: when the connector runs in a container on a Docker bridge, the
+        // pick#510: when the connector runs in a container on a Docker bridge, the
         // advisory must ride with the subnet list so the agent reports "I can
         // only see the container's private network" instead of an empty LAN.
         let subnets = vec!["172.18.0.0/16".to_string()];

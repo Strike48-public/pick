@@ -48,9 +48,9 @@ pub async fn default_pentest_agent_input(
 }
 
 /// Best-effort enumeration of the connector's active IPv4 subnets as CIDR
-/// strings, plus the Docker-bridge advisory (#510), for injection into the
-/// agent persona (#347). Both come from one interface enumeration; a failure
-/// degrades to an empty list and no advisory — the persona then steers the
+/// strings, plus the Docker-bridge advisory (pick#510), for injection into the
+/// agent persona (pick#347). Both come from one interface enumeration; a failure
+/// degrades to an empty list and no advisory - the persona then steers the
 /// agent to `target="auto"` rather than guessing a range.
 async fn active_network_facts() -> (Vec<String>, Option<String>) {
     let (subnets, advisory) = pentest_tools::container_network::persona_network_facts().await;
