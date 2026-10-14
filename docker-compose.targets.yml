@@ -33,7 +33,11 @@
 #                  PINNED (172.18.0.0/24, ipam below) so the demo bridge always
 #                  lands on the same documented range; if that range is already
 #                  taken, compose fails loudly at network-create time instead of
-#                  silently re-addressing.
+#                  silently re-addressing. The DEFAULT stays pinned to the
+#                  documented range — an explicit SCAN_NET_SUBNET override only
+#                  exists so concurrent per-instance compose projects (init-dev's
+#                  redteam fleet writes per-slug values) can coexist on one host
+#                  instead of colliding at network-create time.
 #   - backend-net: pick's egress to the Strike48 backend (Studio) to register.
 #                  NO target is on this network.
 #
@@ -152,9 +156,18 @@ networks:
     # existing network fails loudly at network-create time instead of silently
     # re-addressing. Defined exactly ONCE, here — the targets/*.yml fragments only
     # ATTACH their service to scan-net, they never redefine it.
+    #
+    # The DEFAULT stays pinned to the documented range (172.18.0.0/24): with no
+    # SCAN_NET_SUBNET anywhere, a colliding network still fails loud at
+    # network-create time. The variable exists so CONCURRENT per-instance compose
+    # projects on ONE host (e.g. init-dev's redteam fleet: one pick-demo-<slug>
+    # project per slug, each creating its own <project>_scan-net) can give each
+    # instance a DISTINCT subnet instead of Docker refusing networks 2..N with
+    # "Pool overlaps with other one on this address space". init-dev's
+    # per-instance env generation writes the per-slug value automatically.
     ipam:
       config:
-        - subnet: 172.18.0.0/24
+        - subnet: ${SCAN_NET_SUBNET:-172.18.0.0/24}
   backend-net:
     driver: bridge
 

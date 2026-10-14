@@ -188,7 +188,9 @@ The recipes take `TARGETS_ENV` (falling back to the legacy `DVWA_ENV`, then
   carrying pick and BOTH targets. Targets are published nowhere on the host, so
   scan traffic stays contained on this bridge. The pin also means a collision
   with an existing network fails loudly at network-create time instead of
-  silently re-addressing.
+  silently re-addressing. The pin is the default: the subnet is overridable via
+  `SCAN_NET_SUBNET` for concurrent instances on one host, and per-instance values
+  are written automatically by init-dev's per-instance env generation.
 - **`backend-net`** - plain bridge for pick's egress to the Strike48 backend
   (registration + tool requests). No target is attached to it.
 

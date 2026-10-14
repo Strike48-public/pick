@@ -58,7 +58,9 @@ Topology: one shared internal bridge network `scan-net` (pinned to
 `172.18.0.0/24`) carries pick and both targets; a second network `backend-net`
 carries pick's egress to the Strike48 backend. Targets are published nowhere on
 the host. Engagement URLs, as reached from pick over scan-net: `http://dvwa` and
-`http://juice-shop:3000`.
+`http://juice-shop:3000`. The pin is the default: the subnet is overridable via
+`SCAN_NET_SUBNET` when running concurrent instances on one host, and per-instance
+values are written automatically by init-dev's per-instance env generation.
 
 Adding a future scan target is one new `targets/<name>.yml` fragment plus one
 more `-f` flag. The legacy `dvwa-up` / `dvwa-down` / `dvwa-check` recipe names
