@@ -184,8 +184,13 @@ The recipes take `TARGETS_ENV` (falling back to the legacy `DVWA_ENV`, then
 
 ### Topology
 
-- **`scan-net`** - one shared, `internal: true` bridge pinned to `172.18.0.0/24`,
-  carrying pick and BOTH targets. Targets are published nowhere on the host, so
+- **`scan-net`** - one shared, `internal: true` bridge pinned to `10.250.0.0/24`,
+  carrying pick and BOTH targets. The range deliberately sits OUTSIDE Docker's
+  default address pools (172.17-172.31/16 + 192.168.0.0/16): on a clean host
+  compose creates scan-net and the UNPINNED auto-assigned `backend-net`
+  concurrently, and a range inside those pools could lose its parent /16 to
+  `backend-net` — 10.42/10.43 (k3s pod/service CIDRs) are avoided too. Targets
+  are published nowhere on the host, so
   scan traffic stays contained on this bridge. The pin also means a collision
   with an existing network fails loudly at network-create time instead of
   silently re-addressing. The pin is the default: the subnet is overridable via
@@ -236,10 +241,13 @@ interpolations that would otherwise abort the command at parse time.
   LLM): optional web3/LLM challenge integrations that cannot reach the internet
   from the internal bridge. Not a health problem.
 
-### One-time migration note (pre-existing stacks)
+### One-time migration note (pre-existing stacks, or a default-prefix change)
 
 Stacks brought up BEFORE the scan-net subnet pin existed have an auto-assigned
-subnet. The first `targets-up` recreates the network to apply the pin; containers
+subnet — and a stack brought up on the OLD pin (`172.18.0.0/24`) keeps that
+subnet after the default moves to `10.250.0.0/24`: applying the new default
+requires a force-recreate, exactly like the original pre-pin → pin migration.
+The first `targets-up` recreates the network to apply the pin; containers
 that predate that swap can come back with a stale DNS alias (service name SERVFAILs
 from peers despite a valid IP). Symptom: `curl http://dvwa` → 000 / "Could not
 resolve host" while `docker network inspect pick_scan-net` shows the container.

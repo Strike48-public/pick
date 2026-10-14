@@ -149,7 +149,7 @@ targets_env := env_var_or_default("TARGETS_ENV", env_var_or_default("DVWA_ENV", 
 # or attaches it to the backend network — and fails if pick's healthy-start gate
 # on the targets is lost. Also asserts the scan-net subnet interpolation by
 # rendering the model TWICE: SCAN_NET_SUBNET unset → the DEFAULT pin
-# 172.18.0.0/24 is preserved; SCAN_NET_SUBNET=172.30.0.0/24 → the override is
+# 10.250.0.0/24 is preserved; SCAN_NET_SUBNET=10.251.0.0/24 → the override is
 # honored verbatim (what concurrent per-instance projects rely on). Services
 # are enumerated GENERICALLY from the merged model (everything but pick is a
 # scan target), so a future targets/<name>.yml fragment is covered by the same
@@ -172,7 +172,7 @@ targets-check:
     # concurrent per-instance instance would otherwise false-fail this check
     # even though the model is fine).
     RENDERED_OVERRIDE=$(STRIKE48_HOST=grpc://stub:80 STRIKE48_TENANT=stub MATRIX_API_URL=https://stub \
-        SCAN_NET_SUBNET=172.30.0.0/24 \
+        SCAN_NET_SUBNET=10.251.0.0/24 \
         docker compose {{targets_files}} config)
     export RENDERED RENDERED_OVERRIDE
     python3 -c '
@@ -208,9 +208,9 @@ targets-check:
         if target not in deps:
             errs.append("pick depends_on missing %s (must start only after every target is healthy)" % target)
     # scan-net subnet assertion (renders TWICE above):
-    # (a) SCAN_NET_SUBNET empty/unset → the DEFAULT documented pin 172.18.0.0/24
+    # (a) SCAN_NET_SUBNET empty/unset → the DEFAULT documented pin 10.250.0.0/24
     #     is preserved (default behavior unchanged);
-    # (b) SCAN_NET_SUBNET=172.30.0.0/24 → the override is honored verbatim (what
+    # (b) SCAN_NET_SUBNET=10.251.0.0/24 → the override is honored verbatim (what
     #     concurrent per-instance projects on one host rely on).
     d2 = yaml.safe_load(os.environ["RENDERED_OVERRIDE"])
     if not isinstance(d2, dict):
@@ -220,11 +220,11 @@ targets-check:
         cfg = ((model.get("networks") or {}).get("scan-net") or {}).get("ipam") or {}
         return [c.get("subnet") for c in (cfg.get("config") or [])]
     subnets = ipam_subnets(d)
-    if subnets != ["172.18.0.0/24"]:
-        errs.append("scan-net subnet (SCAN_NET_SUBNET unset) != ['172.18.0.0/24'] (default changed): %s" % subnets)
+    if subnets != ["10.250.0.0/24"]:
+        errs.append("scan-net subnet (SCAN_NET_SUBNET unset) != ['10.250.0.0/24'] (default changed): %s" % subnets)
     subnets2 = ipam_subnets(d2)
-    if subnets2 != ["172.30.0.0/24"]:
-        errs.append("scan-net subnet (SCAN_NET_SUBNET=172.30.0.0/24) != ['172.30.0.0/24'] (override ignored): %s" % subnets2)
+    if subnets2 != ["10.251.0.0/24"]:
+        errs.append("scan-net subnet (SCAN_NET_SUBNET=10.251.0.0/24) != ['10.251.0.0/24'] (override ignored): %s" % subnets2)
     if errs:
         print("targets isolation FAILED:"); [print("  -", e) for e in errs]; sys.exit(1)
     print("targets-check OK: config valid + targets isolated (no host ports, scan-net internal, off backend-net) + pick gated on both targets + scan-net subnet default preserved & SCAN_NET_SUBNET override honored")

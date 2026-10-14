@@ -55,7 +55,9 @@ just targets-down    # tear down (add --volumes to also drop the creds volume)
 ```
 
 Topology: one shared internal bridge network `scan-net` (pinned to
-`172.18.0.0/24`) carries pick and both targets; a second network `backend-net`
+`10.250.0.0/24` — outside Docker's default address pools, so a clean host's
+auto-assigned `backend-net` cannot steal its parent /16) carries pick and both
+targets; a second network `backend-net`
 carries pick's egress to the Strike48 backend. Targets are published nowhere on
 the host. Engagement URLs, as reached from pick over scan-net: `http://dvwa` and
 `http://juice-shop:3000`. The pin is the default: the subnet is overridable via
