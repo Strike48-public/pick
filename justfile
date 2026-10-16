@@ -316,14 +316,17 @@ targets-up *ARGS:
         echo "error: {{targets_env}} not found — copy .env.dvwa.example to {{targets_env}} and set STRIKE48_TENANT" >&2
         exit 1
     fi
-    # Per-run determinism (see the recipe comment above): --force-recreate
-    # juice-app is DEFAULT-ON; JUICE_FRESH=0 omits it (escape hatch for keeping
-    # the running juice-app and its persisted state). The flag is an array so
-    # it stays quoted; the `${arr[@]+…}` guard keeps the EMPTY-array expansion
-    # (JUICE_FRESH=0) legal under `set -u` even on macOS's /bin/bash 3.2.
-    recreate_args=()
-    if [[ "${JUICE_FRESH:-1}" != "0" ]]; then recreate_args=(--force-recreate juice-app); fi
-    docker compose --env-file "{{targets_env}}" {{targets_files}} up --build -d ${recreate_args[@]+"${recreate_args[@]}"} {{ARGS}}
+    # Per-run determinism (see the recipe comment above): juice-app is REMOVED
+    # before up, so every attach/run starts from a pristine shop; JUICE_FRESH=0
+    # keeps the running juice-app (escape hatch). The rm is silent when the
+    # container is absent. NOTE: `up --force-recreate juice-app` would NOT work
+    # here — compose reads the positional name after the boolean flag as the
+    # SERVICE to bring up, scoping the whole up to juice-app alone (dvwa/guard/
+    # pick never created; found live on this deploy).
+    if [[ "${JUICE_FRESH:-1}" != "0" ]]; then
+      docker compose --env-file "{{targets_env}}" {{targets_files}} rm -sf juice-app
+    fi
+    docker compose --env-file "{{targets_env}}" {{targets_files}} up --build -d {{ARGS}}
     # `up -d` returns once containers are STARTED, not proven healthy — pick has no
     # healthcheck (it's an outbound client), so confirm it didn't immediately exit
     # rather than blindly claiming success (a crash-on-boot would otherwise be hidden).
