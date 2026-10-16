@@ -160,6 +160,182 @@ STRIKE48_TENANT=production just run-headless-dev
 
 ---
 
+## Demo Stack: Pick + Scan Targets (docker compose)
+
+`docker-compose.targets.yml` (the target-agnostic base) plus one fragment per
+scan target under `targets/` (`targets/dvwa.yml`, `targets/juice-shop.yml` —
+which brings TWO services: the juice-app behind the door + the juice-guard
+door itself) stand
+up the live demo: the headless Pick connector plus two deliberately vulnerable
+web apps, scanning over an isolated bridge and registering with a Strike48
+backend (Studio).
+
+```bash
+# One-time setup: copy the example and set STRIKE48_TENANT (the demo realm's
+# tenant UUID). The init-dev demo:pick tasks generate this file for you.
+cp .env.dvwa.example .env.dvwa
+
+just targets-up      # build + start detached
+just targets-check   # validate the merged model + isolation invariants (no daemon needed)
+just targets-down    # tear down (add --volumes to also drop the creds volume)
+```
+
+The recipes take `TARGETS_ENV` (falling back to the legacy `DVWA_ENV`, then
+`.env.dvwa`), so existing callers keep working; the old `dvwa-up` / `dvwa-down` /
+`dvwa-check` names remain as aliases.
+
+### Topology
+
+- **`scan-net`** - one shared, `internal: true` bridge pinned to `10.250.0.0/24`,
+  carrying pick, DVWA (direct) and the Juice Shop GUARD (the "door"). The range
+  deliberately sits OUTSIDE Docker's
+  default address pools (172.17-172.31/16 + 192.168.0.0/16): on a clean host
+  compose creates scan-net and the UNPINNED auto-assigned `backend-net`
+  concurrently, and a range inside those pools could lose its parent /16 to
+  `backend-net` — 10.42/10.43 (k3s pod/service CIDRs) are avoided too. Targets
+  are published nowhere on the host, so
+  scan traffic stays contained on this bridge. The pin also means a collision
+  with an existing network fails loudly at network-create time instead of
+  silently re-addressing. The pin is the default: the subnet is overridable via
+  `SCAN_NET_SUBNET` for concurrent instances on one host, and per-instance values
+  are written automatically by init-dev's per-instance env generation.
+- **`juice-net`** - second `internal: true` bridge (UNPINNED — the engagement
+  URL is hostname-based, so nothing needs a documented address here) carrying
+  Juice Shop's app (juice-app) behind its door (juice-guard). The door is the
+  ONLY member of both scan-net and juice-net, so pick has no L3 path to the
+  app except through the guard — the **door pattern**: an app needing route
+  filtering sits on its own internal net behind a guard that fronts it with
+  the engagement DNS alias on scan-net (future targets repeat this pattern;
+  DVWA, which needs no filtering, stays direct).
+- **`backend-net`** - plain bridge for pick's egress to the Strike48 backend
+  (registration + tool requests). No target is attached to it.
+
+Engagement URLs, as reached from pick over scan-net:
+
+| Target | URL |
+|--------|-----|
+| DVWA | `http://dvwa` |
+| Juice Shop | `http://juice-shop` (port 80 through the guard door) |
+
+The door publishes the engagement DNS name: on scan-net, `juice-shop` resolves
+to the GUARD (an explicit network alias of targets/juice-guard.yml), which
+proxies port 80 to juice-app over juice-net. The app's own name (`juice-app`)
+exists only on juice-net — nothing on scan-net can resolve or reach it.
+
+### Route filtering, quiet variant, masking, pinning, freshness
+
+Benchmark determinism for the juice target (DVWA needs none of this):
+
+- **The door's deny-list** (targets/juice-guard.nginx.conf, INTERIM — ours):
+  denies the challenge/hint meta-intel data routes `/api/Challenges` (116
+  challenge rows, unauthenticated) and `/api/Hints` (hint text, unauthenticated)
+  — grounded in the app's route tree (the shipped swagger.yml is the B2B order
+  decoy and lists no challenge/hint routes). Everything else passes through:
+  the vulnerability-finding routes STAY reachable (e.g.
+  `/rest/admin/application-configuration` returns 200 unauthenticated — keep),
+  and the shop's own API stays open. The FINAL deny-list comes from the
+  benchmark fixture's filtering-proxy contract when the shared range freezes
+  (matrix#2422).
+- **The quiet variant**: juice-app runs with `NODE_ENV=quiet` — the image's own
+  shipped config/quiet.yml section, turning off the meta-intel UI noise (hints
+  UI, hacking instructor, first-start welcome modal, solved notifications).
+  Configuration, not a code variant.
+- **No SOLUTIONS mask**: the benchmark fixture ships the standard image with
+  the repo-tree `SOLUTIONS.md` (whole-challenge spoilers) in it, so the local
+  twin keeps it too (comparability) — and it is never web-served (verified),
+  so the scanner cannot read it regardless. `/juice-shop/ctf.key` is likewise
+  kept — the dataErasure challenge reads it at request time. (An empty-volume
+  mask was attempted and dropped: Docker 28 cannot shadow a file with an
+  empty named volume — container create fails "source is not directory".)
+- **The digest pin**: juice-app's image is pinned by RepoDigest — INTERIM: the
+  digest of the version this box already runs (a digest resolving to the same
+  image id pulls nothing, so the pin changed nothing at bring-up). It kills
+  `latest`'s drift between runs. Re-pin to the benchmark fixture manifest's
+  digest when that fixture freezes.
+- **Per-run freshness**: `targets-up` force-recreates juice-app by default
+  (`--force-recreate juice-app`) so every run starts a FRESH engagement
+  (seeded sqlite state). Escape hatch: `JUICE_FRESH=0` keeps the running
+  juice-app (persisted state, e.g. mid-engagement debugging).
+
+### Startup ordering
+
+pick carries `depends_on` entries with `condition: service_healthy` for BOTH
+targets AND the juice door (dvwa, juice-app, juice-guard), so it starts only
+after DVWA and Juice Shop each pass their healthcheck and the door is serving
+(a PHP probe for DVWA, a `node -e` HTTP probe for Juice Shop, a busybox-wget
+probe of the guard's own `/juice-guard-healthz` endpoint; each probe uses an
+interpreter guaranteed present in its image, since curl/wget are not guaranteed
+in these images). The door itself starts only after the app behind it is
+healthy (`depends_on: juice-app: service_healthy` — nginx resolves the app's
+name in `proxy_pass` at conf-load time). A target that never turns healthy
+holds the door and pick back rather than letting it scan a half-up target set.
+
+### Juice Shop state reset
+
+Juice Shop keeps its state (registered users, challenge progress) in an
+in-container sqlite file, so leftovers from a previous engagement can confuse
+the next one. `targets-up` already force-recreates juice-app on EVERY run by
+default (`JUICE_FRESH=0` keeps it — see per-run freshness above). To reset a
+RUNNING stack mid-session, force-recreate just that service:
+
+```bash
+docker compose --env-file .env.dvwa \
+    -f docker-compose.targets.yml -f targets/dvwa.yml -f targets/juice-shop.yml -f targets/juice-guard.yml \
+    up -d --force-recreate juice-app
+```
+
+The `--env-file` is required: the compose model has mandatory `${VAR:?}`
+interpolations that would otherwise abort the command at parse time. The door
+(juice-guard) is NOT recreated — the app re-claims the lowest free IP on
+juice-net, so the door's resolved upstream is stable.
+
+### Operational notes
+
+- With a shared subnet, subnet-CIDR engagement scoping hits BOTH targets — URL
+  scoping is what distinguishes them.
+- The juice-app image is distroless: no shell, and `node` resolves only at the
+  absolute entrypoint path `/nodejs/bin/node` — the healthcheck uses that path; a
+  bare `node` probe (or `docker exec sh`) fails by design of the image.
+- Expected scan-net warnings in juice-app logs (alchemy.com, localhost:11434
+  LLM): optional web3/LLM challenge integrations that cannot reach the internet
+  from the internal bridge. Not a health problem.
+- The guard's logs are the door's audit trail: a `403` line means pick (or
+  anything else on scan-net) hit a denied meta-intel route; the
+  `juice-guard-healthz` probe hits are not logged (access_log off).
+
+### One-time migration note (pre-existing stacks, or a default-prefix change)
+
+Stacks brought up BEFORE the scan-net subnet pin existed have an auto-assigned
+subnet — and a stack brought up on the OLD pin (`172.18.0.0/24`) keeps that
+subnet after the default moves to `10.250.0.0/24`: applying the new default
+requires a force-recreate, exactly like the original pre-pin → pin migration.
+The first `targets-up` recreates the network to apply the pin; containers
+that predate that swap can come back with a stale DNS alias (service name SERVFAILs
+from peers despite a valid IP). Symptom: `curl http://dvwa` → 000 / "Could not
+resolve host" while `docker network inspect pick_scan-net` shows the container.
+Fix once, then never again: `up -d --force-recreate dvwa` (or all targets).
+
+### Cross-checkout hazard: never drive the runtime with an OLD checkout
+
+The compose project is keyed by NAME (the directory, `pick`) — so an OLD pick
+checkout (single-file `docker-compose.dvwa.yml`, pre-targets model) invoked
+against a runtime that the NEW model brought up will half-destroy it, exactly
+like this: the old model sees only `dvwa` + `pick`, classifies the running
+`juice-app` container as an ORPHAN, stops the compose services, then — because
+the existing `scan-net` carries the new pinned subnet the old model doesn't
+declare — tries to REMOVE the network and fails with
+`network pick_scan-net has active endpoints (name:"pick-juice-app-1")`,
+leaving dvwa/pick stopped, juice orphaned, and (worse) dvwa/pick endpoints
+released so service DNS dead-ends from pick after a plain restart.
+
+Recovery (new checkout): `up -d --force-recreate dvwa pick` (re-attaches the
+released endpoints; pick reconnects on its persisted JWT), then always drive
+the stack from the checkout that HOLDS the new model
+(`docker compose ls` → CONFIG FILES shows the `docker-compose.targets.yml` +
+`targets/*.yml` set).
+
+---
+
 ## Troubleshooting
 
 ### "Operation not permitted" or WiFi tools don't work
@@ -291,4 +467,4 @@ See [docs/BWRAP_SUDO_EXPLAINED.md](docs/BWRAP_SUDO_EXPLAINED.md) for technical d
 
 ---
 
-**Last Updated**: 2026-03-05
+**Last Updated**: 2026-10-09

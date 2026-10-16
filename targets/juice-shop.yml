@@ -1,0 +1,101 @@
+# OWASP Juice Shop scan target for the Pick demo — self-contained fragment.
+#
+# NOT standalone: attach it to the base model by passing the FULL file set, in
+# this merge order:
+#
+#   docker compose -f docker-compose.targets.yml -f targets/dvwa.yml -f targets/juice-shop.yml -f targets/juice-guard.yml ...
+#
+# (see the base file header for the topology and the merge rationale). This
+# fragment only DEFINES the juice-app service (the Juice Shop app itself); the
+# juice-net network it attaches to is defined ONCE in the base file — the
+# fragments only ATTACH, they never redefine shared resources. The GUARD that
+# fronts this app is a
+# separate fragment: targets/juice-guard.yml (the "door" — see its header).
+#
+# Juice Shop is a Node.js (Express/Angular) app listening on 3000 INSIDE the
+# container. It is reachable ONLY through the guard: pick scans it at
+# http://juice-shop (port 80 — the DNS name resolves to the guard on scan-net,
+# which proxies to this app over juice-net; DVWA sits at http://dvwa — port 80 —
+# directly on scan-net). The image ships arm64 builds, so unlike the amd64-only
+# dvwa image it runs natively (no emulation) on arm64 hosts.
+#
+# Why fragments instead of one big file: adding the next target is one new file
+# in this directory plus one -f flag — the base file and the existing targets
+# never change.
+services:
+  # The app service key is juice-app — NOT juice-shop. The DNS name
+  # `juice-shop` (what pick scans) is an ALIAS of the guard on scan-net
+  # (targets/juice-guard.yml), so the app itself can live on its own internal
+  # network with no alias pick could resolve. Renaming the app service keeps
+  # the engagement URL stable: `juice-shop` keeps meaning "the door".
+  juice-app:
+    # Docker Hub (bkimminich/juice-shop) — the project's canonical, anonymously
+    # pullable image. (ghcr.io/juice-shop/juice-shop was tried first and is NOT
+    # publicly resolvable — pull failed "not found" even with ghcr credentials
+    # present; see the live bring-up in the multi-target work.) The image ships
+    # arm64 builds, so unlike the amd64-only dvwa image it runs natively (no
+    # emulation) on arm64 hosts.
+    #
+    # INTERIM digest pin: this is the RepoDigest of the version this box
+    # ALREADY RUNS — verified to match the live container's image id, so the
+    # pin changes nothing at the next `up` (a digest that resolves to the same
+    # image id pulls nothing). It exists to kill `latest`'s drift: a mutable
+    # tag re-pulls a moving image and silently changes the benchmark's scan
+    # surface between runs (the comparability ask behind jtomek's benchmark
+    # fixture work). RE-PIN to the benchmark fixture manifest's digest when
+    # that fixture freezes its version — this interim pin is ours, not the
+    # fixture's, and must not outlive it.
+    image: bkimminich/juice-shop@sha256:73c53fbf442e8337b3ea3d98c7e8550308854701ebdfce4cc39768f36b75430e
+    restart: unless-stopped
+    networks:
+      - juice-net
+    # No `ports:` — Juice Shop is reachable only through the guard, never the
+    # host (targets-check asserts this for every non-pick service).
+    # The SHIPPED QUIET VARIANT: NODE_ENV=quiet selects the image's own
+    # config/quiet.yml section (shipped in the image, verified via node exec),
+    # which turns OFF the meta-intel UI noise for a benchmark run:
+    #   challenges.showHints: false + hackingInstructor.isEnabled: false
+    #   (no hints UI, no instructor), welcomeBanner.showOnFirstStart: false
+    #   (no first-start modal), challenges.showSolvedNotifications: false.
+    # The app itself is unchanged — this is configuration, not a code variant.
+    environment:
+      NODE_ENV: quiet
+    # NOTE: the repo tree ships SOLUTIONS.md (whole-challenge spoilers) — the
+    # benchmark fixture ships the standard image with it, so it stays (comparable
+    # with the scored range); it is never web-served (verified), and the guard
+    # denies the meta-intel routes to pick. The empty-volume mask attempt was
+    # DROPPED: Docker 28 cannot shadow a file with an empty named volume
+    # (container create fails "source is not directory").
+    # NOTE: /juice-shop/ctf.key is deliberately kept — it is read at REQUEST
+    # time by the dataErasure challenge (routes/dataErasure.ts + lib/utils.ts);
+    # removing or masking it would break that challenge.
+    # Juice Shop's `latest`-lineage image is DISTROLESS: no shell, no curl/wget,
+    # and `node` is NOT on the exec PATH — it exists only at the image's own
+    # entrypoint path `/nodejs/bin/node` (verified live: a PATH-based `node`
+    # healthcheck fails with `exec: "node": executable file not found in $PATH`,
+    # and even `docker exec sh` fails). Probe with the ABSOLUTE entrypoint
+    # binary instead — it is the one executable guaranteed present. Probe
+    # 127.0.0.1 so the check does not depend on the container's internal
+    # DNS/hostname. Any HTTP 5xx counts as not-ready; connection refused (app
+    # still booting) exits 1 and is retried. Exec form (CMD list) so no shell
+    # is involved (there isn't one).
+    # NOTE: this couples the healthcheck to the image's internal node path. If a
+    # future juice-shop image relocates node, the healthcheck fails LOUDLY
+    # (container never goes healthy → the guard and pick never start, by the
+    # depends_on gates) instead of silently scanning an unhealthy target.
+    healthcheck:
+      test:
+        - CMD
+        - /nodejs/bin/node
+        - -e
+        - "require('http').get('http://127.0.0.1:3000', (r) => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      # Juice Shop seeds its sqlite db + serves a bundled Angular bundle on first
+      # boot; give it a longer grace period than dvwa before retries count.
+      start_period: 30s
+    # Juice Shop is chunky (bundled frontend + sqlite). Cap it so a
+    # scan-flooded instance cannot starve the host — the demo box also runs the
+    # Strike48 backend stack.
+    mem_limit: 1g
