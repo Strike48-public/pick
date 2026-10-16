@@ -1,0 +1,83 @@
+# Juice Shop GUARD for the Pick demo — self-contained fragment (the "door").
+#
+# NOT standalone: attach it to the base model by passing the FULL file set, in
+# this merge order:
+#
+#   docker compose -f docker-compose.targets.yml -f targets/dvwa.yml -f targets/juice-shop.yml -f targets/juice-guard.yml ...
+#
+# (see the base file header for the topology and the merge rationale). This
+# fragment only DEFINES the juice-guard service; the scan-net and juice-net
+# networks it attaches to are defined once in the base file, never here.
+#
+# THE DOOR PATTERN — Juice Shop sits BEHIND a filtering proxy, not directly on
+# the scan bridge:
+#
+#   pick ── scan-net ──> juice-guard (ALIAS `juice-shop`, port 80)
+#                          │ scan-net + juice-net (the only member of both)
+#                          ▼
+#                        juice-app (juice-net ONLY, port 3000)
+#
+# The guard publishes the engagement DNS name `juice-shop` ON scan-net (the
+# explicit alias below — pick's `http://juice-shop` resolves to the GUARD,
+# which proxies port 80 to the app on juice-net), and is the ONLY member of
+# BOTH networks, so pick has no L3 path to the app except through it. DVWA,
+# which needs no filtering, stays DIRECT on scan-net. Future targets repeat
+# this pattern: app on its own internal net, guard fronting it with the
+# engagement alias on scan-net.
+#
+# Route denial lives in the committed conf (targets/juice-guard.nginx.conf —
+# the INTERIM deny-list + proxy headers live there, not here).
+#
+# Why fragments instead of one big file: adding the next target is one new file
+# in this directory plus one -f flag — the base file and the existing targets
+# never change.
+services:
+  juice-guard:
+    # Pinned MINOR (1.27-alpine): a mutable `alpine`/`latest` tag would drift
+    # the door's behavior between runs — same comparability reasoning as the
+    # app's digest pin, one notch coarser (nginx minor tags are stable enough
+    # for a proxy door; the app got the full digest because its `latest` was
+    # observed to move).
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    networks:
+      scan-net:
+        # THE ENGAGEMENT ALIAS: on scan-net, `juice-shop` resolves to the
+        # GUARD (service DNS adds the service name `juice-guard` too; the
+        # explicit alias adds `juice-shop`). pick scans http://juice-shop and
+        # hits the door. The app itself (`juice-app`) has no scan-net alias,
+        # so nothing on scan-net can resolve or reach it except through here.
+        aliases:
+          - juice-shop
+      juice-net:
+    # No `ports:` — the door is reachable only by pick on scan-net, never the
+    # host (targets-check asserts this for every non-pick service).
+    # The conf is COMMITTED and bind-mounted read-only: the door's route
+    # policy (deny-list + proxy headers + health endpoint) is versioned with
+    # the repo, not baked into an image. Relative host paths resolve against
+    # the PROJECT directory (the first -f file's dir — the repo root), so the
+    # mount works from any caller using the documented file set.
+    volumes:
+      - "./targets/juice-guard.nginx.conf:/etc/nginx/conf.d/default.conf:ro"
+    # busybox wget ships in nginx:*alpine (no curl). Probe the conf's own
+    # health endpoint over loopback — proves the conf LOADED (a conf syntax
+    # error kills nginx at start → connection refused → unhealthy) and that
+    # the deny-list conf is the one serving. Exec form (CMD list) so no shell
+    # is involved.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1/juice-guard-healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      # nginx boots instantly, but it must not come up before the app behind
+      # it is serving (the depends_on gate below); a short start_period is a
+      # belt-and-suspenders grace for the app's healthcheck interval to fire.
+      start_period: 10s
+    # The door starts only after the app behind it passes its healthcheck —
+    # nginx resolves `juice-app` in `proxy_pass` at conf-load time, so the
+    # app's DNS name must resolve (container up + on juice-net) when the
+    # guard starts, and the app must be SERVING (service_healthy) so the
+    # door never opens onto a dead end.
+    depends_on:
+      juice-app:
+        condition: service_healthy

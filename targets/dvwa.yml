@@ -4,7 +4,7 @@
 # NOT standalone: attach it to the base model by passing the FULL file set, in
 # this merge order:
 #
-#   docker compose -f docker-compose.targets.yml -f targets/dvwa.yml -f targets/juice-shop.yml ...
+#   docker compose -f docker-compose.targets.yml -f targets/dvwa.yml -f targets/juice-shop.yml -f targets/juice-guard.yml ...
 #
 # (see the base file header for the topology and the merge rationale). This
 # fragment only DEFINES the dvwa service; the scan-net network it attaches to is

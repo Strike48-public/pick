@@ -139,21 +139,34 @@ run-headless-env *ARGS:
 # legacy DVWA_ENV, then .env.dvwa, so the init-dev demo:pick tasks (which set
 # DVWA_ENV) and old muscle memory keep working unchanged; the env file itself
 # keeps its historical .env.dvwa name and target-agnostic contents.
-targets_files := "-f docker-compose.targets.yml -f targets/dvwa.yml -f targets/juice-shop.yml"
+targets_files := "-f docker-compose.targets.yml -f targets/dvwa.yml -f targets/juice-shop.yml -f targets/juice-guard.yml"
 targets_env := env_var_or_default("TARGETS_ENV", env_var_or_default("DVWA_ENV", ".env.dvwa"))
 
-# Validate the compose model + assert the demo isolation invariants (no live
-# daemon needed beyond `docker compose config`). Cheap regression tripwire:
-# fails if a future edit re-exposes a deliberately-vulnerable target — publishes
-# a host port, flips scan-net off `internal`, detaches a target from scan-net,
-# or attaches it to the backend network — and fails if pick's healthy-start gate
-# on the targets is lost. Also asserts the scan-net subnet interpolation by
-# rendering the model TWICE: SCAN_NET_SUBNET unset → the DEFAULT pin
-# 10.250.0.0/24 is preserved; SCAN_NET_SUBNET=10.251.0.0/24 → the override is
-# honored verbatim (what concurrent per-instance projects rely on). Services
-# are enumerated GENERICALLY from the merged model (everything but pick is a
-# scan target), so a future targets/<name>.yml fragment is covered by the same
-# assertions with no edit here; only pick's depends_on pair is asserted by name.
+# Validate the compose model + assert the demo isolation invariants + the door
+# topology (no live daemon needed beyond `docker compose config`). Cheap
+# regression tripwire; asserts:
+#   - door pattern (BY NAME — targets differ on purpose, see the base header):
+#     dvwa DIRECT on scan-net; juice-app on juice-net ONLY; juice-guard = the
+#     ONLY member of BOTH scan-net + juice-net (the engagement alias lives in
+#     the conf-side tripwire via the committed nginx conf, not here);
+#   - BOTH internal bridges internal:true (scan-net + juice-net — no external
+#     egress from either);
+#   - pick stays {scan-net, backend-net} — no L3 path to juice-net except
+#     through the guard — and its healthy-start gate on dvwa, juice-app AND
+#     juice-guard (all service_healthy) is intact;
+#   - GENERIC over the merged model: every non-pick service publishes NO host
+#     ports and stays OFF backend-net, so a future targets/<name>.yml fragment
+#     is covered by the same assertions with no edit here;
+#   - the juice-app image carries a @sha256: digest pin (tripwire against
+#     regression to a mutable tag — the pin requirement is named in the error)
+#     and the door's image keeps its nginx:1.27-alpine minor pin;
+#   - the committed door conf (targets/juice-guard.nginx.conf) still denies
+#     /api/Challenges (403) and still serves the healthz endpoint (200);
+#   - the SOLUTIONS mask volume is declared AND mounted on juice-app.
+# Also asserts the scan-net subnet interpolation by rendering the model TWICE:
+# SCAN_NET_SUBNET unset → the DEFAULT pin 10.250.0.0/24 is preserved;
+# SCAN_NET_SUBNET=10.251.0.0/24 → the override is honored verbatim (what
+# concurrent per-instance projects rely on).
 targets-check:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -184,29 +197,102 @@ targets-check:
         print("targets-check FAILED:\n  - compose config produced no usable model (check the mandatory ${VAR:?} names)")
         sys.exit(1)
     s, n = d["services"], d["networks"]
+    v = d.get("volumes") or {}
     # `docker compose config` renders service networks as a dict (name -> opts|None),
     # not a list — set() over a dict takes its keys, so this normalizes both shapes.
-    # GENERIC enumeration: every service except the pick connector is a scan target
-    # and must satisfy the same isolation contract (no host ports, scan-net only,
-    # scan-net internal). A future targets/<name>.yml fragment is covered with zero
-    # edits here; only pick is special-cased below.
     errs = []
+    # GENERIC enumeration: every service except the pick connector must publish
+    # NO host ports and stay OFF the backend network. Network MEMBERSHIP differs
+    # per target on purpose (door pattern — dvwa direct, juice-app behind the
+    # door), so it is asserted BY NAME below, not generically.
     for name in sorted(k for k in s if k != "pick"):
         svc = s[name]
         nets = set(svc.get("networks") or [])
         if "ports" in svc: errs.append("%s publishes host ports (must not)" % name)
-        if nets != {"scan-net"}: errs.append("%s networks != {scan-net}: %s" % (name, sorted(nets)))
-        if n["scan-net"].get("internal") is not True: errs.append("scan-net is not internal:true")
-    # pick: egress + scan membership, plus the healthy-start gate on BOTH targets.
-    # The depends_on pair is asserted BY NAME on purpose: it is pick wiring, not
-    # per-target isolation, so it does not generalize automatically — extend it
-    # when adding a target (same as the depends_on block in the base compose file).
+        if "backend-net" in nets: errs.append("%s is on backend-net (targets must never be)" % name)
+    # Network membership BY NAME (the door pattern):
+    #   dvwa: DIRECT on scan-net (needs no filtering);
+    #   juice-app: juice-net ONLY — nothing on scan-net can resolve or reach it;
+    #   juice-guard: scan-net + juice-net, the ONLY member of both (the door).
+    def net_set(name):
+        svc = s.get(name)
+        if svc is None:
+            errs.append("service %s missing from the merged model (renamed or dropped — the door pattern needs it)" % name)
+            return set()
+        return set(svc.get("networks") or [])
+    dvwa_nets = net_set("dvwa")
+    if dvwa_nets != {"scan-net"}: errs.append("dvwa networks != {scan-net} (dvwa is DIRECT): %s" % sorted(dvwa_nets))
+    juice_nets = net_set("juice-app")
+    if juice_nets != {"juice-net"}: errs.append("juice-app networks != {juice-net} ONLY (juice-app must sit behind the door): %s" % sorted(juice_nets))
+    guard_nets = net_set("juice-guard")
+    if guard_nets != {"scan-net", "juice-net"}: errs.append("juice-guard networks != {scan-net, juice-net} (the guard is the ONLY member of both — the door): %s" % sorted(guard_nets))
+    # BOTH internal bridges must be internal:true — no external egress from
+    # either (scan-net has always been; juice-net is the door private side).
+    for net in ("scan-net", "juice-net"):
+        if net not in n:
+            errs.append("network %s missing from the merged model" % net)
+        elif n[net].get("internal") is not True:
+            errs.append("%s is not internal:true" % net)
+    # pick: egress + scan membership only (no L3 path to juice-net except
+    # through the guard), plus the healthy-start gate on BOTH targets AND the
+    # door. The depends_on set is asserted BY NAME on purpose: it is pick
+    # wiring, not per-target isolation, so it does not generalize automatically
+    # — extend it when adding a target (same as the depends_on block in the
+    # base compose file).
     pick_nets = set(s["pick"].get("networks") or [])
     if pick_nets != {"scan-net", "backend-net"}: errs.append("pick networks != {scan-net, backend-net}: %s" % sorted(pick_nets))
-    deps = set(s["pick"].get("depends_on") or [])
-    for target in ("dvwa", "juice-shop"):
-        if target not in deps:
-            errs.append("pick depends_on missing %s (must start only after every target is healthy)" % target)
+    deps = s["pick"].get("depends_on") or {}
+    # Normalize: config renders depends_on as dict (name -> {condition: ...});
+    # a list form means names WITHOUT a condition — treat as unsatisfied.
+    if isinstance(deps, dict):
+        conds = {k: (val or {}).get("condition") for k, val in deps.items()}
+    else:
+        conds = {k: None for k in deps}
+    for target in ("dvwa", "juice-app", "juice-guard"):
+        if target not in conds:
+            errs.append("pick depends_on missing %s (must start only after every target and the door are healthy)" % target)
+        elif conds[target] != "service_healthy":
+            errs.append("pick depends_on %s condition != service_healthy (%s)" % (target, conds[target]))
+    # Images: juice-app digest-pinned (tripwire against regression to a mutable
+    # tag — the pin requirement is named in the error); the door keeps its
+    # nginx minor pin.
+    juice_img = s.get("juice-app", {}).get("image") or ""
+    if "@sha256:" not in juice_img:
+        errs.append("juice-app image %r lacks a @sha256: digest pin (mutable-tag regression — pin the image by digest, targets-check requires @sha256:)" % juice_img)
+    guard_img = s.get("juice-guard", {}).get("image") or ""
+    if guard_img != "nginx:1.27-alpine":
+        errs.append("juice-guard image != nginx:1.27-alpine (the door minor pin): %s" % guard_img)
+    # The committed door conf (recipe runs from the repo root): the deny + the
+    # health endpoint must survive any conf edit. FULL-LINE comments are
+    # STRIPPED before matching — a deleted deny block must not be able to hide
+    # behind grounding-comment text that names the same route (mutation-verified:
+    # raw-text matching stayed green with the whole block deleted, because the
+    # comments mention it). Read via python so a MISSING file is a named
+    # failure, not a crash.
+    try:
+        conf_code = "\n".join(l for l in open("targets/juice-guard.nginx.conf").read().splitlines() if not l.lstrip().startswith("#"))
+        if "location /api/Challenges" not in conf_code or "return 403;" not in conf_code:
+            errs.append("juice-guard conf lost the /api/Challenges deny (needs location /api/Challenges + return 403;)")
+        if "location = /juice-guard-healthz" not in conf_code or "return 200;" not in conf_code:
+            errs.append("juice-guard conf lost the healthz endpoint (needs location = /juice-guard-healthz + return 200;)")
+    except OSError as e:
+        errs.append("juice-guard conf unreadable (targets/juice-guard.nginx.conf): %s" % e)
+    # The SOLUTIONS mask: volume declared AND mounted on juice-app. Mounts
+    # render in EITHER short syntax (strings) or long syntax (dicts with
+    # source/target/read_only) depending on compose version — normalize both.
+    if "juice-solutions-mask" not in v:
+        errs.append("juice-solutions-mask volume not declared (the SOLUTIONS mask)")
+    else:
+        def mount_str(m):
+            if isinstance(m, dict):
+                return "%s:%s%s" % (m.get("source"), m.get("target"), ":ro" if m.get("read_only") else "")
+            return str(m)
+        mounts = [mount_str(m) for m in (s.get("juice-app", {}).get("volumes") or [])]
+        # STRICT equality on the normalized mount — INCLUDING the :ro flag: a
+        # prefix match missed a target drift to /juice-shop/SOLUTIONS.md.bak
+        # (mutation-verified). The mask must shadow the EXACT path, read-only.
+        if "juice-solutions-mask:/juice-shop/SOLUTIONS.md:ro" not in mounts:
+            errs.append("juice-app does not mount juice-solutions-mask:/juice-shop/SOLUTIONS.md:ro (the SOLUTIONS mask, read-only): %s" % mounts)
     # scan-net subnet assertion (renders TWICE above):
     # (a) SCAN_NET_SUBNET empty/unset → the DEFAULT documented pin 10.250.0.0/24
     #     is preserved (default behavior unchanged);
@@ -227,11 +313,12 @@ targets-check:
         errs.append("scan-net subnet (SCAN_NET_SUBNET=10.251.0.0/24) != ['10.251.0.0/24'] (override ignored): %s" % subnets2)
     if errs:
         print("targets isolation FAILED:"); [print("  -", e) for e in errs]; sys.exit(1)
-    print("targets-check OK: config valid + targets isolated (no host ports, scan-net internal, off backend-net) + pick gated on both targets + scan-net subnet default preserved & SCAN_NET_SUBNET override honored")
+    print("targets-check OK: config valid + door topology asserted (dvwa direct on scan-net; juice-app behind the door on juice-net ONLY; juice-guard = only scan-net+juice-net member; both internal) + pick gated on dvwa, juice-app AND the door (all service_healthy) + no host ports + targets off backend-net + juice digest pin + nginx minor pin + conf deny/healthz + SOLUTIONS mask + scan-net subnet default preserved & SCAN_NET_SUBNET override honored")
     '
 
-# Bring up the Pick + scan-targets demo stack (pick scans dvwa + juice-shop;
-# registers with the backend; starts only after BOTH targets are healthy)
+# Bring up the Pick + scan-targets demo stack (pick scans dvwa + juice-shop
+# through the door; registers with the backend; starts only after dvwa,
+# juice-app AND the juice-guard door are healthy)
 targets-up *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -254,8 +341,8 @@ targets-up *ARGS:
     # backend), so it stays `running` while never appearing in Studio. Don't assert
     # PENDING here — tell the operator how to confirm it, so a silent registration
     # failure isn't masked as success.
-    echo "Pick + scan targets started (pick container running; started only after dvwa AND juice-shop reported healthy)."
-    echo "Engagement URLs from pick on scan-net: http://dvwa and http://juice-shop:3000."
+    echo "Pick + scan targets started (pick container running; started only after dvwa, juice-app AND the juice-guard door reported healthy)."
+    echo "Engagement URLs from pick on scan-net: http://dvwa and http://juice-shop (through the door)."
     echo "Confirm registration: 'docker compose {{targets_files}} logs pick' should show a registration/pending line,"
     echo "then approve the connector in Studio -> Gateways. If it never appears, check STRIKE48_TENANT and backend reachability."
 
