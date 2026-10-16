@@ -76,8 +76,9 @@ DENIES the challenge/hint meta-intel data routes (`/api/Challenges` and
 deny-list comes from the benchmark fixture's filtering-proxy contract when
 the shared range freezes, matrix#2422), the app runs the image's own SHIPPED
 QUIET VARIANT (`NODE_ENV=quiet`: no hints UI, no hacking instructor, no
-first-start modal, no solved notifications), the repo-tree `SOLUTIONS.md`
-walkthrough file is MASKED by an empty named volume, and `targets-up`
+first-start modal, no solved notifications). The repo-tree `SOLUTIONS.md`
+walkthrough file stays in the container (the benchmark fixture ships it too —
+it is never web-served, so the scanner cannot read it), and `targets-up`
 FORCE-RECREATES juice-app on every run so each engagement starts fresh
 (`JUICE_FRESH=0` keeps the running app). DVWA needs none of this — it stays
 direct on scan-net.

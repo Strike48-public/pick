@@ -215,12 +215,3 @@ networks:
 
 volumes:
   pick-demo-creds:
-  # Juice Shop's SOLUTIONS mask: an EMPTY named volume mounted over the image's
-  # /juice-shop/SOLUTIONS.md — the mount shadows the shipped solve-walkthrough
-  # file with an empty mountpoint dir. The app never reads the file (verified
-  # via node exec over the route tree — nothing opens it at boot or request
-  # time), so boot is unaffected. Juice-specific, but declared HERE (once, next
-  # to the network definitions — the same "shared resource defined once in the
-  # base" pattern as the networks; the targets/juice-shop.yml fragment only
-  # mounts it).
-  juice-solutions-mask:

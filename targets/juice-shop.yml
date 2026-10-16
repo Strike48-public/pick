@@ -7,9 +7,9 @@
 #
 # (see the base file header for the topology and the merge rationale). This
 # fragment only DEFINES the juice-app service (the Juice Shop app itself); the
-# juice-net network it attaches to and the juice-solutions-mask volume it
-# mounts are defined ONCE in the base file — the fragments only ATTACH/MOUNT,
-# they never redefine shared resources. The GUARD that fronts this app is a
+# juice-net network it attaches to is defined ONCE in the base file — the
+# fragments only ATTACH, they never redefine shared resources. The GUARD that
+# fronts this app is a
 # separate fragment: targets/juice-guard.yml (the "door" — see its header).
 #
 # Juice Shop is a Node.js (Express/Angular) app listening on 3000 INSIDE the
@@ -60,18 +60,15 @@ services:
     # The app itself is unchanged — this is configuration, not a code variant.
     environment:
       NODE_ENV: quiet
-    # The SOLUTIONS MASK: an EMPTY named volume mounted over the repo tree's
-    # /juice-shop/SOLUTIONS.md shadows the shipped solve-walkthrough file with
-    # an empty mountpoint dir. The app never reads SOLUTIONS.md (verified via
-    # node exec over the route tree — nothing opens it at boot or at request
-    # time), so boot is unaffected; the file simply stops being readable by
-    # anything that could list the repo tree through an app bug. The volume's
-    # DEFINITION lives in the base file (declared once, next to the networks).
-    # NOTE: /juice-shop/ctf.key is deliberately NOT masked — it is read at
-    # REQUEST time by the dataErasure challenge (routes/dataErasure.ts +
-    # lib/utils.ts) and masking it would break that challenge.
-    volumes:
-      - "juice-solutions-mask:/juice-shop/SOLUTIONS.md:ro"
+    # NOTE: the repo tree ships SOLUTIONS.md (whole-challenge spoilers) — the
+    # benchmark fixture ships the standard image with it, so it stays (comparable
+    # with the scored range); it is never web-served (verified), and the guard
+    # denies the meta-intel routes to pick. The empty-volume mask attempt was
+    # DROPPED: Docker 28 cannot shadow a file with an empty named volume
+    # (container create fails "source is not directory").
+    # NOTE: /juice-shop/ctf.key is deliberately kept — it is read at REQUEST
+    # time by the dataErasure challenge (routes/dataErasure.ts + lib/utils.ts);
+    # removing or masking it would break that challenge.
     # Juice Shop's `latest`-lineage image is DISTROLESS: no shell, no curl/wget,
     # and `node` is NOT on the exec PATH — it exists only at the image's own
     # entrypoint path `/nodejs/bin/node` (verified live: a PATH-based `node`

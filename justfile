@@ -162,7 +162,6 @@ targets_env := env_var_or_default("TARGETS_ENV", env_var_or_default("DVWA_ENV", 
 #     and the door's image keeps its nginx:1.27-alpine minor pin;
 #   - the committed door conf (targets/juice-guard.nginx.conf) still denies
 #     /api/Challenges (403) and still serves the healthz endpoint (200);
-#   - the SOLUTIONS mask volume is declared AND mounted on juice-app.
 # Also asserts the scan-net subnet interpolation by rendering the model TWICE:
 # SCAN_NET_SUBNET unset → the DEFAULT pin 10.250.0.0/24 is preserved;
 # SCAN_NET_SUBNET=10.251.0.0/24 → the override is honored verbatim (what
@@ -277,22 +276,6 @@ targets-check:
             errs.append("juice-guard conf lost the healthz endpoint (needs location = /juice-guard-healthz + return 200;)")
     except OSError as e:
         errs.append("juice-guard conf unreadable (targets/juice-guard.nginx.conf): %s" % e)
-    # The SOLUTIONS mask: volume declared AND mounted on juice-app. Mounts
-    # render in EITHER short syntax (strings) or long syntax (dicts with
-    # source/target/read_only) depending on compose version — normalize both.
-    if "juice-solutions-mask" not in v:
-        errs.append("juice-solutions-mask volume not declared (the SOLUTIONS mask)")
-    else:
-        def mount_str(m):
-            if isinstance(m, dict):
-                return "%s:%s%s" % (m.get("source"), m.get("target"), ":ro" if m.get("read_only") else "")
-            return str(m)
-        mounts = [mount_str(m) for m in (s.get("juice-app", {}).get("volumes") or [])]
-        # STRICT equality on the normalized mount — INCLUDING the :ro flag: a
-        # prefix match missed a target drift to /juice-shop/SOLUTIONS.md.bak
-        # (mutation-verified). The mask must shadow the EXACT path, read-only.
-        if "juice-solutions-mask:/juice-shop/SOLUTIONS.md:ro" not in mounts:
-            errs.append("juice-app does not mount juice-solutions-mask:/juice-shop/SOLUTIONS.md:ro (the SOLUTIONS mask, read-only): %s" % mounts)
     # scan-net subnet assertion (renders TWICE above):
     # (a) SCAN_NET_SUBNET empty/unset → the DEFAULT documented pin 10.250.0.0/24
     #     is preserved (default behavior unchanged);
@@ -313,7 +296,7 @@ targets-check:
         errs.append("scan-net subnet (SCAN_NET_SUBNET=10.251.0.0/24) != ['10.251.0.0/24'] (override ignored): %s" % subnets2)
     if errs:
         print("targets isolation FAILED:"); [print("  -", e) for e in errs]; sys.exit(1)
-    print("targets-check OK: config valid + door topology asserted (dvwa direct on scan-net; juice-app behind the door on juice-net ONLY; juice-guard = only scan-net+juice-net member; both internal) + pick gated on dvwa, juice-app AND the door (all service_healthy) + no host ports + targets off backend-net + juice digest pin + nginx minor pin + conf deny/healthz + SOLUTIONS mask + scan-net subnet default preserved & SCAN_NET_SUBNET override honored")
+    print("targets-check OK: config valid + door topology asserted (dvwa direct on scan-net; juice-app behind the door on juice-net ONLY; juice-guard = only scan-net+juice-net member; both internal) + pick gated on dvwa, juice-app AND the door (all service_healthy) + no host ports + targets off backend-net + juice digest pin + nginx minor pin + conf deny/healthz + scan-net subnet default preserved & SCAN_NET_SUBNET override honored")
     '
 
 # Bring up the Pick + scan-targets demo stack (pick scans dvwa + juice-shop

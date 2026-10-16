@@ -240,11 +240,13 @@ Benchmark determinism for the juice target (DVWA needs none of this):
   shipped config/quiet.yml section, turning off the meta-intel UI noise (hints
   UI, hacking instructor, first-start welcome modal, solved notifications).
   Configuration, not a code variant.
-- **The SOLUTIONS mask**: an empty named volume (`juice-solutions-mask`)
-  mounted over the image's repo-tree `/juice-shop/SOLUTIONS.md` shadows the
-  solve-walkthrough file with an empty mountpoint dir. The app never reads the
-  file, so boot is unaffected. `/juice-shop/ctf.key` is deliberately NOT
-  masked — the dataErasure challenge reads it at request time.
+- **No SOLUTIONS mask**: the benchmark fixture ships the standard image with
+  the repo-tree `SOLUTIONS.md` (whole-challenge spoilers) in it, so the local
+  twin keeps it too (comparability) — and it is never web-served (verified),
+  so the scanner cannot read it regardless. `/juice-shop/ctf.key` is likewise
+  kept — the dataErasure challenge reads it at request time. (An empty-volume
+  mask was attempted and dropped: Docker 28 cannot shadow a file with an
+  empty named volume — container create fails "source is not directory".)
 - **The digest pin**: juice-app's image is pinned by RepoDigest — INTERIM: the
   digest of the version this box already runs (a digest resolving to the same
   image id pulls nothing, so the pin changed nothing at bring-up). It kills
