@@ -318,7 +318,14 @@ targets-check:
 
 # Bring up the Pick + scan-targets demo stack (pick scans dvwa + juice-shop
 # through the door; registers with the backend; starts only after dvwa,
-# juice-app AND the juice-guard door are healthy)
+# juice-app AND the juice-guard door are healthy). Per-run determinism
+# (benchmark fixture contract): juice-app is force-recreated by default so
+# every run starts a FRESH engagement (seeded sqlite state — no challenge
+# progress or registered users leaking over from the previous run); the door
+# (juice-guard) is NOT recreated — it only needs to re-resolve the app, which
+# re-claims the lowest free IP on juice-net. Escape hatch: JUICE_FRESH=0 keeps
+# the running juice-app (persisted state, e.g. mid-engagement debugging) by
+# omitting the flag.
 targets-up *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -326,7 +333,14 @@ targets-up *ARGS:
         echo "error: {{targets_env}} not found — copy .env.dvwa.example to {{targets_env}} and set STRIKE48_TENANT" >&2
         exit 1
     fi
-    docker compose --env-file "{{targets_env}}" {{targets_files}} up --build -d {{ARGS}}
+    # Per-run determinism (see the recipe comment above): --force-recreate
+    # juice-app is DEFAULT-ON; JUICE_FRESH=0 omits it (escape hatch for keeping
+    # the running juice-app and its persisted state). The flag is an array so
+    # it stays quoted; the `${arr[@]+…}` guard keeps the EMPTY-array expansion
+    # (JUICE_FRESH=0) legal under `set -u` even on macOS's /bin/bash 3.2.
+    recreate_args=()
+    if [[ "${JUICE_FRESH:-1}" != "0" ]]; then recreate_args=(--force-recreate juice-app); fi
+    docker compose --env-file "{{targets_env}}" {{targets_files}} up --build -d ${recreate_args[@]+"${recreate_args[@]}"} {{ARGS}}
     # `up -d` returns once containers are STARTED, not proven healthy — pick has no
     # healthcheck (it's an outbound client), so confirm it didn't immediately exit
     # rather than blindly claiming success (a crash-on-boot would otherwise be hidden).
@@ -342,7 +356,7 @@ targets-up *ARGS:
     # PENDING here — tell the operator how to confirm it, so a silent registration
     # failure isn't masked as success.
     echo "Pick + scan targets started (pick container running; started only after dvwa, juice-app AND the juice-guard door reported healthy)."
-    echo "Engagement URLs from pick on scan-net: http://dvwa and http://juice-shop (through the door)."
+    echo "Engagement URLs from pick on scan-net: http://dvwa (direct) and http://juice-shop (port 80, through the guard door)."
     echo "Confirm registration: 'docker compose {{targets_files}} logs pick' should show a registration/pending line,"
     echo "then approve the connector in Studio -> Gateways. If it never appears, check STRIKE48_TENANT and backend reachability."
 
