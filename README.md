@@ -73,8 +73,9 @@ Benchmark determinism on the juice target: the app image is DIGEST-PINNED
 benchmark fixture manifest's digest when that fixture freezes), the door
 DENIES the challenge/hint meta-intel data routes AND the solution-state
 routes (CASE-INSENSITIVE `/api/Challenges` + `/api/Hints` — the app's routes
-are case-insensitive, so the deny must be too — plus `/metrics` and
-`/rest/continue-code`, which leak what pick has solved; an interim list
+are case-insensitive, so the deny must be too — plus `/metrics`,
+`/rest/continue-code` and its findIt/fixIt variants, and the `/snippets`
+surface, which leak what pick has solved; an interim list
 proven BY REQUEST in `targets-check`'s live guard probe (where a docker
 daemon runs — daemonless boxes run the render + text assertions only); the
 deny-list comes from the benchmark fixture's filtering-proxy contract when

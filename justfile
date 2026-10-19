@@ -390,8 +390,9 @@ targets-check:
         fi
         # THE BYPASS PATHS: every case variant the case-sensitive list leaked
         # (the case-insensitivity bypass) + the SOLUTION-STATE routes
-        # (/metrics, /rest/continue-code) + the subpath, merged-slash and
-        # decoded-uri forms. ALL denied 403.
+        # (/metrics, /rest/continue-code and its findIt/fixIt variants) + the
+        # snippets surface (the vulnerable source behind the door) + the
+        # subpath, merged-slash and decoded-uri forms. ALL denied 403.
         DENIED_PATHS=(
             "/api/Challenges"
             "/api/challenges"
@@ -406,6 +407,9 @@ targets-check:
             "/METRICS"
             "/rest/continue-code"
             "/rest/continue-code/apply/x"
+            "/rest/continue-code-findIt"
+            "/rest/continue-code-fixIt"
+            "/snippets/loginAdminChallenge"
         )
         for p in "${DENIED_PATHS[@]}"; do
             code=$(docker exec probe-client curl -s --path-as-is -o /dev/null -w '%{http_code}' "http://juice-guard$p") || code="000"
@@ -441,7 +445,7 @@ targets-check:
             exit 1
         fi
         LIVE_PROBE_RAN=1
-        echo "targets-check: LIVE GUARD PROBE green (17 paths by request through the committed conf on a scratch net: 13 denied 403 incl. every case variant + /metrics + /rest/continue-code; 3 keep-open 200 with upstream-traversal marker; healthz 200)"
+        echo "targets-check: LIVE GUARD PROBE green (20 paths by request through the committed conf on a scratch net: 16 denied 403 incl. every case variant + /metrics + /rest/continue-code incl. the findIt/fixIt variants + the snippets surface; 3 keep-open 200 with upstream-traversal marker; healthz 200)"
     else
         echo "targets-check: LIVE GUARD PROBE SKIPPED — no docker daemon reachable ('docker info' failed; daemonless box). The daemon-free render assertions ran; the conf text assertions follow (they run on every box); the deny-list is proven BY REQUEST only on a dev box (run 'just targets-check' where a daemon runs)."
     fi
@@ -464,8 +468,8 @@ targets-check:
         conf_code = "\n".join(l for l in open("targets/juice-guard.nginx.conf").read().splitlines() if not l.lstrip().startswith("#"))
         if "location ~* ^/api/(challenges|hints)(/|$)" not in conf_code or "return 403;" not in conf_code:
             errs.append("juice-guard conf lost the case-insensitive challenge/hint deny (needs location ~* ^/api/(challenges|hints)(/|$) + return 403;)")
-        if "location ~* ^/(metrics|rest/continue-code)(/|$)" not in conf_code:
-            errs.append("juice-guard conf lost the solution-state deny (needs location ~* ^/(metrics|rest/continue-code)(/|$) — /metrics + /rest/continue-code leak what pick has solved)")
+        if "location ~* ^/(metrics|rest/continue-code[^/]*|snippets)(/|$)" not in conf_code:
+            errs.append("juice-guard conf lost the solution-state deny (needs location ~* ^/(metrics|rest/continue-code[^/]*|snippets)(/|$) — /metrics + /rest/continue-code (any variant) + the snippets surface leak what pick has solved)")
         if "location = /juice-guard-healthz" not in conf_code or "return 200;" not in conf_code:
             errs.append("juice-guard conf lost the healthz endpoint (needs location = /juice-guard-healthz + return 200;)")
     except OSError as e:

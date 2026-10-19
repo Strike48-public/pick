@@ -233,7 +233,10 @@ Benchmark determinism for the juice target (DVWA needs none of this):
   data routes `/api/Challenges` (116 challenge rows, unauthenticated) and
   `/api/Hints` (hint text, unauthenticated on non-quiet builds) PLUS the
   solution-state routes `/metrics` (Prometheus solved gauges) and
-  `/rest/continue-code` (a token of the solved set). Proven BY REQUEST:
+  `/rest/continue-code` (a token of the solved set — the `[^/]*` class in
+  the rule covers its findIt/fixIt variants too, which the `(/|$)` anchor
+  alone never matched) PLUS the `/snippets` surface (the vulnerable source,
+  the candidate fixes and the verdict oracle). Proven BY REQUEST:
   `targets-check`'s LIVE GUARD PROBE boots the committed conf on a scratch
   net and requires 403 for every known bypass path + 200 for the keep-open
   routes (skipped with a disclosure on daemonless boxes, which run the

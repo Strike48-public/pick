@@ -74,6 +74,21 @@ jobs:
           cd deploy/docker
           cp .env.example .env
           docker compose config -q
+      # targets-check: the daemon-free render + conf-text assertions PLUS —
+      # where a docker daemon exists, which GitHub's Ubuntu runners HAVE — the
+      # LIVE GUARD PROBE: throwaway scratch containers + scratch net, removed
+      # on every exit path, proving the door's deny-list BY REQUEST pre-merge
+      # (the probe's daemon-detection is what makes it RUN here rather than
+      # skip — the bonus of a pre-merge signal without a self-hosted dev box).
+      # just is installed as a release binary via taiki-e/install-action
+      # (seconds; checksummed) — the nix path the Android build uses is
+      # toolchain parity, disproportionate for lint. PyYAML is ensured for the
+      # render assertions (importable → the pip fallback never runs).
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+      - run: just targets-check
 
   clippy:
     name: Clippy
