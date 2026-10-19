@@ -33,12 +33,13 @@
 # never change.
 services:
   juice-guard:
-    # Pinned MINOR (1.27-alpine): a mutable `alpine`/`latest` tag would drift
-    # the door's behavior between runs — same comparability reasoning as the
-    # app's digest pin, one notch coarser (nginx minor tags are stable enough
-    # for a proxy door; the app got the full digest because its `latest` was
-    # observed to move).
-    image: nginx:1.27-alpine
+    # Digest-pinned (nginx:1.27-alpine@sha256:65645c7b…) with the tag kept in
+    # the annotation for readability. The guard is the CONTROL — its route
+    # policy is the deny-list, so a moving door image would drift the door's
+    # behavior (nginx conf semantics included) between runs. Same comparability
+    # reasoning as the app's digest pin (the pin requirement is asserted by
+    # targets-check: @sha256: present + the 1.27-alpine tag retained).
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     restart: unless-stopped
     networks:
       scan-net:

@@ -71,8 +71,12 @@ as reached from pick over scan-net: `http://dvwa` (direct, port 80) and
 Benchmark determinism on the juice target: the app image is DIGEST-PINNED
 (interim — the digest of the version this box already runs; re-pin to the
 benchmark fixture manifest's digest when that fixture freezes), the door
-DENIES the challenge/hint meta-intel data routes (`/api/Challenges` and
-`/api/Hints` — an interim list grounded in the app's route tree; the final
+DENIES the challenge/hint meta-intel data routes AND the solution-state
+routes (CASE-INSENSITIVE `/api/Challenges` + `/api/Hints` — the app's routes
+are case-insensitive, so the deny must be too — plus `/metrics` and
+`/rest/continue-code`, which leak what pick has solved; an interim list
+proven BY REQUEST in `targets-check`'s live guard probe (where a docker
+daemon runs — daemonless boxes run the render + text assertions only); the
 deny-list comes from the benchmark fixture's filtering-proxy contract when
 the shared range freezes, matrix#2422), the app runs the image's own SHIPPED
 QUIET VARIANT (`NODE_ENV=quiet`: no hints UI, no hacking instructor, no

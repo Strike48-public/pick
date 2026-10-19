@@ -227,11 +227,18 @@ exists only on juice-net — nothing on scan-net can resolve or reach it.
 Benchmark determinism for the juice target (DVWA needs none of this):
 
 - **The door's deny-list** (targets/juice-guard.nginx.conf, INTERIM — ours):
-  denies the challenge/hint meta-intel data routes `/api/Challenges` (116
-  challenge rows, unauthenticated) and `/api/Hints` (hint text, unauthenticated)
-  — grounded in the app's route tree (the shipped swagger.yml is the B2B order
-  decoy and lists no challenge/hint routes). Everything else passes through:
-  the vulnerability-finding routes STAY reachable (e.g.
+  CASE-INSENSITIVE (the app's Express routes are case-insensitive, nginx
+  prefix matching is not — the case-sensitive prefix forms leaked the whole
+  catalog to one lower-case request), denying the challenge/hint meta-intel
+  data routes `/api/Challenges` (116 challenge rows, unauthenticated) and
+  `/api/Hints` (hint text, unauthenticated on non-quiet builds) PLUS the
+  solution-state routes `/metrics` (Prometheus solved gauges) and
+  `/rest/continue-code` (a token of the solved set). Proven BY REQUEST:
+  `targets-check`'s LIVE GUARD PROBE boots the committed conf on a scratch
+  net and requires 403 for every known bypass path + 200 for the keep-open
+  routes (skipped with a disclosure on daemonless boxes, which run the
+  render + text assertions only). Everything else passes through: the
+  vulnerability-finding routes STAY reachable (e.g.
   `/rest/admin/application-configuration` returns 200 unauthenticated — keep),
   and the shop's own API stays open. The FINAL deny-list comes from the
   benchmark fixture's filtering-proxy contract when the shared range freezes
