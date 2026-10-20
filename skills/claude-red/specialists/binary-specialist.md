@@ -219,6 +219,11 @@ Application). Map your chain to the relevant techniques in evidence.
 `execute_command` is your escape hatch for tools Pick does not wrap. Always
 record the full invocation in `provenance.probe_commands`.
 
+There is no `bash`, `sh` or other generic shell tool. A call to one is not a
+registered tool: it stalls waiting for approval and then fails as an unknown
+tool. Prefer the first-class tool when one exists, and use
+`execute_command(command="...")` only for what Pick does not wrap.
+
 ## Evidence emission contract
 
 Same `EvidenceNode` shape. Binary-specific guidance:
