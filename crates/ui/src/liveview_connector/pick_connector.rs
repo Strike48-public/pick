@@ -399,9 +399,7 @@ impl BaseConnector for PickConnector {
                         // as a normal execution instead.
                         self.budget.reset_for_new_scan().await;
                     } else {
-                        let made_progress =
-                            result.provenance.is_some() || !result.data.is_null() || result.success;
-                        self.budget.record(made_progress).await;
+                        self.budget.record(result.made_progress()).await;
                     }
 
                     // A successful `begin_scan` marks the start of a fresh

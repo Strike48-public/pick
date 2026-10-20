@@ -18,6 +18,11 @@ use crate::tools::{ToolOutcome, ToolResult};
 /// the result `data`.
 pub const STDERR_TAIL_MAX_BYTES: usize = 512;
 
+/// How much of the end of stderr is redacted before the tail is cut. Bounds
+/// the regex work on a tool that dumps megabytes of stderr; the window edge is
+/// far enough from the tail that a secret split there cannot reach it.
+const REDACT_WINDOW_BYTES: usize = 64 * 1024;
+
 /// Failure details read from a tool result's `data`. Each field is `None` when
 /// the tool did not report it, so the log line omits it rather than printing a
 /// guess.
@@ -44,13 +49,13 @@ impl FailureFields {
     }
 }
 
-/// Redact `stderr`, then keep at most [`STDERR_TAIL_MAX_BYTES`] from its end.
+/// Redact the end of `stderr`, then keep at most [`STDERR_TAIL_MAX_BYTES`].
 ///
-/// Redaction runs on the whole stream first: cutting first can split a secret
+/// Redaction runs before the tail is cut: cutting first can split a secret
 /// from the prefix that identifies it (`Bearer <token>`), and the remainder no
 /// longer matches any pattern.
 fn redacted_tail(stderr: &str) -> Option<String> {
-    let redacted = redact(stderr.trim());
+    let redacted = redact(tail(stderr.trim(), REDACT_WINDOW_BYTES));
     if redacted.is_empty() {
         return None;
     }
@@ -94,7 +99,8 @@ pub fn log_tool_result(tool: &str, duration_ms: u64, result: &ToolResult) {
                 "tool execution skipped"
             );
         }
-        _ => {
+        // `Ran` without success is a failure the tool did not reclassify.
+        ToolOutcome::Ran | ToolOutcome::Failed => {
             let fields = FailureFields::from_data(&result.data);
             tracing::warn!(
                 tool,
@@ -169,6 +175,19 @@ mod tests {
             .expect("tail present");
         assert_eq!(tail.len(), STDERR_TAIL_MAX_BYTES);
         assert!(tail.ends_with("final cause"), "{tail}");
+    }
+
+    #[test]
+    fn huge_stderr_is_windowed_and_still_redacted_near_the_end() {
+        let stderr = format!(
+            "{}Authorization: Bearer s3cr.e7-tok.en-\nfatal: auth failed",
+            "x ".repeat(REDACT_WINDOW_BYTES)
+        );
+        let tail = FailureFields::from_data(&json!({ "stderr": stderr }))
+            .stderr_tail
+            .expect("tail present");
+        assert!(!tail.contains("s3cr.e7"), "secret leaked into tail: {tail}");
+        assert!(tail.ends_with("fatal: auth failed"), "{tail}");
     }
 
     #[test]

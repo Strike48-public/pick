@@ -324,8 +324,7 @@ impl BaseConnector for PentestConnector {
                     }
                     // Budget: a successful run that produced no new evidence
                     // feeds the stall counter; evidence-bearing runs reset it.
-                    let made_progress =
-                        result.provenance.is_some() || !result.data.is_null() || result.success;
+                    let made_progress = result.made_progress();
                     if tool_name == "begin_scan" && success {
                         // Agent-reachable reset: bounded so a stuck/injected
                         // agent cannot restart its own envelope at will (review

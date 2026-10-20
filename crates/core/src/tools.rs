@@ -644,6 +644,17 @@ impl ToolResult {
         }
         self
     }
+
+    /// Whether this run counts as progress for the session stall budget.
+    ///
+    /// Only a run that completed a probe counts, and then only when it
+    /// produced evidence, data, or success. A failed or skipped run never
+    /// counts, even though it may carry diagnostic `data` (a failed probe's
+    /// exit code and stderr): an agent repeating a failing command is stalled.
+    pub fn made_progress(&self) -> bool {
+        self.outcome == ToolOutcome::Ran
+            && (self.provenance.is_some() || !self.data.is_null() || self.success)
+    }
 }
 
 /// Reclassify a completed discovery run from the platform probe outcome (#309).
@@ -1234,6 +1245,18 @@ mod tool_outcome_tests {
     fn with_outcome_overrides() {
         let r = ToolResult::success(json!({})).with_outcome(ToolOutcome::Failed);
         assert_eq!(r.outcome, ToolOutcome::Failed);
+    }
+
+    #[test]
+    fn made_progress_counts_completed_runs_only() {
+        assert!(ToolResult::success(json!({"hosts": []})).made_progress());
+        assert!(!ToolResult::error("boom").made_progress());
+        // A failed probe keeps its exit code and stderr in data; that is
+        // diagnostics, not progress.
+        let failed = ToolResult::success(json!({"exit_code": 2, "stderr": "refused"}))
+            .with_outcome(ToolOutcome::Failed);
+        assert!(!failed.made_progress());
+        assert!(!ToolResult::skipped("not installed").made_progress());
     }
 
     #[test]
