@@ -1093,9 +1093,12 @@ impl ToolRegistry {
     /// Matrix side as a blank string in workflow node outputs and agent tool
     /// results — the model has nothing to act on ("the model diagnosed blind
     /// all night" is this exact failure), and the operator cannot tell what
-    /// went wrong. A blank failure is replaced with a message that names the
-    /// tool and points at the connector's logs. Successful results and
-    /// failures that already carry a real message are returned untouched.
+    /// went wrong. A blank failure gets a message that names the tool and
+    /// points at the connector's logs. Only the message is filled in: `data`
+    /// (a failed probe's exit code and stderr), `provenance`, `outcome` and
+    /// `duration_ms` are kept, so the cause still reaches the model and the
+    /// hop's failure line (pick#476). Successful results and failures that
+    /// already carry a real message are returned untouched.
     fn ensure_actionable_error(tool_name: &str, result: ToolResult) -> ToolResult {
         let has_message = result
             .error
@@ -1111,13 +1114,12 @@ impl ToolRegistry {
                 tool = tool_name,
                 "tool failed with an EMPTY error message — substituting actionable message"
             );
-            ToolResult::error_with_duration(
-                format!(
+            ToolResult {
+                error: Some(format!(
                     "Tool '{tool_name}' failed without returning an error message. Check the pick connector's logs for the underlying failure and retry; if the request was malformed, retry with the tool's documented parameters (a minimal `target` alone is a good starting point)."
-                ),
-                result.duration_ms,
-            )
-            .with_outcome(result.outcome)
+                )),
+                ..result
+            }
         }
     }
 

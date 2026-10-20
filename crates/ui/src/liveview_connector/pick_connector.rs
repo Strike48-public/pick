@@ -383,6 +383,11 @@ impl BaseConnector for PickConnector {
                             pentest_core::tools::ToolResult::error(error)
                         }
                     };
+                    pentest_core::failure_fields::log_tool_result(
+                        &tool_name,
+                        start.elapsed().as_millis() as u64,
+                        &result,
+                    );
 
                     // Budget bookkeeping (agent hardening C3): `/begin_scan` starts
                     // a fresh engagement envelope; everything else records against
@@ -1129,6 +1134,17 @@ mod tests {
             }),
             "no tool_execution close event in {output:?}"
         );
+        // The failure line itself, scoped and carrying its duration (pick#476).
+        let failure_line = output
+            .lines()
+            .find(|l| l.contains("tool execution failed"))
+            .unwrap_or_else(|| panic!("{}", dump("no failure line")));
+        for expected in ["tool_call_id=call-1", "duration_ms=", "error="] {
+            assert!(
+                failure_line.contains(expected),
+                "missing {expected} in {failure_line}"
+            );
+        }
         assert!(!output.contains("secret-token-value"), "{output}");
     }
 
