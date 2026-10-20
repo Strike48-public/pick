@@ -547,7 +547,10 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         });
     }
 
-    // Debug: log credential state to the Logs page (emit also traces it)
+    // Debug: log credential state to the Logs page (emit also traces it).
+    // Only when it changes: this runs during render, and an emit wakes every
+    // Logs signal, which re-renders the parents and this panel again.
+    let last_credential_log = use_hook(|| std::rc::Rc::new(std::cell::RefCell::new(String::new())));
     if props.visible && !agents_loaded() {
         let log_msg = format!(
             "[chat] waiting for credentials: api_url={} token_len={} session_token_len={} fetch_started={}",
@@ -556,7 +559,10 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             crate::session::get_auth_token().len(),
             fetch_started(),
         );
-        pentest_core::ui_log::emit(TerminalLine::info(log_msg));
+        if *last_credential_log.borrow() != log_msg {
+            *last_credential_log.borrow_mut() = log_msg.clone();
+            pentest_core::ui_log::emit(TerminalLine::info(log_msg));
+        }
     }
 
     // -----------------------------------------------------------------------

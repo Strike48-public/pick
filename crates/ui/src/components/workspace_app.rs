@@ -272,7 +272,8 @@ pub fn WorkspaceApp() -> Element {
     let _sidebar_open = use_signal(|| false); // managed by AppLayout
                                               // Fed by the shared Logs buffer, which the connector writes from another task.
     let terminal_lines = use_ui_log_lines();
-    let mut last_seen_terminal_count = use_signal(|| 0usize);
+    // Lines already there at mount (the restored previous session) are not unread.
+    let mut last_seen_terminal_count = use_signal(|| terminal_lines.peek().len());
     let workspace = get_workspace_path();
 
     // Persisted settings (shell mode, downloads)

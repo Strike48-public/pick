@@ -498,7 +498,8 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     let mut connecting_step: Signal<Option<ConnectingStep>> = use_signal(|| None);
     let mut active_page = use_signal(|| NavPage::Dashboard);
     let workspace_path: Signal<Option<String>> = use_signal(|| None);
-    let mut last_seen_terminal_count = use_signal(|| 0usize);
+    // Lines already there at mount (the restored previous session) are not unread.
+    let mut last_seen_terminal_count = use_signal(|| terminal_lines.peek().len());
     // Error visible on the Connect screen. Connect-phase failures (validation,
     // registration, transport) populate this so the user can see *why* the
     // button "did nothing" instead of finding it logged into a terminal that

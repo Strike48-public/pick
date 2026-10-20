@@ -185,12 +185,9 @@ async fn main() -> anyhow::Result<()> {
     // Start the internal LiveView server (Dioxus WorkspaceApp on :3030 or Unix socket)
     // with shell WebSocket routes merged in
     let shell_routes = pentest_ui::shell_ws::shell_routes(ShellMode::Native);
-    if let Err(e) = connector.start_liveview_server(shell_routes).await {
-        // A server that failed to bind has already logged its error; this
-        // covers the case that returns before trying (no workspace).
-        tracing::warn!("LiveView server not started: {}", e);
-        // Continue anyway — tools still work, just no app UI
-    }
+    // start_liveview_server reports its own failures. Continue either way:
+    // tools still work, just no app UI.
+    let _ = connector.start_liveview_server(shell_routes).await;
 
     // Spawn log consumer (just prints events to stderr since there's no UI)
     let mut event_rx = connector.event_rx();

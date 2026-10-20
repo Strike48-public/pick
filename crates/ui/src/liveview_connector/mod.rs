@@ -603,8 +603,13 @@ impl LiveViewConnector {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
+        // This function reports every failure itself, so callers need not.
         if workspace_path.is_empty() {
-            return Err("No workspace path configured".to_string());
+            let error = "No workspace path configured".to_string();
+            self.send_event(ConnectorEvent::Log(TerminalLine::error(format!(
+                "LiveView server not started: {error}"
+            ))));
+            return Err(error);
         }
 
         let ipc_mode = std::env::var("STRIKEHUB_SOCKET").is_ok();

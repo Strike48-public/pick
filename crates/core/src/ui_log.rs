@@ -100,10 +100,15 @@ impl UiLog {
     /// Lines already dropped from the buffer are not returned.
     pub fn since(&self, seq: u64) -> (Vec<TerminalLine>, u64) {
         let inner = self.lock();
+        // Numbers are contiguous, so the first wanted line is found by
+        // arithmetic instead of a scan held under the lock.
+        let first = inner.lines.front().map_or(0, |(s, _)| *s);
+        let start = usize::try_from(seq.saturating_add(1).saturating_sub(first))
+            .unwrap_or(usize::MAX)
+            .min(inner.lines.len());
         let lines = inner
             .lines
-            .iter()
-            .filter(|(s, _)| *s > seq)
+            .range(start..)
             .map(|(_, line)| line.clone())
             .collect();
         (lines, inner.last_seq)
@@ -137,7 +142,8 @@ pub fn emit(line: TerminalLine) {
 /// source, never the details.
 fn trace_ui_line(line: &TerminalLine) {
     let message = redact(&line.message);
-    let source = line.source.as_deref();
+    let source = line.source.as_deref().map(redact);
+    let source = source.as_deref();
     match line.level {
         LogLevel::Debug => tracing::debug!(ui = true, source, "{message}"),
         LogLevel::Info => tracing::info!(ui = true, source, "{message}"),
@@ -368,6 +374,20 @@ mod tests {
         assert_eq!(messages(&lines), vec!["c"]);
         assert_eq!(last, 3);
         assert!(log.since(last).0.is_empty());
+    }
+
+    #[test]
+    fn since_handles_a_reader_behind_the_buffer_or_past_its_end() {
+        let log = UiLog::new(3);
+        for i in 1..=6 {
+            log.push(TerminalLine::info(format!("l{i}")));
+        }
+        // Lines 1-3 were dropped: a reader that last saw 2 gets what is left.
+        assert_eq!(messages(&log.since(2).0), vec!["l4", "l5", "l6"]);
+        assert_eq!(messages(&log.since(4).0), vec!["l5", "l6"]);
+        assert!(log.since(6).0.is_empty());
+        assert!(log.since(99).0.is_empty());
+        assert!(UiLog::new(3).since(0).0.is_empty());
     }
 
     #[test]
