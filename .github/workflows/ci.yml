@@ -80,13 +80,14 @@ jobs:
       # on every exit path, proving the door's deny-list BY REQUEST pre-merge
       # (the probe's daemon-detection is what makes it RUN here rather than
       # skip — the bonus of a pre-merge signal without a self-hosted dev box).
-      # just is installed as a release binary via taiki-e/install-action
-      # (seconds; checksummed) — the nix path the Android build uses is
-      # toolchain parity, disproportionate for lint. PyYAML is ensured for the
-      # render assertions (importable → the pip fallback never runs).
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: just
+      # just is installed via the OFFICIAL install script as a plain run step —
+      # NOT a third-party uses: action: the public org's Actions allowlist
+      # rejects actions it does not list, and a rejected action is a
+      # startup_failure with ZERO jobs (no Check/Clippy/Test/Compose Lint at
+      # all). A run: step is inline shell, so the allowlist never applies to it.
+      # PyYAML is ensured for the render assertions (importable → the pip
+      # fallback never runs).
+      - run: curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --tag 1.58.0 --to /usr/local/bin
       - run: python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check pyyaml
       - run: just targets-check
 
