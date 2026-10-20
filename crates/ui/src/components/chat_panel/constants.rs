@@ -425,3 +425,132 @@ Then say one sentence: "No pending evidence to validate." Do not pad.
 - Never refer to yourself in the third person
 - Never wrap the JSON in extra prose inside the fenced block — the block contains JSON only
 "#;
+
+/// Why the assistant persona could not be created (pick#393).
+///
+/// Every Matrix client failure is a flat `Error::Matrix(String)`, so the class
+/// is read from the error text. Session problems are checked first: an HTTP 401
+/// renders as "401 Unauthorized", which means "not signed in", not "signed in
+/// without permission".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssistantSetupFailure {
+    /// The session token is missing, expired, or rejected: sign in again.
+    SessionInvalid,
+    /// Signed in, but the user lacks persona/agent-create permission.
+    NotAuthorized,
+    /// Anything else: registration not finished, transport, server error.
+    Other,
+}
+
+const SESSION_INVALID_MARKERS: &[&str] = &[
+    "unauthorized",
+    "unauthenticated",
+    "not authenticated",
+    "auth token required",
+    "jwt",
+    "token expired",
+    "session expired",
+];
+
+const NOT_AUTHORIZED_MARKERS: &[&str] = &["not authorized", "forbidden", "permission denied"];
+
+fn classify_assistant_setup_failure(err: &str) -> AssistantSetupFailure {
+    let err = err.to_ascii_lowercase();
+    let has_any = |markers: &[&str]| markers.iter().any(|m| err.contains(m));
+    if has_any(SESSION_INVALID_MARKERS) {
+        AssistantSetupFailure::SessionInvalid
+    } else if has_any(NOT_AUTHORIZED_MARKERS) {
+        AssistantSetupFailure::NotAuthorized
+    } else {
+        AssistantSetupFailure::Other
+    }
+}
+
+/// User-facing message for a failed persona create, keeping the raw error
+/// visible and pointing at the likely fix for its class (pick#393).
+pub fn assistant_setup_failure_message(err: &str) -> String {
+    let hint = match classify_assistant_setup_failure(err) {
+        AssistantSetupFailure::SessionInvalid => {
+            "Your session has expired or was rejected - sign in again."
+        }
+        AssistantSetupFailure::NotAuthorized => {
+            "Your account is not allowed to set up the assistant in this workspace - ask a \
+             workspace admin to grant persona (agent) create permission."
+        }
+        AssistantSetupFailure::Other => {
+            "This usually means the connector didn't finish registering - try again, or check \
+             the server connection."
+        }
+    };
+    format!("Couldn't set up the assistant: {err}. {hint}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persona_authz_denial_is_not_authorized() {
+        // The error observed in pick#393, as `create_agent` surfaces it.
+        let err = "Matrix error: GraphQL errors: Not authorized to create personas";
+        assert_eq!(
+            classify_assistant_setup_failure(err),
+            AssistantSetupFailure::NotAuthorized
+        );
+        let msg = assistant_setup_failure_message(err);
+        assert!(msg.contains("persona (agent) create permission"), "{msg}");
+        assert!(!msg.contains("didn't finish registering"), "{msg}");
+        assert!(
+            msg.contains("Not authorized to create personas"),
+            "raw error kept: {msg}"
+        );
+    }
+
+    #[test]
+    fn http_forbidden_is_not_authorized() {
+        let err = "GraphQL request failed: 403 Forbidden - {}";
+        assert_eq!(
+            classify_assistant_setup_failure(err),
+            AssistantSetupFailure::NotAuthorized
+        );
+    }
+
+    #[test]
+    fn session_failures_ask_for_sign_in() {
+        for err in [
+            "GraphQL request failed: 401 Unauthorized - {}",
+            "Matrix error: Auth token required",
+            "GraphQL errors: JWT has expired",
+            "GraphQL errors: not authenticated",
+        ] {
+            assert_eq!(
+                classify_assistant_setup_failure(err),
+                AssistantSetupFailure::SessionInvalid,
+                "{err}"
+            );
+            assert!(
+                assistant_setup_failure_message(err).contains("sign in again"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_failures_keep_the_registration_hint() {
+        for err in [
+            "error sending request for url (https://example.invalid/api/v1alpha)",
+            "GraphQL errors: A persona with that name already exists",
+            "GraphQL response contained no data",
+        ] {
+            assert_eq!(
+                classify_assistant_setup_failure(err),
+                AssistantSetupFailure::Other,
+                "{err}"
+            );
+            assert!(
+                assistant_setup_failure_message(err).contains("didn't finish registering"),
+                "{err}"
+            );
+        }
+    }
+}

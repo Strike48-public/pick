@@ -842,10 +842,11 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                 // an agent to begin" empty state (which implies an
                                 // action that doesn't exist — the connector owns its
                                 // one agent). This is the state a registration/setup
-                                // failure lands in.
-                                error_msg.set(Some(format!(
-                                    "Couldn't set up the assistant: {e}. This usually means the connector didn't finish registering — try again, or check the server connection."
-                                )));
+                                // failure lands in. The hint names the likely
+                                // cause instead of always blaming registration
+                                // (pick#393).
+                                error_msg
+                                    .set(Some(assistant_setup_failure_message(&e.to_string())));
                             }
                         }
                     }
