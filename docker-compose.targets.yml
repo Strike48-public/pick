@@ -1,0 +1,217 @@
+# StrikeKit live demo: Pick connector + vulnerable scan targets (matrix#3207).
+#
+# Brings up the demo stack:
+#   - dvwa:        a deliberately vulnerable web app — the scan target living in
+#                  targets/dvwa.yml (DIRECT on scan-net)
+#   - juice-app:   OWASP Juice Shop, a second deliberately vulnerable web app,
+#                  living in targets/juice-shop.yml (on juice-net, BEHIND the
+#                  door)
+#   - juice-guard: the filtering-proxy "door" fronting Juice Shop — the
+#                  engagement DNS name `juice-shop` on scan-net resolves to IT,
+#                  living in targets/juice-guard.yml
+#   - pick:        the headless pentest-agent connector that scans the targets
+#                  and registers with a Strike48 backend (Studio) as the "Pick"
+#                  connector
+#
+# STRUCTURE — base + one fragment per target. This base file carries everything
+# TARGET-AGNOSTIC: the pick connector and the network/volume definitions. Each
+# scan target is a self-contained fragment under targets/ that only defines its
+# own service(s) — Juice Shop brings TWO (the app behind the door + the door
+# itself) — and attaches them to its network(s). Adding a future target is one new
+# targets/<name>.yml fragment, one more -f flag (in targets_files in the
+# justfile + ci.yml's compose-lint), and one more pick.depends_on entry below —
+# the base file changes by that one entry, and the existing targets never
+# change. The full file set is merged by docker compose
+# as a plain multi-file merge (NOT compose `include:` — keep the merged model a
+# flat, greppable YAML):
+#
+#   docker compose -f docker-compose.targets.yml -f targets/dvwa.yml -f targets/juice-shop.yml -f targets/juice-guard.yml ...
+#
+# (the targets-* just recipes pass exactly this set; the env file stays
+# .env.dvwa — historical name, its contents are target-agnostic.)
+#
+# Network topology (isolation is the point):
+#   - scan-net:    ONE internal bridge shared by pick, dvwa (direct) and
+#                  juice-guard (the door). Pick reaches DVWA by service DNS
+#                  (http://dvwa) and Juice Shop THROUGH THE DOOR at
+#                  http://juice-shop (port 80 — the alias resolves to the
+#                  guard, which proxies to the app). Targets are published
+#                  NOWHERE else, so
+#                  scan traffic stays contained on this bridge. The subnet is
+#                  PINNED (10.250.0.0/24, ipam below) so the demo bridge always
+#                  lands on the same documented range; if that range is already
+#                  taken, compose fails loudly at network-create time instead of
+#                  silently re-addressing. The range deliberately sits OUTSIDE
+#                  Docker's default address pools (172.17-172.31/16 +
+#                  192.168.0.0/16): on a clean host compose creates scan-net and
+#                  the UNPINNED auto-assigned backend-net CONCURRENTLY, and a
+#                  range inside those pools could lose its parent /16 to
+#                  backend-net — every pinned scan-net create (including this
+#                  default) would then fail with "Pool overlaps with other one on
+#                  this address space". 10.42/10.43 (k3s pod/service CIDRs) are
+#                  avoided too. An explicit SCAN_NET_SUBNET override only
+#                  exists so concurrent per-instance compose projects (init-dev's
+#                  redteam fleet writes per-slug values) can coexist on one host
+#                  instead of colliding at network-create time.
+#   - juice-net:   ONE internal bridge carrying Juice Shop's app (juice-app)
+#                  and its door (juice-guard) — the door is the ONLY member of
+#                  BOTH networks, so pick has no L3 path to the app except
+#                  through the guard. UNPINNED (auto-assigned subnet): the
+#                  engagement URL is hostname-based (`http://juice-shop`
+#                  through the door), so nothing needs a documented address
+#                  here and auto-assignment cannot collide with anything the
+#                  demo cares about.
+#   - backend-net: pick's egress to the Strike48 backend (Studio) to register.
+#                  NO target is on this network.
+#
+# Pick is an OUTBOUND-only client — it exposes no inbound port. It connects out
+# to STRIKE48_HOST (gRPC) and MATRIX_API_URL (HTTP, for OTT registration).
+#
+# Pick starts only after EVERY target — and the Juice Shop door — reports
+# healthy: its depends_on below gates on service_healthy for each, so a half-up
+# target set (or a down door) never starts a scan.
+#
+# Configure via a .env file next to this compose file (see .env.dvwa.example);
+# `just targets-up` sources it. STRIKE48_TENANT must be the demo realm's tenant
+# UUID (not the realm name) — the init-dev `demo:pick:*` tasks resolve + inject it.
+
+services:
+  pick:
+    build:
+      context: .
+      # Kali-based image (same one prod/k8s ships) — it bundles the actual pentest
+      # toolchain (nmap, nikto, nuclei, ffuf, sqlmap, whatweb, …). The slim
+      # `Dockerfile` builds only the pentest-agent binary with NO tools, so scans
+      # fail "tool not found" (only the built-in Rust port_scan works there). This
+      # runtime runs as ROOT, so raw-socket caps are effective without setcap, and
+      # HOME is /root (see the creds volume mount below).
+      dockerfile: Dockerfile.scratch
+    image: ghcr.io/strike48-public/pick:demo
+    restart: unless-stopped
+    # Start only after EVERY scan target AND the door report healthy (explicit
+    # demo decision): a half-up target set must not let a scan start, and each
+    # target's healthcheck (lives in its targets/ fragment) is what gates this.
+    # The juice door gates TOO — pick scans juice THROUGH it, so the door must
+    # be up before pick starts. Adding a future target: add its fragment under
+    # targets/ AND a matching service_healthy entry here (plus the door's when
+    # it brings one), then extend targets-check's depends_on assertion to match.
+    depends_on:
+      dvwa:
+        condition: service_healthy
+      juice-app:
+        condition: service_healthy
+      juice-guard:
+        condition: service_healthy
+    networks:
+      - scan-net      # dvwa at http://dvwa; juice through the door at http://juice-shop
+      - backend-net   # egress to the Strike48 backend
+    # Reach the Strike48 backend hostnames on the DOCKER HOST. On a local/newdev
+    # cluster the backend is exposed on the host (lima/k3s forwards :80/:443/:50061;
+    # *.strike48.test → 127.0.0.1 in the host's /etc/hosts). A container can't use
+    # the host's loopback, so map the backend hostnames to host-gateway (the host
+    # as seen from the container). Without this Pick resolves the names to the
+    # CONTAINER's 127.0.0.1 and gets "connection refused". Three hosts are needed
+    # across the connect + OTT→JWT flow: the connector gRPC endpoint, the Studio
+    # HTTP API, AND Keycloak (auth) — Pick fetches its JWT directly from Keycloak
+    # after approval, so auth.strike48.test must resolve too. Override via the env
+    # vars if your backend is reachable at a routable address instead.
+    extra_hosts:
+      - "connectors-studio.strike48.test:host-gateway"
+      - "studio.strike48.test:host-gateway"
+      - "auth.strike48.test:host-gateway"
+    # Raw sockets for nmap/masscan/etc. The Kali runtime (Dockerfile.scratch) runs
+    # as ROOT, so these caps are effective on exec directly — no setcap needed
+    # (that dance was only for the slim image's non-root uid 999). Keep cap_add so
+    # the caps are in the container bounding set. NET_RAW+NET_ADMIN mirror the
+    # chart's "pentest" profile (chart/pick-connector/templates/_helpers.tpl).
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    # Reaching a private-IP / self-signed backend on newdev requires relaxing
+    # the connector's SSRF guard and cert checks — see .env.dvwa.example for why.
+    environment:
+      STRIKE48_HOST: "${STRIKE48_HOST:?set STRIKE48_HOST in .env (e.g. grpc://connectors-studio.strike48.test:80)}"
+      STRIKE48_TENANT: "${STRIKE48_TENANT:?set STRIKE48_TENANT to the demo realm tenant UUID}"
+      MATRIX_API_URL: "${MATRIX_API_URL:?set MATRIX_API_URL in .env (e.g. https://studio.strike48.test)}"
+      CONNECTOR_NAME: "${CONNECTOR_NAME:-pick-demo}"
+      STRIKE48_INSTANCE_ID: "${STRIKE48_INSTANCE_ID:-pick-demo-01}"
+      # Security-relaxation flags are secure-by-default HERE and switched on only
+      # by .env.dvwa (which sets them true for the newdev demo). Keeping the
+      # compose default secure means a bare `docker compose up` with an unrelated
+      # env fails LOUDLY against a self-signed/private backend rather than
+      # silently running cert-insecure.
+      #
+      # SSRF guard relaxation for newdev's private-IP / ClusterIP backend (169.254
+      # cloud-metadata stays blocked regardless). Required for the demo → set in .env.dvwa.
+      PENTEST_ALLOW_PRIVATE_IPS: "${PENTEST_ALLOW_PRIVATE_IPS:-false}"
+      # Self-signed *.strike48.test certs → set true in .env.dvwa.
+      MATRIX_TLS_INSECURE: "${MATRIX_TLS_INSECURE:-false}"
+      STRIKE48_ACCEPT_INVALID_CERTS: "${STRIKE48_ACCEPT_INVALID_CERTS:-false}"
+      RUST_LOG: "${RUST_LOG:-info,strike48_connector=info}"
+      # Disable the proot/BlackArch sandbox: this slim demo image doesn't ship the
+      # sandbox rootfs (or `zstd` to extract it), so sandboxed external tools (e.g.
+      # webwright, nmap) fail-closed with "Rootfs extraction incomplete". Tools run
+      # directly in the container instead — fine for the demo, whose isolation is
+      # the container + the internal scan-net, not the in-container sandbox. (The
+      # full sandbox lives in the prod Kali image built from Dockerfile.scratch.)
+      DISABLE_SANDBOX: "${DISABLE_SANDBOX:-true}"
+      # Same-origin base for the OTT post-approval callback. The vendored SDK
+      # resolves the register URL as: STRIKE48_API_URL > derived-from-dialed-
+      # host > server-advertised. When the connector dials an insecure
+      # grpc:// fronting that 301-redirects http→https (envoy http-to-https),
+      # the dialed-host derivation yields http:// and the token exchange dies
+      # on the redirect's empty body. Pin the tenant API base to override.
+      # Unset = SDK's built-in resolution (behavior unchanged).
+      STRIKE48_API_URL: "${STRIKE48_API_URL:-}"
+      # STRIKE48_TOKEN intentionally unset → Pick registers PENDING approval
+      # (OTT flow). Operator approves in Studio → Gateways. The minted JWT is
+      # persisted to HOME below so the approval survives restarts.
+    volumes:
+      # Persist ~/.strike48 credentials so the OTT-minted JWT survives restarts
+      # and the approval sticks. The Kali runtime (Dockerfile.scratch) runs as
+      # root with HOME=/root, so mount there. (The slim Dockerfile used
+      # /data/connector — keep this in sync with whichever image `build.dockerfile`
+      # selects above.)
+      - pick-demo-creds:/root
+
+networks:
+  scan-net:
+    driver: bridge
+    internal: true   # no external egress from the scan bridge — targets stay contained
+    # Pinned (ipam) so the demo bridge always lands on the same documented subnet:
+    # operators can reason about the address space, and a collision with an
+    # existing network fails loudly at network-create time instead of silently
+    # re-addressing. Defined exactly ONCE, here — the targets/*.yml fragments only
+    # ATTACH their service to scan-net, they never redefine it.
+    #
+    # The DEFAULT stays pinned to the documented range (10.250.0.0/24): with no
+    # SCAN_NET_SUBNET anywhere, a colliding network still fails loud at
+    # network-create time. The range deliberately sits OUTSIDE Docker's default
+    # address pools (172.17-172.31/16 + 192.168.0.0/16): on a CLEAN host compose
+    # creates scan-net and the UNPINNED auto-assigned backend-net CONCURRENTLY,
+    # and a range inside those pools could lose its parent /16 to backend-net
+    # (every pinned scan-net create — including this default — would then fail
+    # with "Pool overlaps with other one on this address space"); 10.42/10.43
+    # (k3s pod/service CIDRs) are avoided too. The variable exists so CONCURRENT
+    # per-instance compose projects on ONE host (e.g. init-dev's redteam fleet:
+    # one pick-demo-<slug> project per slug, each creating its own
+    # <project>_scan-net) can give each instance a DISTINCT subnet
+    # (10.250.<n>.0/24) instead of Docker refusing networks 2..N with "Pool
+    # overlaps with other one on this address space". init-dev's per-instance
+    # env generation writes the per-slug value automatically.
+    ipam:
+      config:
+        - subnet: ${SCAN_NET_SUBNET:-10.250.0.0/24}
+  # Juice Shop's app + door bridge: INTERNAL (no external egress from it) and
+  # UNPINNED (no ipam) — the engagement URL is hostname-based (`http://juice-shop`
+  # through the door), so nothing needs a documented address on this net.
+  # The door (juice-guard) is the ONLY member of BOTH scan-net and juice-net;
+  # pick has NO path here except through the guard.
+  juice-net:
+    driver: bridge
+    internal: true
+  backend-net:
+    driver: bridge
+
+volumes:
+  pick-demo-creds:
