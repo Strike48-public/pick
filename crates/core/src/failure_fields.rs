@@ -245,7 +245,9 @@ mod tests {
 
     #[test]
     fn failure_line_redacts_the_error_message() {
-        let result = ToolResult::error("curl -H 'Authorization: Bearer abc.def-ghi' failed");
+        // Fake credential; phrased as an error line, not a command, so it reads
+        // as the test fixture it is.
+        let result = ToolResult::error("request rejected (Authorization: Bearer abc.def-ghi)");
         let output = capture_with(|| log_tool_result("http_request", 5, &result));
         let line = output
             .lines()
