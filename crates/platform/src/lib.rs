@@ -19,6 +19,23 @@ pub mod ios;
 
 pub use traits::*;
 
+/// Best-effort local default route as `(gateway, local_ipv4, prefix_len)`, for
+/// callers whose primary lookup is blocked. Android reads it from
+/// ConnectivityManager via JNI (#549), since an unprivileged app cannot read the
+/// routing table that `default_net` relies on; other builds return `None` and
+/// leave the caller's primary path in charge. `None` means "unknown" - never a
+/// guessed subnet.
+pub fn local_default_route() -> Option<(std::net::IpAddr, std::net::IpAddr, Option<u8>)> {
+    #[cfg(feature = "android")]
+    {
+        android::local_default_route()
+    }
+    #[cfg(not(feature = "android"))]
+    {
+        None
+    }
+}
+
 /// Re-export PtyShell for the current platform
 #[cfg(feature = "desktop")]
 pub use desktop::pty_shell::PtyShell;

@@ -330,6 +330,20 @@ fn is_own_addressable(ip: &IpAddr) -> bool {
 /// when there is no IPv4 (should not happen given the `.context` below, but the
 /// type keeps the IPv6-only future honest).
 async fn get_gateway_and_local_ip() -> anyhow::Result<(IpAddr, IpAddr, Option<u8>)> {
+    match from_default_net().await {
+        Ok(route) => Ok(route),
+        // `default_net` reads the routing table, which an unprivileged Android
+        // app cannot (#549); without this fallback `determine_subnet` would
+        // assume /24 and fabricate a subnet. ConnectivityManager has the real
+        // gateway + prefix there; elsewhere this returns None and the original
+        // error stands.
+        Err(primary_err) => pentest_platform::local_default_route().ok_or_else(|| {
+            anyhow::anyhow!("could not determine the local default route: {primary_err}")
+        }),
+    }
+}
+
+async fn from_default_net() -> anyhow::Result<(IpAddr, IpAddr, Option<u8>)> {
     let interface = tokio::task::spawn_blocking(default_net::get_default_interface)
         .await
         .context("Failed to spawn interface detection task")?

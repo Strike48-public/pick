@@ -12,6 +12,7 @@ pub mod connector_registration;
 pub mod error;
 pub mod evidence;
 pub mod export;
+pub mod failure_fields;
 pub mod file_browser;
 pub mod identity;
 pub mod jwt_validator;
