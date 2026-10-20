@@ -80,6 +80,9 @@ android-jniLibs
 
 .strike48
 
+# Forge scratch/build-target dir created by forge tool runs. Never commit.
+.forge-target/
+
 # Mise
 .mise.local.toml
 .direnv/
