@@ -30,6 +30,15 @@ async fn main() -> anyhow::Result<()> {
     // Windows leaves HOME unset; resolve it before anything reads ~/.strike48.
     pentest_core::config::ensure_home_env();
 
+    // `pentest-agent diagnose`: print a redacted support bundle and exit
+    // (pick#476). Dispatched before logging and telemetry start so it neither
+    // writes its own lines into the log tail it reports nor sends telemetry,
+    // and before config load, which would read `diagnose` as the host.
+    if std::env::args().nth(1).as_deref() == Some("diagnose") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(run_diagnose(&args));
+    }
+
     // Initialize logging: console plus the rolling JSON file under the local
     // data dir, so a failure in a customer install leaves a trail after the
     // process is gone (pick#476). A read-only filesystem degrades to console
@@ -279,8 +288,84 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Options for `pentest-agent diagnose`.
+#[derive(Debug, PartialEq)]
+struct DiagnoseArgs {
+    json: bool,
+    lines: usize,
+}
+
+fn parse_diagnose_args(args: &[String]) -> Result<Option<DiagnoseArgs>, String> {
+    let mut parsed = DiagnoseArgs {
+        json: false,
+        lines: pentest_core::diagnostics::DEFAULT_TAIL_LINES,
+    };
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--json" => parsed.json = true,
+            "--lines" => {
+                let value = iter.next().ok_or("--lines needs a number")?;
+                parsed.lines = value
+                    .parse()
+                    .map_err(|_| format!("--lines: not a number: {value}"))?;
+            }
+            "--help" | "-h" => return Ok(None),
+            other => return Err(format!("unknown diagnose option: {other}")),
+        }
+    }
+    Ok(Some(parsed))
+}
+
+/// Print the diagnostics bundle to stdout. Returns the process exit code.
+fn run_diagnose(args: &[String]) -> i32 {
+    let opts = match parse_diagnose_args(args) {
+        Ok(Some(opts)) => opts,
+        Ok(None) => {
+            print_diagnose_usage();
+            return 0;
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            print_diagnose_usage();
+            return 2;
+        }
+    };
+    let bundle = pentest_core::diagnostics::collect(pentest_core::diagnostics::CollectInput {
+        platform: pentest_platform::diagnostic_facts(),
+        settings: pentest_core::diagnostics::read_settings_readonly(),
+        log_dir: pentest_core::logging::log_dir(),
+        tail_lines: opts.lines,
+    });
+    let out = if opts.json {
+        bundle.to_json()
+    } else {
+        bundle.to_text()
+    };
+    println!("{out}");
+    0
+}
+
+fn print_diagnose_usage() {
+    eprintln!("Usage: pentest-agent diagnose [--json] [--lines <n>]");
+    eprintln!();
+    eprintln!("  Print a redacted support bundle: version, OS, sandbox state, the");
+    eprintln!("  saved connector config without secrets, environment variables as");
+    eprintln!("  set/unset, and the tail of the newest log file. Tokens, keys and");
+    eprintln!("  passwords are removed; log lines still include targets and tool");
+    eprintln!("  output, so review before sharing outside your organization.");
+    eprintln!();
+    eprintln!("  --json         JSON instead of text");
+    eprintln!(
+        "  --lines <n>    Log lines to include (default {})",
+        pentest_core::diagnostics::DEFAULT_TAIL_LINES
+    );
+}
+
 fn print_usage() {
     eprintln!("Usage: pentest-agent <host:port> [OPTIONS]");
+    eprintln!("       pentest-agent connect <studio-url>");
+    eprintln!("       pentest-agent diagnose [--json] [--lines <n>]");
     eprintln!();
     eprintln!("  Headless Strike48 connector agent. Connects to the platform,");
     eprintln!("  registers tools, and serves the workspace app via LiveView.");
@@ -339,6 +424,40 @@ fn init_telemetry() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| (*a).to_string()).collect()
+    }
+
+    #[test]
+    fn diagnose_args_default_to_text_and_the_default_tail() {
+        assert_eq!(
+            parse_diagnose_args(&[]),
+            Ok(Some(DiagnoseArgs {
+                json: false,
+                lines: pentest_core::diagnostics::DEFAULT_TAIL_LINES,
+            }))
+        );
+    }
+
+    #[test]
+    fn diagnose_args_parse_json_and_lines() {
+        assert_eq!(
+            parse_diagnose_args(&strings(&["--lines", "50", "--json"])),
+            Ok(Some(DiagnoseArgs {
+                json: true,
+                lines: 50
+            }))
+        );
+    }
+
+    #[test]
+    fn diagnose_args_reject_bad_input_and_honor_help() {
+        assert!(parse_diagnose_args(&strings(&["--lines"])).is_err());
+        assert!(parse_diagnose_args(&strings(&["--lines", "many"])).is_err());
+        assert!(parse_diagnose_args(&strings(&["--token", "x"])).is_err());
+        assert_eq!(parse_diagnose_args(&strings(&["-h"])), Ok(None));
+    }
 
     /// Serializes the tests below, which mutate process-global env vars
     /// (HOME / XDG_CONFIG_HOME) to point the settings dir at a tempdir. Same

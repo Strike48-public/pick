@@ -75,6 +75,12 @@ pub fn set_use_sandbox(use_sandbox: bool) {
 }
 
 /// Check if sandbox is enabled
+/// Whether `DISABLE_SANDBOX` forced the sandbox off for this process.
+pub fn is_sandbox_disabled_by_env() -> bool {
+    init_sandbox_from_env();
+    DISABLED_BY_ENV.load(Ordering::SeqCst)
+}
+
 pub fn is_sandbox_enabled() -> bool {
     init_sandbox_from_env();
 

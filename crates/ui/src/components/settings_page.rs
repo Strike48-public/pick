@@ -102,6 +102,9 @@ pub fn SettingsPage(
     let mut export_loading = use_signal(|| false);
     let mut export_result = use_signal(|| None::<Result<String, String>>);
 
+    // Copy-diagnostics feedback (pick#476)
+    let mut diagnostics_copied = use_signal(|| None::<String>);
+
     // Tools catalog state
     let mut catalog_items = use_signal(|| None::<Vec<pentest_tools::catalog::CatalogItem>>);
     let mut catalog_loading = use_signal(|| false);
@@ -1927,6 +1930,27 @@ pub fn SettingsPage(
                             "Pick writes one JSON log file per day and keeps up to {log_files_kept}. When reporting a problem, attach the file for the day it happened."
                         }
                         code { class: "text-dim-xs", "{log_dir}" }
+                        div { class: "export-format-group",
+                            button {
+                                class: "export-btn",
+                                onclick: move |_| {
+                                    let (text, lines) = diagnostics_text();
+                                    spawn(async move {
+                                        crate::clipboard::copy_to_clipboard(&text).await;
+                                        diagnostics_copied.set(Some(format!(
+                                            "Diagnostics copied ({lines} log lines). Paste them into your support ticket."
+                                        )));
+                                    });
+                                },
+                                "Copy diagnostics"
+                            }
+                        }
+                        if let Some(ref msg) = diagnostics_copied() {
+                            div { class: "seed-result-success", "✓ {msg}" }
+                        }
+                        div { class: "export-info text-dim-xs",
+                            "Diagnostics include version, OS, sandbox state, settings and recent log lines. Tokens, keys and passwords are removed; log lines still show targets and tool output."
+                        }
                         if log_sink_failed {
                             div { class: "seed-result-error",
                                 "Writing to the log file failed this session (disk full or no permission), so it may be missing recent events."
@@ -1939,6 +1963,20 @@ pub fn SettingsPage(
             }
         }
     }
+}
+
+/// The diagnostics bundle as text, built from the same sources as
+/// `pentest-agent diagnose`, plus the number of log lines it carries.
+fn diagnostics_text() -> (String, usize) {
+    use pentest_core::diagnostics::{collect, read_settings_readonly, CollectInput};
+    let bundle = collect(CollectInput {
+        platform: pentest_platform::diagnostic_facts(),
+        settings: read_settings_readonly(),
+        log_dir: pentest_core::logging::log_dir(),
+        tail_lines: pentest_core::diagnostics::DEFAULT_TAIL_LINES,
+    });
+    let lines = bundle.logs.tail.len();
+    (bundle.to_text(), lines)
 }
 
 /// Turn elapsed and estimated install seconds into a progress fraction

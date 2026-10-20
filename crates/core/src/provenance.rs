@@ -183,6 +183,7 @@ struct RedactRegexes {
     long_hex: Regex,
     long_b64: Regex,
     env_secret: Regex,
+    jwt: Regex,
 }
 
 static REDACT_RE: OnceLock<RedactRegexes> = OnceLock::new();
@@ -198,7 +199,8 @@ fn redact_regexes() -> &'static RedactRegexes {
         // must allow `@`; the old `[^/\s:@]+` anchored on the first `@` and
         // left the tail of an `@`-bearing password in every redact() sink
         // (published commands, response excerpts, evidence node fields).
-        url_userinfo: Regex::new(r"(https?://)[^/\s]*:[^/\s]*@")
+        // Any scheme: Pick's own connector hosts are wss:// and grpc:// URLs.
+        url_userinfo: Regex::new(r"(?i)([a-z][a-z0-9+.-]*://)[^/\s]*:[^/\s]*@")
             .expect("valid url userinfo regex"),
         password_flag: Regex::new(
             r"(?i)(--password[=\s]+|--token[=\s]+|--api[_-]?key[=\s]+)[^\s]+",
@@ -208,10 +210,16 @@ fn redact_regexes() -> &'static RedactRegexes {
         set_cookie: Regex::new(r"(?i)(set-cookie:\s*)[^\r\n]+").expect("valid set-cookie regex"),
         long_hex: Regex::new(r"\b[0-9a-fA-F]{32,}\b").expect("valid long hex regex"),
         long_b64: Regex::new(r"\b[A-Za-z0-9+/]{40,}={0,2}\b").expect("valid long base64 regex"),
+        // The optional `\\?['"]` after the key covers JSON (`"auth_token":`)
+        // and a JSON log line's escaped form (`\"auth_token\":`).
         env_secret: Regex::new(
-            r"(?i)((?:api[_-]?key|secret|token|password|passwd|pwd)\s*[=:]\s*)['\x22]?[^\s'\x22]+['\x22]?",
+            r#"(?i)((?:api[_-]?key|secret|token|password|passwd|pwd)(?:\\?['"])?\s*[=:]\s*(?:\\?['"])?)[^\s'"]+['"]?"#,
         )
         .expect("valid env secret regex"),
+        // header.payload.signature, base64url. Runs before the long-hex and
+        // long-base64 passes, which only catch fragments of it.
+        jwt: Regex::new(r"\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*")
+            .expect("valid jwt regex"),
     })
 }
 
@@ -303,6 +311,7 @@ pub fn redact(input: &str) -> String {
     let s = re
         .env_secret
         .replace_all(&s, format!("${{1}}{REDACTION}").as_str());
+    let s = re.jwt.replace_all(&s, REDACTION);
     let s = re.long_hex.replace_all(&s, REDACTION);
     let s = re.long_b64.replace_all(&s, REDACTION);
     s.into_owned()
@@ -376,6 +385,70 @@ mod tests {
         let cmd = "API_KEY=sk-live-xyz-1234567890 curl https://api.example.com";
         let out = redact(cmd);
         assert!(!out.contains("sk-live-xyz-1234567890"));
+    }
+
+    /// JSON puts a closing quote between the key and the colon, and a JSON
+    /// log line escapes it again (`\"auth_token\":\"...\"`). Both forms must
+    /// redact, or a config dumped into a log line leaks its token (pick#476).
+    #[test]
+    fn redact_strips_json_key_secrets_plain_and_escaped() {
+        let plain = r#"{"host":"wss://studio.example.com","auth_token":"fake-token-value-1"}"#;
+        let out = redact(plain);
+        assert!(
+            !out.contains("fake-token-value-1"),
+            "plain JSON leaked: {out}"
+        );
+        assert!(out.contains("studio.example.com"), "host lost: {out}");
+
+        let escaped = r#"{"fields":{"message":"cfg {\"auth_token\":\"fake-token-value-2\"}"}}"#;
+        let out = redact(escaped);
+        assert!(
+            !out.contains("fake-token-value-2"),
+            "escaped JSON leaked: {out}"
+        );
+
+        let spaced = r#"{"api_key" : "fake-key-value-3", "password":"fake-pass-4"}"#;
+        let out = redact(spaced);
+        assert!(!out.contains("fake-key-value-3"), "{out}");
+        assert!(!out.contains("fake-pass-4"), "{out}");
+    }
+
+    /// A bare JWT's header segment is under the 40-char base64 floor and its
+    /// segments are base64url (`-`, `_`), so the generic patterns leave parts
+    /// of it behind. Built from parts so no JWT literal sits in the source.
+    #[test]
+    fn redact_strips_bare_jwt() {
+        let jwt = [
+            "eyJhbGciOiJIUzI1NiJ9",
+            "eyJzdWIiOiJmYWtlLXVzZXIifQ",
+            "ZmFrZS1zaWduYXR1cmUtdmFsdWU_-x",
+        ]
+        .join(".");
+        let out = redact(&format!("connecting with {jwt} to studio"));
+        for part in jwt.split('.') {
+            assert!(!out.contains(part), "JWT segment {part} leaked: {out}");
+        }
+        assert!(out.contains("connecting with"), "{out}");
+        assert!(out.contains("to studio"), "{out}");
+    }
+
+    /// Pick's connector hosts are wss:// and grpc:// URLs, not only http(s).
+    #[test]
+    fn redact_strips_userinfo_for_any_url_scheme() {
+        for url in [
+            "wss://alice:fake-pass-5@studio.example.com/ws",
+            "grpc://bob:fake-pass-6@studio.example.com:443",
+        ] {
+            let out = redact(url);
+            assert!(!out.contains("fake-pass"), "userinfo leaked: {out}");
+            assert!(out.contains("studio.example.com"), "host lost: {out}");
+        }
+    }
+
+    #[test]
+    fn redact_leaves_token_lookalike_keys_alone() {
+        let line = r#"{"tokens_used":42,"token_type":"bearer","max_tokens":1000}"#;
+        assert_eq!(redact(line), line);
     }
 
     #[test]
