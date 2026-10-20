@@ -24,7 +24,15 @@ services:
     # The classic, anonymously-pullable DVWA image. (digininja's ghcr.io/digininja/dvwa
     # named in matrix#3207 is not anonymously pullable — pull is "denied".) amd64-only,
     # so it runs under emulation on arm64 hosts — fine for a demo target.
-    image: docker.io/vulnerables/web-dvwa:latest
+    #
+    # Digest-pinned (matrix#4533 owner decision 2, 2026-10-02): the benchmark target-set
+    # fixture (red-team-docs analysis/benchmark-fixture/fixture-v1.yaml) pins this same
+    # digest, so demo stacks and benchmark runs measure identical targets. A moving tag
+    # would silently change the target under a published number. The pinned image is
+    # DVWA '1.10 *Development*' (PHP 7.0.30 / MariaDB 10.1.26), all 13 vulnerability
+    # classes present. Advancing the digest means a new fixture version on the
+    # red-team-docs side first — never edit a frozen fixture manifest.
+    image: docker.io/vulnerables/web-dvwa@sha256:dae203fe11646a86937bf04db0079adef295f426da68a92b40e3b181f337daa7
     restart: unless-stopped
     networks:
       - scan-net
