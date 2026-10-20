@@ -81,6 +81,17 @@ pub fn secure_delete(key: &str) -> Result<()> {
 // and not a security boundary.
 pub use system::{check_root_access, RootStatus};
 
+/// Local default route from ConnectivityManager as `(gateway, local_ipv4,
+/// prefix_len)` (#549). `None` unless both a local IPv4 and a default gateway
+/// are known, so a caller never receives a half-known, guessable result.
+pub fn local_default_route() -> Option<(std::net::IpAddr, std::net::IpAddr, Option<u8>)> {
+    let link = network::active_link_info();
+    let addr = link.addresses.first()?;
+    let local_ip = addr.ip.parse().ok()?;
+    let gateway = link.gateway.as_deref()?.parse().ok()?;
+    Some((gateway, local_ip, addr.prefix_len))
+}
+
 /// Android platform provider
 pub struct AndroidPlatform;
 
