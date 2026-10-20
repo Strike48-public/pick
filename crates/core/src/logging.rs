@@ -45,23 +45,41 @@ pub fn log_dir() -> PathBuf {
         .join("logs")
 }
 
-/// The newest `connector.YYYY-MM-DD.log` in `dir`, or `None` when there is
-/// none. The ISO date in the name sorts lexically, so the greatest name is the
-/// newest file; today's may not exist yet (no line logged since the UTC
-/// rollover, or a process that never installed the file sink).
-pub fn newest_log_file(dir: &Path) -> Option<PathBuf> {
-    let prefix = format!("{LOG_FILE_PREFIX}.");
-    let suffix = format!(".{LOG_FILE_SUFFIX}");
-    std::fs::read_dir(dir)
-        .ok()?
+/// The `connector.YYYY-MM-DD.log` files in `dir`, newest first. Only names
+/// whose middle segment is a real date count, so a stray `connector.zzz.log`
+/// cannot sort ahead of every day. Empty when the directory is missing.
+pub fn log_files_newest_first(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with(&prefix) && n.ends_with(&suffix))
-        })
-        .max()
+        .filter(|path| is_dated_log_name(path))
+        .collect();
+    // The ISO date sorts lexically, so name order is date order.
+    files.sort();
+    files.reverse();
+    files
+}
+
+/// The newest `connector.YYYY-MM-DD.log` in `dir`, or `None` when there is
+/// none. Today's may not exist yet (no line logged since the UTC rollover, or
+/// a process that never installed the file sink).
+pub fn newest_log_file(dir: &Path) -> Option<PathBuf> {
+    log_files_newest_first(dir).into_iter().next()
+}
+
+fn is_dated_log_name(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let date = name
+        .strip_prefix(LOG_FILE_PREFIX)
+        .and_then(|rest| rest.strip_prefix('.'))
+        .and_then(|rest| rest.strip_suffix(LOG_FILE_SUFFIX))
+        .and_then(|rest| rest.strip_suffix('.'));
+    date.is_some_and(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_ok())
 }
 
 /// Open the rolling file appender in `log_dir`, creating the directory.
@@ -474,12 +492,26 @@ mod tests {
             "connector.2026-10-19.log",
             "other.2026-10-21.log",
             "connector.2026-10-22.txt",
+            "connector.zzz.log",
+            "connector.2026-13-40.log",
         ] {
             std::fs::write(dir.path().join(name), "x").expect("write");
         }
         assert_eq!(
             newest_log_file(dir.path()),
             Some(dir.path().join("connector.2026-10-20.log"))
+        );
+        let names: Vec<String> = log_files_newest_first(dir.path())
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "connector.2026-10-20.log",
+                "connector.2026-10-19.log",
+                "connector.2026-10-18.log"
+            ]
         );
     }
 

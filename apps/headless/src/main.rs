@@ -336,14 +336,23 @@ fn run_diagnose(args: &[String]) -> i32 {
         settings: pentest_core::diagnostics::read_settings_readonly(),
         log_dir: pentest_core::logging::log_dir(),
         tail_lines: opts.lines,
+        extra_secrets: Vec::new(),
     });
     let out = if opts.json {
         bundle.to_json()
     } else {
         bundle.to_text()
     };
-    println!("{out}");
-    0
+    // `writeln!`, not `println!`: a closed pipe (`diagnose | head`) is a
+    // normal way to stop reading, not a panic.
+    use std::io::Write;
+    match writeln!(std::io::stdout(), "{out}") {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => {
+            eprintln!("could not write diagnostics: {e}");
+            1
+        }
+        _ => 0,
+    }
 }
 
 fn print_diagnose_usage() {

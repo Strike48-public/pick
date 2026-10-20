@@ -14,6 +14,9 @@ use super::sandbox::{config::SandboxConfig, current_backend};
 /// Marker the rootfs manager writes after a successful install.
 const ROOTFS_VERSION_MARKER: &str = ".rootfs_version";
 
+/// Longest rootfs version kept, so a damaged marker cannot pad the bundle.
+const MAX_ROOTFS_VERSION_CHARS: usize = 64;
+
 pub fn diagnostic_facts() -> PlatformFacts {
     PlatformFacts {
         os_name: System::name(),
@@ -33,8 +36,12 @@ fn rootfs_version() -> Option<String> {
         .rootfs_dir()
         .join(ROOTFS_VERSION_MARKER);
     let version = std::fs::read_to_string(marker).ok()?;
-    let version = version.trim();
-    (!version.is_empty()).then(|| version.to_string())
+    let version: String = version
+        .trim()
+        .chars()
+        .take(MAX_ROOTFS_VERSION_CHARS)
+        .collect();
+    (!version.is_empty()).then(|| pentest_core::provenance::redact(&version))
 }
 
 #[cfg(test)]

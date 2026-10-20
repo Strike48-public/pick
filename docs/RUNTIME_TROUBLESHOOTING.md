@@ -265,7 +265,7 @@ Pick builds a redacted support bundle for you. It contains the version, OS, sand
   ```
   In Docker, run it inside the container, for example `docker exec <container> pentest-agent diagnose`.
 
-Tokens, keys, passwords and credential files are never included. Log lines still show targets and tool output, so review the bundle before sharing it outside your organization.
+The saved token, credential files and environment variable values are never included. Secrets in log lines are removed on a best-effort basis: known tokens are removed by exact value, and common secret shapes by pattern. Log lines still show targets and tool output, so review the bundle before sharing it outside your organization.
 
 To capture a fresh debug-level session to reproduce a problem:
 

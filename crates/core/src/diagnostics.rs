@@ -15,6 +15,7 @@
 use crate::config::{AppSettings, ConnectorConfig};
 use crate::provenance::{redact, redact_known_secret};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -103,9 +104,11 @@ impl DiagnosticConfig {
     pub fn from_config(config: &ConnectorConfig) -> Self {
         Self {
             host: redact(&config.host),
-            tenant_id: config.tenant_id.clone(),
-            instance_id: config.instance_id.clone(),
-            connector_name: config.connector_name.clone(),
+            // Free text the user typed; not secret by design, but passed
+            // through redact in case a token was pasted into the wrong field.
+            tenant_id: redact(&config.tenant_id),
+            instance_id: redact(&config.instance_id),
+            connector_name: redact(&config.connector_name),
             use_tls: config.use_tls,
             reconnect_enabled: config.reconnect_enabled,
             aggression_level: config.aggression_level.display_name().to_string(),
@@ -154,29 +157,36 @@ pub struct DiagnosticsBundle {
     pub platform: PlatformFacts,
     pub config: Option<DiagnosticConfig>,
     pub settings: Option<SettingsFacts>,
-    /// `(name, set)` for each of [`REPORTED_ENV_VARS`].
-    pub env: Vec<(String, bool)>,
+    /// Why `settings.json` could not be read, when it exists but is
+    /// unreadable or corrupt (a common support case in itself).
+    pub settings_error: Option<String>,
+    /// Whether each of [`REPORTED_ENV_VARS`] is set.
+    pub env: BTreeMap<String, bool>,
     pub logs: LogFacts,
 }
 
 /// Everything [`collect`] needs that comes from outside core.
 pub struct CollectInput {
     pub platform: PlatformFacts,
-    pub settings: Option<AppSettings>,
+    /// `Ok(None)` when there is no settings file; `Err` when it is unreadable.
+    pub settings: Result<Option<AppSettings>, String>,
     pub log_dir: PathBuf,
     pub tail_lines: usize,
+    /// Secrets only the caller knows (the UI's live session token), replaced
+    /// by value in the log tail like the saved ones.
+    pub extra_secrets: Vec<String>,
 }
 
 /// Build the bundle from the current process environment.
 pub fn collect(input: CollectInput) -> DiagnosticsBundle {
     let env = |name: &str| std::env::var(name).ok();
-    let secrets = known_secrets(input.settings.as_ref(), env);
-    let newest_file = crate::logging::newest_log_file(&input.log_dir);
-    let tail = newest_file
-        .as_deref()
-        .map(|path| read_redacted_tail(path, input.tail_lines, &secrets))
-        .unwrap_or_default();
-    let config = input.settings.as_ref().and_then(|s| s.last_config.as_ref());
+    let (settings, settings_error) = match input.settings {
+        Ok(settings) => (settings, None),
+        Err(e) => (None, Some(e)),
+    };
+    let secrets = known_secrets(settings.as_ref(), &input.extra_secrets, env);
+    let (newest_file, tail) = collect_tail(&input.log_dir, input.tail_lines, &secrets);
+    let config = settings.as_ref().and_then(|s| s.last_config.as_ref());
     DiagnosticsBundle {
         generated_at: chrono::Utc::now().to_rfc3339(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -184,7 +194,8 @@ pub fn collect(input: CollectInput) -> DiagnosticsBundle {
         arch: std::env::consts::ARCH.to_string(),
         platform: input.platform,
         config: config.map(DiagnosticConfig::from_config),
-        settings: input.settings.as_ref().map(SettingsFacts::from_settings),
+        settings: settings.as_ref().map(SettingsFacts::from_settings),
+        settings_error,
         env: env_presence(env),
         logs: LogFacts {
             dir: input.log_dir,
@@ -195,32 +206,97 @@ pub fn collect(input: CollectInput) -> DiagnosticsBundle {
     }
 }
 
-/// `(name, set)` for each reported environment variable. A variable set to an
+/// The redacted tail of the newest log file. When that file is short (just
+/// after a UTC rollover or a restart), the rest comes from the previous day,
+/// after a marker line, since the failure is often there.
+fn collect_tail(
+    dir: &Path,
+    max_lines: usize,
+    secrets: &[String],
+) -> (Option<PathBuf>, Vec<String>) {
+    let files = crate::logging::log_files_newest_first(dir);
+    let Some(newest) = files.first() else {
+        return (None, Vec::new());
+    };
+    let mut tail = read_redacted_tail(newest, max_lines, secrets);
+    if let Some(previous) = files.get(1).filter(|_| tail.len() < max_lines) {
+        let wanted = max_lines - tail.len();
+        let mut earlier = vec![format!("<from previous file {}>", file_name(previous))];
+        earlier.extend(read_redacted_tail(previous, wanted, secrets));
+        earlier.push(format!("<from newest file {}>", file_name(newest)));
+        earlier.extend(tail);
+        tail = earlier;
+    }
+    (Some(newest.clone()), tail)
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Whether each reported environment variable is set. A variable set to an
 /// empty string counts as unset.
-pub fn env_presence(env: impl Fn(&str) -> Option<String>) -> Vec<(String, bool)> {
+pub fn env_presence(env: impl Fn(&str) -> Option<String>) -> BTreeMap<String, bool> {
     REPORTED_ENV_VARS
         .iter()
         .map(|name| {
-            let set = env(name).is_some_and(|v| !v.is_empty());
+            let set = env(name).is_some_and(|v| !v.trim().is_empty());
             ((*name).to_string(), set)
         })
         .collect()
 }
 
-/// Secret values to replace by exact match: the saved token plus the live
-/// values of the secret environment variables.
+/// Secret values to replace by exact match: the saved token, the caller's
+/// extra secrets, the live values of the secret environment variables, and
+/// the contents of the OTT file `STRIKE48_REGISTRATION_TOKEN_FILE` names.
+/// Each is trimmed (the code that uses them trims too) and also matched in its
+/// JSON-escaped form, which is how it appears inside a JSON log line.
 pub fn known_secrets(
     settings: Option<&AppSettings>,
+    extra: &[String],
     env: impl Fn(&str) -> Option<String>,
 ) -> Vec<String> {
     let saved = settings
         .and_then(|s| s.last_config.as_ref())
         .map(|c| c.auth_token.clone());
+    let ott_file = env(OTT_FILE_ENV_VAR).and_then(|path| read_secret_file(Path::new(&path)));
     saved
         .into_iter()
+        .chain(extra.iter().cloned())
         .chain(SECRET_ENV_VARS.iter().filter_map(|name| env(name)))
+        .chain(ott_file)
+        .map(|s| s.trim().to_string())
         .filter(|s| s.len() >= MIN_KNOWN_SECRET_LEN)
+        .flat_map(|s| secret_forms(&s))
         .collect()
+}
+
+/// Environment variable naming a file that holds the registration OTT.
+const OTT_FILE_ENV_VAR: &str = "STRIKE48_REGISTRATION_TOKEN_FILE";
+
+/// Largest secret file read for by-value replacement.
+const MAX_SECRET_FILE_BYTES: u64 = 16 * 1024;
+
+fn read_secret_file(path: &Path) -> Option<String> {
+    let mut contents = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_SECRET_FILE_BYTES)
+        .read_to_string(&mut contents)
+        .ok()?;
+    Some(contents)
+}
+
+/// `secret` plus its JSON-escaped form when that differs (a secret holding a
+/// quote, backslash or control character is written escaped in a log line).
+fn secret_forms(secret: &str) -> Vec<String> {
+    let escaped = serde_json::to_string(secret)
+        .ok()
+        .map(|quoted| quoted[1..quoted.len() - 1].to_string())
+        .filter(|escaped| escaped != secret);
+    std::iter::once(secret.to_string()).chain(escaped).collect()
 }
 
 /// The last `max_lines` lines of `path`, each redacted and length-capped. An
@@ -249,6 +325,12 @@ fn read_tail_lines(path: &Path, max_lines: usize) -> std::io::Result<Vec<String>
     // secret cut in half there is not half-logged.
     if start > 0 && !lines.is_empty() {
         lines.remove(0);
+        if lines.is_empty() {
+            return Ok(vec![format!(
+                "<the last {} KiB of this file hold no complete log line>",
+                TAIL_READ_BYTES / 1024
+            )]);
+        }
     }
     let skip = lines.len().saturating_sub(max_lines);
     Ok(lines[skip..].iter().map(|l| (*l).to_string()).collect())
@@ -273,17 +355,31 @@ fn cap_bytes(s: String, max: usize) -> String {
     format!("{} ...<truncated>", &s[..end])
 }
 
-/// Read `settings.json` without the rewrites `load_settings` performs.
-pub fn read_settings_readonly() -> Option<AppSettings> {
-    let contents = std::fs::read_to_string(crate::settings::settings_path()).ok()?;
-    serde_json::from_str(&contents).ok()
+/// Read `settings.json` without the rewrites `load_settings` performs and
+/// without creating the settings directory. `Ok(None)` when there is no file;
+/// `Err` when it exists but cannot be read or parsed.
+pub fn read_settings_readonly() -> Result<Option<AppSettings>, String> {
+    read_settings_file(&crate::settings::settings_dir_path().join("settings.json"))
+}
+
+fn read_settings_file(path: &Path) -> Result<Option<AppSettings>, String> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    serde_json::from_str(&contents)
+        .map(Some)
+        .map_err(|e| format!("cannot parse {}: {e}", path.display()))
 }
 
 impl DiagnosticsBundle {
     /// Pretty JSON, for tooling that parses the bundle.
     pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self)
-            .unwrap_or_else(|e| format!("{{\"error\":\"could not serialize diagnostics: {e}\"}}"))
+        serde_json::to_string_pretty(self).unwrap_or_else(|e| {
+            serde_json::json!({ "error": format!("could not serialize diagnostics: {e}") })
+                .to_string()
+        })
     }
 
     /// Plain-text rendering for pasting into a ticket.
@@ -340,6 +436,9 @@ impl DiagnosticsBundle {
                 );
             }
             None => out.push_str("none saved\n"),
+        }
+        if let Some(e) = &self.settings_error {
+            push_kv(out, "settings error", e);
         }
         if let Some(s) = &self.settings {
             push_kv(out, "shell mode", &s.shell_mode);
@@ -440,7 +539,7 @@ mod tests {
     fn env_is_reported_as_presence_only() {
         let env = env_of(&[("STRIKE48_TOKEN", "fake-env-token-value"), ("RUST_LOG", "")]);
         let presence = env_presence(env);
-        let get = |name: &str| presence.iter().find(|(n, _)| n == name).map(|(_, s)| *s);
+        let get = |name: &str| presence.get(name).copied();
         assert_eq!(get("STRIKE48_TOKEN"), Some(true));
         assert_eq!(get("RUST_LOG"), Some(false), "empty counts as unset");
         assert_eq!(get("DISABLE_SANDBOX"), Some(false));
@@ -455,7 +554,7 @@ mod tests {
             ("OPENAI_API_KEY", "short"),
             ("RUST_LOG", "debug-not-a-secret"),
         ]);
-        let secrets = known_secrets(Some(&settings), env);
+        let secrets = known_secrets(Some(&settings), &[], env);
         assert!(secrets.contains(&"fake-saved-token-value".to_string()));
         assert!(secrets.contains(&"fake-matrix-token-value".to_string()));
         assert!(
@@ -525,14 +624,104 @@ mod tests {
     }
 
     #[test]
+    fn known_secrets_are_trimmed_and_also_matched_json_escaped() {
+        let env = env_of(&[("STRIKE48_TOKEN", "  fake\"quoted-token  ")]);
+        let secrets = known_secrets(None, &[], env);
+        assert!(
+            secrets.contains(&r#"fake"quoted-token"#.to_string()),
+            "{secrets:?}"
+        );
+        assert!(
+            secrets.contains(&r#"fake\"quoted-token"#.to_string()),
+            "{secrets:?}"
+        );
+        // The escaped form is what a JSON log line holds.
+        let line = r#"{"message":"sent fake\"quoted-token upstream"}"#;
+        let out = redact_line(line, &secrets);
+        assert!(!out.contains("quoted-token"), "{out}");
+    }
+
+    #[test]
+    fn known_secrets_include_extra_and_the_ott_file_contents() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ott = dir.path().join("ott");
+        std::fs::write(&ott, "fake-ott-file-value\n").expect("write ott");
+        let ott_path = ott.display().to_string();
+        let env = env_of(&[("STRIKE48_REGISTRATION_TOKEN_FILE", ott_path.as_str())]);
+        let secrets = known_secrets(None, &["fake-session-token".to_string()], env);
+        assert!(
+            secrets.contains(&"fake-ott-file-value".to_string()),
+            "{secrets:?}"
+        );
+        assert!(
+            secrets.contains(&"fake-session-token".to_string()),
+            "{secrets:?}"
+        );
+    }
+
+    #[test]
+    fn corrupt_settings_are_reported_not_treated_as_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        assert!(
+            matches!(read_settings_file(&path), Ok(None)),
+            "missing file"
+        );
+        std::fs::write(&path, "{ not json").expect("write");
+        let err = read_settings_file(&path).expect_err("corrupt file");
+        assert!(err.contains("cannot parse"), "{err}");
+
+        let bundle = collect(CollectInput {
+            platform: PlatformFacts::default(),
+            settings: Err(err),
+            log_dir: dir.path().join("logs"),
+            tail_lines: 10,
+            extra_secrets: vec![],
+        });
+        assert!(bundle.to_text().contains("settings error: cannot parse"));
+    }
+
+    #[test]
+    fn a_short_newest_file_is_topped_up_from_the_previous_day() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("connector.2026-10-19.log"),
+            "old 1\nold 2\nold 3\n",
+        )
+        .expect("write");
+        std::fs::write(dir.path().join("connector.2026-10-20.log"), "new 1\n").expect("write");
+        let (newest, tail) = collect_tail(dir.path(), 3, &[]);
+        assert_eq!(newest, Some(dir.path().join("connector.2026-10-20.log")));
+        assert_eq!(
+            tail,
+            vec![
+                "<from previous file connector.2026-10-19.log>",
+                "old 2",
+                "old 3",
+                "<from newest file connector.2026-10-20.log>",
+                "new 1",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_window_inside_one_huge_line_says_so() {
+        let (_dir, path) = log_file_with(&["q".repeat(TAIL_READ_BYTES as usize + 10)]);
+        let tail = read_redacted_tail(&path, 10, &[]);
+        assert_eq!(tail.len(), 1);
+        assert!(tail[0].contains("hold no complete log line"), "{}", tail[0]);
+    }
+
+    #[test]
     fn text_report_has_every_section_and_no_secrets() {
         let settings = settings_with_token("fake-saved-token-value");
         let (dir, _path) = log_file_with(&["{\"message\":\"hello\"}".to_string()]);
         let bundle = collect(CollectInput {
             platform: PlatformFacts::default(),
-            settings: Some(settings),
+            settings: Ok(Some(settings)),
             log_dir: dir.path().to_path_buf(),
             tail_lines: 10,
+            extra_secrets: vec![],
         });
         let text = bundle.to_text();
         for section in [
