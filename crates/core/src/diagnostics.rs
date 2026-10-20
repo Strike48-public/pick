@@ -627,16 +627,15 @@ mod tests {
     fn known_secrets_are_trimmed_and_also_matched_json_escaped() {
         let env = env_of(&[("STRIKE48_TOKEN", "  fake\"quoted-token  ")]);
         let secrets = known_secrets(None, &[], env);
-        // Report only the count: printing `secrets` trips rust/cleartext-logging.
+        // Messages stay static: CodeQL's rust/cleartext-logging flags any value
+        // derived from `secrets` in a panic message, even its length.
         assert!(
             secrets.contains(&r#"fake"quoted-token"#.to_string()),
-            "raw form missing from {} secrets",
-            secrets.len()
+            "raw form missing from known secrets"
         );
         assert!(
             secrets.contains(&r#"fake\"quoted-token"#.to_string()),
-            "escaped form missing from {} secrets",
-            secrets.len()
+            "escaped form missing from known secrets"
         );
         // The escaped form is what a JSON log line holds.
         let line = r#"{"message":"sent fake\"quoted-token upstream"}"#;
@@ -654,13 +653,11 @@ mod tests {
         let secrets = known_secrets(None, &["fake-session-token".to_string()], env);
         assert!(
             secrets.contains(&"fake-ott-file-value".to_string()),
-            "OTT file value missing from {} secrets",
-            secrets.len()
+            "OTT file value missing from known secrets"
         );
         assert!(
             secrets.contains(&"fake-session-token".to_string()),
-            "extra secret missing from {} secrets",
-            secrets.len()
+            "extra secret missing from known secrets"
         );
     }
 
