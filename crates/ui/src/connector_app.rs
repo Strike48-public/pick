@@ -24,6 +24,7 @@ use crate::components::{
     WslInstallBanner, STRIKE48_SIDEBAR_LOGO_SVG,
 };
 use crate::download_manager::is_blackarch_ready;
+use crate::logs_feed::use_ui_log_lines;
 use crate::{
     compute_screen, mobile_css, run_event_loop, utils_css, AppScreen, EventLoopSignals,
     LiveViewConnector,
@@ -492,7 +493,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
 
     // ---- signals ----
     let mut status = use_signal(|| ConnectorStatus::Disconnected);
-    let mut terminal_lines = use_signal(Vec::<TerminalLine>::new);
+    let terminal_lines = use_ui_log_lines();
     let mut config = use_signal(move || initial_config.clone());
     let mut connecting_step: Signal<Option<ConnectingStep>> = use_signal(|| None);
     let mut active_page = use_signal(|| NavPage::Dashboard);
@@ -601,14 +602,12 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
     }
 
     use_effect(move || {
-        terminal_lines.write().push(TerminalLine::info(format!(
+        pentest_core::ui_log::emit(TerminalLine::info(format!(
             "Pentest Connector ({}) initialized.",
             cfg.platform_name
         )));
         for msg in cfg.extra_init_messages {
-            terminal_lines
-                .write()
-                .push(TerminalLine::info(msg.to_string()));
+            pentest_core::ui_log::emit(TerminalLine::info(msg.to_string()));
         }
     });
 
@@ -626,7 +625,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             Err(e) => {
                 // Surface to the form banner (visible) AND log to terminal
                 // (debuggable on Dashboard once connected).
-                terminal_lines.write().push(TerminalLine::error(e.clone()));
+                pentest_core::ui_log::emit(TerminalLine::error(e.clone()));
                 connect_error.set(Some(e));
                 return;
             }
@@ -656,7 +655,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         // pick#223.
         if !ConnectorConfig::is_uuid_like(&new_config.tenant_id) {
             if let Some(env_uuid) = ConnectorConfig::tenant_uuid_from_env() {
-                terminal_lines.write().push(TerminalLine::info(format!(
+                pentest_core::ui_log::emit(TerminalLine::info(format!(
                     "Promoting tenant UUID {} from env (form value: {})",
                     env_uuid, new_config.tenant_id,
                 )));
@@ -669,7 +668,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             ConnectorConfig::read_credentials_tenant_id(&new_config.instance_id)
         {
             if canonical != new_config.tenant_id {
-                terminal_lines.write().push(TerminalLine::info(format!(
+                pentest_core::ui_log::emit(TerminalLine::info(format!(
                     "Using tenant UUID {} from saved credentials (form value: {})",
                     canonical, new_config.tenant_id,
                 )));
@@ -682,7 +681,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         config.set(new_config.clone());
         status.set(ConnectorStatus::Connecting);
         connecting_step.set(Some(ConnectingStep::Connecting));
-        terminal_lines.write().push(TerminalLine::info(format!(
+        pentest_core::ui_log::emit(TerminalLine::info(format!(
             "Connecting to {}...",
             new_config.host
         )));
@@ -702,7 +701,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
 
         let mut connector = connector;
         let mut status = status;
-        let mut terminal_lines = terminal_lines;
         let connecting_step = connecting_step;
         let mut workspace_path = workspace_path;
         // Read the live mode so a runtime toggle is honored on the next connect.
@@ -725,7 +723,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 .unwrap_or_default();
 
             tracing::debug!("workspace path: {:?}", ws_path);
-            terminal_lines.write().push(TerminalLine::info(format!(
+            pentest_core::ui_log::emit(TerminalLine::info(format!(
                 "Workspace: {}",
                 if ws_path.is_empty() {
                     "(none)"
@@ -744,12 +742,11 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 #[cfg(feature = "shell-ws")]
                 if cfg.start_liveview_server {
                     tracing::debug!("starting liveview server");
-                    if let Err(e) = lv_connector
+                    // A failure is already on the Logs page: start_liveview_server
+                    // writes it there.
+                    let _ = lv_connector
                         .start_liveview_server(crate::shell_ws::shell_routes(cfg.shell_route_mode))
-                        .await
-                    {
-                        tracing::error!("LiveView server failed: {}", e);
-                    }
+                        .await;
                 }
             }
 
@@ -799,7 +796,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                             }
                             let _ = save_settings(&s);
                         }
-                        terminal_lines.write().push(TerminalLine::info(format!(
+                        pentest_core::ui_log::emit(TerminalLine::info(format!(
                             "Saved canonical tenant UUID {} for next launch.",
                             canonical
                         )));
@@ -812,7 +809,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             spawn(run_event_loop(
                 event_rx,
                 EventLoopSignals {
-                    terminal_lines,
                     status,
                     connecting_step,
                     config,
@@ -827,10 +823,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 let mut conn = lv_connector.write().await;
                 if let Err(e) = conn.connect_and_run().await {
                     let display = format!("Connection error: {}", e);
-                    tracing::error!("[CONNECT] connect_and_run failed: {e}");
-                    terminal_lines
-                        .write()
-                        .push(TerminalLine::error(display.clone()));
+                    pentest_core::ui_log::emit(TerminalLine::error(display.clone()));
                     if easy_mode {
                         // A staged OTT is single-use; a failed registration
                         // consumed or invalidated it, so drop it (a retry
@@ -859,7 +852,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
         move |base_config: ConnectorConfig| {
             let mut connecting_step = connecting_step;
             let mut status = status;
-            let mut terminal_lines = terminal_lines;
             let mut config = config;
             let mut matrix_auth_token = matrix_auth_token;
             let mut matrix_api_url = matrix_api_url;
@@ -888,10 +880,9 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 let jwt = match pentest_core::matrix::fetch_matrix_token_browser(&api_url).await {
                     Ok(t) => t,
                     Err(e) => {
-                        tracing::error!("[CONNECT] fetch_matrix_token_browser failed: {e}");
-                        terminal_lines
-                            .write()
-                            .push(TerminalLine::error(format!("Sign-in failed: {e}")));
+                        pentest_core::ui_log::emit(TerminalLine::error(format!(
+                            "Sign-in failed: {e}"
+                        )));
                         status.set(ConnectorStatus::Disconnected);
                         connecting_step.set(None);
                         dispatch(AuthEvent::TokenFailed(e.to_string()));
@@ -941,10 +932,9 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                     {
                         Ok(o) => o,
                         Err(e) => {
-                            tracing::error!("[CONNECT] prepare_connector_registration failed: {e}");
-                            terminal_lines
-                                .write()
-                                .push(TerminalLine::error(format!("Pre-approval failed: {e}")));
+                            pentest_core::ui_log::emit(TerminalLine::error(format!(
+                                "Pre-approval failed: {e}"
+                            )));
                             // Setting status to Disconnected while the flow is in
                             // Registering is bridged to AuthEvent::TokenFailed by the
                             // status->flow effect, so easy mode leaves the
@@ -961,7 +951,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 c.tenant_id = ott.tenant_id.clone();
                 config.set(c.clone());
 
-                terminal_lines.write().push(TerminalLine::info(
+                pentest_core::ui_log::emit(TerminalLine::info(
                     "Signed in. Registering connector for your workspace...",
                 ));
                 connecting_step.set(Some(ConnectingStep::Connecting));
@@ -1067,7 +1057,6 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
 
             let connector = connector;
             let mut status = status;
-            let mut terminal_lines = terminal_lines;
             let mut connecting_step = connecting_step;
             let dispatch = dispatch.clone();
 
@@ -1080,9 +1069,7 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
             // dead. Dispatch first, then tear the connector down in the background.
             status.set(ConnectorStatus::Disconnected);
             connecting_step.set(None);
-            terminal_lines
-                .write()
-                .push(TerminalLine::info("Disconnected"));
+            pentest_core::ui_log::emit(TerminalLine::info("Disconnected"));
             dispatch(AuthEvent::Disconnected);
 
             spawn(async move {
@@ -1175,12 +1162,9 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
 
     let on_start_download = move |_: ()| {
         let mut download_progress = download_progress;
-        let mut terminal_lines = terminal_lines;
 
         setup_error.set(None);
-        terminal_lines
-            .write()
-            .push(TerminalLine::info("Setting up BlackArch environment..."));
+        pentest_core::ui_log::emit(TerminalLine::info("Setting up BlackArch environment..."));
 
         // Set immediately so UI shows progress bar without waiting for poll.
         crate::download_manager::set_global_progress(Some(-1.0));
@@ -1201,15 +1185,16 @@ pub fn connector_app(cfg: ConnectorAppConfig) -> Element {
                 match result {
                     Ok(()) => {
                         blackarch_downloaded.set(true);
-                        terminal_lines.write().push(TerminalLine::success(
+                        pentest_core::ui_log::emit(TerminalLine::success(
                             "BlackArch environment ready.".to_string(),
                         ));
                     }
                     Err(e) => {
                         setup_error.set(Some(e.clone()));
-                        terminal_lines
-                            .write()
-                            .push(TerminalLine::error(format!("Setup failed: {}", e)));
+                        pentest_core::ui_log::emit(TerminalLine::error(format!(
+                            "Setup failed: {}",
+                            e
+                        )));
                     }
                 }
             }

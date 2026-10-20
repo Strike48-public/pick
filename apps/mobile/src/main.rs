@@ -91,6 +91,7 @@ fn main() {
             let _ = tracing_subscriber::registry()
                 .with(filter)
                 .with(tracing_oslog::OsLogger::new("com.strike48.pick", "default"))
+                .with(pentest_core::ui_log::layer())
                 .try_init();
         }
 
@@ -121,6 +122,20 @@ fn main() {
         pentest_core::share::set_share_handler(|text| {
             pentest_platform::ios::share_text(text).map_err(|e| e.to_string())
         });
+    }
+
+    // Android: feed warnings and errors to the in-app Logs page. Installed
+    // last so the init above still reaches logcat through tracing's `log`
+    // bridge, which only runs while no subscriber is set. Installing one also
+    // stops `dioxus::launch` from adding its own stdout subscriber, which goes
+    // nowhere on Android. WARN keeps every other callsite disabled.
+    #[cfg(target_os = "android")]
+    {
+        use tracing_subscriber::prelude::*;
+        let _ = tracing_subscriber::registry()
+            .with(pentest_core::ui_log::layer())
+            .with(tracing_subscriber::filter::LevelFilter::WARN)
+            .try_init();
     }
 
     dioxus::launch(MobileApp);

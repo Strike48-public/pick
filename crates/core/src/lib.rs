@@ -39,6 +39,7 @@ pub mod theme_loader;
 pub mod timeout;
 pub mod tool_connector;
 pub mod tools;
+pub mod ui_log;
 pub mod url_validation;
 pub mod validation;
 pub mod workspace;

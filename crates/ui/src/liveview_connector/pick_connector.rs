@@ -108,8 +108,13 @@ impl PickConnector {
         self.matrix_api_url.clone()
     }
 
-    /// Emit a ConnectorEvent
+    /// Emit a ConnectorEvent, writing its line to the shared Logs buffer the
+    /// same way `LiveViewConnector::send_event` does. Real tool calls arrive
+    /// here, so without it they never reached the LiveView Logs page.
     fn send_event(&self, event: ConnectorEvent) {
+        if let Some(line) = event.terminal_line() {
+            pentest_core::ui_log::emit(line);
+        }
         let _ = self.event_tx.send(event);
     }
 }
@@ -769,6 +774,56 @@ mod tests {
             identities: Arc::new(pentest_core::identity::IdentityStore::new()),
             budget: pentest_core::budget::SessionBudget::default(),
         }
+    }
+
+    /// Lines in the global Logs buffer that mention `needle`. Tests share the
+    /// buffer, so each one looks only for its own unique tool name.
+    fn logs_mentioning(needle: &str) -> Vec<pentest_core::terminal::TerminalLine> {
+        pentest_core::ui_log::global()
+            .since(0)
+            .0
+            .into_iter()
+            .filter(|l| l.message.contains(needle))
+            .collect()
+    }
+
+    /// Real tool calls go through `PickConnector::send_event`. Each must reach
+    /// the shared Logs buffer exactly once with the subscriber's UI layer
+    /// installed: once, not zero (it used to skip the buffer) and not twice
+    /// (the layer would re-add the emitted error if it did not skip it).
+    #[test]
+    fn send_event_writes_tool_events_to_the_logs_buffer_once() {
+        use tracing_subscriber::prelude::*;
+        let connector = test_connector();
+        let mut rx = connector.event_tx.subscribe();
+        let subscriber = tracing_subscriber::registry().with(pentest_core::ui_log::layer());
+        tracing::subscriber::with_default(subscriber, || {
+            connector.send_event(ConnectorEvent::ToolStarted {
+                tool_name: "slice5b_probe_tool".into(),
+                params: json!({"target": "10.0.0.1"}),
+            });
+            connector.send_event(ConnectorEvent::ToolFailed {
+                tool_name: "slice5b_probe_tool".into(),
+                error: "boom".into(),
+            });
+        });
+
+        let lines = logs_mentioning("slice5b_probe_tool");
+        let messages: Vec<&str> = lines.iter().map(|l| l.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            vec![
+                "[tool] slice5b_probe_tool started",
+                "[tool] slice5b_probe_tool failed"
+            ]
+        );
+        assert!(lines[0].details.as_deref().unwrap().contains("10.0.0.1"));
+        assert_eq!(lines[1].details.as_deref(), Some("boom"));
+        // The event still reaches the app's own subscribers.
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ConnectorEvent::ToolStarted { .. })
+        ));
     }
 
     /// Regression guard for #386: `BaseConnector::connector_type()` — which

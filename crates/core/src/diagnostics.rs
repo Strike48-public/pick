@@ -312,7 +312,7 @@ pub fn read_redacted_tail(path: &Path, max_lines: usize, secrets: &[String]) -> 
     }
 }
 
-fn read_tail_lines(path: &Path, max_lines: usize) -> std::io::Result<Vec<String>> {
+pub(crate) fn read_tail_lines(path: &Path, max_lines: usize) -> std::io::Result<Vec<String>> {
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     let start = len.saturating_sub(TAIL_READ_BYTES);
