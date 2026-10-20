@@ -125,6 +125,8 @@ RUN printf 'deb http://kali.download/kali kali-rolling main contrib non-free non
         wpscan \
         ffuf \
         nuclei \
+        gospider \
+        katana \
         curl \
         wget \
         net-tools \
