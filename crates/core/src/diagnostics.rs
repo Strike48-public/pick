@@ -779,13 +779,13 @@ mod tests {
 
     #[test]
     fn paths_under_home_are_shown_relative_to_it() {
-        let home = Path::new("/home/fake-user");
+        let home = Path::new("/home/user");
         let under = display_path_under(&home.join("logs/connector.log"), Some(home));
         assert_eq!(under, "~/logs/connector.log");
         assert_eq!(display_path_under(home, Some(home)), "~");
         let outside = display_path_under(Path::new("/var/log/pick"), Some(home));
         assert_eq!(outside, "/var/log/pick");
-        assert_eq!(display_path_under(home, None), "/home/fake-user");
+        assert_eq!(display_path_under(home, None), "/home/user");
     }
 
     #[test]
