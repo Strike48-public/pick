@@ -74,6 +74,19 @@ pub fn sandbox_available_blocking() -> bool {
     false
 }
 
+/// Host facts for the support diagnostics bundle. Desktop reports the OS and
+/// the sandbox state; other targets have no host sandbox and report defaults.
+#[cfg(feature = "desktop")]
+pub use desktop::diagnostic_facts;
+
+#[cfg(not(feature = "desktop"))]
+pub fn diagnostic_facts() -> pentest_core::diagnostics::PlatformFacts {
+    pentest_core::diagnostics::PlatformFacts {
+        os_name: Some(std::env::consts::OS.to_string()),
+        ..Default::default()
+    }
+}
+
 /// Re-export capture session management for desktop
 #[cfg(feature = "desktop")]
 pub use desktop::{
