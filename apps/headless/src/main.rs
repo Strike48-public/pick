@@ -185,10 +185,9 @@ async fn main() -> anyhow::Result<()> {
     // Start the internal LiveView server (Dioxus WorkspaceApp on :3030 or Unix socket)
     // with shell WebSocket routes merged in
     let shell_routes = pentest_ui::shell_ws::shell_routes(ShellMode::Native);
-    if let Err(e) = connector.start_liveview_server(shell_routes).await {
-        tracing::error!("LiveView server failed to start: {}", e);
-        // Continue anyway — tools still work, just no app UI
-    }
+    // start_liveview_server reports its own failures. Continue either way:
+    // tools still work, just no app UI.
+    let _ = connector.start_liveview_server(shell_routes).await;
 
     // Spawn log consumer (just prints events to stderr since there's no UI)
     let mut event_rx = connector.event_rx();
@@ -204,31 +203,14 @@ async fn main() -> anyhow::Result<()> {
                         ConnectorEvent::StepChanged(s) => {
                             tracing::info!("[step] {:?}", s);
                         }
-                        ConnectorEvent::Log(line) => {
-                            tracing::info!("[log] {}", line.message);
-                        }
-                        ConnectorEvent::ToolStarted { tool_name, .. } => {
-                            tracing::info!("[tool] {} started", tool_name);
-                        }
-                        ConnectorEvent::ToolCompleted {
-                            tool_name,
-                            duration_ms,
-                            success,
-                            ..
-                        } => {
-                            if *success {
-                                tracing::info!(
-                                    "[tool] {} completed ({}ms)",
-                                    tool_name,
-                                    duration_ms
-                                );
-                            } else {
-                                tracing::warn!("[tool] {} failed ({}ms)", tool_name, duration_ms);
-                            }
-                        }
-                        ConnectorEvent::ToolFailed { tool_name, error } => {
-                            tracing::error!("[tool] {} error: {}", tool_name, error);
-                        }
+                        // send_event already wrote these to the Logs buffer and
+                        // traced them; logging them again here would put every
+                        // tool failure on the Logs page twice.
+                        ConnectorEvent::Log(_)
+                        | ConnectorEvent::ToolStarted { .. }
+                        | ConnectorEvent::ToolCompleted { .. }
+                        | ConnectorEvent::ToolFailed { .. }
+                        | ConnectorEvent::ToolProgress { .. } => {}
                         ConnectorEvent::CredentialsUpdated { auth_token, .. } => {
                             tracing::info!(
                                 "[auth] credentials updated (token_len={})",
@@ -248,14 +230,6 @@ async fn main() -> anyhow::Result<()> {
                                 "[auth] matrix chat token obtained (token_len={})",
                                 auth_token.len()
                             );
-                        }
-                        ConnectorEvent::ToolProgress {
-                            tool_name,
-                            step,
-                            message,
-                            ..
-                        } => {
-                            tracing::info!("[tool] {} step {}: {}", tool_name, step, message);
                         }
                     }
                 }

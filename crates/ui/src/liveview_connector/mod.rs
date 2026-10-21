@@ -181,6 +181,55 @@ pub enum ConnectorEvent {
     },
 }
 
+impl ConnectorEvent {
+    /// The Logs line for this event, or `None` for events that are not shown
+    /// there. The only place a connector event becomes a line: both
+    /// connectors' `send_event` emit it to [`pentest_core::ui_log`].
+    pub fn terminal_line(&self) -> Option<TerminalLine> {
+        let pretty = |value: &serde_json::Value| {
+            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+        };
+        let line = match self {
+            ConnectorEvent::Log(line) => line.clone(),
+            ConnectorEvent::ToolStarted { tool_name, params } => {
+                TerminalLine::info(format!("[tool] {tool_name} started"))
+                    .with_details(format!("args: {}", pretty(params)))
+            }
+            ConnectorEvent::ToolCompleted {
+                tool_name,
+                duration_ms,
+                success: true,
+                result,
+            } => TerminalLine::success(format!("[tool] {tool_name} completed ({duration_ms}ms)"))
+                .with_details(pretty(result)),
+            ConnectorEvent::ToolCompleted {
+                tool_name,
+                duration_ms,
+                success: false,
+                result,
+            } => TerminalLine::error(format!(
+                "[tool] {tool_name} returned error ({duration_ms}ms)"
+            ))
+            .with_details(pretty(result)),
+            ConnectorEvent::ToolFailed { tool_name, error } => {
+                TerminalLine::error(format!("[tool] {tool_name} failed"))
+                    .with_details(error.clone())
+            }
+            ConnectorEvent::ToolProgress {
+                tool_name,
+                step,
+                message,
+                ..
+            } => TerminalLine::info(format!("[tool] {tool_name} step {step}: {message}")),
+            ConnectorEvent::StatusChanged(_)
+            | ConnectorEvent::StepChanged(_)
+            | ConnectorEvent::CredentialsUpdated { .. }
+            | ConnectorEvent::MatrixTokenObtained { .. } => return None,
+        };
+        Some(line)
+    }
+}
+
 /// LiveView-enabled connector that handles WebSocket proxying
 pub struct LiveViewConnector {
     pub(crate) config: ConnectorConfig,
@@ -320,208 +369,179 @@ impl LiveViewConnector {
             }
         }
 
-        // Mirror log/tool events into the global terminal buffer so the WorkspaceApp
-        // Logs page shows connector activity even in headless (no desktop UI) mode.
-        use pentest_core::terminal::TerminalLine;
-        match &event {
-            ConnectorEvent::Log(line) => {
-                crate::liveview_server::push_terminal_line(line.clone());
-            }
-            ConnectorEvent::ToolStarted { tool_name, params } => {
-                let details = serde_json::to_string(params).unwrap_or_default();
-                crate::liveview_server::push_terminal_line(
-                    TerminalLine::info(format!("[tool] {} started", tool_name))
-                        .with_details(format!("args: {}", details)),
-                );
-            }
-            ConnectorEvent::ToolCompleted {
-                tool_name,
-                duration_ms,
-                success,
-                result,
-            } => {
-                let details = serde_json::to_string(result).unwrap_or_default();
-                let line = if *success {
-                    TerminalLine::success(format!(
-                        "[tool] {} completed ({}ms)",
-                        tool_name, duration_ms
-                    ))
-                    .with_details(details.clone())
-                } else {
-                    TerminalLine::error(format!(
-                        "[tool] {} returned error ({}ms)",
-                        tool_name, duration_ms
-                    ))
-                    .with_details(details.clone())
-                };
-                crate::liveview_server::push_terminal_line(line);
+        // The shared Logs buffer feeds every Logs page, including headless mode
+        // (no desktop UI), so log/tool events need no other path to a page.
+        if let Some(line) = event.terminal_line() {
+            pentest_core::ui_log::emit(line);
+        }
 
-                // Event-driven scan state tracking
-                // When specific tools complete successfully, we update the scan state accordingly
-                if *success {
-                    // begin_scan completion → Initialize scan state
-                    // This creates the root tracking object for the entire scan session
-                    if tool_name == "begin_scan" {
-                        // Extract conversation_id (scan_id) and agent_id from tool result
-                        if let Ok(scan_result) =
-                            serde_json::from_value::<serde_json::Value>(result.clone())
-                        {
-                            if let (Some(conv_id), Some(agent_id)) = (
-                                scan_result.get("scan_id").and_then(|v| v.as_str()),
-                                result.get("agent_id").and_then(|v| v.as_str()),
-                            ) {
-                                // Initialize scan state with current config values
-                                let scan_state = ScanState {
-                                    conversation_id: conv_id.to_string(),
-                                    agent_id: agent_id.to_string(),
-                                    started_at: std::time::Instant::now(),
-                                    started_at_system: std::time::SystemTime::now(),
-                                    current_aggression: self.config.aggression_level,
-                                    active_specialists: std::collections::HashMap::new(),
-                                };
+        // Event-driven scan state tracking
+        // When specific tools complete successfully, we update the scan state accordingly
+        if let ConnectorEvent::ToolCompleted {
+            tool_name,
+            success: true,
+            result,
+            ..
+        } = &event
+        {
+            // begin_scan completion → Initialize scan state
+            // This creates the root tracking object for the entire scan session
+            if tool_name == "begin_scan" {
+                // Extract conversation_id (scan_id) and agent_id from tool result
+                if let Ok(scan_result) = serde_json::from_value::<serde_json::Value>(result.clone())
+                {
+                    if let (Some(conv_id), Some(agent_id)) = (
+                        scan_result.get("scan_id").and_then(|v| v.as_str()),
+                        result.get("agent_id").and_then(|v| v.as_str()),
+                    ) {
+                        // Initialize scan state with current config values
+                        let scan_state = ScanState {
+                            conversation_id: conv_id.to_string(),
+                            agent_id: agent_id.to_string(),
+                            started_at: std::time::Instant::now(),
+                            started_at_system: std::time::SystemTime::now(),
+                            current_aggression: self.config.aggression_level,
+                            active_specialists: std::collections::HashMap::new(),
+                        };
 
-                                // Use try_write() to avoid blocking the event loop
-                                // Retry with exponential backoff to ensure scan state is initialized
-                                // Spawn as task since send_event is not async
-                                let active_scan = Arc::clone(&self.active_scan);
-                                let conv_id = conv_id.to_string();
-                                let total_specialists = Arc::clone(&self.total_specialists_spawned);
-                                tokio::spawn(async move {
-                                    let mut retry_count = 0;
-                                    let max_retries = 10;
-                                    let mut initialized = false;
+                        // Use try_write() to avoid blocking the event loop
+                        // Retry with exponential backoff to ensure scan state is initialized
+                        // Spawn as task since send_event is not async
+                        let active_scan = Arc::clone(&self.active_scan);
+                        let conv_id = conv_id.to_string();
+                        let total_specialists = Arc::clone(&self.total_specialists_spawned);
+                        tokio::spawn(async move {
+                            let mut retry_count = 0;
+                            let max_retries = 10;
+                            let mut initialized = false;
 
-                                    while retry_count < max_retries {
-                                        if let Ok(mut scan_guard) = active_scan.try_write() {
-                                            *scan_guard = Some(scan_state.clone());
-                                            // Reset specialist counter when new scan starts
-                                            total_specialists.store(0, Ordering::SeqCst);
-                                            tracing::info!(
-                                                "Scan state initialized: conversation={} agent={}",
-                                                scan_state.conversation_id,
-                                                scan_state.agent_id
-                                            );
-                                            initialized = true;
-                                            break;
-                                        } else {
-                                            retry_count += 1;
-                                            if retry_count < max_retries {
-                                                tracing::debug!(
-                                                    "Scan state init lock contention, retry {}/{}",
-                                                    retry_count,
-                                                    max_retries
-                                                );
-                                                // Exponential backoff: 2ms, 4ms, 8ms, 16ms, 32ms, ...
-                                                tokio::time::sleep(
-                                                    tokio::time::Duration::from_millis(
-                                                        2 << retry_count,
-                                                    ),
-                                                )
-                                                .await;
-                                            }
-                                        }
-                                    }
-
-                                    if !initialized {
-                                        tracing::error!(
-                                            "CRITICAL: Failed to initialize scan state after {} retries. \
-                                             Scan {} will not be trackable via REST API.",
-                                            max_retries,
-                                            conv_id
+                            while retry_count < max_retries {
+                                if let Ok(mut scan_guard) = active_scan.try_write() {
+                                    *scan_guard = Some(scan_state.clone());
+                                    // Reset specialist counter when new scan starts
+                                    total_specialists.store(0, Ordering::SeqCst);
+                                    tracing::info!(
+                                        "Scan state initialized: conversation={} agent={}",
+                                        scan_state.conversation_id,
+                                        scan_state.agent_id
+                                    );
+                                    initialized = true;
+                                    break;
+                                } else {
+                                    retry_count += 1;
+                                    if retry_count < max_retries {
+                                        tracing::debug!(
+                                            "Scan state init lock contention, retry {}/{}",
+                                            retry_count,
+                                            max_retries
                                         );
+                                        // Exponential backoff: 2ms, 4ms, 8ms, 16ms, 32ms, ...
+                                        tokio::time::sleep(tokio::time::Duration::from_millis(
+                                            2 << retry_count,
+                                        ))
+                                        .await;
                                     }
-                                });
+                                }
                             }
-                        }
-                    // spawn_specialist completion → Track new specialist
-                    // This adds the specialist to the scan's active_specialists map
-                    } else if tool_name == "spawn_specialist" {
-                        // Extract specialist information from tool result
-                        if let Ok(spawn_result) =
-                            serde_json::from_value::<serde_json::Value>(result.clone())
-                        {
-                            // Only track if spawn actually succeeded (spawned: true in result)
-                            if spawn_result
-                                .get("spawned")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false)
-                            {
-                                if let (
-                                    Some(specialist_type),
-                                    Some(agent_id),
-                                    Some(agent_name),
-                                    Some(targets),
-                                ) = (
-                                    spawn_result.get("specialist_type").and_then(|v| v.as_str()),
-                                    spawn_result.get("agent_id").and_then(|v| v.as_str()),
-                                    spawn_result.get("agent_name").and_then(|v| v.as_str()),
-                                    spawn_result.get("targets").and_then(|v| v.as_array()),
-                                ) {
-                                    // Defense against hostile agents: limit specialist tracking to prevent memory exhaustion
-                                    const MAX_SPECIALISTS_PER_SCAN: usize = 50;
-                                    const MAX_TARGETS_PER_SPECIALIST: usize = 1000;
 
-                                    // Truncate target list if excessive (defense against compromised agents)
-                                    let mut target_list: Vec<String> = targets
-                                        .iter()
-                                        .filter_map(|v| v.as_str().map(String::from))
-                                        .collect();
+                            if !initialized {
+                                tracing::error!(
+                                    "CRITICAL: Failed to initialize scan state after {} retries. \
+                                             Scan {} will not be trackable via REST API.",
+                                    max_retries,
+                                    conv_id
+                                );
+                            }
+                        });
+                    }
+                }
+            // spawn_specialist completion → Track new specialist
+            // This adds the specialist to the scan's active_specialists map
+            } else if tool_name == "spawn_specialist" {
+                // Extract specialist information from tool result
+                if let Ok(spawn_result) =
+                    serde_json::from_value::<serde_json::Value>(result.clone())
+                {
+                    // Only track if spawn actually succeeded (spawned: true in result)
+                    if spawn_result
+                        .get("spawned")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        if let (
+                            Some(specialist_type),
+                            Some(agent_id),
+                            Some(agent_name),
+                            Some(targets),
+                        ) = (
+                            spawn_result.get("specialist_type").and_then(|v| v.as_str()),
+                            spawn_result.get("agent_id").and_then(|v| v.as_str()),
+                            spawn_result.get("agent_name").and_then(|v| v.as_str()),
+                            spawn_result.get("targets").and_then(|v| v.as_array()),
+                        ) {
+                            // Defense against hostile agents: limit specialist tracking to prevent memory exhaustion
+                            const MAX_SPECIALISTS_PER_SCAN: usize = 50;
+                            const MAX_TARGETS_PER_SPECIALIST: usize = 1000;
 
-                                    if target_list.len() > MAX_TARGETS_PER_SPECIALIST {
-                                        tracing::warn!(
+                            // Truncate target list if excessive (defense against compromised agents)
+                            let mut target_list: Vec<String> = targets
+                                .iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect();
+
+                            if target_list.len() > MAX_TARGETS_PER_SPECIALIST {
+                                tracing::warn!(
                                             "Specialist {} targets truncated from {} to {} (defensive limit)",
                                             agent_id,
                                             target_list.len(),
                                             MAX_TARGETS_PER_SPECIALIST
                                         );
-                                        target_list.truncate(MAX_TARGETS_PER_SPECIALIST);
-                                    }
+                                target_list.truncate(MAX_TARGETS_PER_SPECIALIST);
+                            }
 
-                                    let specialist_info = SpecialistInfo {
-                                        specialist_type: specialist_type.to_string(),
-                                        agent_id: agent_id.to_string(),
-                                        agent_name: agent_name.to_string(),
-                                        targets: target_list,
-                                        spawned_at: std::time::SystemTime::now(),
-                                    };
+                            let specialist_info = SpecialistInfo {
+                                specialist_type: specialist_type.to_string(),
+                                agent_id: agent_id.to_string(),
+                                agent_name: agent_name.to_string(),
+                                targets: target_list,
+                                spawned_at: std::time::SystemTime::now(),
+                            };
 
-                                    // Add specialist to active scan's specialist map
-                                    // Use agent_id as key for easy lookup/updates
-                                    // Retry with exponential backoff to ensure specialist is tracked
-                                    // Spawn as task since send_event is not async
-                                    let active_scan = Arc::clone(&self.active_scan);
-                                    let total_specialists =
-                                        Arc::clone(&self.total_specialists_spawned);
-                                    let agent_id_owned = agent_id.to_string();
-                                    tokio::spawn(async move {
-                                        let mut retry_count = 0;
-                                        let max_retries = 10;
-                                        let mut tracked = false;
+                            // Add specialist to active scan's specialist map
+                            // Use agent_id as key for easy lookup/updates
+                            // Retry with exponential backoff to ensure specialist is tracked
+                            // Spawn as task since send_event is not async
+                            let active_scan = Arc::clone(&self.active_scan);
+                            let total_specialists = Arc::clone(&self.total_specialists_spawned);
+                            let agent_id_owned = agent_id.to_string();
+                            tokio::spawn(async move {
+                                let mut retry_count = 0;
+                                let max_retries = 10;
+                                let mut tracked = false;
 
-                                        while retry_count < max_retries {
-                                            if let Ok(mut scan_guard) = active_scan.try_write() {
-                                                if let Some(ref mut scan) = *scan_guard {
-                                                    // Check global specialist limit (persists across reconnects)
-                                                    let current_total =
-                                                        total_specialists.load(Ordering::SeqCst);
-                                                    if current_total >= MAX_SPECIALISTS_PER_SCAN {
-                                                        tracing::warn!(
+                                while retry_count < max_retries {
+                                    if let Ok(mut scan_guard) = active_scan.try_write() {
+                                        if let Some(ref mut scan) = *scan_guard {
+                                            // Check global specialist limit (persists across reconnects)
+                                            let current_total =
+                                                total_specialists.load(Ordering::SeqCst);
+                                            if current_total >= MAX_SPECIALISTS_PER_SCAN {
+                                                tracing::warn!(
                                                             "Max specialists limit reached ({} total spawned). \
                                                              Specialist {} will not be tracked.",
                                                             current_total,
                                                             agent_id_owned
                                                         );
-                                                        break;
-                                                    }
+                                                break;
+                                            }
 
-                                                    scan.active_specialists.insert(
-                                                        agent_id_owned.clone(),
-                                                        specialist_info.clone(),
-                                                    );
-                                                    // Increment global counter (atomic)
-                                                    total_specialists
-                                                        .fetch_add(1, Ordering::SeqCst);
-                                                    tracing::info!(
+                                            scan.active_specialists.insert(
+                                                agent_id_owned.clone(),
+                                                specialist_info.clone(),
+                                            );
+                                            // Increment global counter (atomic)
+                                            total_specialists.fetch_add(1, Ordering::SeqCst);
+                                            tracing::info!(
                                                         "Specialist tracked: type={} agent={} targets={} (total: {}/{})",
                                                         specialist_info.specialist_type,
                                                         agent_id_owned,
@@ -529,55 +549,44 @@ impl LiveViewConnector {
                                                         current_total + 1,
                                                         MAX_SPECIALISTS_PER_SCAN
                                                     );
-                                                    tracked = true;
-                                                    break;
-                                                } else {
-                                                    tracing::warn!(
+                                            tracked = true;
+                                            break;
+                                        } else {
+                                            tracing::warn!(
                                                         "Specialist spawned but no active scan found - specialist will not be tracked"
                                                     );
-                                                    break;
-                                                }
-                                            } else {
-                                                retry_count += 1;
-                                                if retry_count < max_retries {
-                                                    tracing::debug!(
-                                                        "Specialist tracking lock contention, retry {}/{}",
-                                                        retry_count,
-                                                        max_retries
-                                                    );
-                                                    // Exponential backoff: 2ms, 4ms, 8ms, 16ms, 32ms, ...
-                                                    tokio::time::sleep(
-                                                        tokio::time::Duration::from_millis(
-                                                            2 << retry_count,
-                                                        ),
-                                                    )
-                                                    .await;
-                                                }
-                                            }
+                                            break;
                                         }
+                                    } else {
+                                        retry_count += 1;
+                                        if retry_count < max_retries {
+                                            tracing::debug!(
+                                                "Specialist tracking lock contention, retry {}/{}",
+                                                retry_count,
+                                                max_retries
+                                            );
+                                            // Exponential backoff: 2ms, 4ms, 8ms, 16ms, 32ms, ...
+                                            tokio::time::sleep(tokio::time::Duration::from_millis(
+                                                2 << retry_count,
+                                            ))
+                                            .await;
+                                        }
+                                    }
+                                }
 
-                                        if !tracked {
-                                            tracing::error!(
+                                if !tracked {
+                                    tracing::error!(
                                                 "CRITICAL: Failed to track specialist {} after {} retries. \
                                                  Specialist will not appear in /api/status and won't receive aggression updates.",
                                                 agent_id_owned,
                                                 max_retries
                                             );
-                                        }
-                                    });
                                 }
-                            }
+                            });
                         }
                     }
                 }
             }
-            ConnectorEvent::ToolFailed { tool_name, error } => {
-                crate::liveview_server::push_terminal_line(
-                    TerminalLine::error(format!("[tool] {} failed", tool_name))
-                        .with_details(error.clone()),
-                );
-            }
-            _ => {}
         }
 
         let _ = self.event_tx.send(event);
@@ -594,8 +603,13 @@ impl LiveViewConnector {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
+        // This function reports every failure itself, so callers need not.
         if workspace_path.is_empty() {
-            return Err("No workspace path configured".to_string());
+            let error = "No workspace path configured".to_string();
+            self.send_event(ConnectorEvent::Log(TerminalLine::error(format!(
+                "LiveView server not started: {error}"
+            ))));
+            return Err(error);
         }
 
         let ipc_mode = std::env::var("STRIKEHUB_SOCKET").is_ok();
@@ -1236,7 +1250,8 @@ impl LiveViewConnector {
                 tracing::info!("ConnectorRunner exited cleanly");
             }
             Err(e) => {
-                tracing::error!("ConnectorRunner error: {}", e);
+                // The Log event is traced at error level on its way to the
+                // Logs buffer; a separate `tracing::error!` would show twice.
                 self.send_event(ConnectorEvent::Log(TerminalLine::error(format!(
                     "Connector error: {}",
                     e
@@ -1384,6 +1399,67 @@ mod registration_outcome_tests {
         assert_eq!(registration_outcome(false, false, false), None);
         assert_eq!(registration_outcome(false, true, false), None);
         assert_eq!(registration_outcome(false, false, true), None);
+    }
+}
+
+#[cfg(test)]
+mod terminal_line_tests {
+    use super::*;
+    use pentest_core::terminal::LogLevel;
+
+    #[test]
+    fn tool_events_become_lines_with_their_details() {
+        let ok = ConnectorEvent::ToolCompleted {
+            tool_name: "nmap".into(),
+            duration_ms: 12,
+            success: true,
+            result: serde_json::json!({"open": [22]}),
+        }
+        .terminal_line()
+        .expect("a line");
+        assert_eq!(ok.level, LogLevel::Success);
+        assert_eq!(ok.message, "[tool] nmap completed (12ms)");
+        assert!(ok.details.as_deref().unwrap().contains("\"open\""));
+
+        let err = ConnectorEvent::ToolCompleted {
+            tool_name: "nmap".into(),
+            duration_ms: 3,
+            success: false,
+            result: serde_json::json!("denied"),
+        }
+        .terminal_line()
+        .expect("a line");
+        assert_eq!(err.level, LogLevel::Error);
+        assert_eq!(err.message, "[tool] nmap returned error (3ms)");
+
+        let progress = ConnectorEvent::ToolProgress {
+            tool_name: "webwright".into(),
+            step: 2,
+            message: "clicked".into(),
+            screenshot: Some("aGk=".into()),
+        }
+        .terminal_line()
+        .expect("a line");
+        assert_eq!(progress.message, "[tool] webwright step 2: clicked");
+        assert_eq!(progress.details, None, "screenshots stay out of the log");
+    }
+
+    #[test]
+    fn status_and_credential_events_have_no_line() {
+        for event in [
+            ConnectorEvent::StatusChanged(ConnectorStatus::Registered),
+            ConnectorEvent::StepChanged(ConnectingStep::Connecting),
+            ConnectorEvent::CredentialsUpdated {
+                auth_token: "t".into(),
+                api_url: "u".into(),
+            },
+            ConnectorEvent::MatrixTokenObtained {
+                auth_token: "t".into(),
+                api_url: "u".into(),
+            },
+        ] {
+            assert!(event.terminal_line().is_none(), "{event:?}");
+        }
     }
 }
 

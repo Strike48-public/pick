@@ -29,7 +29,8 @@ use super::terminal::Terminal;
 use super::tools_page::ToolsPage;
 use super::WifiWarningDialog;
 use crate::auth_flow::AuthFlow;
-use crate::liveview_server::{get_terminal_lines, get_workspace_path, terminal_lines_count};
+use crate::liveview_server::get_workspace_path;
+use crate::logs_feed::use_ui_log_lines;
 use crate::theme::{responsive_css, tailwind_css, utils_css};
 use pentest_core::config::{BorderRadius, Density, ShellMode, Theme};
 use pentest_core::settings::{load_settings, save_settings};
@@ -269,25 +270,11 @@ pub fn WorkspacePages(props: WorkspacePagesProps) -> Element {
 pub fn WorkspaceApp() -> Element {
     let mut active_page = use_signal(|| NavPage::Dashboard);
     let _sidebar_open = use_signal(|| false); // managed by AppLayout
-                                              // Initialise from the global buffer (populated by the connector's send_event)
-    let mut terminal_lines = use_signal(get_terminal_lines);
-    let mut last_seen_terminal_count = use_signal(|| 0usize);
+                                              // Fed by the shared Logs buffer, which the connector writes from another task.
+    let terminal_lines = use_ui_log_lines();
+    // Lines already there at mount (the restored previous session) are not unread.
+    let mut last_seen_terminal_count = use_signal(|| terminal_lines.peek().len());
     let workspace = get_workspace_path();
-
-    // Poll the global terminal buffer every second to pick up new connector events.
-    // This is necessary in headless/liveview mode where the connector runs in a
-    // separate task and cannot directly write to a Dioxus signal.
-    let mut synced_count = use_signal(terminal_lines_count);
-    use_future(move || async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            let global_count = terminal_lines_count();
-            if global_count != synced_count() {
-                terminal_lines.set(get_terminal_lines());
-                synced_count.set(global_count);
-            }
-        }
-    });
 
     // Persisted settings (shell mode, downloads)
     // Whether a command-sandbox backend is usable on this host (bwrap/proot/
@@ -668,15 +655,11 @@ pub fn WorkspaceApp() -> Element {
                         download_progress: *download_progress.read(),
                         setup_error: setup_error.read().clone(),
                         on_start_download: {
-                            let terminal_lines = terminal_lines;
                             move |_: ()| {
                                 let mut download_progress = download_progress;
-                                let mut terminal_lines = terminal_lines;
 
                                 setup_error.set(None);
-                                terminal_lines
-                                    .write()
-                                    .push(TerminalLine::info("Setting up BlackArch environment..."));
+                                pentest_core::ui_log::emit(TerminalLine::info("Setting up BlackArch environment..."));
 
                                 // Set immediately so UI shows progress bar without waiting for poll.
                                 crate::download_manager::set_global_progress(Some(-1.0));
@@ -694,13 +677,13 @@ pub fn WorkspaceApp() -> Element {
                                         match result {
                                             Ok(()) => {
                                                 blackarch_downloaded.set(true);
-                                                terminal_lines.write().push(TerminalLine::success(
+                                                pentest_core::ui_log::emit(TerminalLine::success(
                                                     "BlackArch environment ready.".to_string(),
                                                 ));
                                             }
                                             Err(e) => {
                                                 setup_error.set(Some(e.clone()));
-                                                terminal_lines.write().push(TerminalLine::error(format!(
+                                                pentest_core::ui_log::emit(TerminalLine::error(format!(
                                                     "Setup failed: {}",
                                                     e
                                                 )));
