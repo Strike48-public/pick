@@ -129,56 +129,397 @@ run-headless-env *ARGS:
     set +a
     cargo run --package pentest-headless -- {{ARGS}} 2>&1 | tee -a ~/tmp/pentest.log
 
-# ============ StrikeKit DVWA demo (matrix#3207) ============
+# ============ StrikeKit scan-targets demo (https://github.com/Strike48/matrix/issues/3207) ============
 
-# Compose file + its env for the Pick + DVWA live demo. Override DVWA_ENV to
-# point at a different env file (the init-dev demo:pick tasks generate .env.dvwa).
-dvwa_compose := "docker-compose.dvwa.yml"
-dvwa_env := env_var_or_default("DVWA_ENV", ".env.dvwa")
+# Compose model + its env for the Pick + scan-targets live demo (DVWA + OWASP
+# Juice Shop). The model is a MULTI-FILE merge: a target-agnostic base
+# (docker-compose.targets.yml) plus one self-contained fragment per target under
+# targets/ — see the base file header for the topology + merge rationale.
+# Override TARGETS_ENV to point at a different env file. It falls back to the
+# legacy DVWA_ENV, then .env.dvwa, so the init-dev demo:pick tasks (which set
+# DVWA_ENV) and old muscle memory keep working unchanged; the env file itself
+# keeps its historical .env.dvwa name and target-agnostic contents.
+targets_files := "-f docker-compose.targets.yml -f targets/dvwa.yml -f targets/juice-shop.yml -f targets/juice-guard.yml"
+targets_env := env_var_or_default("TARGETS_ENV", env_var_or_default("DVWA_ENV", ".env.dvwa"))
+# Docker's name-only format strings, carried as just VARIABLES: a literal
+# `{{.Names}}` inside a recipe body is parsed as a recipe INTERPOLATION (just
+# evaluates it as a just expression and fails: "Unknown start of token '.'");
+# interpolating a variable whose VALUE is the format string hands docker the
+# braces verbatim (variable values are not re-interpolated).
+docker_fmt_names := "{{.Names}}"
+docker_fmt_name := "{{.Name}}"
 
-# Validate the compose file + assert the DVWA isolation invariant (no live daemon
-# needed beyond `docker compose config`). Cheap regression tripwire: fails if a
-# future edit re-exposes the deliberately-vulnerable DVWA — publishes a host port,
-# flips scan-net off `internal`, or attaches dvwa to the backend network.
-dvwa-check:
+# Validate the compose model + assert the demo isolation invariants + the door
+# topology (daemon-free: `docker compose config` renders + text assertions),
+# PLUS — when a docker daemon IS reachable (dev boxes; daemonless boxes skip it
+# with a disclosure) — a LIVE GUARD PROVE: a throwaway door on a scratch
+# internal net requesting every known bypass path THROUGH the committed conf,
+# requiring 403 for each and 200 for the keep-open routes (proof BY REQUEST —
+# the case-sensitivity bypass a text match cannot see). Cheap regression
+# tripwire; asserts:
+#   - door pattern (BY NAME — targets differ on purpose, see the base header):
+#     dvwa DIRECT on scan-net; juice-app on juice-net ONLY; juice-guard = the
+#     ONLY member of BOTH scan-net + juice-net (the engagement alias lives in
+#     the conf-side tripwire via the committed nginx conf, not here);
+#   - BOTH internal bridges internal:true (scan-net + juice-net — no external
+#     egress from either);
+#   - pick stays {scan-net, backend-net} — no L3 path to juice-net except
+#     through the guard — and its healthy-start gate on dvwa, juice-app AND
+#     juice-guard (all service_healthy) is intact;
+#   - GENERIC over the merged model: every non-pick service publishes NO host
+#     ports and stays OFF backend-net, so a future targets/<name>.yml fragment
+#     is covered by the same assertions with no edit here;
+#   - the juice-app image carries a @sha256: digest pin (tripwire against
+#     regression to a mutable tag — the pin requirement is named in the error)
+#     and the door's image is digest-pinned too (nginx:1.27-alpine@sha256:…,
+#     the 1.27-alpine tag retained for readability) — the door is the control;
+#   - the committed door conf (targets/juice-guard.nginx.conf) still carries
+#     the CASE-INSENSITIVE challenge/hint deny + the /metrics and
+#     /rest/continue-code solution-state deny (403) and still serves the
+#     healthz endpoint (200);
+# Also asserts the scan-net subnet interpolation by rendering the model TWICE:
+# SCAN_NET_SUBNET unset → the DEFAULT pin 10.250.0.0/24 is preserved;
+# SCAN_NET_SUBNET=10.251.0.0/24 → the override is honored verbatim (what
+# concurrent per-instance projects rely on).
+targets-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Stub env so the mandatory ${VAR:?} interpolations resolve for a pure config render.
+    # Stub env so the mandatory ${VAR:?} interpolations resolve for a pure config
+    # render. Assign RENDERED on its own line, NOT as a `VAR=$(...) python3`
+    # prefix: in the prefix form a failing command substitution does not trip
+    # `set -e`, so a compose model that no longer renders (e.g. a renamed
+    # mandatory var) would reach python as an empty string and crash with a
+    # TypeError instead of reporting the real problem.
     RENDERED=$(STRIKE48_HOST=grpc://stub:80 STRIKE48_TENANT=stub MATRIX_API_URL=https://stub \
-        docker compose -f "{{dvwa_compose}}" config) \
+        docker compose {{targets_files}} config)
+    # Second render with the subnet override set. The default pass pins
+    # SCAN_NET_SUBNET to EMPTY (not just unset): an empty value trips the same
+    # `${VAR:-default}` fallback as unset, and pinning it isolates the default
+    # assertion from an ambient SCAN_NET_SUBNET export (a host running a
+    # concurrent per-instance instance would otherwise false-fail this check
+    # even though the model is fine).
+    RENDERED_OVERRIDE=$(STRIKE48_HOST=grpc://stub:80 STRIKE48_TENANT=stub MATRIX_API_URL=https://stub \
+        SCAN_NET_SUBNET=10.251.0.0/24 \
+        docker compose {{targets_files}} config)
+    export RENDERED RENDERED_OVERRIDE
     python3 -c '
     import os, sys, yaml
     d = yaml.safe_load(os.environ["RENDERED"])
+    # Guard explicitly: an empty/undefined render must be a clear failure, never
+    # an attribute error on None.
+    if not isinstance(d, dict):
+        print("targets-check FAILED:\n  - compose config produced no usable model (check the mandatory ${VAR:?} names)")
+        sys.exit(1)
     s, n = d["services"], d["networks"]
+    v = d.get("volumes") or {}
     # `docker compose config` renders service networks as a dict (name -> opts|None),
-    # not a list — normalize to the set of network names before asserting.
-    dvwa_nets = set(s["dvwa"]["networks"] or [])
+    # not a list — set() over a dict takes its keys, so this normalizes both shapes.
     errs = []
-    if "ports" in s["dvwa"]: errs.append("dvwa publishes host ports (must not)")
-    if dvwa_nets != {"scan-net"}: errs.append("dvwa networks != {scan-net}: %s" % sorted(dvwa_nets))
-    if n["scan-net"].get("internal") is not True: errs.append("scan-net is not internal:true")
-    if "backend-net" in dvwa_nets: errs.append("dvwa attached to backend-net (must not)")
+    # GENERIC enumeration: every service except the pick connector must publish
+    # NO host ports and stay OFF the backend network. Network MEMBERSHIP differs
+    # per target on purpose (door pattern — dvwa direct, juice-app behind the
+    # door), so it is asserted BY NAME below, not generically.
+    for name in sorted(k for k in s if k != "pick"):
+        svc = s[name]
+        nets = set(svc.get("networks") or [])
+        if "ports" in svc: errs.append("%s publishes host ports (must not)" % name)
+        if "backend-net" in nets: errs.append("%s is on backend-net (targets must never be)" % name)
+    # Network membership BY NAME (the door pattern):
+    #   dvwa: DIRECT on scan-net (needs no filtering);
+    #   juice-app: juice-net ONLY — nothing on scan-net can resolve or reach it;
+    #   juice-guard: scan-net + juice-net, the ONLY member of both (the door).
+    def net_set(name):
+        svc = s.get(name)
+        if svc is None:
+            errs.append("service %s missing from the merged model (renamed or dropped — the door pattern needs it)" % name)
+            return set()
+        return set(svc.get("networks") or [])
+    dvwa_nets = net_set("dvwa")
+    if dvwa_nets != {"scan-net"}: errs.append("dvwa networks != {scan-net} (dvwa is DIRECT): %s" % sorted(dvwa_nets))
+    juice_nets = net_set("juice-app")
+    if juice_nets != {"juice-net"}: errs.append("juice-app networks != {juice-net} ONLY (juice-app must sit behind the door): %s" % sorted(juice_nets))
+    guard_nets = net_set("juice-guard")
+    if guard_nets != {"scan-net", "juice-net"}: errs.append("juice-guard networks != {scan-net, juice-net} (the guard is the ONLY member of both — the door): %s" % sorted(guard_nets))
+    # BOTH internal bridges must be internal:true — no external egress from
+    # either (scan-net has always been; juice-net is the door private side).
+    for net in ("scan-net", "juice-net"):
+        if net not in n:
+            errs.append("network %s missing from the merged model" % net)
+        elif n[net].get("internal") is not True:
+            errs.append("%s is not internal:true" % net)
+    # pick: egress + scan membership only (no L3 path to juice-net except
+    # through the guard), plus the healthy-start gate on BOTH targets AND the
+    # door. The depends_on set is asserted BY NAME on purpose: it is pick
+    # wiring, not per-target isolation, so it does not generalize automatically
+    # — extend it when adding a target (same as the depends_on block in the
+    # base compose file).
+    pick_nets = set(s["pick"].get("networks") or [])
+    if pick_nets != {"scan-net", "backend-net"}: errs.append("pick networks != {scan-net, backend-net}: %s" % sorted(pick_nets))
+    deps = s["pick"].get("depends_on") or {}
+    # Normalize: config renders depends_on as dict (name -> {condition: ...});
+    # a list form means names WITHOUT a condition — treat as unsatisfied.
+    if isinstance(deps, dict):
+        conds = {k: (val or {}).get("condition") for k, val in deps.items()}
+    else:
+        conds = {k: None for k in deps}
+    for target in ("dvwa", "juice-app", "juice-guard"):
+        if target not in conds:
+            errs.append("pick depends_on missing %s (must start only after every target and the door are healthy)" % target)
+        elif conds[target] != "service_healthy":
+            errs.append("pick depends_on %s condition != service_healthy (%s)" % (target, conds[target]))
+    # Images: juice-app digest-pinned (tripwire against regression to a mutable
+    # tag — the pin requirement is named in the error); the door is digest-
+    # pinned too (it is the control: its route policy is the deny-list), with
+    # the 1.27-alpine tag retained for readability.
+    juice_img = s.get("juice-app", {}).get("image") or ""
+    if "@sha256:" not in juice_img:
+        errs.append("juice-app image %r lacks a @sha256: digest pin (mutable-tag regression — pin the image by digest, targets-check requires @sha256:)" % juice_img)
+    guard_img = s.get("juice-guard", {}).get("image") or ""
+    if "@sha256:" not in guard_img or "nginx:1.27-alpine" not in guard_img:
+        errs.append("juice-guard image %r is not digest-pinned (the door is the control: needs nginx:1.27-alpine@sha256:<digest> — @sha256: present + the 1.27-alpine tag retained for readability)" % guard_img)
+    # scan-net subnet assertion (renders TWICE above):
+    # (a) SCAN_NET_SUBNET empty/unset → the DEFAULT documented pin 10.250.0.0/24
+    #     is preserved (default behavior unchanged);
+    # (b) SCAN_NET_SUBNET=10.251.0.0/24 → the override is honored verbatim (what
+    #     concurrent per-instance projects on one host rely on).
+    d2 = yaml.safe_load(os.environ["RENDERED_OVERRIDE"])
+    if not isinstance(d2, dict):
+        print("targets-check FAILED:\n  - override render produced no usable model (SCAN_NET_SUBNET pass)")
+        sys.exit(1)
+    def ipam_subnets(model):
+        cfg = ((model.get("networks") or {}).get("scan-net") or {}).get("ipam") or {}
+        return [c.get("subnet") for c in (cfg.get("config") or [])]
+    subnets = ipam_subnets(d)
+    if subnets != ["10.250.0.0/24"]:
+        errs.append("scan-net subnet (SCAN_NET_SUBNET unset) != ['10.250.0.0/24'] (default changed): %s" % subnets)
+    subnets2 = ipam_subnets(d2)
+    if subnets2 != ["10.251.0.0/24"]:
+        errs.append("scan-net subnet (SCAN_NET_SUBNET=10.251.0.0/24) != ['10.251.0.0/24'] (override ignored): %s" % subnets2)
     if errs:
-        print("DVWA isolation FAILED:"); [print("  -", e) for e in errs]; sys.exit(1)
-    print("dvwa-check OK: config valid + DVWA isolated (no host ports, scan-net internal, off backend-net)")
+        print("targets isolation FAILED:"); [print("  -", e) for e in errs]; sys.exit(1)
     '
 
-# Bring up the Pick + DVWA demo stack (pick scans dvwa; registers with the backend)
-dvwa-up *ARGS:
+    # ═════════════════════════════════════════════════════════════════════
+    # LIVE GUARD PROBE — proof BY REQUEST, not by text.
+    #
+    # The daemon-free text assertion above cannot prove the deny WORKS. The
+    # bypass that motivated this section: nginx prefix `location` matching is
+    # CASE-SENSITIVE while Juice Shop's Express routes are case-INSENSITIVE, so
+    # the case-sensitive interim list stayed green in every text match while
+    # ONE lower-case request (/api/challenges) leaked the whole challenge
+    # catalog through the door at 200 — and the /metrics + /rest/continue-code
+    # SOLUTION-STATE routes never appeared in any text match at all. The proof
+    # is a LIVE step: boot a throwaway door on a SCRATCH internal network and
+    # REQUEST every known bypass path through it, requiring 403 for each, plus
+    # the keep-open routes requiring 200:
+    #
+    #   (a) a tiny upstream serving a distinguishable body (200 universally),
+    #       NAMED `juice-app` on the scratch net — so the COMMITTED conf's
+    #       `proxy_pass http://juice-app:3000` works UNCHANGED (the conf is
+    #       tested as-is, exactly as the door runs it);
+    #   (b) the guard with the COMMITTED conf bind-mounted read-only — the
+    #       image ref is taken FROM the merged model (the digest pin);
+    #   (c) a curl client that requests through the guard. The keep-open
+    #       responses must carry the upstream's body marker, so a 200 proves
+    #       the request really TRAVERSED the door (not a guard-local answer).
+    #
+    # Everything is removed even on failure (EXIT trap: --rm containers +
+    # scratch net). Foreign-name pre-check: the probe's plain names
+    # (juice-app/juice-guard/probe-client) must be FREE — a collision fails
+    # loudly and the probe never touches a foreign container (the live stack's
+    # containers are compose-managed with the project prefix `pick-`).
+    #
+    # Daemonless boxes: SKIP the live section with a clear disclosure — the
+    # daemon-free render + text assertions still ran; the live probe is a
+    # dev-box gate (it runs wherever a daemon runs).
+    # ═════════════════════════════════════════════════════════════════════
+    LIVE_PROBE_RAN=0
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        PROBE_NET=juice-guard-probe-net
+        for name in juice-app juice-guard probe-client; do
+            if docker ps -a --format '{{docker_fmt_names}}' | grep -qx "$name"; then
+                echo "targets-check FAILED: live probe container name '$name' is already taken (a foreign or leftover container) — the probe refuses to touch it; remove/rename it and re-run" >&2
+                exit 1
+            fi
+        done
+        if docker network ls --format '{{docker_fmt_name}}' | grep -qx "$PROBE_NET"; then
+            echo "targets-check FAILED: scratch network '$PROBE_NET' already exists (a leftover from a killed probe run?) — the probe refuses to remove it blindly; remove it and re-run" >&2
+            exit 1
+        fi
+        docker network create --internal "$PROBE_NET" >/dev/null
+        # Cleanup on EVERY exit path (failure or success): --rm containers +
+        # scratch net. No temp files: the upstream body conf is passed via an
+        # env var + sh -c printf — on macOS/colima only /Users is shared into
+        # the VM, so a /tmp temp conf file is INVISIBLE to the daemon (the
+        # mount failed live: docker mis-reads the missing host path as a
+        # directory mount onto the image's default.conf FILE → "mount a
+        # directory onto a file").
+        trap 'docker rm -f juice-app juice-guard probe-client >/dev/null 2>&1 || true; docker network rm "$PROBE_NET" >/dev/null 2>&1 || true' EXIT
+        # (a) the upstream: 200 + a distinguishable body for EVERY path — the
+        # keep-open assertions prove the request really traversed the door.
+        docker run -d --rm --name juice-app --network "$PROBE_NET" \
+            -e UPSTREAM_CONF='server { listen 3000; location / { default_type text/plain; return 200 "JUICE-PROBE-UPSTREAM-BODY"; } }' \
+            nginx:1.27-alpine \
+            sh -c 'printf "%s" "$UPSTREAM_CONF" > /etc/nginx/conf.d/default.conf && exec nginx -g "daemon off;"' >/dev/null
+        # (b) the guard with the COMMITTED conf, image ref FROM the merged
+        # model (the digest pin — the probe runs the door as the door runs).
+        GUARD_IMG=$(python3 -c 'import os, yaml; print((yaml.safe_load(os.environ["RENDERED"]).get("services") or {}).get("juice-guard", {}).get("image") or "")')
+        if [[ -z "$GUARD_IMG" ]]; then
+            echo "targets-check FAILED: live probe — could not resolve the guard image ref from the merged model" >&2
+            exit 1
+        fi
+        docker run -d --rm --name juice-guard --network "$PROBE_NET" \
+            -v "$PWD/targets/juice-guard.nginx.conf:/etc/nginx/conf.d/default.conf:ro" \
+            "$GUARD_IMG" >/dev/null
+        # (c) the probe client (curl). `--entrypoint sleep` bypasses the
+        # image's curl-wrapping entrypoint; the probes run via docker exec.
+        docker run -d --rm --name probe-client --network "$PROBE_NET" \
+            --entrypoint sleep curlimages/curl:8.16.0 infinity >/dev/null
+        # Wait until the door answers (its conf-load resolves `juice-app` —
+        # the upstream is already up; readiness = the conf's own healthz).
+        ready=""
+        for _ in $(seq 1 30); do
+            ready=$(docker exec probe-client curl -s -o /dev/null -w '%{http_code}' http://juice-guard/juice-guard-healthz) || ready="000"
+            if [[ "$ready" == "200" ]]; then break; fi
+            sleep 1
+        done
+        if [[ "$ready" != "200" ]]; then
+            echo "targets-check FAILED: live probe — the probe door never became ready (healthz stayed $ready after 30s); guard logs:" >&2
+            docker logs juice-guard 2>&1 | tail -20 >&2 || true
+            exit 1
+        fi
+        # THE BYPASS PATHS: every case variant the case-sensitive list leaked
+        # (the case-insensitivity bypass) + the SOLUTION-STATE routes
+        # (/metrics, /rest/continue-code and its findIt/fixIt variants) + the
+        # snippets surface (the vulnerable source behind the door) + the
+        # subpath, merged-slash and decoded-uri forms. ALL denied 403.
+        DENIED_PATHS=(
+            "/api/Challenges"
+            "/api/challenges"
+            "/API/CHALLENGES"
+            "/api/Challenges/1"
+            "/api//challenges"
+            "/api/%63hallenges"
+            "/api/hints"
+            "/api/Hints"
+            "/API/HINTS"
+            "/metrics"
+            "/METRICS"
+            "/rest/continue-code"
+            "/rest/continue-code/apply/x"
+            "/rest/continue-code-findIt"
+            "/rest/continue-code-fixIt"
+            "/snippets/loginAdminChallenge"
+        )
+        for p in "${DENIED_PATHS[@]}"; do
+            code=$(docker exec probe-client curl -s --path-as-is -o /dev/null -w '%{http_code}' "http://juice-guard$p") || code="000"
+            if [[ "$code" != "403" ]]; then
+                echo "targets-check FAILED: live probe — DENY LEAK: '$p' answered $code through the door, required 403 (the deny-list does not hold by request — the bypass a text match cannot see)" >&2
+                exit 1
+            fi
+        done
+        # THE KEEP-OPEN ROUTES: the vulnerability surface must stay reachable —
+        # 200 each AND the upstream's body marker (a 200 from the guard itself
+        # would not carry it).
+        OPEN_PATHS=(
+            "/api/Products"
+            "/rest/products/search?q=a"
+            "/rest/admin/application-configuration"
+        )
+        for p in "${OPEN_PATHS[@]}"; do
+            code=$(docker exec probe-client curl -s --path-as-is -o /dev/null -w '%{http_code}' "http://juice-guard$p") || code="000"
+            if [[ "$code" != "200" ]]; then
+                echo "targets-check FAILED: live probe — keep-open route over-denied: '$p' answered $code through the door, required 200 (the door must pass the vulnerability surface)" >&2
+                exit 1
+            fi
+            body=$(docker exec probe-client curl -s --path-as-is "http://juice-guard$p") || body=""
+            if [[ "$body" != "JUICE-PROBE-UPSTREAM-BODY" ]]; then
+                echo "targets-check FAILED: live probe — keep-open route '$p' answered 200 but NOT from the upstream (body starts: ${body:0:60}) — the traversal proof failed" >&2
+                exit 1
+            fi
+        done
+        # The guard-local healthz (200 by the guard itself — no marker by design).
+        code=$(docker exec probe-client curl -s -o /dev/null -w '%{http_code}' http://juice-guard/juice-guard-healthz) || code="000"
+        if [[ "$code" != "200" ]]; then
+            echo "targets-check FAILED: live probe — healthz answered $code through the door, required 200" >&2
+            exit 1
+        fi
+        LIVE_PROBE_RAN=1
+        echo "targets-check: LIVE GUARD PROBE green (20 paths by request through the committed conf on a scratch net: 16 denied 403 incl. every case variant + /metrics + /rest/continue-code incl. the findIt/fixIt variants + the snippets surface; 3 keep-open 200 with upstream-traversal marker; healthz 200)"
+    else
+        echo "targets-check: LIVE GUARD PROBE SKIPPED — no docker daemon reachable ('docker info' failed; daemonless box). The daemon-free render assertions ran; the conf text assertions follow (they run on every box); the deny-list is proven BY REQUEST only on a dev box (run 'just targets-check' where a daemon runs)."
+    fi
+
+    # The committed door conf (recipe runs from the repo root): the deny lines
+    # + the health endpoint must survive any conf edit. This block runs on
+    # EVERY box, AFTER the live probe: where a daemon exists the deny is
+    # already proven BY REQUEST above (the by-request proof is the first deny
+    # layer — a case-sensitive revert goes red at the DENY LEAK, not here); on
+    # a daemonless box THIS is the only deny tripwire, so it must run
+    # unconditionally. FULL-LINE comments are STRIPPED before matching — a
+    # deleted deny block must not be able to hide behind grounding-comment
+    # text that names the same route (mutation-verified: raw-text matching
+    # stayed green with the whole block deleted, because the comments mention
+    # it). Read via python so a MISSING file is a named failure, not a crash.
+    python3 -c '
+    import sys
+    errs = []
+    try:
+        conf_code = "\n".join(l for l in open("targets/juice-guard.nginx.conf").read().splitlines() if not l.lstrip().startswith("#"))
+        if "location ~* ^/api/(challenges|hints)(/|$)" not in conf_code or "return 403;" not in conf_code:
+            errs.append("juice-guard conf lost the case-insensitive challenge/hint deny (needs location ~* ^/api/(challenges|hints)(/|$) + return 403;)")
+        if "location ~* ^/(metrics|rest/continue-code[^/]*|snippets)(/|$)" not in conf_code:
+            errs.append("juice-guard conf lost the solution-state deny (needs location ~* ^/(metrics|rest/continue-code[^/]*|snippets)(/|$) — /metrics + /rest/continue-code (any variant) + the snippets surface leak what pick has solved)")
+        if "location = /juice-guard-healthz" not in conf_code or "return 200;" not in conf_code:
+            errs.append("juice-guard conf lost the healthz endpoint (needs location = /juice-guard-healthz + return 200;)")
+    except OSError as e:
+        errs.append("juice-guard conf unreadable (targets/juice-guard.nginx.conf): %s" % e)
+    if errs:
+        print("targets isolation FAILED:"); [print("  -", e) for e in errs]; sys.exit(1)
+    '
+
+    if [[ "$LIVE_PROBE_RAN" == "1" ]]; then
+        PROBE_LINE=" + LIVE GUARD PROBE green (bypass paths denied by request)"
+    else
+        PROBE_LINE=" + live probe SKIPPED (no docker daemon — daemon-free assertions ran)"
+    fi
+    echo "targets-check OK: config valid + door topology asserted (dvwa direct on scan-net; juice-app behind the door on juice-net ONLY; juice-guard = only scan-net+juice-net member; both internal) + pick gated on dvwa, juice-app AND the door (all service_healthy) + no host ports + targets off backend-net + juice digest pin + guard digest pin + conf case-insensitive deny/healthz + scan-net subnet default preserved & SCAN_NET_SUBNET override honored$PROBE_LINE"
+
+# Bring up the Pick + scan-targets demo stack (pick scans dvwa + juice-shop
+# through the door; registers with the backend; starts only after dvwa,
+# juice-app AND the juice-guard door are healthy). Per-run determinism
+# (benchmark fixture contract): juice-app is force-recreated by default so
+# every run starts a FRESH engagement (seeded sqlite state — no challenge
+# progress or registered users leaking over from the previous run); the door
+# (juice-guard) is NOT recreated — it only needs to re-resolve the app, which
+# re-claims the lowest free IP on juice-net. Escape hatch: JUICE_FRESH=0 keeps
+# the running juice-app (persisted state, e.g. mid-engagement debugging) by
+# omitting the flag.
+targets-up *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ ! -f "{{dvwa_env}}" ]]; then
-        echo "error: {{dvwa_env}} not found — copy .env.dvwa.example to {{dvwa_env}} and set STRIKE48_TENANT" >&2
+    if [[ ! -f "{{targets_env}}" ]]; then
+        echo "error: {{targets_env}} not found — copy .env.dvwa.example to {{targets_env}} and set STRIKE48_TENANT" >&2
         exit 1
     fi
-    docker compose --env-file "{{dvwa_env}}" -f "{{dvwa_compose}}" up --build -d {{ARGS}}
+    # Per-run determinism (see the recipe comment above): juice-app is REMOVED
+    # before up, so every attach/run starts from a pristine shop; JUICE_FRESH=0
+    # keeps the running juice-app (escape hatch). The rm is silent when the
+    # container is absent. NOTE: `up --force-recreate juice-app` would NOT work
+    # here — compose reads the positional name after the boolean flag as the
+    # SERVICE to bring up, scoping the whole up to juice-app alone (dvwa/guard/
+    # pick never created; found live on this deploy).
+    if [[ "${JUICE_FRESH:-1}" != "0" ]]; then
+      docker compose --env-file "{{targets_env}}" {{targets_files}} rm -sf juice-app
+    fi
+    docker compose --env-file "{{targets_env}}" {{targets_files}} up --build -d {{ARGS}}
     # `up -d` returns once containers are STARTED, not proven healthy — pick has no
     # healthcheck (it's an outbound client), so confirm it didn't immediately exit
     # rather than blindly claiming success (a crash-on-boot would otherwise be hidden).
     # `ps --status running -q pick` prints the id only while pick is actually running.
     sleep 2
-    if [[ -z "$(docker compose --env-file "{{dvwa_env}}" -f "{{dvwa_compose}}" ps --status running -q pick)" ]]; then
-        echo "error: pick container is not running — check 'docker compose -f {{dvwa_compose}} logs pick'" >&2
+    if [[ -z "$(docker compose --env-file "{{targets_env}}" {{targets_files}} ps --status running -q pick)" ]]; then
+        echo "error: pick container is not running — check 'docker compose {{targets_files}} logs pick'" >&2
         exit 1
     fi
     # pick is running, but "running" is NOT proof it registered: the connector SDK
@@ -186,30 +527,39 @@ dvwa-up *ARGS:
     # backend), so it stays `running` while never appearing in Studio. Don't assert
     # PENDING here — tell the operator how to confirm it, so a silent registration
     # failure isn't masked as success.
-    echo "Pick + DVWA started (pick container running)."
-    echo "Confirm registration: 'docker compose -f {{dvwa_compose}} logs pick' should show a registration/pending line,"
+    echo "Pick + scan targets started (pick container running; started only after dvwa, juice-app AND the juice-guard door reported healthy)."
+    echo "Engagement URLs from pick on scan-net: http://dvwa (direct) and http://juice-shop (port 80, through the guard door)."
+    echo "Confirm registration: 'docker compose {{targets_files}} logs pick' should show a registration/pending line,"
     echo "then approve the connector in Studio -> Gateways. If it never appears, check STRIKE48_TENANT and backend reachability."
 
-# Tear down the Pick + DVWA demo stack (add --volumes to also drop the creds volume)
-dvwa-down *ARGS:
+# Tear down the Pick + scan-targets demo stack (add --volumes to also drop the creds volume)
+targets-down *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
     # The compose model has mandatory ${VAR:?} interpolations; if they can't
-    # resolve, `down` aborts at model-parse time and leaves DVWA (a deliberately
-    # vulnerable app, restart: unless-stopped) running. `down` never USES these
+    # resolve, `down` aborts at model-parse time and leaves the targets (deliberately
+    # vulnerable apps, restart: unless-stopped) running. `down` never USES these
     # values (it identifies containers by compose project/service, not by env), so
     # default any that are unset to a stub — teardown then always succeeds even when
-    # {{dvwa_env}} is absent (deleted after up, or brought up via exported vars).
+    # {{targets_env}} is absent (deleted after up, or brought up via exported vars).
     # The `:-` only substitutes when a var is unset, so a real value already in the
     # shell env is preserved; --env-file is still passed when present. (Shell env
     # takes precedence over --env-file in compose, but for `down` neither matters.)
+    # Every ${VAR:?} in the compose files needs a stub here; missing one makes
+    # `down` abort and leaves the targets running.
     env_args=()
-    [[ -f "{{dvwa_env}}" ]] && env_args=(--env-file "{{dvwa_env}}")
+    [[ -f "{{targets_env}}" ]] && env_args=(--env-file "{{targets_env}}")
     STRIKE48_HOST="${STRIKE48_HOST:-stub}" \
     STRIKE48_TENANT="${STRIKE48_TENANT:-stub}" \
     MATRIX_API_URL="${MATRIX_API_URL:-stub}" \
-        docker compose "${env_args[@]}" -f "{{dvwa_compose}}" down --remove-orphans {{ARGS}}
+        docker compose "${env_args[@]}" {{targets_files}} down --remove-orphans {{ARGS}}
 
+# Legacy names from when DVWA was the only target. Thin aliases running the
+# targets-* recipes verbatim (including the TARGETS_ENV -> DVWA_ENV fallback),
+# so old callers and muscle memory keep working.
+alias dvwa-up := targets-up
+alias dvwa-down := targets-down
+alias dvwa-check := targets-check
 # ============ StrikeHub (PLG) demo (matrix#3519) ============
 
 # Compose file + its env for the Pick + DVWA StrikeHub (PLG) demo. Sibling of the
