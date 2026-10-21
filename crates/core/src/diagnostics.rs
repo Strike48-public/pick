@@ -14,10 +14,12 @@
 
 use crate::config::{AppSettings, ConnectorConfig};
 use crate::provenance::{redact, redact_known_secret};
+use regex::Regex;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// Log lines included in the bundle by default.
 pub const DEFAULT_TAIL_LINES: usize = 200;
@@ -138,11 +140,12 @@ impl SettingsFacts {
     }
 }
 
-/// Log location, sink health and the redacted tail of the newest file.
+/// Log location, sink health and the redacted tail of the newest file. Paths
+/// show the home directory as `~`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LogFacts {
-    pub dir: PathBuf,
-    pub newest_file: Option<PathBuf>,
+    pub dir: String,
+    pub newest_file: Option<String>,
     pub file_sink_failed: bool,
     pub tail: Vec<String>,
 }
@@ -165,11 +168,20 @@ pub struct DiagnosticsBundle {
     pub logs: LogFacts,
 }
 
+/// Why `settings.json` could not be used. When the file was read but does not
+/// parse (version skew, a partial write), the saved token values found in its
+/// raw text are kept so by-value redaction still covers them.
+#[derive(Clone, PartialEq)]
+pub struct SettingsError {
+    pub message: String,
+    salvaged_secrets: Vec<String>,
+}
+
 /// Everything [`collect`] needs that comes from outside core.
 pub struct CollectInput {
     pub platform: PlatformFacts,
     /// `Ok(None)` when there is no settings file; `Err` when it is unreadable.
-    pub settings: Result<Option<AppSettings>, String>,
+    pub settings: Result<Option<AppSettings>, SettingsError>,
     pub log_dir: PathBuf,
     pub tail_lines: usize,
     /// Secrets only the caller knows (the UI's live session token), replaced
@@ -180,11 +192,16 @@ pub struct CollectInput {
 /// Build the bundle from the current process environment.
 pub fn collect(input: CollectInput) -> DiagnosticsBundle {
     let env = |name: &str| std::env::var(name).ok();
-    let (settings, settings_error) = match input.settings {
+    let (settings, error) = match input.settings {
         Ok(settings) => (settings, None),
         Err(e) => (None, Some(e)),
     };
-    let secrets = known_secrets(settings.as_ref(), &input.extra_secrets, env);
+    let salvaged = error
+        .iter()
+        .flat_map(|e| e.salvaged_secrets.iter().cloned());
+    let extra: Vec<String> = input.extra_secrets.into_iter().chain(salvaged).collect();
+    let secrets = known_secrets(settings.as_ref(), &extra, env);
+    let settings_error = error.map(|e| redact_line(&e.message, &secrets));
     let (newest_file, tail) = collect_tail(&input.log_dir, input.tail_lines, &secrets);
     let config = settings.as_ref().and_then(|s| s.last_config.as_ref());
     DiagnosticsBundle {
@@ -198,8 +215,8 @@ pub fn collect(input: CollectInput) -> DiagnosticsBundle {
         settings_error,
         env: env_presence(env),
         logs: LogFacts {
-            dir: input.log_dir,
-            newest_file,
+            dir: display_path(&input.log_dir),
+            newest_file: newest_file.as_deref().map(display_path),
             file_sink_failed: crate::logging::file_sink_failed(),
             tail,
         },
@@ -308,7 +325,7 @@ pub fn read_redacted_tail(path: &Path, max_lines: usize, secrets: &[String]) -> 
             .iter()
             .map(|line| redact_line(line, secrets))
             .collect(),
-        Err(e) => vec![format!("<could not read {}: {e}>", path.display())],
+        Err(e) => vec![format!("<could not read {}: {e}>", display_path(path))],
     }
 }
 
@@ -358,19 +375,43 @@ fn cap_bytes(s: String, max: usize) -> String {
 /// Read `settings.json` without the rewrites `load_settings` performs and
 /// without creating the settings directory. `Ok(None)` when there is no file;
 /// `Err` when it exists but cannot be read or parsed.
-pub fn read_settings_readonly() -> Result<Option<AppSettings>, String> {
+pub fn read_settings_readonly() -> Result<Option<AppSettings>, SettingsError> {
     read_settings_file(&crate::settings::settings_dir_path().join("settings.json"))
 }
 
-fn read_settings_file(path: &Path) -> Result<Option<AppSettings>, String> {
+fn read_settings_file(path: &Path) -> Result<Option<AppSettings>, SettingsError> {
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+        Err(e) => {
+            return Err(SettingsError {
+                message: format!("cannot read {}: {e}", display_path(path)),
+                salvaged_secrets: Vec::new(),
+            })
+        }
     };
     serde_json::from_str(&contents)
         .map(Some)
-        .map_err(|e| format!("cannot parse {}: {e}", path.display()))
+        .map_err(|e| SettingsError {
+            message: format!("cannot parse {}: {e}", display_path(path)),
+            salvaged_secrets: salvage_auth_tokens(&contents),
+        })
+}
+
+/// `auth_token` string values found by pattern in settings text serde cannot
+/// parse. A value cut off by a partial write runs to the end of the text.
+fn salvage_auth_tokens(raw: &str) -> Vec<String> {
+    static AUTH_TOKEN: OnceLock<Regex> = OnceLock::new();
+    let re = AUTH_TOKEN.get_or_init(|| {
+        Regex::new(r#""auth_token"\s*:\s*"((?:[^"\\]|\\.)*)"#).expect("auth_token regex")
+    });
+    re.captures_iter(raw)
+        .map(|c| {
+            let escaped = &c[1];
+            serde_json::from_str::<String>(&format!("\"{escaped}\""))
+                .unwrap_or_else(|_| escaped.to_string())
+        })
+        .collect()
 }
 
 impl DiagnosticsBundle {
@@ -458,10 +499,12 @@ impl DiagnosticsBundle {
 
     fn write_logs(&self, out: &mut String) {
         out.push_str("\n== Logs ==\n");
-        push_kv(out, "dir", &self.logs.dir.display().to_string());
-        let newest = self.logs.newest_file.as_ref();
-        let newest = newest.map_or("none".to_string(), |p| p.display().to_string());
-        push_kv(out, "newest file", &newest);
+        push_kv(out, "dir", &self.logs.dir);
+        push_kv(
+            out,
+            "newest file",
+            self.logs.newest_file.as_deref().unwrap_or("none"),
+        );
         push_kv(
             out,
             "file sink failed",
@@ -481,6 +524,20 @@ fn push_kv(out: &mut String, key: &str, value: &str) {
 
 fn opt(value: &Option<String>) -> &str {
     value.as_deref().unwrap_or("unknown")
+}
+
+/// `path` with the home directory shown as `~`, so a bundle pasted into a
+/// ticket does not carry the operator's username.
+fn display_path(path: &Path) -> String {
+    display_path_under(path, dirs::home_dir().as_deref())
+}
+
+fn display_path_under(path: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -671,7 +728,7 @@ mod tests {
         );
         std::fs::write(&path, "{ not json").expect("write");
         let err = read_settings_file(&path).expect_err("corrupt file");
-        assert!(err.contains("cannot parse"), "{err}");
+        assert!(err.message.contains("cannot parse"), "{}", err.message);
 
         let bundle = collect(CollectInput {
             platform: PlatformFacts::default(),
@@ -681,6 +738,54 @@ mod tests {
             extra_secrets: vec![],
         });
         assert!(bundle.to_text().contains("settings error: cannot parse"));
+    }
+
+    /// Bundle text for a settings file that exists but does not parse, with a
+    /// log line that mentions `token` in free text (no key a pattern catches).
+    fn bundle_text_for_unparseable_settings(settings_json: &str, token: &str) -> String {
+        let (dir, _path) = log_file_with(&[format!("old line with {token} too")]);
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, settings_json).expect("write settings");
+        let err = read_settings_file(&path).expect_err("settings must not parse");
+        collect(CollectInput {
+            platform: PlatformFacts::default(),
+            settings: Err(err),
+            log_dir: dir.path().to_path_buf(),
+            tail_lines: 10,
+            extra_secrets: vec![],
+        })
+        .to_text()
+    }
+
+    #[test]
+    fn unparseable_settings_still_redact_the_saved_token_by_value() {
+        // Version skew: valid JSON the reading version rejects (no `tags`).
+        let token = "fake-salvaged-token-value";
+        let skewed = format!(r#"{{"last_config":{{"host":"h","auth_token":"{token}"}}}}"#);
+        let text = bundle_text_for_unparseable_settings(&skewed, token);
+        assert!(text.contains("settings error: cannot parse"), "{text}");
+        assert!(text.contains("old line with"), "tail missing:\n{text}");
+        assert!(!text.contains(token), "{text}");
+    }
+
+    #[test]
+    fn truncated_settings_still_redact_the_saved_token_by_value() {
+        // A partial write that cut the file inside the token's string.
+        let token = "fake-truncated-token-value";
+        let truncated = format!(r#"{{"last_config":{{"auth_token": "{token}"#);
+        let text = bundle_text_for_unparseable_settings(&truncated, token);
+        assert!(!text.contains(token), "{text}");
+    }
+
+    #[test]
+    fn paths_under_home_are_shown_relative_to_it() {
+        let home = Path::new("/home/fake-user");
+        let under = display_path_under(&home.join("logs/connector.log"), Some(home));
+        assert_eq!(under, "~/logs/connector.log");
+        assert_eq!(display_path_under(home, Some(home)), "~");
+        let outside = display_path_under(Path::new("/var/log/pick"), Some(home));
+        assert_eq!(outside, "/var/log/pick");
+        assert_eq!(display_path_under(home, None), "/home/fake-user");
     }
 
     #[test]
