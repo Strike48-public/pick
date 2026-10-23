@@ -23,6 +23,9 @@ pub struct MessageListProps {
     pub agent_thinking: Signal<bool>,
     /// Status text shown in the thinking indicator.
     pub agent_status_text: Signal<String>,
+    /// True when the last turn was stopped by the user (agent status
+    /// `CANCELLED`); renders a "Stopped" marker once the turn is over.
+    pub turn_stopped: Signal<bool>,
     /// Currently selected agent (used for the thinking bubble label and empty state).
     pub selected_agent: Signal<Option<AgentInfo>>,
     /// Callback to send a message (used by suggested actions).
@@ -60,6 +63,7 @@ pub fn MessageList(props: MessageListProps) -> Element {
     let mut user_scrolled_up = props.user_scrolled_up;
     let agent_thinking = props.agent_thinking;
     let agent_status_text = props.agent_status_text;
+    let turn_stopped = props.turn_stopped;
     let selected_agent = props.selected_agent;
 
     // Auto-scroll and chart post-process when new messages arrive or agent is thinking.
@@ -171,6 +175,15 @@ pub fn MessageList(props: MessageListProps) -> Element {
                     NextStepsActions {
                         messages: messages,
                         on_send: props.on_send,
+                    }
+                }
+
+                // "Stopped" marker: the turn ended because the user stopped it.
+                // Distinct from a normal completion (no marker) and from an
+                // error (the chat-notice banner).
+                if turn_stopped() && !agent_thinking() && !messages.read().is_empty() {
+                    div { class: "chat-bubble chat-bubble-agent chat-stopped",
+                        span { class: "chat-status-label", "Stopped" }
                     }
                 }
 
