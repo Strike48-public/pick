@@ -208,9 +208,21 @@ impl DockerExecutor {
     ) -> SandboxResult<CommandResult> {
         let start = Instant::now();
 
+        // Unique container name so a drop guard can stop THIS container.
+        // `kill_on_drop(true)` only kills the local `docker run` client; the
+        // container keeps running the scan (and `--rm` only cleans up after the
+        // container exits). Naming it lets us `docker kill <name>` on job-cancel
+        // or timeout so the dispatched tool process actually halts
+        // (Strike48/matrix#4684).
+        let container_name = format!("pick-{}", uuid::Uuid::new_v4());
+
         let mut args = vec![
             "run".to_string(),
             "--rm".to_string(),
+            // Clean signal handling / reaping inside the container (PID 1 init).
+            "--init".to_string(),
+            "--name".to_string(),
+            container_name.clone(),
             // Select platform for the host arch (arm64 native on Apple Silicon, amd64 on Intel)
             "--platform".to_string(),
             super::arch::docker_platform().to_string(),
@@ -256,14 +268,21 @@ impl DockerExecutor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        // Kill the process if this future is dropped (job cancel, server
-        // deadline or the timeout below); otherwise it outlives the job.
+        // Kill the local client if this future is dropped. On its own this is
+        // NOT enough: the container keeps running (see `ContainerKiller`), so we
+        // pair it with the name-based drop guard below.
         command.kill_on_drop(true);
         let child = command.spawn().map_err(SandboxError::Io)?;
+
+        // Arm a guard that `docker kill`s the named container on cancel/timeout.
+        // Disarmed on observed normal exit (`--rm` already removed it, and the
+        // name could be reused by then).
+        let mut container_guard = ContainerKiller::new(container_name);
 
         // Wait with timeout
         match tokio::time::timeout(timeout, crate::desktop::wait_for_child_output(child)).await {
             Ok(result) => {
+                container_guard.disarm();
                 let (stdout, stderr, exit_code) = result?;
                 Ok(CommandResult::success(
                     stdout,
@@ -272,12 +291,67 @@ impl DockerExecutor {
                     start.elapsed().as_millis() as u64,
                 ))
             }
-            Err(_) => Ok(CommandResult::timeout(
-                String::new(),
-                "Command timed out".to_string(),
-                start.elapsed().as_millis() as u64,
-            )),
+            Err(_) => {
+                // Timeout: stop the still-running container now (not just the
+                // client), then disarm.
+                container_guard.kill_now();
+                Ok(CommandResult::timeout(
+                    String::new(),
+                    "Command timed out".to_string(),
+                    start.elapsed().as_millis() as u64,
+                ))
+            }
         }
+    }
+}
+
+/// RAII guard that stops a named Docker container on drop.
+///
+/// `docker run` with `kill_on_drop(true)` only SIGKILLs the local `docker`
+/// CLI client; the container it launched keeps running the scan independently
+/// (`--rm` just removes it *after* it exits). So on a job-cancel (future
+/// dropped mid-await) or timeout we must explicitly `docker kill <name>`
+/// (Strike48/matrix#4684).
+///
+/// The kill is a short, detached, best-effort `docker kill` — fire-and-forget:
+/// Drop cannot await, and a failure (container already gone, daemon down) is
+/// ignored. We disarm on observed normal exit so we never `docker kill` a name
+/// that `--rm` has freed and could have been reused.
+struct ContainerKiller {
+    name: String,
+    armed: bool,
+}
+
+impl ContainerKiller {
+    fn new(name: String) -> Self {
+        Self { name, armed: true }
+    }
+
+    /// Disarm after observing the container exit.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    /// Best-effort stop of the container, once, if still armed.
+    fn kill_now(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.armed = false;
+        // Detached fire-and-forget: Drop can't await. Spawn a `docker kill` and
+        // deliberately drop the handle (do NOT kill_on_drop it — that would kill
+        // the killer). Errors (already gone, no daemon) are irrelevant here.
+        let _ = Command::new("docker")
+            .args(["kill", &self.name])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+}
+
+impl Drop for ContainerKiller {
+    fn drop(&mut self) {
+        self.kill_now();
     }
 }
 
@@ -295,6 +369,69 @@ mod tests {
     async fn test_docker_image_check() {
         let built = DockerExecutor::is_image_built().await;
         println!("Docker image built: {}", built);
+    }
+
+    /// The drop guard must actually stop a running container, proving that
+    /// dropping a cancelled job halts the dispatched tool process and does not
+    /// leave the scan running (Strike48/matrix#4684) — which plain
+    /// `kill_on_drop` on the `docker run` client does not do.
+    ///
+    /// Gated on a live daemon and a lightweight `alpine` image: skips (does not
+    /// fail) when Docker is unavailable, so it is a no-op in CI (the Test job
+    /// has no daemon) and runs only on a developer box with Docker.
+    #[tokio::test]
+    async fn container_killer_stops_a_running_container() {
+        if !DockerExecutor::is_available().await {
+            eprintln!("skipping: no Docker daemon available");
+            return;
+        }
+
+        let name = format!("pick-droptest-{}", uuid::Uuid::new_v4());
+        // Start a long-running container detached so this test owns its lifetime.
+        let started = Command::new("docker")
+            .args([
+                "run", "-d", "--rm", "--name", &name, "alpine", "sleep", "120",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !started {
+            eprintln!("skipping: could not start alpine container (image pull blocked?)");
+            return;
+        }
+
+        let running = |name: String| async move {
+            Command::new("docker")
+                .args(["inspect", "-f", "{{.State.Running}}", &name])
+                .output()
+                .await
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
+                .unwrap_or(false)
+        };
+        assert!(running(name.clone()).await, "container should be Up");
+
+        // Fire the guard (same path as job-cancel/timeout) and wait for the stop.
+        ContainerKiller::new(name.clone()).kill_now();
+
+        let mut gone = false;
+        for _ in 0..50 {
+            if !running(name.clone()).await {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // Best-effort cleanup in case the assert below fails.
+        let _ = Command::new("docker")
+            .args(["kill", &name])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+        assert!(gone, "the drop guard must stop the running container");
     }
 
     // Today's x86_64 Dockerfile, verbatim — regression guard so the arch-aware

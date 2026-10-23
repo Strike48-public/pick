@@ -546,6 +546,16 @@ impl WslExecutor {
 
         // Kill the process if this future is dropped (job cancel, server
         // deadline or the timeout below); otherwise it outlives the job.
+        //
+        // KNOWN GAP (Strike48/matrix#4684): on the *drop/cancel* path this only
+        // SIGKILLs the Windows-side `wsl.exe` client. The Linux-side command
+        // running inside the distro is a separate process the client does not
+        // own, so it can keep running — the same client-kill gap the Docker
+        // executor had. The *timeout* branch below already handles this with
+        // `wsl --terminate <distro>`; the cancel path does not. A correct fix
+        // (e.g. terminate/signal the distro-side process group on drop) needs a
+        // Windows host to develop and verify and is deliberately NOT attempted
+        // blind here. Tracked as a follow-up.
         command.kill_on_drop(true);
         let child = command.spawn().map_err(SandboxError::Io)?;
 
