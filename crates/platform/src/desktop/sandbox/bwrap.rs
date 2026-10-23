@@ -208,6 +208,9 @@ impl BwrapExecutor {
 
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
+        // Kill the process if this future is dropped (job cancel, server
+        // deadline or the timeout below); otherwise it outlives the job.
+        command.kill_on_drop(true);
         let child = command.spawn().map_err(SandboxError::Io)?;
 
         // Wait with timeout

@@ -51,6 +51,7 @@ use tokio::sync::{Mutex, RwLock, Semaphore, mpsc, oneshot};
 use crate::auth::CallbackNote;
 use crate::connector::{BaseConnector, ConnectorConfig};
 use crate::error::{ConnectorError, Result};
+use crate::jobs::{self, JobRegistry, JobTicket};
 use crate::logger::Logger;
 use crate::multi::registration_runner::{REJECTIONS_BEFORE_TOKEN_DROP, auth_mint_budget};
 use crate::multi::{MultiTransportOptions, RegistrationKey};
@@ -749,6 +750,8 @@ pub(crate) struct WsMultiplexHandle {
     pub metrics: Arc<Mutex<ConnectorMetrics>>,
     pub opts: MultiTransportOptions,
     pub request_semaphore: Arc<Semaphore>,
+    /// In-flight `ExecuteRequest` jobs, so `matrix.cancel` can recall them.
+    pub jobs: JobRegistry,
     /// Per-handle session token. Mirrors the gRPC runner: persists across
     /// in-stream re-registers (post-OTT) so the server can identify this
     /// instance. None until the first successful register.
@@ -1157,6 +1160,19 @@ impl WsMultiplexHandle {
         logger: &Logger,
     ) {
         match msg.message {
+            Some(stream_message::Message::ExecuteRequest(req))
+                if req.capability_id == jobs::CANCEL_CAPABILITY =>
+            {
+                // Platform verb: recall an in-flight job (see `crate::jobs`).
+                let response = self
+                    .jobs
+                    .answer_cancel(req.request_id.clone(), &req.payload);
+                let _ = self
+                    .socket
+                    .outbound_tx
+                    .send(jobs::execute_response_message(response))
+                    .await;
+            }
             Some(stream_message::Message::ExecuteRequest(req)) => {
                 let request = SdkExecuteRequest {
                     request_id: req.request_id.clone(),
@@ -1176,27 +1192,44 @@ impl WsMultiplexHandle {
                 let key = self.key.clone();
                 let semaphore = self.request_semaphore.clone();
                 let exec_logger = Logger::new("multi/ws/handle/execute");
+                let (ticket, abort_reg) = self.jobs.track(request.request_id.clone());
 
                 tokio::spawn(async move {
-                    let permit = match semaphore.acquire_owned().await {
-                        Ok(p) => p,
-                        Err(_) => {
-                            exec_logger.debug(&format!(
-                                "ws multiplex handle {key}: request semaphore closed"
-                            ));
-                            return;
+                    let ticket = ticket;
+                    let work = async {
+                        let permit = match semaphore.acquire_owned().await {
+                            Ok(p) => p,
+                            Err(_) => {
+                                exec_logger.debug(&format!(
+                                    "ws multiplex handle {key}: request semaphore closed"
+                                ));
+                                return;
+                            }
+                        };
+                        if let Err(e) = handle_execute(
+                            connector,
+                            request,
+                            outbound,
+                            metrics,
+                            &exec_logger,
+                            &key,
+                            Some(&ticket),
+                        )
+                        .await
+                        {
+                            exec_logger.error(
+                                &format!("ws multiplex handle {key}: execute dispatch failed"),
+                                &e.to_string(),
+                            );
                         }
+                        drop(permit);
                     };
-                    if let Err(e) =
-                        handle_execute(connector, request, outbound, metrics, &exec_logger, &key)
-                            .await
+                    if futures::future::Abortable::new(work, abort_reg)
+                        .await
+                        .is_err()
                     {
-                        exec_logger.error(
-                            &format!("ws multiplex handle {key}: execute dispatch failed"),
-                            &e.to_string(),
-                        );
+                        tracing::info!("Job aborted via matrix.cancel");
                     }
-                    drop(permit);
                 });
             }
             Some(stream_message::Message::RegisterResponse(resp)) => {
@@ -1617,6 +1650,7 @@ async fn handle_execute(
     metrics: Arc<Mutex<ConnectorMetrics>>,
     logger: &Logger,
     key: &RegistrationKey,
+    ticket: Option<&JobTicket>,
 ) -> Result<()> {
     let start = Instant::now();
     {
@@ -1632,9 +1666,15 @@ async fn handle_execute(
         &request.payload,
         request.payload_encoding,
     ) {
-        Ok(payload) => match connector
-            .execute_with_context(payload, request.capability_id.as_deref(), &request.context)
-            .await
+        Ok(payload) => match jobs::run_with_deadline(
+            &request.context,
+            connector.execute_with_context(
+                payload,
+                request.capability_id.as_deref(),
+                &request.context,
+            ),
+        )
+        .await
         {
             Ok(value) => {
                 // Never put a blank failure on the wire (Strike48/matrix#4715,
@@ -1715,6 +1755,14 @@ async fn handle_execute(
     let msg = StreamMessage {
         message: Some(stream_message::Message::ExecuteResponse(response)),
     };
+    // A cancel that claimed this job already answered for it.
+    if ticket.is_some_and(|t| !t.complete()) {
+        logger.info(&format!(
+            "ws multiplex handle {key}: job cancelled before its result was sent; result dropped"
+        ));
+        return Ok(());
+    }
+
     if outbound.send(msg).await.is_err() {
         return Err(ConnectorError::StreamError(
             "ws multiplex outbound closed".to_string(),
@@ -1918,6 +1966,7 @@ async fn run_tenant_group(
                 shutdown,
                 metrics,
                 opts: opts.clone(),
+                jobs: crate::jobs::JobRegistry::new(),
                 request_semaphore: Arc::new(Semaphore::new(opts.max_concurrent_requests.max(1))),
                 session_token: Arc::new(RwLock::new(None)),
                 consecutive_rejections: Arc::new(AtomicU32::new(0)),
@@ -2468,6 +2517,7 @@ mod tests {
             shutdown: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(Mutex::new(ConnectorMetrics::default())),
             opts: MultiTransportOptions::default(),
+            jobs: crate::jobs::JobRegistry::new(),
             request_semaphore: Arc::new(Semaphore::new(8)),
             session_token: Arc::new(RwLock::new(None)),
             consecutive_rejections: Arc::new(AtomicU32::new(0)),
@@ -2688,7 +2738,7 @@ mod tests {
         };
 
         let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
-        handle_execute(connector, request, tx, metrics, &logger, &key)
+        handle_execute(connector, request, tx, metrics, &logger, &key, None)
             .await
             .expect("handle_execute should succeed");
 
