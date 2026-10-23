@@ -1,6 +1,7 @@
 use crate::auth::{CallbackNote, OttProvider};
 use crate::client::{ClientOptions, ConnectorClient, InvokeOptions};
 use crate::error::{ConnectorError, Result};
+use crate::jobs::{self, JobRegistry, JobTicket};
 use crate::logger::Logger;
 use crate::transport::TransportType;
 use crate::types::*;
@@ -38,7 +39,27 @@ pub(crate) fn build_registration_metadata(
         .any(|b| matches!(b, ConnectorBehavior::Tool));
 
     if tool_declared && !metadata.contains_key("tool_schemas") {
-        let task_types = connector.capabilities();
+        // Reserved-namespace guard: a connector-authored tool in the
+        // `matrix.` platform namespace would be shadowed by the SDK's
+        // interception and never reachable, so it is not advertised.
+        let task_types: Vec<_> = connector
+            .capabilities()
+            .into_iter()
+            .filter(|schema| {
+                let reserved = jobs::is_reserved_capability(&schema.name)
+                    || jobs::is_reserved_capability(&schema.task_type_id);
+                if reserved {
+                    tracing::warn!(
+                        target: "strike48_connector::reserved_capability",
+                        name = %schema.name,
+                        task_type_id = %schema.task_type_id,
+                        "connector capability uses the reserved 'matrix.' namespace; \
+                         not advertised (the SDK intercepts that namespace)"
+                    );
+                }
+                !reserved
+            })
+            .collect();
         if !task_types.is_empty() {
             let schemas: Vec<serde_json::Value> = task_types
                 .iter()
@@ -874,6 +895,12 @@ pub struct ConnectorRunner {
     /// after credentials have already been cleared (e.g. Keycloak client deleted,
     /// future-dated JWT, server misconfiguration).
     consecutive_auth_failures: Arc<AtomicU64>,
+    /// In-flight `ExecuteRequest` jobs keyed by `request_id`, so a dispatched
+    /// job can be recalled via the `matrix.cancel` capability. Lives on the
+    /// runner (not the stream handler) so entries survive transient
+    /// disconnects: on a network blip jobs keep running and remain
+    /// cancellable after re-registration.
+    jobs: JobRegistry,
 }
 
 impl ConnectorRunner {
@@ -901,6 +928,7 @@ impl ConnectorRunner {
             metrics_reporter_running: Arc::new(AtomicBool::new(false)),
             metrics_storage,
             consecutive_auth_failures: Arc::new(AtomicU64::new(0)),
+            jobs: JobRegistry::new(),
         }
     }
 
@@ -1348,6 +1376,21 @@ impl ConnectorRunner {
                                         break;
                                     }
                                 } else if let Some(proto::stream_message::Message::ExecuteRequest(req)) = msg.message.as_ref() {
+                                    // Platform verb interception: the reserved `matrix.cancel`
+                                    // capability recalls an in-flight job. Handled here, before
+                                    // connector-authored tools ever see it (capability IDs
+                                    // prefixed `matrix.` are reserved — see `crate::jobs`).
+                                    if req.capability_id == jobs::CANCEL_CAPABILITY {
+                                        let response = self
+                                            .jobs
+                                            .answer_cancel(req.request_id.clone(), &req.payload);
+                                        let client_clone = self.client.clone();
+                                        tokio::spawn(async move {
+                                            if let Err(e) = Self::send_execute_response(client_clone, response).await {
+                                                tracing::error!("Error answering matrix.cancel: {}", e);
+                                            }
+                                        });
+                                    } else {
                                     // Handle execute request
                                     let request = ExecuteRequest {
                                         request_id: req.request_id.clone(),
@@ -1369,27 +1412,50 @@ impl ConnectorRunner {
                                     let logger = Logger::new("connector");
                                     let semaphore = self.request_semaphore.clone();
 
+                                    // Track the job so `matrix.cancel` can recall it. The
+                                    // entry is inserted before the task is spawned, so a
+                                    // cancel can never race past it. The registry lives on
+                                    // the runner (not this stream) so jobs survive transient
+                                    // disconnects: on a network blip work keeps running and
+                                    // stays cancellable after re-registration.
+                                    let (ticket, abort_reg) = self.jobs.track(request.request_id.clone());
+
                                     tokio::spawn(async move {
-                                        // Acquire permit - blocks if at max concurrency
-                                        // Permit is released when dropped at end of scope
-                                        let _permit = match semaphore.acquire().await {
-                                            Ok(permit) => permit,
-                                            Err(_) => {
-                                                tracing::error!("Request semaphore closed");
-                                                return;
+                                        // The ticket removes the registry entry when the task
+                                        // finishes for any reason (success, error, deadline, abort).
+                                        let ticket = ticket;
+
+                                        let work = async {
+                                            // Acquire permit - blocks if at max concurrency
+                                            // Permit is released when dropped at end of scope
+                                            let _permit = match semaphore.acquire().await {
+                                                Ok(permit) => permit,
+                                                Err(_) => {
+                                                    tracing::error!("Request semaphore closed");
+                                                    return;
+                                                }
+                                            };
+
+                                            if let Err(e) = Self::handle_request(
+                                                connector,
+                                                request,
+                                                client_clone,
+                                                metrics,
+                                                logger,
+                                                Some(&ticket),
+                                            ).await {
+                                                tracing::error!("Error handling request: {}", e);
                                             }
                                         };
 
-                                        if let Err(e) = Self::handle_request(
-                                            connector,
-                                            request,
-                                            client_clone,
-                                            metrics,
-                                            logger,
-                                        ).await {
-                                            tracing::error!("Error handling request: {}", e);
+                                        if futures::future::Abortable::new(work, abort_reg)
+                                            .await
+                                            .is_err()
+                                        {
+                                            tracing::info!("Job aborted via matrix.cancel");
                                         }
                                     });
+                                    }
                                 } else if let Some(proto::stream_message::Message::InvokeResponse(resp)) = msg.message.as_ref() {
                                     // Handle invoke response
                                     if let Some(client) = client_for_sending.read().await.as_ref() {
@@ -1683,6 +1749,7 @@ impl ConnectorRunner {
         client: Arc<RwLock<Option<ConnectorClient>>>,
         metrics: Arc<RwLock<ConnectorMetrics>>,
         logger: Logger,
+        ticket: Option<&JobTicket>,
     ) -> Result<()> {
         let start_time = Instant::now();
         let mut metrics_guard = metrics.write().await;
@@ -1696,13 +1763,20 @@ impl ConnectorRunner {
             request.payload_encoding,
         ) {
             Ok(request_data) => {
-                match connector
-                    .execute_with_context(
+                // Server-imposed deadline (`context["matrix.deadline_ms"]`):
+                // bound the connector's execution. When it expires the
+                // execution future is dropped and the reply is a
+                // deadline-exceeded error. Absent → no deadline; the
+                // Matrix-side dispatch timeout remains the backstop.
+                match jobs::run_with_deadline(
+                    &request.context,
+                    connector.execute_with_context(
                         request_data,
                         request.capability_id.as_deref(),
                         &request.context,
-                    )
-                    .await
+                    ),
+                )
+                .await
                 {
                     Ok(response_data) => {
                         // Never put a blank failure on the wire (Strike48/matrix#4715,
@@ -1783,7 +1857,27 @@ impl ConnectorRunner {
             }
         };
 
+        // A cancel that claimed this job already answered for it: send
+        // nothing, so Matrix never sees both "stopped" and a result.
+        if ticket.is_some_and(|t| !t.complete()) {
+            logger.info(&format!(
+                "Job {} was cancelled before its result was sent; result dropped",
+                response.request_id
+            ));
+            return Ok(());
+        }
+
         // Send response -- clone sender under lock, drop lock, then send
+        Self::send_execute_response(client, response).await
+    }
+
+    /// Send an `ExecuteResponse` back to Matrix over the current stream.
+    /// No-op when no client is attached (e.g. after shutdown, or in unit
+    /// tests that drive `handle_request` without a live stream).
+    async fn send_execute_response(
+        client: Arc<RwLock<Option<ConnectorClient>>>,
+        response: ExecuteResponse,
+    ) -> Result<()> {
         let tx = {
             let client_guard = client.read().await;
             match client_guard.as_ref() {
@@ -3003,6 +3097,7 @@ mod tests {
             Arc::new(RwLock::new(Some(client))),
             metrics,
             logger,
+            None,
         )
         .await
         .expect("handle_request should succeed");

@@ -136,6 +136,10 @@ pub async fn run_command_opts(
 
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    // Kill the child when this future is dropped — by the timeout below, a
+    // server deadline or a `matrix.cancel` abort. Without it the process
+    // outlives the job.
+    cmd.kill_on_drop(true);
 
     let mut child = cmd
         .spawn()
@@ -461,5 +465,28 @@ mod tests {
             "20 concurrent sleeps took {:?} — thread starvation detected",
             elapsed
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_the_future_kills_the_child() {
+        // A unique argument so the probe finds only this child.
+        let tag = format!("{}", 7_000_000 + std::process::id());
+        let args = [tag.as_str()];
+        // Let it spawn, then drop it the way an abort or deadline does.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            run_command("sleep", &args),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let ps = std::process::Command::new("ps")
+            .args(["-axo", "stat,command"])
+            .output()
+            .expect("ps");
+        let still_running = String::from_utf8_lossy(&ps.stdout)
+            .lines()
+            .any(|l| l.ends_with(&format!("sleep {tag}")) && !l.starts_with('Z'));
+        assert!(!still_running, "the child must die with its future");
     }
 }

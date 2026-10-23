@@ -156,3 +156,48 @@ against Strike48/sdk-rs when landing this there.
 
 **Drop when:** the equivalent lands upstream in Strike48/sdk-rs and pick moves to
 that release.
+
+## matrix-cancel-and-deadline
+
+**Files:** `src/jobs.rs` (new), `src/connector.rs`, `src/multi/mod.rs`,
+`src/multi/registration_runner.rs`, `src/multi/ws_multiplex.rs`,
+`src/process.rs`, `src/context.rs`, `src/lib.rs`
+
+**Problem.** Pressing Stop in Matrix kills the agent's worker, but a tool
+already dispatched to pick keeps running against the target, while Matrix
+records it as cancelled (Strike48/matrix#4684). The SDK discarded each job's
+task handle, so nothing could recall it.
+
+**Change.** Mirrors the sdk-rs branch `fix/sdk-rs/connector-job-cancel-v1`
+(POC `aa49af6` + `2e1fe5e`):
+
+- Every `ExecuteRequest` is tracked in a `JobRegistry` keyed by `request_id`.
+- An `ExecuteRequest` with the reserved capability `matrix.cancel` and
+  `{"cancel_request_id": "<job>"}` is answered by the SDK before any tool sees
+  it: `success: true` = stopped, `success: false` + `unknown request_id` = not
+  in flight. Exactly one answer per job reaches Matrix.
+- `context["matrix.deadline_ms"]` bounds a job's execution.
+- `process::run_command*` set `kill_on_drop(true)`.
+- Tools named `matrix.*` are not advertised.
+
+All three runners are covered. No proto change.
+
+The deadline wrapping in the three `handle_*` functions was re-applied by hand
+around the fork's `never-blank-failure` sanitizer; the fork-local tests that
+call `handle_request` / `handle_execute` pass the new `ticket` argument as
+`None`.
+
+**Pick side.** Aborting a job only stops a child process if it was spawned with
+`kill_on_drop(true)`. Pick's own spawn sites set it as part of the same change
+(`crates/platform/src/desktop/`).
+
+**Tests.** The registry, ticket, deadline and multi-runner dispatch tests run
+with `cargo test --lib` here. The gRPC end-to-end tests (including the one
+that cancels a job running a real child process) live upstream in
+`crates/connector/tests/cancel_e2e.rs`.
+
+**Tracking:** Strike48/matrix#4684. Upstream: Strike48/sdk-rs branch
+`fix/sdk-rs/connector-job-cancel-v1`.
+
+**Drop when:** the equivalent lands upstream in Strike48/sdk-rs and pick moves to
+that release.

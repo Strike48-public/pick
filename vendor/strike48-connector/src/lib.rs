@@ -97,6 +97,7 @@ pub mod behaviors;
 pub mod connector;
 pub mod context;
 pub mod error;
+pub mod jobs;
 pub mod multi;
 pub mod process;
 pub mod simple;
@@ -128,6 +129,9 @@ pub use multi::{
 };
 pub use types::*;
 pub use utils::{deserialize_payload, error_response, serialize_payload, success_response};
+
+// Job tracking & platform cancel capability
+pub use jobs::{CANCEL_CAPABILITY, CancelOutcome, JobRegistry};
 
 // App behavior
 pub use behaviors::app::{

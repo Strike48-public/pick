@@ -696,6 +696,7 @@ impl MultiConnectorRunner {
                 shutdown: self.shutdown_requested.clone(),
                 metrics: entry.metrics,
                 opts: self.opts.clone(),
+                jobs: crate::jobs::JobRegistry::new(),
                 request_semaphore: Arc::new(Semaphore::new(
                     self.opts.max_concurrent_requests.max(1),
                 )),
