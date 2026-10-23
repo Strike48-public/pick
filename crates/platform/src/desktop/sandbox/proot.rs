@@ -312,6 +312,18 @@ impl ProotExecutor {
 
         // Kill the process if this future is dropped (job cancel, server
         // deadline or the timeout below); otherwise it outlives the job.
+        //
+        // KNOWN GAP (Strike48/matrix#4684): `kill_on_drop` SIGKILLs only the
+        // `proot` process. proot runs the guest `bash -c "<cmd>"` and its tool
+        // children under ptrace; when the tracer (proot) is killed the kernel
+        // detaches the tracees, which are reparented to init and can keep
+        // running — the same grandchild-leak the direct `sh -c` path had. The
+        // robust fix is the one applied to the direct path: put proot in its own
+        // process group (`setpgid` in `pre_exec`) and `killpg` the group on
+        // drop/timeout. It is left as a follow-up for this backend because proot
+        // execution cannot be exercised in CI here (no proot/BlackArch rootfs),
+        // so the change would ship unverified. bwrap is unaffected (it uses
+        // `--die-with-parent`). Tracked as a follow-up.
         command.kill_on_drop(true);
         let child = command.spawn().map_err(SandboxError::Io)?;
 
