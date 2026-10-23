@@ -354,6 +354,9 @@ pub(crate) async fn execute_command_direct(
         command.current_dir(dir);
     }
 
+    // Kill the process if this future is dropped (job cancel, server
+    // deadline or the timeout below); otherwise it outlives the job.
+    command.kill_on_drop(true);
     let child = command.spawn().map_err(Error::Io)?;
 
     match timeout(timeout_duration, super::wait_for_child_output(child)).await {
@@ -591,5 +594,38 @@ mod tests {
             !logged_full.contains("ab12cd"),
             "exotic-shape credential leaked into logged full_cmd: {logged_full}"
         );
+    }
+
+    /// True while a live (non-zombie) `sleep <secs>` process exists.
+    #[cfg(unix)]
+    fn sleep_alive(secs: &str) -> bool {
+        let ps = std::process::Command::new("ps")
+            .args(["-axo", "stat,command"])
+            .output()
+            .expect("ps");
+        String::from_utf8_lossy(&ps.stdout).lines().any(|l| {
+            l.trim_end().ends_with(&format!("sleep {secs}")) && !l.trim_start().starts_with('Z')
+        })
+    }
+
+    /// A cancelled job drops its future; the tool process must die with it
+    /// (Strike48/matrix#4684), not keep running against the target.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_a_running_command_kills_its_process() {
+        let secs = format!("{}", 810_000 + std::process::id());
+        let args = [secs.as_str()];
+        let run = execute_command_direct("sleep", &args, Duration::from_secs(600), None);
+        // Drop the future after the process has started, as an abort does.
+        let _ = tokio::time::timeout(Duration::from_millis(300), run).await;
+        let mut gone = false;
+        for _ in 0..30 {
+            if !sleep_alive(&secs) {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(gone, "the process must not outlive its cancelled job");
     }
 }
