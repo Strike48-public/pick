@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pre-commit hook - Block commits that introduce customer PII.
+# pre-commit hook - Block commits that introduce customer PII or secrets.
 #
 # Install by running: scripts/install-hooks.sh
 # (or manually: git config core.hooksPath .githooks)
@@ -34,6 +34,26 @@ if [[ -n "$added_lines" ]]; then
         echo "Remove the customer names above and retry, or bypass with --no-verify (not recommended)." >&2
         exit 1
     fi
+fi
+
+# Scan the staged changes for secrets with the same config CI uses. The CI
+# Gitleaks job scans every pushed branch, not only the PR's commits, so a
+# secret-shaped string pushed to any branch fails Gitleaks on every open PR
+# until main ignores its fingerprint. This is a public repo: a pushed branch is
+# published whether or not it merges. Catch it before the commit exists.
+if command -v gitleaks >/dev/null 2>&1; then
+    if ! gitleaks git --pre-commit --staged --no-banner --redact \
+        --config "$REPO_ROOT/.gitleaks.toml" \
+        --gitleaks-ignore-path "$REPO_ROOT/.gitleaksignore" \
+        "$REPO_ROOT" >&2; then
+        echo "" >&2
+        echo "Commit blocked: gitleaks found a secret in staged changes." >&2
+        echo "If it is a test fixture, rephrase it so no rule matches rather than allowlisting it" >&2
+        echo "(see the allowlist policy in .gitleaks.toml)." >&2
+        exit 1
+    fi
+else
+    echo "warning: gitleaks not found, skipping secret scan (https://github.com/gitleaks/gitleaks)" >&2
 fi
 
 exit 0
