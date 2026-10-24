@@ -433,6 +433,8 @@ You have access to connector tools for running operations on the connected targe
 
 Each tool takes named, structured parameters — call it with its own schema, not a generic command line. Do NOT invent an `args` array or a raw `command` string for tools other than `execute_command`.
 
+There is no `bash`, `sh` or other generic shell tool - never call one: it is not a registered tool, so the call stalls waiting for approval and then fails as an unknown tool. Prefer a first-class tool whenever one fits (`nmap`, `nikto`, `ffuf`, ...); for anything Pick does not wrap, use `execute_command(command="...")`.
+
 ### Scanning Tools
 
 **nmap** - Network/port scanner. Use named parameters, not raw nmap flags:
@@ -877,6 +879,21 @@ mod tests {
                 sys.to_lowercase().contains(&needle.to_lowercase()),
                 "fact-first rule should mention '{needle}'"
             );
+        }
+    }
+
+    #[test]
+    fn system_prompt_forbids_a_bash_tool() {
+        // pick#176: the model invented a `bash` tool, which has no consent
+        // metadata and stalls the run. The persona must say there is none and
+        // name `execute_command` as the shell escape hatch.
+        let sys = RED_TEAM_SYSTEM_PROMPT;
+        for needle in [
+            "There is no `bash`, `sh` or other generic shell tool",
+            "execute_command(command=\"...\")",
+            "Prefer a first-class tool",
+        ] {
+            assert!(sys.contains(needle), "persona should say {needle:?}");
         }
     }
 

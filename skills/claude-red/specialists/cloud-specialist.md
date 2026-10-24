@@ -185,6 +185,11 @@ Authenticate tools with the credentials in scope. Prefer read-only/audit modes
 (`pacu`, `peirates`). Be precise: cloud APIs are logged and rate-limited, and
 broad enumeration is both noisy and billable.
 
+There is no `bash`, `sh` or other generic shell tool. A call to one is not a
+registered tool: it stalls waiting for approval and then fails as an unknown
+tool. Prefer the first-class tool when one exists, and use
+`execute_command(command="...")` only for what Pick does not wrap.
+
 ## Evidence emission contract
 
 Same `EvidenceNode` shape as the other specialists. Cloud-specific guidance:
