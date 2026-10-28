@@ -361,6 +361,22 @@ pub(crate) async fn execute_command_direct(
     // SIGKILLs only `sh`, leaving the grandchildren running against the target
     // (Strike48/matrix#4684). With a dedicated group, `killpg(-pgid, SIGKILL)`
     // reaches every member. The child becomes the group leader (pgid == pid).
+    //
+    // NON-UNIX (Windows) FALLBACK: the process-group setup below and the
+    // `ProcessGroupKiller` group-kill guard are `#[cfg(unix)]`-only. On Windows
+    // there is no `setpgid`/`killpg` equivalent here, so a cancel/deadline/
+    // timeout falls back to `kill_on_drop(true)` (set unconditionally just
+    // below), which SIGKILLs ONLY the direct child. A grandchild or deeper
+    // process tree spawned under a routed `sh -c "a | b | c"` pipeline can
+    // therefore survive a cancel on Windows. Full process-tree teardown on
+    // Windows (a Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, or a
+    // `taskkill /T /F` on the child pid) is a deliberate follow-up: it needs a
+    // real Windows host to verify and is NOT implemented blind here.
+    //
+    // Severity note: the headless, Matrix-dispatched connector runs on Linux,
+    // so the PRIMARY cancel path is Unix and IS fully covered by the group
+    // kill below. Windows is only the desktop app surface; the gap is confined
+    // to that surface. See the PR "Known limits" and the tracked follow-up.
     #[cfg(unix)]
     unsafe {
         // `tokio::process::Command::pre_exec` is inherent (Unix-only).
