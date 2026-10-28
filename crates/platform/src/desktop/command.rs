@@ -354,10 +354,62 @@ pub(crate) async fn execute_command_direct(
         command.current_dir(dir);
     }
 
+    // Put the child in its own process group so the WHOLE pipeline can be
+    // killed on cancel/timeout — not just the group leader. A shell line routed
+    // through `sh -c "<line>"` (see `needs_shell`) spawns `sh` as the leader and
+    // the pipeline members (`nmap`, `tee`, ...) as its children; `kill_on_drop`
+    // SIGKILLs only `sh`, leaving the grandchildren running against the target
+    // (Strike48/matrix#4684). With a dedicated group, `killpg(-pgid, SIGKILL)`
+    // reaches every member. The child becomes the group leader (pgid == pid).
+    //
+    // NON-UNIX (Windows) FALLBACK: the process-group setup below and the
+    // `ProcessGroupKiller` group-kill guard are `#[cfg(unix)]`-only. On Windows
+    // there is no `setpgid`/`killpg` equivalent here, so a cancel/deadline/
+    // timeout falls back to `kill_on_drop(true)` (set unconditionally just
+    // below), which SIGKILLs ONLY the direct child. A grandchild or deeper
+    // process tree spawned under a routed `sh -c "a | b | c"` pipeline can
+    // therefore survive a cancel on Windows. Full process-tree teardown on
+    // Windows (a Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, or a
+    // `taskkill /T /F` on the child pid) is a deliberate follow-up: it needs a
+    // real Windows host to verify and is NOT implemented blind here.
+    //
+    // Severity note: the headless, Matrix-dispatched connector runs on Linux,
+    // so the PRIMARY cancel path is Unix and IS fully covered by the group
+    // kill below. Windows is only the desktop app surface; the gap is confined
+    // to that surface. See the PR "Known limits" and the tracked follow-up.
+    #[cfg(unix)]
+    unsafe {
+        // `tokio::process::Command::pre_exec` is inherent (Unix-only).
+        command.pre_exec(|| {
+            // setpgid(0, 0): new process group led by this (pre-exec) child.
+            // Async-signal-safe; the only call between fork and exec here.
+            if libc::setpgid(0, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    // Kill the process if this future is dropped (job cancel, server
+    // deadline or the timeout below); otherwise it outlives the job.
+    command.kill_on_drop(true);
     let child = command.spawn().map_err(Error::Io)?;
+
+    // Arm a group-kill guard. While armed, dropping it (future cancelled
+    // mid-await) or an explicit `kill_now()` SIGKILLs the child's whole process
+    // group. We disarm on observed normal exit so we never signal a pgid that
+    // could by then have been reused (the child is the group leader, so its pid
+    // doubles as the pgid).
+    #[cfg(unix)]
+    let mut group_guard = child.id().map(ProcessGroupKiller::new);
 
     match timeout(timeout_duration, super::wait_for_child_output(child)).await {
         Ok(result) => {
+            // Child was reaped: disarm so we don't killpg a possibly-reused pgid.
+            #[cfg(unix)]
+            if let Some(g) = group_guard.as_mut() {
+                g.disarm();
+            }
             let (stdout, stderr, exit_code) = result?;
             Ok(CommandResult::success(
                 stdout,
@@ -367,13 +419,72 @@ pub(crate) async fn execute_command_direct(
             ))
         }
         Err(_) => {
-            // Timeout occurred
+            // Timeout: the pipeline's grandchildren outlive the SIGKILLed leader,
+            // so kill the whole group now (not just `sh`). The guard would also
+            // fire on drop, but do it explicitly so the timeout path is
+            // deterministic, then disarm.
+            #[cfg(unix)]
+            if let Some(g) = group_guard.as_mut() {
+                g.kill_now();
+            }
             Ok(CommandResult::timeout(
                 String::new(),
                 "Command timed out".to_string(),
                 start.elapsed().as_millis() as u64,
             ))
         }
+    }
+}
+
+/// RAII guard that SIGKILLs a child's entire process group on drop.
+///
+/// The spawned child is made its own process-group leader (`setpgid(0, 0)` in
+/// `pre_exec`), so its pid equals the group id. While armed, `kill_now` / `Drop`
+/// send `SIGKILL` to `-pgid` (the whole group), killing every member of a
+/// routed `sh -c "a | b | c"` pipeline — the grandchildren that `kill_on_drop`
+/// (leader-only) leaves behind on job-cancel or timeout (Strike48/matrix#4684).
+///
+/// Safety against killing an unrelated group: the guard is disarmed the moment
+/// the child is observed to exit (reaped by `wait_for_child_output`). It only
+/// ever signals while the child has NOT been reaped, so the pid/pgid cannot yet
+/// have been recycled by the kernel for an unrelated process group.
+#[cfg(unix)]
+struct ProcessGroupKiller {
+    pgid: i32,
+    armed: bool,
+}
+
+#[cfg(unix)]
+impl ProcessGroupKiller {
+    fn new(pid: u32) -> Self {
+        Self {
+            pgid: pid as i32,
+            armed: true,
+        }
+    }
+
+    /// Disarm after observing the child's exit, so we never signal a pgid that
+    /// could since have been reused.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    /// SIGKILL the whole process group once, if still armed.
+    fn kill_now(&mut self) {
+        if self.armed {
+            self.armed = false;
+            // Negative pid targets the process group led by `pgid`.
+            unsafe {
+                libc::kill(-self.pgid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ProcessGroupKiller {
+    fn drop(&mut self) {
+        self.kill_now();
     }
 }
 
@@ -590,6 +701,93 @@ mod tests {
         assert!(
             !logged_full.contains("ab12cd"),
             "exotic-shape credential leaked into logged full_cmd: {logged_full}"
+        );
+    }
+
+    /// True while a live (non-zombie) `sleep <secs>` process exists.
+    #[cfg(unix)]
+    fn sleep_alive(secs: &str) -> bool {
+        let ps = std::process::Command::new("ps")
+            .args(["-axo", "stat,command"])
+            .output()
+            .expect("ps");
+        String::from_utf8_lossy(&ps.stdout).lines().any(|l| {
+            l.trim_end().ends_with(&format!("sleep {secs}")) && !l.trim_start().starts_with('Z')
+        })
+    }
+
+    /// A cancelled job drops its future; the tool process must die with it
+    /// (Strike48/matrix#4684), not keep running against the target.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_a_running_command_kills_its_process() {
+        let secs = format!("{}", 810_000 + std::process::id());
+        let args = [secs.as_str()];
+        let run = execute_command_direct("sleep", &args, Duration::from_secs(600), None);
+        // Drop the future after the process has started, as an abort does.
+        let _ = tokio::time::timeout(Duration::from_millis(300), run).await;
+        let mut gone = false;
+        for _ in 0..30 {
+            if !sleep_alive(&secs) {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(gone, "the process must not outlive its cancelled job");
+    }
+
+    /// True while a live (non-zombie) process whose command line ends with
+    /// `needle` exists. Used to look for pipeline members by a unique argument.
+    #[cfg(unix)]
+    fn proc_alive(needle: &str) -> bool {
+        let ps = std::process::Command::new("ps")
+            .args(["-axo", "stat,command"])
+            .output()
+            .expect("ps");
+        String::from_utf8_lossy(&ps.stdout)
+            .lines()
+            .any(|l| l.trim_end().ends_with(needle) && !l.trim_start().starts_with('Z'))
+    }
+
+    /// A cancelled shell-line job must halt the ENTIRE pipeline, not just the
+    /// `sh` leader. `kill_on_drop(true)` SIGKILLs only `sh`; its pipeline
+    /// children (grandchildren of this process) survive unless we kill the whole
+    /// process group (Strike48/matrix#4684). This mirrors the direct/`sh -c`
+    /// path the headless connector takes under `DISABLE_SANDBOX=true`.
+    ///
+    /// Two uniquely-argged `sleep`s joined by a pipe stand in for `nmap | tee`:
+    /// both are grandchildren in `sh`'s group and both must die. (A bare `cat`
+    /// has no unique arg to grep for reliably on a shared CI box, hence two
+    /// distinct sleeps.) This test FAILS before the process-group fix — the two
+    /// sleeps outlive the killed `sh` — and PASSES after it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_a_shell_pipeline_kills_every_member() {
+        let a = format!("{}", 820_000 + std::process::id());
+        let b = format!("{}", 830_000 + std::process::id());
+        let line = format!("sleep {a} | sleep {b}");
+        let args = ["-c", line.as_str()];
+        let run = execute_command_direct("sh", &args, Duration::from_secs(600), None);
+        // Drop the future after the pipeline has started, as a job cancel does.
+        let _ = tokio::time::timeout(Duration::from_millis(400), run).await;
+
+        let needle_a = format!("sleep {a}");
+        let needle_b = format!("sleep {b}");
+        let mut both_gone = false;
+        for _ in 0..40 {
+            if !proc_alive(&needle_a) && !proc_alive(&needle_b) {
+                both_gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            both_gone,
+            "both pipeline members must die with the cancelled job: \
+             sleep {a} alive={}, sleep {b} alive={}",
+            proc_alive(&needle_a),
+            proc_alive(&needle_b)
         );
     }
 }
