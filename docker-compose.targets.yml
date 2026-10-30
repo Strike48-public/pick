@@ -86,6 +86,8 @@ services:
       # runtime runs as ROOT, so raw-socket caps are effective without setcap, and
       # HOME is /root (see the creds volume mount below).
       dockerfile: Dockerfile.scratch
+      args:
+        REVISION: ${PICK_IMAGE_REVISION:-local}
     image: ghcr.io/strike48-public/pick:demo
     restart: unless-stopped
     # Start only after EVERY scan target AND the door report healthy (explicit
