@@ -181,11 +181,14 @@ COPY --from=builder /out/pentest-agent /usr/local/bin/pentest-agent
 # whole Kali toolset reinstalled per REVISION; Jonathan's Colima
 # verification). The label OVERWRITES the Kali base's inherited
 # org.opencontainers.image.revision (a Kali upstream sha, not ours).
-# Every build path passes REVISION: the CI's multiarch build-args
-# (github.sha), and the targets/plg compose build.args (PICK_IMAGE_REVISION —
-# set by the init-dev attach from the pick tree's HEAD; the default "local"
-# renders honestly when the caller does not attest). init-dev's
-# pick_build_local.sh wiring rides the init-dev companion change.
+# Every CI/registry build path passes REVISION: the CI's multiarch
+# build-args (github.sha), and the targets/plg compose build.args
+# (PICK_IMAGE_REVISION — set by the init-dev attach from the pick tree's
+# HEAD; the default "local" renders honestly when the caller does not
+# attest). init-dev's pick_build_local.sh wiring rides the init-dev
+# companion change (its PR). Substrate note: the placement and the label
+# semantics audited statically this round; the committed-image proof rides
+# the CI multiarch build on this PR and the post-merge pull.
 ARG REVISION=""
 LABEL org.opencontainers.image.revision=$REVISION
 
