@@ -103,8 +103,11 @@ FROM kalilinux/kali-rolling AS runtime
 # it. This LABEL also OVERWRITES the Kali base image's inherited
 # org.opencontainers.image.revision (a Kali upstream sha, not ours — the live
 # probe of ghcr.io/strike48-public/pick:demo showed the inherited value).
-# Every build path passes REVISION: the CI's multiarch build-args, the
-# targets compose build.args, and init-dev's pick_build_local.sh.
+# Every build path passes REVISION: the CI's multiarch build-args
+# (github.sha), and the targets/plg compose build.args (PICK_IMAGE_REVISION —
+# set by the init-dev attach from the pick tree's HEAD; the default "local"
+# renders honestly when the caller does not attest). init-dev's
+# pick_build_local.sh wiring rides the init-dev companion change.
 ARG REVISION=""
 LABEL org.opencontainers.image.revision=$REVISION
 
