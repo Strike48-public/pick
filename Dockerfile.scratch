@@ -97,20 +97,6 @@ RUN RUST_TARGET=$(cat /tmp/rust-target) && \
 # ----------------------------------------------------------
 FROM kalilinux/kali-rolling AS runtime
 
-# The image's build origin (pick#599): the init-dev attach verifies a pulled
-# image against the caller's tree by comparing this label to HEAD — the
-# fingerprint alone proves the TREE state, not that the image was BUILT from
-# it. This LABEL also OVERWRITES the Kali base image's inherited
-# org.opencontainers.image.revision (a Kali upstream sha, not ours — the live
-# probe of ghcr.io/strike48-public/pick:demo showed the inherited value).
-# Every build path passes REVISION: the CI's multiarch build-args
-# (github.sha), and the targets/plg compose build.args (PICK_IMAGE_REVISION —
-# set by the init-dev attach from the pick tree's HEAD; the default "local"
-# renders honestly when the caller does not attest). init-dev's
-# pick_build_local.sh wiring rides the init-dev companion change.
-ARG REVISION=""
-LABEL org.opencontainers.image.revision=$REVISION
-
 # Pin sources.list to the kali.download CDN before updating. The default Kali
 # mirror rotation occasionally serves an apt index ahead of one or more backing
 # mirrors, which produces 404s during the install step for transitive deps
@@ -188,5 +174,19 @@ RUN set -eux; \
 RUN command -v theharvester >/dev/null 2>&1 || python3 -m pip install --no-cache-dir theHarvester
 
 COPY --from=builder /out/pentest-agent /usr/local/bin/pentest-agent
+
+# The image's build origin (pick#599) — PLACED LAST deliberately: a changed
+# REVISION invalidates only this LABEL layer, never the apt/RUN layers above
+# (the pair before the apt install busted the cache on every build — the
+# whole Kali toolset reinstalled per REVISION; Jonathan's Colima
+# verification). The label OVERWRITES the Kali base's inherited
+# org.opencontainers.image.revision (a Kali upstream sha, not ours).
+# Every build path passes REVISION: the CI's multiarch build-args
+# (github.sha), and the targets/plg compose build.args (PICK_IMAGE_REVISION —
+# set by the init-dev attach from the pick tree's HEAD; the default "local"
+# renders honestly when the caller does not attest). init-dev's
+# pick_build_local.sh wiring rides the init-dev companion change.
+ARG REVISION=""
+LABEL org.opencontainers.image.revision=$REVISION
 
 ENTRYPOINT ["pentest-agent"]
