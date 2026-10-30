@@ -66,15 +66,6 @@ COPY --from=builder /app/target/release/pentest-agent /usr/local/bin/pentest-age
 RUN setcap cap_net_raw,cap_net_admin+ep /usr/local/bin/pentest-agent
 
 RUN mkdir -p /tmp && chown pick:pick /tmp
-
-# The image's build origin (pick#599): the init-dev attach verifies a pulled
-# image against the caller's tree by comparing this label to HEAD — the
-# fingerprint alone proves the TREE state, not that the image was BUILT from
-# it. The CI's metadata-action sets the same label from the build commit;
-# local/VM builds pass it via --build-arg REVISION=$(git rev-parse HEAD).
-ARG REVISION=""
-LABEL org.opencontainers.image.revision=$REVISION
-
 USER pick
 ENV HOME=/data/connector
 

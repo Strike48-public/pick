@@ -518,9 +518,10 @@ targets-up *ARGS:
     # build:+image: pair, `up --build` rebuilds EVERY time regardless (verified
     # on Colima and in the run45 attach: the pre-pull could only seed cache).
     # PICK_TARGETS_NO_BUILD=1 opts in; the default keeps today's behavior.
-    build_flags=""
+    build_flags="--build"
     if [[ "${PICK_TARGETS_NO_BUILD:-0}" == "1" ]]; then
       build_flags="--no-build"
+      echo "targets-up: NO-BUILD mode — using the local pick:demo image as-is (the caller attests currency)"
     fi
     docker compose --env-file "{{targets_env}}" {{targets_files}} up $build_flags -d {{ARGS}}
     # `up -d` returns once containers are STARTED, not proven healthy — pick has no
