@@ -1008,6 +1008,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn specialist_prompts_forbid_a_bash_tool() {
+        // pick#176: a specialist invented a `bash` tool, which has no consent
+        // metadata and stalls the run. Every specialist's tool guide must say
+        // there is none and name `execute_command` as the escape hatch.
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("crates/core/.. should resolve to repo root")
+            .to_path_buf();
+
+        for specialist in [
+            SpecialistType::WEB_APP,
+            SpecialistType::API,
+            SpecialistType::BINARY,
+            SpecialistType::AI_SECURITY,
+            SpecialistType::CLOUD,
+            SpecialistType::DATABASE,
+        ] {
+            let path = repo_root.join(specialist.prompt_file());
+            let body = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("specialist prompt unreadable at {path:?}: {e}"));
+            for needle in [
+                "There is no `bash`, `sh` or other generic shell tool",
+                "`execute_command(command=\"...\")`",
+            ] {
+                assert!(
+                    body.contains(needle),
+                    "specialist prompt for {specialist:?} is missing {needle:?} (pick#176)"
+                );
+            }
+        }
+    }
+
     // --- Cloud specialist (pick#151) ---------------------------------------
 
     #[test]

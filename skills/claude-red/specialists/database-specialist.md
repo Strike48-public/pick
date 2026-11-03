@@ -167,6 +167,11 @@ Authenticate tools with the credentials in scope. Prefer read-only enumeration
 before any takeover tool. Database APIs are logged and load-sensitive: be precise,
 sample, and never run a destructive statement without explicit authorization.
 
+There is no `bash`, `sh` or other generic shell tool. A call to one is not a
+registered tool: it stalls waiting for approval and then fails as an unknown
+tool. Prefer the first-class tool when one exists, and use
+`execute_command(command="...")` only for what Pick does not wrap.
+
 ## Evidence emission contract
 
 Same `EvidenceNode` shape as the other specialists. Database-specific guidance:
