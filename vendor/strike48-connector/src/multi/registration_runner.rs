@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
@@ -28,7 +28,11 @@ use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
 use tokio::time::{MissedTickBehavior, interval};
 
 use crate::auth::{CallbackNote, OttProvider};
-use crate::connector::{BaseConnector, ConnectorConfig, ConnectorHandle};
+use crate::connector::{
+    BaseConnector, ConnectorConfig, ConnectorHandle, DUPLICATE_REJECTION_STOP_THRESHOLD,
+    duplicate_rejection_log_message, effective_slow_retry_interval_ms, is_duplicate_instance_error,
+    should_engage_slow_retry_lane,
+};
 use crate::error::{ConnectorError, Result};
 use crate::logger::Logger;
 use crate::multi::MultiTransportOptions;
@@ -84,6 +88,15 @@ pub(crate) struct RegistrationRunner {
     /// genuine rejections neither triggers a drop nor forgives the earlier
     /// rejection.
     pub consecutive_rejections: Arc<AtomicU32>,
+    /// Consecutive duplicate-instance rejections (#3134) since the last
+    /// successful register. A fence rejection is NOT a credential problem, so
+    /// it never counts toward [`consecutive_rejections`] and never triggers
+    /// the token drop; at
+    /// [`crate::connector::DUPLICATE_REJECTION_STOP_THRESHOLD`] consecutive
+    /// duplicates this runner paces its retries at the reduced frequency and
+    /// self-heals when the owner goes away. Reset to 0 on any success or
+    /// non-duplicate failure. Mirrors the single-runner lane in connector.rs.
+    pub consecutive_duplicate_rejections: Arc<AtomicU64>,
 }
 
 /// Default heartbeat interval — matches Matrix's session-reaper expectation.
@@ -276,29 +289,94 @@ impl RegistrationRunner {
                 Err(e) => {
                     logger.warn(&format!("registration {}: register failed: {e}", self.key));
 
-                    // If the server *rejected* the register (as opposed to a
-                    // transient stream/network blip), the usual cause is a stale
-                    // cached session token that no longer validates — e.g. after
-                    // Matrix redeploys and rotates its session-signing secret.
-                    // After REJECTIONS_BEFORE_TOKEN_DROP consecutive rejections
-                    // we drop it and re-mint auth so the next attempt
-                    // re-registers from scratch (keypair JWT / OTT) instead of
-                    // replaying a credential that will never decode again;
-                    // otherwise the loop retries the dead token forever.
-                    // Transient errors keep the token so a working session
-                    // survives a blip. See `is_registration_rejection` for what
-                    // counts as a rejection.
-                    if is_registration_rejection(&e)
-                        && self
-                            .note_rejection_and_maybe_reset_credentials(&logger)
+                    // Duplicate fence (#3134): the server refused a second
+                    // distinct live connection for an instance_id that already
+                    // has a live, responsive session. A fence rejection is NOT
+                    // a credential problem — the token stays (the
+                    // credential-drop path below is skipped); the streak counts
+                    // toward the reduced-frequency retry lane instead.
+                    let error_text = e.to_string();
+                    if is_duplicate_instance_error(&error_text.to_lowercase()) {
+                        let failures = self
+                            .consecutive_duplicate_rejections
+                            .fetch_add(1, Ordering::SeqCst)
+                            + 1;
+                        let instance_id = self.config.read().await.instance_id.clone();
+                        logger.error(
+                            "Duplicate connector registration rejected",
+                            &duplicate_rejection_log_message(&instance_id, &error_text),
+                        );
+
+                        if should_engage_slow_retry_lane(failures) {
+                            // Reduced-frequency retry lane (#3134, per review:
+                            // never stop retrying on an unattended remote
+                            // deployment). Log the engagement once at the
+                            // threshold, then pace THIS cycle at the slow
+                            // interval — the lane's sleep replaces the fast
+                            // backoff below — and fall through to the reconnect
+                            // attempt. The fence rejects every attempt while
+                            // the owner is alive (a rejected attempt strands
+                            // nothing); when the owner goes away the next
+                            // paced attempt self-heals. The shared channel and
+                            // the other registrations are unaffected.
+                            if failures == DUPLICATE_REJECTION_STOP_THRESHOLD {
+                                logger.error(
+                                    "Reduced-frequency retry engaged (duplicate instance_id)",
+                                    &format!(
+                                        "another live connector owns instance_id '{}': retrying every {} ms until it goes away. Check for a duplicate connector process.",
+                                        instance_id,
+                                        effective_slow_retry_interval_ms(
+                                            self.opts.duplicate_slow_retry_interval_ms,
+                                        )
+                                    ),
+                                );
+                            }
+                            // The lane's sleep replaces the fast backoff below.
+                            if !sleep_with_shutdown(
+                                Duration::from_millis(effective_slow_retry_interval_ms(
+                                    self.opts.duplicate_slow_retry_interval_ms,
+                                )),
+                                &self.shutdown,
+                            )
                             .await
-                    {
-                        logger.warn(&format!(
-                            "registration {}: reset rejected credentials after \
-                             {REJECTIONS_BEFORE_TOKEN_DROP} consecutive rejections; \
-                             re-registering from scratch",
-                            self.key
-                        ));
+                            {
+                                return Ok(());
+                            }
+                            continue;
+                        }
+                        // Below threshold: keep the credentials intact and
+                        // fall through to today's backoff + retry.
+                    } else {
+                        // Any non-duplicate failure breaks the
+                        // consecutive-duplicate streak (only back-to-back
+                        // duplicate rejections stop re-registering).
+                        self.consecutive_duplicate_rejections
+                            .store(0, Ordering::SeqCst);
+
+                        // If the server *rejected* the register (as opposed to a
+                        // transient stream/network blip), the usual cause is a stale
+                        // cached session token that no longer validates — e.g. after
+                        // Matrix redeploys and rotates its session-signing secret.
+                        // After REJECTIONS_BEFORE_TOKEN_DROP consecutive rejections
+                        // we drop it and re-mint auth so the next attempt
+                        // re-registers from scratch (keypair JWT / OTT) instead of
+                        // replaying a credential that will never decode again;
+                        // otherwise the loop retries the dead token forever.
+                        // Transient errors keep the token so a working session
+                        // survives a blip. See `is_registration_rejection` for what
+                        // counts as a rejection.
+                        if is_registration_rejection(&e)
+                            && self
+                                .note_rejection_and_maybe_reset_credentials(&logger)
+                                .await
+                        {
+                            logger.warn(&format!(
+                                "registration {}: reset rejected credentials after \
+                                 {REJECTIONS_BEFORE_TOKEN_DROP} consecutive rejections; \
+                                 re-registering from scratch",
+                                self.key
+                            ));
+                        }
                     }
 
                     if !self.opts.reconnect_enabled {
@@ -580,26 +658,62 @@ impl RegistrationRunner {
                     let mut m = self.metrics.lock().await;
                     m.last_connected_at_ms = Some(now_ms());
                 } else {
-                    logger.warn(&format!(
-                        "registration {}: in-stream re-register failed: status='{}' error='{}'",
-                        self.key, resp.status, resp.error
-                    ));
-                    // Rejected re-registration: after REJECTIONS_BEFORE_TOKEN_DROP
-                    // consecutive rejections, drop the cached session token and
-                    // re-mint auth so the reconnect after this stream tears down
-                    // re-registers from scratch instead of replaying the
-                    // credential the server just refused. Shares the counter
-                    // with the initial-register path.
-                    if self
-                        .note_rejection_and_maybe_reset_credentials(logger)
-                        .await
-                    {
+                    let error_lower = resp.error.to_lowercase();
+                    if is_duplicate_instance_error(&error_lower) {
+                        // Fence rejection on the in-stream path (post-approval
+                        // JWT upgrade): a duplicate rejection is NOT a
+                        // credential problem, so it must never feed the K=2
+                        // token-drop counter. Count the shared duplicate
+                        // streak instead; when the stream later tears down,
+                        // the outer register loop engages the
+                        // reduced-frequency retry lane and self-heals when the
+                        // owner goes away. Mirrors the WS in-stream arm in
+                        // ws_multiplex.rs.
+                        let failures = self
+                            .consecutive_duplicate_rejections
+                            .fetch_add(1, Ordering::SeqCst)
+                            + 1;
+                        let instance_id = self.config.read().await.instance_id.clone();
+                        logger.error(
+                            "Duplicate connector registration rejected (in-stream re-register)",
+                            &duplicate_rejection_log_message(&instance_id, &resp.error),
+                        );
+                        if should_engage_slow_retry_lane(failures) {
+                            logger.error(
+                                "Reduced-frequency retry engaged (duplicate instance_id)",
+                                &format!(
+                                    "{} consecutive duplicate rejections for instance_id '{}': the outer register loop paces at the reduced frequency and self-heals when the owner goes away.",
+                                    failures, instance_id
+                                ),
+                            );
+                        }
+                    } else {
+                        // Non-duplicate failure: reset the duplicate streak
+                        // (only back-to-back duplicate rejections engage the
+                        // lane), then run the existing credential-drop path:
+                        // after REJECTIONS_BEFORE_TOKEN_DROP consecutive
+                        // rejections, drop the cached session token and
+                        // re-mint auth so the reconnect after this stream
+                        // tears down re-registers from scratch instead of
+                        // replaying the credential the server just refused.
+                        // Shares the counter with the initial-register path.
+                        self.consecutive_duplicate_rejections
+                            .store(0, Ordering::SeqCst);
                         logger.warn(&format!(
-                            "registration {}: reset rejected credentials after \
-                             {REJECTIONS_BEFORE_TOKEN_DROP} consecutive rejections \
-                             (in-stream re-register)",
-                            self.key
+                            "registration {}: in-stream re-register failed: status='{}' error='{}'",
+                            self.key, resp.status, resp.error
                         ));
+                        if self
+                            .note_rejection_and_maybe_reset_credentials(logger)
+                            .await
+                        {
+                            logger.warn(&format!(
+                                "registration {}: reset rejected credentials after \
+                                 {REJECTIONS_BEFORE_TOKEN_DROP} consecutive rejections \
+                                 (in-stream re-register)",
+                                self.key
+                            ));
+                        }
                     }
                 }
                 None
@@ -818,6 +932,8 @@ impl RegistrationRunner {
     /// single later rejection never inherits stale count from an earlier blip.
     fn note_registration_success(&self) {
         self.consecutive_rejections.store(0, Ordering::SeqCst);
+        self.consecutive_duplicate_rejections
+            .store(0, Ordering::SeqCst);
     }
 
     /// Load previously-saved credentials (Keycloak `client_id` + private key,
@@ -1424,6 +1540,7 @@ mod tests {
             request_semaphore: Arc::new(Semaphore::new(8)),
             session_token: Arc::new(RwLock::new(None)),
             consecutive_rejections: Arc::new(AtomicU32::new(0)),
+            consecutive_duplicate_rejections: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1700,6 +1817,7 @@ mod tests {
             request_semaphore: Arc::new(Semaphore::new(8)),
             session_token: Arc::new(RwLock::new(None)),
             consecutive_rejections: Arc::new(AtomicU32::new(0)),
+            consecutive_duplicate_rejections: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1838,6 +1956,7 @@ mod tests {
             request_semaphore: Arc::new(Semaphore::new(8)),
             session_token: Arc::new(RwLock::new(None)),
             consecutive_rejections: Arc::new(AtomicU32::new(0)),
+            consecutive_duplicate_rejections: Arc::new(AtomicU64::new(0)),
         };
         assert_eq!(
             runner.opts.heartbeat_interval,
@@ -2272,6 +2391,106 @@ mod tests {
                 .note_rejection_and_maybe_reset_credentials(&logger)
                 .await,
             "threshold must be reported even when there was no token to drop"
+        );
+    }
+
+    /// A duplicate-instance fence rejection on the IN-STREAM re-register path
+    /// (post-approval JWT upgrade) must never feed the K=2 token-drop counter:
+    /// a duplicate rejection is not a credential problem, so there is nothing
+    /// to wipe. It counts the shared duplicate streak instead, and the streak
+    /// resets on the first non-duplicate failure. Regression for the missed
+    /// sibling path of the classify-first treatment (the WS twin is
+    /// `ws_dispatch_in_stream_duplicate_rejection_never_drops_token`).
+    #[tokio::test]
+    async fn dispatch_in_stream_reregister_duplicate_never_drops_token() {
+        let runner = make_runner_for_dispatch_tests();
+        let logger = Logger::new("test");
+        *runner.session_token.write().await = Some("stale-token".into());
+        let (tx, _rx) = mpsc::channel::<StreamMessage>(8);
+        let mut last_hb = Instant::now();
+
+        let duplicate_rejection = |error: &str| StreamMessage {
+            message: Some(stream_message::Message::RegisterResponse(
+                proto::RegisterConnectorResponse {
+                    success: false,
+                    status: 3,
+                    error: error.to_string(),
+                    ..Default::default()
+                },
+            )),
+        };
+
+        // Three consecutive duplicate fence rejections: the token must
+        // survive every one of them (K=2 would have dropped it twice over if
+        // duplicates fed the counter), and the streak must count them.
+        for i in 1..=3 {
+            let outcome = runner
+                .dispatch_inbound(
+                    duplicate_rejection(
+                        "duplicate_instance: another live connector is already registered",
+                    ),
+                    &tx,
+                    &mut last_hb,
+                    &mut HashMap::new(),
+                    &logger,
+                )
+                .await;
+            assert!(
+                outcome.is_none(),
+                "a fence rejection must not tear the stream"
+            );
+            assert!(
+                runner.session_token.read().await.is_some(),
+                "duplicate rejection {i} must NOT drop the session token"
+            );
+            assert_eq!(
+                runner.consecutive_rejections.load(Ordering::SeqCst),
+                0,
+                "duplicate rejection {i} must not feed the token-drop counter"
+            );
+        }
+        assert_eq!(
+            runner
+                .consecutive_duplicate_rejections
+                .load(Ordering::SeqCst),
+            3,
+            "the duplicate streak must count the fence rejections"
+        );
+
+        // A NON-duplicate rejection resets the duplicate streak and resumes
+        // the existing K=2 credential-drop path (drop on the 2nd).
+        runner
+            .dispatch_inbound(
+                duplicate_rejection("Registration failed"),
+                &tx,
+                &mut last_hb,
+                &mut HashMap::new(),
+                &logger,
+            )
+            .await;
+        assert_eq!(
+            runner
+                .consecutive_duplicate_rejections
+                .load(Ordering::SeqCst),
+            0,
+            "a non-duplicate failure must reset the duplicate streak"
+        );
+        assert!(
+            runner.session_token.read().await.is_some(),
+            "first non-duplicate rejection must retain the token (K=2)"
+        );
+        runner
+            .dispatch_inbound(
+                duplicate_rejection("Registration failed"),
+                &tx,
+                &mut last_hb,
+                &mut HashMap::new(),
+                &logger,
+            )
+            .await;
+        assert!(
+            runner.session_token.read().await.is_none(),
+            "second consecutive non-duplicate rejection must drop the token (K=2)"
         );
     }
 
