@@ -317,6 +317,28 @@ pub fn bridged_network_advisory(classification: &ContainerNetworking) -> Option<
     }
 }
 
+/// Scan-tool-result caveat for a sentinel target resolved on a bridged
+/// container (pick#510 acceptance: agents without the Pick persona learn the
+/// fact from the tool result).
+///
+/// `Some` only for [`ContainerNetworking::Bridged`]; the caller (scan-target
+/// preparation) attaches it to `PreparedTargets.warning` when `auto`/`current`
+/// /`all` resolved into the container's bridge subnets. Kept consistent with
+/// [`bridged_network_advisory`], the persona-side wording of the same fact.
+pub fn scan_target_caveat(classification: &ContainerNetworking) -> Option<String> {
+    match classification {
+        ContainerNetworking::Bridged { subnet } => Some(format!(
+            "NOTE: this connector runs in a container on a bridge network ({subnet}); the \
+             resolved target(s) are the container's private bridge subnet, not the \
+             operator's LAN. LAN hosts are reachable by explicit address through the \
+             container's NAT, but ARP, mDNS and SSDP discovery cannot see past the \
+             bridge; enable host networking (docs/DOCKER_INSTALL.md, 'Scanning your \
+             local network (host networking)') for discovery."
+        )),
+        _ => None,
+    }
+}
+
 /// Enumerate this host's subnets and the container-bridge advisory in one
 /// pass, for injection into the agent persona (pick#347, pick#510).
 ///
@@ -875,5 +897,23 @@ mod tests {
             None
         );
         assert_eq!(bridged_network_advisory(&ContainerNetworking::Other), None);
+    }
+
+    #[test]
+    fn scan_target_caveat_consistent_with_advisory() {
+        let bridged = ContainerNetworking::Bridged {
+            subnet: "172.18.0.0/16".to_string(),
+        };
+        let caveat = scan_target_caveat(&bridged).expect("bridged gets a caveat");
+        assert!(caveat.contains("172.18.0.0/16"), "names the subnet");
+        // Same fact, same words as the persona advisory (item 4 consistency).
+        for phrase in ["bridge", "NAT", "ARP", "mDNS", "SSDP", "host networking"] {
+            assert!(
+                caveat.contains(phrase),
+                "caveat should mention '{phrase}' like the advisory does"
+            );
+        }
+        assert_eq!(scan_target_caveat(&ContainerNetworking::Other), None);
+        assert_eq!(scan_target_caveat(&ContainerNetworking::NotContainer), None);
     }
 }
