@@ -8,7 +8,15 @@ use std::path::PathBuf;
 /// Uses platform-appropriate config dir (e.g. ~/.config/pentest-connector/ on Linux).
 /// On Android, uses $HOME/.config/pentest-connector/ since dirs::config_dir() returns None.
 pub fn settings_dir() -> PathBuf {
-    let dir = dirs::config_dir()
+    let dir = settings_dir_path();
+    let _ = fs::create_dir_all(&dir);
+    dir
+}
+
+/// Where [`settings_dir`] lives, without creating it. For read-only callers
+/// such as the diagnostics bundle.
+pub fn settings_dir_path() -> PathBuf {
+    dirs::config_dir()
         .or_else(|| {
             // Android fallback: use $HOME/.config/ if dirs::config_dir() returns None
             std::env::var("HOME")
@@ -16,9 +24,7 @@ pub fn settings_dir() -> PathBuf {
                 .map(|h| PathBuf::from(h).join(".config"))
         })
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("pentest-connector");
-    let _ = fs::create_dir_all(&dir);
-    dir
+        .join("pentest-connector")
 }
 
 /// Returns the path to the settings JSON file.
