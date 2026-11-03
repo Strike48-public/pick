@@ -48,20 +48,33 @@
 //! ## Cancellation semantics
 //!
 //! Cancellation is an abort: the task's work future is dropped at its next
-//! await point. Pure-async work (HTTP, sockets, timers) stops with it.
-//! Child processes stop only if the tool spawned them with
-//! `Command::kill_on_drop(true)` (the SDK's own [`crate::process`] helpers
-//! do); otherwise they outlive the abort. A cooperative cancellation token
-//! for tools that need cleanup is a possible follow-up (it requires a
+//! await point. Pure-async work (HTTP, sockets, timers) and the direct child
+//! of a tool stop with it. The SDK's own [`crate::process`] helpers go
+//! further on Unix — they run each child in its own process group and SIGKILL
+//! the whole group on drop, so a grandchild spawned under a shell dies too. A
+//! process a tool spawns some other way (its own `Command` without
+//! `kill_on_drop(true)`, or work handed to another host) may survive unless
+//! the tool sets up its own teardown. A cooperative cancellation token for
+//! tools that need cleanup is a possible follow-up (it requires a
 //! `BaseConnector` trait addition).
 //!
 //! ## Reserved namespace
 //!
 //! Capability IDs prefixed `matrix.` are reserved for platform verbs and
 //! must not be used by connector-authored tools. The reservation is an SDK
-//! convention (the proto has no field for it): registration drops such tools
-//! from the advertised `tool_schemas` with a warning, since dispatch would
-//! never reach them.
+//! convention (the proto has no field for it): when the SDK auto-derives
+//! `tool_schemas` from the connector's capabilities, registration drops such
+//! tools from them with a warning so they cannot clash with a current or
+//! future platform verb. The filter covers only that auto-derived list: a
+//! connector that supplies its own `tool_schemas` metadata is not filtered,
+//! and `task_types` still advertises the raw capabilities. Note the
+//! reservation is advisory
+//! for everything *except* the one verb the SDK actually intercepts: only the
+//! exact capability `matrix.cancel` is handled before connector tools (see
+//! [`CANCEL_CAPABILITY`]). Any other `matrix.*` capability is merely
+//! unadvertised — if the server dispatched one anyway it would still reach the
+//! connector's `execute`, because the runners intercept only the exact cancel
+//! name and fall through for everything else.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -99,16 +112,19 @@ pub fn is_reserved_capability(name: &str) -> bool {
     name.starts_with("matrix.")
 }
 
-/// A tracked in-flight job.
-pub struct RunningJob {
+/// A tracked in-flight job. Crate-internal: entries are created only through
+/// [`JobRegistry::track`], which pairs each one with the [`JobTicket`] whose
+/// generation check upholds the one-answer-per-job guarantee.
+pub(crate) struct RunningJob {
     /// Abort handle for the spawned task running the runner's request
     /// handler, obtained via `futures::future::AbortHandle::new_pair()`
     /// *before* spawning so the registry entry is always inserted before the
     /// task can run (and hence before it can finish) — no insert/complete
     /// race.
-    pub abort: futures::future::AbortHandle,
+    pub(crate) abort: futures::future::AbortHandle,
     /// When the job was accepted (for logs / future observability).
-    pub started_at: Instant,
+    #[allow(dead_code)]
+    pub(crate) started_at: Instant,
     /// Distinguishes two jobs that reuse one `request_id`, so a finishing
     /// job never removes a newer job's entry.
     generation: u64,
@@ -116,7 +132,7 @@ pub struct RunningJob {
 
 impl RunningJob {
     /// Build an entry for [`JobRegistry::insert`].
-    pub fn new(abort: futures::future::AbortHandle) -> Self {
+    pub(crate) fn new(abort: futures::future::AbortHandle) -> Self {
         Self {
             abort,
             started_at: Instant::now(),
@@ -178,7 +194,8 @@ impl CancelOutcome {
 ///
 /// Accepts [`CANCEL_REQUEST_ID_KEY`] and, for robustness, the generic
 /// [`CANCEL_REQUEST_ID_KEY_ALT`]. Returns `None` for unparsable payloads —
-/// the caller replies with a `bad cancel payload` error rather than guessing.
+/// the caller replies with [`INVALID_CANCEL_PAYLOAD_ERROR`]
+/// (`invalid cancel payload: missing cancel_request_id`) rather than guessing.
 pub fn parse_cancel_target(payload: &[u8]) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
     value
@@ -203,15 +220,37 @@ impl JobRegistry {
         Self::default()
     }
 
-    /// Track a job. Prefer [`JobRegistry::track`], which also hands back the
-    /// [`JobTicket`] that removes the entry again.
-    pub fn insert(&self, request_id: String, mut job: RunningJob) -> u64 {
+    /// Track a job. Crate-internal: use [`JobRegistry::track`], which also
+    /// hands back the [`JobTicket`] that removes the entry again.
+    ///
+    /// Keyed by `request_id`. Inserting a second job under a `request_id`
+    /// already in flight **aborts the displaced job** before replacing its
+    /// entry, so no job is ever left running without a registry entry (an
+    /// untracked job could not be recalled by `matrix.cancel`). The newer job
+    /// owns the id from then on: a later cancel stops the newer job, and the
+    /// displaced job's ticket sees a newer generation, so `complete()` returns
+    /// false and the displaced job never sends a result.
+    ///
+    /// Matrix intends one `request_id` per in-flight dispatch, but its ids are
+    /// unique per running node only, and this registry deliberately survives
+    /// reconnects. So two Matrix nodes dispatching to one connector, or a long
+    /// job that outlives a Matrix restart, can collide; aborting the displaced
+    /// job keeps a Stop from leaving work running unrecallably.
+    pub(crate) fn insert(&self, request_id: String, mut job: RunningJob) -> u64 {
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
         job.generation = generation;
-        self.inner
+        let displaced = self
+            .inner
             .lock()
             .expect("job registry poisoned")
-            .insert(request_id, job);
+            .insert(request_id.clone(), job);
+        if let Some(old) = displaced {
+            tracing::warn!(
+                job = %request_id,
+                "request_id reused while a job was in flight; aborting the displaced job"
+            );
+            old.abort.abort();
+        }
         generation
     }
 
@@ -231,14 +270,6 @@ impl JobRegistry {
             generation,
         };
         (ticket, registration)
-    }
-
-    /// Remove the entry for `request_id` unconditionally.
-    pub fn remove(&self, request_id: &str) {
-        self.inner
-            .lock()
-            .expect("job registry poisoned")
-            .remove(request_id);
     }
 
     /// Remove the entry for `request_id` only if it is still the job of
@@ -379,18 +410,38 @@ pub(crate) fn execute_response_message(
 }
 
 /// Read the server-imposed deadline (`context["matrix.deadline_ms"]`).
-/// Absent, unparsable or zero → no deadline.
+/// Absent, unparsable or zero → no deadline. An unparsable value is logged
+/// as a warning: Matrix always sends an integer, so a non-integer means the
+/// wire format drifted and the job is running with no deadline.
 pub fn deadline_from_context(context: &HashMap<String, String>) -> Option<Duration> {
-    context
-        .get(crate::context::keys::MATRIX_DEADLINE_MS)
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|ms| *ms > 0)
-        .map(Duration::from_millis)
+    let raw = context.get(crate::context::keys::MATRIX_DEADLINE_MS)?;
+    match raw.trim().parse::<u64>() {
+        Ok(0) => None,
+        Ok(ms) => Some(Duration::from_millis(ms)),
+        Err(_) => {
+            tracing::warn!(
+                value = %raw,
+                "matrix.deadline_ms is not an integer; running the job with no deadline"
+            );
+            None
+        }
+    }
 }
 
 /// Run a connector execution under the request's deadline, if any. When the
 /// deadline passes the future is dropped (see the module docs for what that
 /// stops) and the result is a [`ConnectorError::Timeout`].
+///
+/// Scope: the deadline wraps only `execute_with_context`, so time a job
+/// spends waiting for a concurrency permit (the runner's request semaphore) is
+/// *not* counted against it — the clock starts at execution, not dispatch.
+///
+/// Metrics: a job aborted by `matrix.cancel` *while executing* never reaches
+/// the runner's `requests_processed` / `requests_failed` update. The runners
+/// bump those counters after execution finishes but *before* the job claims
+/// its outcome with [`JobTicket::complete`], so a cancel that lands in that
+/// window still leaves the job counted (its result is then dropped). The
+/// tallies are therefore approximate for cancelled jobs.
 pub(crate) async fn run_with_deadline<T, F>(context: &HashMap<String, String>, fut: F) -> Result<T>
 where
     F: Future<Output = Result<T>>,
@@ -528,6 +579,34 @@ mod tests {
         assert_eq!(registry.len(), 1, "the newer job's entry must survive");
         assert!(new.complete());
         assert!(registry.is_empty());
+    }
+
+    /// A second dispatch reusing an in-flight `request_id` must abort the
+    /// first job rather than leave it running untracked (and so unrecallable).
+    #[tokio::test]
+    async fn reused_request_id_aborts_the_displaced_job() {
+        let registry = JobRegistry::new();
+        let (first_ticket, first_reg) = registry.track("agent-dup".into());
+        let first = tokio::spawn(futures::future::Abortable::new(
+            async move {
+                let _ticket = first_ticket;
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            },
+            first_reg,
+        ));
+
+        let (second_ticket, _second_reg) = registry.track("agent-dup".into());
+
+        let outcome = tokio::time::timeout(Duration::from_secs(2), first)
+            .await
+            .expect("the displaced job must stop, not run on")
+            .expect("task joined");
+        assert!(
+            matches!(outcome, Err(futures::future::Aborted)),
+            "the displaced job must be aborted"
+        );
+        assert_eq!(registry.len(), 1, "the newer job keeps its entry");
+        assert!(second_ticket.complete(), "the newer job owns the reused id");
     }
 
     #[test]

@@ -750,6 +750,9 @@ impl MultiConnectorRunner {
                     config,
                     connector: e.connector,
                     metrics: e.metrics,
+                    // Created once per entry; the driver reuses it across
+                    // every socket rebuild.
+                    jobs: crate::jobs::JobRegistry::new(),
                 }
             })
             .collect();

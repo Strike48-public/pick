@@ -1167,11 +1167,20 @@ impl WsMultiplexHandle {
                 let response = self
                     .jobs
                     .answer_cancel(req.request_id.clone(), &req.payload);
-                let _ = self
+                if let Err(e) = self
                     .socket
                     .outbound_tx
                     .send(jobs::execute_response_message(response))
-                    .await;
+                    .await
+                {
+                    // The job was already aborted; only the reply failed to
+                    // send (socket outbound closed). Log it so a lost cancel
+                    // ack is visible instead of silent.
+                    logger.warn(&format!(
+                        "ws multiplex handle {}: failed to send matrix.cancel reply: {e}",
+                        self.key
+                    ));
+                }
             }
             Some(stream_message::Message::ExecuteRequest(req)) => {
                 let request = SdkExecuteRequest {
@@ -1866,6 +1875,50 @@ pub(crate) struct WsMultiplexEntry {
     pub config: ConnectorConfig,
     pub connector: Arc<dyn BaseConnector>,
     pub metrics: Arc<Mutex<ConnectorMetrics>>,
+    /// The entry's job registry, created once with the entry and shared by
+    /// every handle respawned for it across socket rebuilds. A job started
+    /// before a socket blip keeps running, and its entry must stay
+    /// cancellable after the handle is respawned on the fresh socket — so the
+    /// registry cannot be rebuilt per reconnect (that would hand each handle
+    /// an empty map and make a job started before the blip uncancellable,
+    /// `unknown request_id`). Mirrors the gRPC runner, which builds one
+    /// `JobRegistry` per `RegistrationRunner` outside its own reconnect loop
+    /// (see `multi/mod.rs::run_grpc`).
+    pub jobs: JobRegistry,
+}
+
+impl WsMultiplexEntry {
+    /// Build the handle that serves this entry on `socket`. Called by
+    /// `run_tenant_group` once per entry for every socket it opens, so this is
+    /// the one place a respawned handle is assembled — and it always reuses
+    /// the entry's own [`JobRegistry`] rather than creating a fresh one.
+    fn handle_for_socket(
+        &self,
+        socket: Arc<WsMultiplexSocket>,
+        opts: &MultiTransportOptions,
+        shutdown: Arc<AtomicBool>,
+    ) -> WsMultiplexHandle {
+        let mut config = self.config.clone();
+        // Pin transport-level fields to the runner's options so the
+        // handle's view matches the socket it's bound to.
+        config.transport_type = TransportType::WebSocket;
+        config.host = opts.host.clone();
+        config.use_tls = opts.use_tls;
+        WsMultiplexHandle {
+            key: self.key.clone(),
+            config: Arc::new(RwLock::new(config)),
+            connector: self.connector.clone(),
+            socket,
+            shutdown,
+            metrics: self.metrics.clone(),
+            opts: opts.clone(),
+            // Shared across reconnects (see the field doc on `jobs`).
+            jobs: self.jobs.clone(),
+            request_semaphore: Arc::new(Semaphore::new(opts.max_concurrent_requests.max(1))),
+            session_token: Arc::new(RwLock::new(None)),
+            consecutive_rejections: Arc::new(AtomicU32::new(0)),
+        }
+    }
 }
 
 impl WsMultiplexDriver {
@@ -1909,6 +1962,10 @@ async fn run_tenant_group(
     shutdown: Arc<AtomicBool>,
     logger: Logger,
 ) -> Result<()> {
+    // Each entry carries its own job registry (`WsMultiplexEntry::jobs`),
+    // created with the entry and reused by every handle respawned below, so a
+    // job survives a socket rebuild and stays cancellable.
+
     // Outer reconnect loop: when a shared socket dies we rebuild it and
     // respawn every handle.
     let mut socket_attempt: u32 = 0;
@@ -1946,31 +2003,7 @@ async fn run_tenant_group(
         // semaphore (sized from opts) and its own session-token slot.
         let mut handle_tasks = Vec::with_capacity(entries.len());
         for entry in &entries {
-            let opts = opts.clone();
-            let shutdown = shutdown.clone();
-            let socket = socket.clone();
-            let key = entry.key.clone();
-            let metrics = entry.metrics.clone();
-            let connector = entry.connector.clone();
-            let mut config = entry.config.clone();
-            // Pin transport-level fields to the runner's options so the
-            // handle's view matches the socket it's bound to.
-            config.transport_type = TransportType::WebSocket;
-            config.host = opts.host.clone();
-            config.use_tls = opts.use_tls;
-            let handle = WsMultiplexHandle {
-                key,
-                config: Arc::new(RwLock::new(config)),
-                connector,
-                socket,
-                shutdown,
-                metrics,
-                opts: opts.clone(),
-                jobs: crate::jobs::JobRegistry::new(),
-                request_semaphore: Arc::new(Semaphore::new(opts.max_concurrent_requests.max(1))),
-                session_token: Arc::new(RwLock::new(None)),
-                consecutive_rejections: Arc::new(AtomicU32::new(0)),
-            };
+            let handle = entry.handle_for_socket(socket.clone(), &opts, shutdown.clone());
             handle_tasks.push(tokio::spawn(async move { handle.run().await }));
         }
 
@@ -2769,5 +2802,274 @@ mod tests {
             }
             other => panic!("expected ExecuteResponse, got {other:?}"),
         }
+    }
+
+    // --- matrix.cancel / deadline dispatch + reconnect (findings #1, #2) ----
+
+    /// A connector whose `execute` never finishes on its own, so a deadline is
+    /// the only thing that can end the job.
+    struct WsSleepyConn;
+    impl BaseConnector for WsSleepyConn {
+        fn connector_type(&self) -> &str {
+            "test_conn"
+        }
+        fn version(&self) -> &str {
+            "0.0.0"
+        }
+        fn execute(
+            &self,
+            _: serde_json::Value,
+            _: Option<&str>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + '_>,
+        > {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok(serde_json::json!({}))
+            })
+        }
+    }
+
+    /// A shared socket plus the receiving half of its outbound channel, so a
+    /// test can read the `StreamMessage`s a handle sends.
+    fn test_socket_with_rx() -> (Arc<WsMultiplexSocket>, mpsc::Receiver<StreamMessage>) {
+        let (out_tx, out_rx) = mpsc::channel(8);
+        (
+            Arc::new(WsMultiplexSocket::new("t".into(), out_tx, 8)),
+            out_rx,
+        )
+    }
+
+    /// Build a handle bound to `socket`, running `connector`, sharing `jobs`.
+    fn make_ws_handle(
+        socket: Arc<WsMultiplexSocket>,
+        connector: Arc<dyn BaseConnector>,
+        jobs: JobRegistry,
+    ) -> WsMultiplexHandle {
+        WsMultiplexHandle {
+            key: creds_key(),
+            config: Arc::new(RwLock::new(crate::connector::ConnectorConfig::default())),
+            connector,
+            socket,
+            shutdown: Arc::new(AtomicBool::new(false)),
+            metrics: Arc::new(Mutex::new(ConnectorMetrics::default())),
+            opts: MultiTransportOptions::default(),
+            jobs,
+            request_semaphore: Arc::new(Semaphore::new(8)),
+            session_token: Arc::new(RwLock::new(None)),
+            consecutive_rejections: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    fn ws_cancel_msg(reply_id: &str, target: &str) -> StreamMessage {
+        StreamMessage {
+            message: Some(stream_message::Message::ExecuteRequest(
+                proto::ExecuteRequest {
+                    request_id: reply_id.into(),
+                    payload: serde_json::json!({ "cancel_request_id": target })
+                        .to_string()
+                        .into_bytes(),
+                    payload_encoding: PayloadEncoding::Json as i32,
+                    capability_id: jobs::CANCEL_CAPABILITY.into(),
+                    ..Default::default()
+                },
+            )),
+        }
+    }
+
+    fn ws_execute_msg(request_id: &str, context: HashMap<String, String>) -> StreamMessage {
+        StreamMessage {
+            message: Some(stream_message::Message::ExecuteRequest(
+                proto::ExecuteRequest {
+                    request_id: request_id.into(),
+                    payload: b"{}".to_vec(),
+                    payload_encoding: PayloadEncoding::Json as i32,
+                    context,
+                    ..Default::default()
+                },
+            )),
+        }
+    }
+
+    fn ws_execute_reply(msg: StreamMessage) -> proto::ExecuteResponse {
+        match msg.message {
+            Some(stream_message::Message::ExecuteResponse(r)) => r,
+            other => panic!("expected ExecuteResponse, got {other:?}"),
+        }
+    }
+
+    /// A `matrix.cancel` dispatched to a handle stops the tracked job, replies
+    /// `success` on the cancel's own id, and the job then cannot send its
+    /// result (`complete()` is false). Mirrors the gRPC runner's
+    /// `dispatch_matrix_cancel_stops_a_tracked_job`.
+    #[tokio::test]
+    async fn ws_dispatch_matrix_cancel_stops_a_tracked_job() {
+        let (socket, mut out_rx) = test_socket_with_rx();
+        let handle = make_ws_handle(socket.clone(), Arc::new(CredsNoopConn), JobRegistry::new());
+        let (entry, _in_rx) = admit_with_rx(&socket, "inst-1").await;
+        let logger = Logger::new("test");
+
+        let (ticket, _reg) = handle.jobs.track("job-1".into());
+        handle
+            .dispatch_inbound(ws_cancel_msg("c-1", "job-1"), &entry, &logger)
+            .await;
+
+        let reply = ws_execute_reply(out_rx.try_recv().expect("cancel must be answered"));
+        assert_eq!(reply.request_id, "c-1");
+        assert!(reply.success);
+        assert!(
+            !ticket.complete(),
+            "the cancelled job must not send its own result"
+        );
+    }
+
+    /// A dispatched job whose `context["matrix.deadline_ms"]` elapses before
+    /// `execute` finishes is answered on the job's id with `success: false`
+    /// and the `Timeout: deadline exceeded: …` error text.
+    #[tokio::test]
+    async fn ws_dispatch_execute_honours_deadline() {
+        let (socket, mut out_rx) = test_socket_with_rx();
+        let handle = make_ws_handle(socket.clone(), Arc::new(WsSleepyConn), JobRegistry::new());
+        let (entry, _in_rx) = admit_with_rx(&socket, "inst-1").await;
+        let logger = Logger::new("test");
+
+        let mut ctx = HashMap::new();
+        ctx.insert(
+            crate::context::keys::MATRIX_DEADLINE_MS.to_string(),
+            "50".to_string(),
+        );
+        handle
+            .dispatch_inbound(ws_execute_msg("job-deadline", ctx), &entry, &logger)
+            .await;
+
+        let reply = ws_execute_reply(
+            tokio::time::timeout(Duration::from_secs(2), out_rx.recv())
+                .await
+                .expect("deadline must produce a reply")
+                .expect("outbound channel open"),
+        );
+        assert_eq!(reply.request_id, "job-deadline");
+        assert!(!reply.success, "a deadline overrun must fail the job");
+        assert!(
+            reply.error.contains("deadline"),
+            "error should name the deadline, got: {}",
+            reply.error
+        );
+        assert!(
+            handle.jobs.is_empty(),
+            "a timed-out job leaves no registry entry"
+        );
+    }
+
+    /// Finding #1: the job registry must survive a socket rebuild. A job
+    /// tracked on the handle serving one socket stays cancellable on the
+    /// handle respawned for the next socket. Both handles are built by
+    /// `WsMultiplexEntry::handle_for_socket` — the same builder
+    /// `run_tenant_group` calls for every socket it opens — so a builder that
+    /// creates a fresh `JobRegistry` per handle (the round-1 bug) hands the
+    /// second handle an empty registry, the cancel comes back `unknown`, and
+    /// this test goes red.
+    #[tokio::test]
+    async fn ws_job_registry_survives_a_socket_rebuild() {
+        let logger = Logger::new("test");
+        let opts = MultiTransportOptions::default();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let entry = WsMultiplexEntry {
+            key: creds_key(),
+            config: crate::connector::ConnectorConfig::default(),
+            connector: Arc::new(CredsNoopConn),
+            metrics: Arc::new(Mutex::new(ConnectorMetrics::default())),
+            jobs: JobRegistry::new(),
+        };
+
+        // Socket #1: the handle tracks a job, then the socket dies.
+        let (socket1, _out1) = test_socket_with_rx();
+        let handle1 = entry.handle_for_socket(socket1.clone(), &opts, shutdown.clone());
+        let (ticket, _reg) = handle1.jobs.track("job-blip".into());
+        drop(handle1);
+        drop(socket1);
+
+        // Socket #2: the respawned handle must see the job.
+        let (socket2, mut out2) = test_socket_with_rx();
+        let handle2 = entry.handle_for_socket(socket2.clone(), &opts, shutdown.clone());
+        let (admitted, _in2) = admit_with_rx(&socket2, "inst-1").await;
+
+        handle2
+            .dispatch_inbound(ws_cancel_msg("c", "job-blip"), &admitted, &logger)
+            .await;
+        let reply = ws_execute_reply(out2.try_recv().expect("cancel must be answered"));
+        assert!(
+            reply.success,
+            "a job started before a socket blip must still be cancellable after reconnect"
+        );
+        assert!(
+            !ticket.complete(),
+            "the cancel already answered for the job"
+        );
+    }
+
+    /// A cancel that lands while `handle_execute` is parked at the
+    /// post-execute `metrics.lock().await` (the window before `complete()`)
+    /// must claim the job's outcome, so the job's own `ExecuteResponse` is
+    /// never sent. The window is made observable by holding the metrics lock.
+    /// Removing the `complete()` check in this runner's `handle_execute` turns
+    /// this RED (the result is then sent). Mirrors the single runner's
+    /// `single_runner_cancel_before_complete_drops_the_jobs_result`.
+    #[tokio::test]
+    async fn ws_multi_cancel_before_complete_drops_the_jobs_result() {
+        use crate::jobs::CancelOutcome;
+
+        let registry = JobRegistry::new();
+        let (ticket, _abort_reg) = registry.track("job-race".into());
+        let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
+        let metrics = Arc::new(Mutex::new(ConnectorMetrics::default()));
+        let key = RegistrationKey {
+            tenant_id: "t".into(),
+            connector_type: "test_conn".into(),
+            instance_id: "i".into(),
+        };
+        let logger = Logger::new("test");
+        let request = SdkExecuteRequest {
+            request_id: "job-race".into(),
+            payload: b"{}".to_vec(),
+            payload_encoding: PayloadEncoding::Json,
+            context: HashMap::new(),
+            capability_id: None,
+        };
+
+        // Park handle_execute at a metrics.lock() await by holding the lock.
+        let guard = metrics.lock().await;
+        let fut = handle_execute(
+            Arc::new(CredsNoopConn),
+            request,
+            tx,
+            metrics.clone(),
+            &logger,
+            &key,
+            Some(&ticket),
+        );
+        tokio::pin!(fut);
+        tokio::select! {
+            _ = &mut fut => panic!("handle_execute must block on the held metrics lock"),
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+
+        // The cancel lands while the job is parked: it claims the entry.
+        assert_eq!(
+            registry.cancel("job-race"),
+            CancelOutcome::Stopped {
+                request_id: "job-race".into()
+            }
+        );
+
+        // Release the lock; handle_execute sees complete()==false and drops
+        // its result instead of sending it.
+        drop(guard);
+        fut.await
+            .expect("handle_execute returns Ok even when it drops the result");
+        assert!(
+            rx.try_recv().is_err(),
+            "a cancelled job must not send its own ExecuteResponse"
+        );
     }
 }

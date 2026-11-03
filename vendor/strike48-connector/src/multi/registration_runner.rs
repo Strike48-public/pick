@@ -513,7 +513,15 @@ impl RegistrationRunner {
                 let response = self
                     .jobs
                     .answer_cancel(req.request_id.clone(), &req.payload);
-                let _ = tx.send(jobs::execute_response_message(response)).await;
+                if let Err(e) = tx.send(jobs::execute_response_message(response)).await {
+                    // The job was already aborted; only the reply failed to
+                    // send (stream torn down). Log it so a lost cancel ack is
+                    // visible instead of silent.
+                    logger.warn(&format!(
+                        "registration {}: failed to send matrix.cancel reply: {e}",
+                        self.key
+                    ));
+                }
                 None
             }
             Some(stream_message::Message::ExecuteRequest(req)) => {
@@ -2573,6 +2581,151 @@ mod tests {
         assert!(
             runner.jobs.is_empty(),
             "a finished job leaves no registry entry"
+        );
+    }
+
+    /// A connector whose `execute` never finishes on its own, so only the
+    /// deadline can end the job.
+    struct SleepyConn;
+    impl BaseConnector for SleepyConn {
+        fn connector_type(&self) -> &str {
+            "test_conn"
+        }
+        fn version(&self) -> &str {
+            "0.0.0"
+        }
+        fn execute(
+            &self,
+            _: serde_json::Value,
+            _: Option<&str>,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + '_>>
+        {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok(serde_json::json!({}))
+            })
+        }
+    }
+
+    fn make_runner_with_connector(connector: Arc<dyn BaseConnector>) -> RegistrationRunner {
+        let mut runner = make_runner_for_dispatch_tests();
+        runner.connector = connector;
+        runner
+    }
+
+    /// Finding #2: a dispatched job whose `context["matrix.deadline_ms"]`
+    /// elapses before `execute` finishes is answered on the job's own id with
+    /// `success: false` and the `Timeout: deadline exceeded: …` error text,
+    /// and leaves no registry entry.
+    #[tokio::test]
+    async fn dispatch_execute_honours_deadline() {
+        let runner = make_runner_with_connector(Arc::new(SleepyConn));
+        let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
+        let mut last_hb = Instant::now();
+        let logger = Logger::new("test");
+
+        let mut ctx = HashMap::new();
+        ctx.insert(
+            crate::context::keys::MATRIX_DEADLINE_MS.to_string(),
+            "50".to_string(),
+        );
+        let msg = StreamMessage {
+            message: Some(stream_message::Message::ExecuteRequest(
+                proto::ExecuteRequest {
+                    request_id: "job-deadline".into(),
+                    payload: b"{}".to_vec(),
+                    payload_encoding: PayloadEncoding::Json as i32,
+                    context: ctx,
+                    ..Default::default()
+                },
+            )),
+        };
+
+        runner
+            .dispatch_inbound(msg, &tx, &mut last_hb, &mut HashMap::new(), &logger)
+            .await;
+
+        let reply = execute_reply(
+            tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("deadline must produce a reply")
+                .expect("channel open"),
+        );
+        assert_eq!(reply.request_id, "job-deadline");
+        assert!(!reply.success, "a deadline overrun must fail the job");
+        assert!(
+            reply.error.contains("deadline"),
+            "error should name the deadline, got: {}",
+            reply.error
+        );
+        assert!(
+            runner.jobs.is_empty(),
+            "a timed-out job leaves no registry entry"
+        );
+    }
+
+    /// A cancel that lands while `handle_execute` is parked at the
+    /// post-execute `metrics.lock().await` (the window before `complete()`)
+    /// must claim the job's outcome, so the job's own `ExecuteResponse` is
+    /// never sent. The window is made observable by holding the metrics lock.
+    /// Removing the `complete()` check in this runner's `handle_execute` turns
+    /// this RED (the result is then sent). Mirrors the single runner's
+    /// `single_runner_cancel_before_complete_drops_the_jobs_result`.
+    #[tokio::test]
+    async fn grpc_multi_cancel_before_complete_drops_the_jobs_result() {
+        use crate::jobs::CancelOutcome;
+
+        let registry = JobRegistry::new();
+        let (ticket, _abort_reg) = registry.track("job-race".into());
+        let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
+        let metrics = Arc::new(Mutex::new(ConnectorMetrics::default()));
+        let key = RegistrationKey {
+            tenant_id: "t".into(),
+            connector_type: "test_conn".into(),
+            instance_id: "i".into(),
+        };
+        let logger = Logger::new("test");
+        let request = SdkExecuteRequest {
+            request_id: "job-race".into(),
+            payload: b"{}".to_vec(),
+            payload_encoding: PayloadEncoding::Json,
+            context: HashMap::new(),
+            capability_id: None,
+        };
+
+        // Park handle_execute at a metrics.lock() await by holding the lock.
+        let guard = metrics.lock().await;
+        let fut = handle_execute(
+            Arc::new(NoopConn),
+            request,
+            tx,
+            metrics.clone(),
+            &logger,
+            &key,
+            Some(&ticket),
+        );
+        tokio::pin!(fut);
+        tokio::select! {
+            _ = &mut fut => panic!("handle_execute must block on the held metrics lock"),
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+
+        // The cancel lands while the job is parked: it claims the entry.
+        assert_eq!(
+            registry.cancel("job-race"),
+            CancelOutcome::Stopped {
+                request_id: "job-race".into()
+            }
+        );
+
+        // Release the lock; handle_execute sees complete()==false and drops
+        // its result instead of sending it.
+        drop(guard);
+        fut.await
+            .expect("handle_execute returns Ok even when it drops the result");
+        assert!(
+            rx.try_recv().is_err(),
+            "a cancelled job must not send its own ExecuteResponse"
         );
     }
 }

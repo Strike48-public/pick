@@ -84,6 +84,11 @@ tower-service = { workspace = true }
 hyper-util = { workspace = true }
 metrics = "0.24.3"
 
+# Process-group kill on drop in `process.rs` (SIGKILL the child's whole group
+# so grandchildren don't outlive a cancelled/timed-out job). Unix only.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 tempfile = "3"

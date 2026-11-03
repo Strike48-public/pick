@@ -40,8 +40,11 @@ pub(crate) fn build_registration_metadata(
 
     if tool_declared && !metadata.contains_key("tool_schemas") {
         // Reserved-namespace guard: a connector-authored tool in the
-        // `matrix.` platform namespace would be shadowed by the SDK's
-        // interception and never reachable, so it is not advertised.
+        // `matrix.` platform namespace is not advertised, so it cannot clash
+        // with a current or future platform verb. The SDK only actually
+        // intercepts the exact `matrix.cancel`; a different `matrix.*` name is
+        // simply left out of `tool_schemas` (it would still reach `execute` if
+        // the server dispatched it).
         let task_types: Vec<_> = connector
             .capabilities()
             .into_iter()
@@ -54,7 +57,7 @@ pub(crate) fn build_registration_metadata(
                         name = %schema.name,
                         task_type_id = %schema.task_type_id,
                         "connector capability uses the reserved 'matrix.' namespace; \
-                         not advertised (the SDK intercepts that namespace)"
+                         not advertised (reserved for platform verbs)"
                     );
                 }
                 !reserved
@@ -2891,6 +2894,80 @@ mod tests {
             .await
             .expect("default execute_with_context must delegate to execute and succeed");
         assert_eq!(resp, serde_json::json!({}));
+    }
+
+    /// A cancel that lands while `handle_request` is parked at the
+    /// post-execute `metrics.write().await` (the window before `complete()`)
+    /// must claim the job's outcome, so the job's own `ExecuteResponse` is
+    /// never sent — only the cancel's reply is. We make the window observable
+    /// by holding the metrics write lock: `handle_request` blocks at a
+    /// `metrics.write()` await, we fire the cancel, then release the lock and
+    /// let it run through `complete()`. Removing the `complete()` guard in
+    /// `handle_request` turns this RED (the result is then sent).
+    #[tokio::test]
+    async fn single_runner_cancel_before_complete_drops_the_jobs_result() {
+        use crate::jobs::{CancelOutcome, JobRegistry};
+
+        // A client whose outbound channel we can inspect.
+        #[allow(deprecated)]
+        let client = ConnectorClient::with_options(ClientOptions {
+            url: Some("grpc://localhost:1".to_string()),
+            host: None,
+            use_tls: None,
+            transport: None,
+            default_timeout_ms: Some(30000),
+        });
+        let mut outbound = client.install_test_outbound();
+        let client = Arc::new(RwLock::new(Some(client)));
+
+        let metrics = Arc::new(RwLock::new(ConnectorMetrics::default()));
+        let registry = JobRegistry::new();
+        let (ticket, _abort_reg) = registry.track("job-race".into());
+
+        let connector: Arc<dyn BaseConnector> = Arc::new(DummyConnector);
+        let request = ExecuteRequest {
+            request_id: "job-race".into(),
+            payload: b"{}".to_vec(),
+            payload_encoding: PayloadEncoding::Json,
+            context: HashMap::new(),
+            capability_id: None,
+        };
+
+        // Park handle_request at a metrics.write() await by holding the lock.
+        let guard = metrics.write().await;
+        let logger = Logger::new("test");
+        let fut = ConnectorRunner::handle_request(
+            connector,
+            request,
+            client.clone(),
+            metrics.clone(),
+            logger,
+            Some(&ticket),
+        );
+        tokio::pin!(fut);
+        tokio::select! {
+            _ = &mut fut => panic!("handle_request must block on the held metrics lock"),
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+
+        // Cancel lands while the job is parked: it claims the registry entry.
+        assert_eq!(
+            registry.cancel("job-race"),
+            CancelOutcome::Stopped {
+                request_id: "job-race".into()
+            }
+        );
+
+        // Release the lock; handle_request finishes, sees complete()==false
+        // and drops its result instead of sending it.
+        drop(guard);
+        fut.await
+            .expect("handle_request returns Ok even when it drops the result");
+
+        assert!(
+            outbound.try_recv().is_err(),
+            "a cancelled job must not send its own ExecuteResponse"
+        );
     }
 
     #[test]

@@ -159,9 +159,11 @@ that release.
 
 ## matrix-cancel-and-deadline
 
-**Files:** `src/jobs.rs` (new), `src/connector.rs`, `src/multi/mod.rs`,
-`src/multi/registration_runner.rs`, `src/multi/ws_multiplex.rs`,
-`src/process.rs`, `src/context.rs`, `src/lib.rs`
+**Files:** `src/jobs.rs` (new), `src/connector.rs`, `src/client.rs`,
+`src/multi/mod.rs`, `src/multi/registration_runner.rs`,
+`src/multi/ws_multiplex.rs`, `src/process.rs`, `src/context.rs`, `src/lib.rs`,
+`Cargo.toml` / `Cargo.toml.orig` (Unix-only `libc` dependency for the
+process-group kill)
 
 **Problem.** Pressing Stop in Matrix kills the agent's worker, but a tool
 already dispatched to pick keeps running against the target, while Matrix
@@ -169,7 +171,14 @@ records it as cancelled (Strike48/matrix#4684). The SDK discarded each job's
 task handle, so nothing could recall it.
 
 **Change.** Mirrors the sdk-rs branch `fix/sdk-rs/connector-job-cancel-v1`
-(POC `aa49af6` + `2e1fe5e`):
+at **`eff0dbd`** (https://github.com/Strike48/sdk-rs/pull/69, final review
+round). Applied as the sdk-rs diff `2e1fe5e..eff0dbd` of `crates/connector/src`
+on top of the previous mirror (POC `aa49af6` + `2e1fe5e`), so the fork's other
+patches are untouched. After the re-copy, `jobs.rs`, `process.rs`,
+`context.rs`, `lib.rs` and `multi/mod.rs` are byte-identical to sdk-rs
+`eff0dbd`; `connector.rs`, `client.rs`, `multi/registration_runner.rs` and
+`multi/ws_multiplex.rs` differ only by this fork's other patches (same delta
+as before the re-copy).
 
 - Every `ExecuteRequest` is tracked in a `JobRegistry` keyed by `request_id`.
 - An `ExecuteRequest` with the reserved capability `matrix.cancel` and
@@ -177,8 +186,13 @@ task handle, so nothing could recall it.
   it: `success: true` = stopped, `success: false` + `unknown request_id` = not
   in flight. Exactly one answer per job reaches Matrix.
 - `context["matrix.deadline_ms"]` bounds a job's execution.
-- `process::run_command*` set `kill_on_drop(true)`.
-- Tools named `matrix.*` are not advertised.
+- `process::run_command*` set `kill_on_drop(true)`, and on Unix run each child
+  in its own process group and SIGKILL the whole group on a
+  dropped-before-completion future (grandchildren die too).
+- A reused in-flight `request_id` aborts the displaced job.
+- The WS multiplex keeps one `JobRegistry` per entry across socket rebuilds.
+- Lost cancel-reply sends are logged.
+- Tools named `matrix.*` are not advertised in the auto-derived `tool_schemas`.
 
 All three runners are covered. No proto change.
 
@@ -191,8 +205,10 @@ call `handle_request` / `handle_execute` pass the new `ticket` argument as
 `kill_on_drop(true)`. Pick's own spawn sites set it as part of the same change
 (`crates/platform/src/desktop/`).
 
-**Tests.** The registry, ticket, deadline and multi-runner dispatch tests run
-with `cargo test --lib` here. The gRPC end-to-end tests (including the one
+**Tests.** The registry, ticket, deadline, multi-runner dispatch, WS
+reconnect, `complete()`-window and process-group tests run with
+`cargo test --manifest-path vendor/strike48-connector/Cargo.toml --lib` here
+(427 at the `eff0dbd` mirror). The gRPC end-to-end tests (including the one
 that cancels a job running a real child process) live upstream in
 `crates/connector/tests/cancel_e2e.rs`.
 
