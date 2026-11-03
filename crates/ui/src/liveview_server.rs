@@ -39,44 +39,6 @@ static MATRIX_API_URL_GLOBAL: std::sync::RwLock<String> = std::sync::RwLock::new
 #[cfg(feature = "liveview")]
 static MATRIX_AUTH_TOKEN_GLOBAL: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
 
-/// Global terminal log lines — connector events get pushed here so the
-/// WorkspaceApp Logs page can display them even in headless mode.
-#[cfg(feature = "liveview")]
-static TERMINAL_LINES_GLOBAL: std::sync::RwLock<Vec<pentest_core::terminal::TerminalLine>> =
-    std::sync::RwLock::new(Vec::new());
-
-/// Append a terminal line to the global log buffer.
-#[cfg(feature = "liveview")]
-pub fn push_terminal_line(line: pentest_core::terminal::TerminalLine) {
-    if let Ok(mut lines) = TERMINAL_LINES_GLOBAL.write() {
-        lines.push(line);
-        // Cap at 5000 lines to avoid unbounded growth
-        if lines.len() > 5000 {
-            let drain_to = lines.len() - 5000;
-            lines.drain(0..drain_to);
-        }
-    }
-}
-
-/// No-op when liveview is not enabled.
-#[cfg(not(feature = "liveview"))]
-pub fn push_terminal_line(_line: pentest_core::terminal::TerminalLine) {}
-
-/// Return all terminal lines from the global buffer.
-#[cfg(feature = "liveview")]
-pub fn get_terminal_lines() -> Vec<pentest_core::terminal::TerminalLine> {
-    TERMINAL_LINES_GLOBAL
-        .read()
-        .map(|l| l.clone())
-        .unwrap_or_default()
-}
-
-/// Return the number of terminal lines currently in the global buffer.
-#[cfg(feature = "liveview")]
-pub fn terminal_lines_count() -> usize {
-    TERMINAL_LINES_GLOBAL.read().map(|l| l.len()).unwrap_or(0)
-}
-
 /// Set the Matrix API credentials for the liveview workspace chat panel.
 #[cfg(feature = "liveview")]
 pub fn set_matrix_credentials(api_url: &str, auth_token: &str) {

@@ -547,7 +547,10 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         });
     }
 
-    // Debug: log credential state to both tracing and the Logs sidebar
+    // Debug: log credential state to the Logs page (emit also traces it).
+    // Only when it changes: this runs during render, and an emit wakes every
+    // Logs signal, which re-renders the parents and this panel again.
+    let last_credential_log = use_hook(|| std::rc::Rc::new(std::cell::RefCell::new(String::new())));
     if props.visible && !agents_loaded() {
         let log_msg = format!(
             "[chat] waiting for credentials: api_url={} token_len={} session_token_len={} fetch_started={}",
@@ -556,8 +559,10 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             crate::session::get_auth_token().len(),
             fetch_started(),
         );
-        tracing::info!("{}", log_msg);
-        crate::liveview_server::push_terminal_line(TerminalLine::info(log_msg));
+        if *last_credential_log.borrow() != log_msg {
+            *last_credential_log.borrow_mut() = log_msg.clone();
+            pentest_core::ui_log::emit(TerminalLine::info(log_msg));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -583,7 +588,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             let mut token_tick = token_tick;
             browser_auth_attempted.set(true);
             let api_url_clone = api_url.clone();
-            crate::liveview_server::push_terminal_line(TerminalLine::info(
+            pentest_core::ui_log::emit(TerminalLine::info(
                 "[chat] No auth token — opening browser for authentication...",
             ));
             spawn(async move {
@@ -604,13 +609,12 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                         // Bump the tick so the render re-reads the session store
                         // (RwLock, not a signal) and drops the awaiting state.
                         token_tick += 1;
-                        crate::liveview_server::push_terminal_line(TerminalLine::success(
+                        pentest_core::ui_log::emit(TerminalLine::success(
                             "[chat] Authentication successful — chat ready",
                         ));
                     }
                     Err(e) => {
-                        tracing::warn!("[chat] Browser auth failed: {}", e);
-                        crate::liveview_server::push_terminal_line(TerminalLine::error(format!(
+                        pentest_core::ui_log::emit(TerminalLine::error(format!(
                             "[chat] Authentication failed: {}",
                             e
                         )));
@@ -661,14 +665,14 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         let log_url = api_url.clone();
         // Captured for the auth-error recovery path below (Signals are Copy).
         let mut auth_fail_count = auth_fail_count;
-        crate::liveview_server::push_terminal_line(TerminalLine::info(format!(
+        pentest_core::ui_log::emit(TerminalLine::info(format!(
             "[chat] fetching agents from {}",
             api_url
         )));
         spawn(async move {
             match client.list_agents().await {
                 Ok(mut list) => {
-                    crate::liveview_server::push_terminal_line(TerminalLine::success(format!(
+                    pentest_core::ui_log::emit(TerminalLine::success(format!(
                         "[chat] loaded {} agents from {}",
                         list.len(),
                         log_url
@@ -853,14 +857,10 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 Err(e) => {
                     let err_str = e.to_string();
                     let session_tok = crate::session::get_auth_token();
-                    tracing::error!(
-                        "ChatPanel: failed to fetch agents: {} (token_len={})",
+                    pentest_core::ui_log::emit(TerminalLine::error(format!(
+                        "[chat] failed to fetch agents: {} (token_len={})",
                         err_str,
                         session_tok.len(),
-                    );
-                    crate::liveview_server::push_terminal_line(TerminalLine::error(format!(
-                        "[chat] failed to fetch agents: {}",
-                        err_str
                     )));
 
                     let is_auth_err = err_str.contains("authenticated")
