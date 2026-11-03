@@ -31,8 +31,9 @@ pub const SUGGESTED_ACTIONS: &[(&str, &str)] = &[
 ///
 /// This is a thin wrapper over the shared, pure builder in `pentest-core`
 /// (`pentest_core::matrix::default_pentest_agent_input`); it only supplies the
-/// UI's session-derived tool names so the crux middleware and the Dioxus app
-/// share ONE implementation of the agent persona.
+/// UI's session-derived inputs (registered tool names, live subnets and the
+/// container-bridge advisory) so the crux middleware and the Dioxus app share
+/// ONE implementation of the agent persona.
 pub async fn default_pentest_agent_input(
     tenant_id: &str,
     connector_name: &str,

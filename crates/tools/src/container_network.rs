@@ -274,12 +274,13 @@ pub async fn warn_if_bridged_container() {
         // set() wins exactly once even if two startup paths race here.
         if WARNED.set(()).is_ok() {
             tracing::warn!(
-                "This connector runs in a container on a Docker bridge network: scans and \
-                 discovery can only see the container's private subnet {subnet}, not the \
-                 host's LAN. Multicast discovery (mDNS/SSDP) returns nothing and ARP sees \
-                 only the bridge. To scan the host's network, enable host networking \
-                 (network_mode: host in docker-compose.override.yml) - see the 'Scanning \
-                 your local network (host networking)' section of docs/DOCKER_INSTALL.md."
+                "This connector runs in a container on a bridge network (Docker/Podman): it \
+                 sees the container's private subnet {subnet}, not the host's LAN directly. \
+                 Scans of LAN hosts by explicit address still work through the container's \
+                 NAT, but ARP, mDNS and SSDP discovery cannot see past the bridge. For full \
+                 discovery, enable host networking (network_mode: host in \
+                 docker-compose.override.yml) - see the 'Scanning your local network (host \
+                 networking)' section of docs/DOCKER_INSTALL.md."
             );
         }
     }
@@ -289,19 +290,28 @@ pub async fn warn_if_bridged_container() {
 ///
 /// `Some` only for [`ContainerNetworking::Bridged`]: the agent gets told its
 /// subnets are the container's private bridge network so it reports "I can
-/// only see the container's private network" instead of an empty LAN. All
-/// other classifications yield `None` - no caveat on healthy installs.
+/// only see the container's private network" instead of an empty LAN, and
+/// learns what still works (TCP scans by explicit address through the NAT)
+/// and what does not (ARP, mDNS, SSDP discovery). All other classifications
+/// yield `None` - no caveat on healthy installs.
+///
+/// The wording is kept consistent with [`scan_target_caveat`], which carries
+/// the same fact into scan-tool results for agents without this persona.
 pub fn bridged_network_advisory(classification: &ContainerNetworking) -> Option<String> {
     match classification {
         ContainerNetworking::Bridged { subnet } => Some(format!(
-            "IMPORTANT: these subnets are this connector's private Docker bridge network \
-             ({subnet}), NOT the operator's LAN. You can reach little beyond the Docker \
-             host itself: hosts on the real network, and multicast discovery of them \
-             (mDNS/SSDP), are not reachable from here. When describing network scope, say \
-             that you can only see the container's private network - never report an empty \
-             scan as 'no hosts on the network' without that caveat - and tell the operator \
-             to enable host networking (docs/DOCKER_INSTALL.md, 'Scanning your local \
-             network (host networking)') if they need the LAN scanned."
+            "IMPORTANT: the subnets listed above are this connector's private container \
+             bridge network ({subnet}), not the operator's LAN. LAN hosts are still \
+             reachable by explicit address through the container's NAT, so TCP scans of \
+             specific hosts and CIDRs work, but ARP, mDNS and SSDP discovery cannot see \
+             past the bridge: host discovery and local-service discovery find nothing \
+             beyond the container. When describing network scope, say you can see only \
+             the container's private bridge network - never report an empty discovery \
+             scan as 'no hosts on the network' without that caveat. Full discovery needs \
+             host networking (network_mode: host - docs/DOCKER_INSTALL.md, 'Scanning \
+             your local network (host networking)'); on Docker Desktop for \
+             macOS/Windows, host networking is layer-4 only, so use the native Pick app \
+             for discovery."
         )),
         _ => None,
     }
@@ -833,12 +843,31 @@ mod tests {
         let advisory = bridged_network_advisory(&bridged).expect("bridged gets an advisory");
         assert!(advisory.contains("172.18.0.0/16"), "names the subnet");
         assert!(
-            advisory.to_lowercase().contains("docker bridge"),
+            advisory.contains("bridge network"),
             "says the network is the container's bridge"
+        );
+        // Item 3: the advisory must not overstate the limitation - LAN hosts
+        // ARE reachable by explicit address through the NAT.
+        assert!(advisory.contains("NAT"), "acknowledges NAT reachability");
+        for signal in ["ARP", "mDNS", "SSDP"] {
+            assert!(
+                advisory.contains(signal),
+                "names the discovery that fails: {signal}"
+            );
+        }
+        assert!(advisory.contains("host networking"), "points at the fix");
+        // Optional note: Docker Desktop host networking is L4-only.
+        assert!(
+            advisory.contains("Docker Desktop"),
+            "covers the Docker Desktop caveat"
         );
         assert!(
             advisory.contains("DOCKER_INSTALL.md"),
             "points at the runbook"
+        );
+        assert!(
+            !advisory.contains("are not reachable"),
+            "must not claim LAN hosts are unreachable"
         );
         // Silent classifications carry no caveat.
         assert_eq!(

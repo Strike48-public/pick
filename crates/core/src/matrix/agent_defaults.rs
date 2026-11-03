@@ -52,12 +52,13 @@ fn available_tools_section(tool_names: &[String]) -> String {
 /// Lists the connector's active subnets so the agent targets them directly
 /// instead of guessing a home range (the `192.168.1.0/24`-on-a-`10.0.x`
 /// failure). `network_advisory` (pick#510) carries an optional caveat paragraph
-/// rendered after the subnet list - notably the Docker-bridge warning that the
+/// rendered after the subnet list - the container-bridge warning that the
 /// listed subnets are the container's private network, not the host LAN. The
-/// section is emitted when either input is present: subnets without an
-/// advisory are the healthy case, an advisory without subnets still warns
-/// (e.g. a bridged container whose enumeration degraded), and both empty
-/// yields an empty string so no section is emitted.
+/// section is emitted when either input is present. In practice the advisory
+/// always rides with at least the bridge subnet it names (the classifier needs
+/// that subnet to decide `Bridged`, and the same enumeration feeds both
+/// inputs), so an advisory-only section is a defensive leftover rather than a
+/// reachable state; both empty yields an empty string so no section is emitted.
 fn host_network_facts_section(active_subnets: &[String], network_advisory: Option<&str>) -> String {
     if active_subnets.is_empty() && network_advisory.is_none() {
         return String::new();
@@ -129,11 +130,13 @@ fn system_message_with_available_tools(
 ///
 /// `tool_names` are the registered tool names to auto-approve, and
 /// `active_subnets` are the connector's live subnet CIDRs injected into the
-/// persona (#347). Callers pass both explicitly (the Dioxus app sources them
-/// from its session / `network_context`) so this builder stays pure.
+/// persona (#347). Callers pass both explicitly - in practice sourced from
+/// `pentest_tools::container_network::persona_network_facts` (subnets plus
+/// the container-bridge advisory from one enumeration) - so this builder
+/// stays pure.
 ///
 /// `network_advisory` (pick#510) is an optional caveat paragraph appended to the
-/// host-network-facts section - notably the Docker-bridge warning from
+/// host-network-facts section - the container-bridge warning from
 /// `pentest_tools::container_network` that the subnets are the container's
 /// private network, not the host LAN. `None` keeps the persona unchanged.
 pub fn default_pentest_agent_input(
@@ -893,8 +896,8 @@ mod tests {
         // advisory must ride with the subnet list so the agent reports "I can
         // only see the container's private network" instead of an empty LAN.
         let subnets = vec!["172.18.0.0/16".to_string()];
-        let advisory = "IMPORTANT: these subnets are this connector's private Docker \
-                        bridge network (172.18.0.0/16), NOT the operator's LAN.";
+        let advisory = "IMPORTANT: the subnets listed above are this connector's private \
+                        container bridge network (172.18.0.0/16), not the operator's LAN.";
         let msg =
             system_message_with_available_tools(&["port_scan".into()], &subnets, Some(advisory));
         assert!(
@@ -903,20 +906,21 @@ mod tests {
         );
         assert!(msg.contains("172.18.0.0/16"), "subnet still listed");
         assert!(
-            msg.contains("NOT the operator's LAN"),
+            msg.contains("not the operator's LAN"),
             "advisory paragraph appended after the list"
         );
-        // Advisory without subnets still emits its section (a bridged container
-        // whose enumeration degraded must not lose the caveat).
+        // Advisory without subnets still emits its section (defensive: the
+        // classifier cannot currently produce an advisory without the subnet
+        // that produced it, since the same enumeration feeds both inputs).
         let advisory_only =
             system_message_with_available_tools(&["port_scan".into()], &[], Some(advisory));
         assert!(
-            advisory_only.contains("NOT the operator's LAN"),
+            advisory_only.contains("not the operator's LAN"),
             "advisory-only section is emitted"
         );
         // And the advisory alone never leaks into an otherwise bare persona.
         let bare = system_message_with_available_tools(&[], &[], None);
-        assert!(!bare.contains("NOT the operator's LAN"));
+        assert!(!bare.contains("not the operator's LAN"));
     }
 
     #[test]
