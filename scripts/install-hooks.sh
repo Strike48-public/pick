@@ -23,7 +23,7 @@ fi
 
 echo ""
 echo "Hooks installed. The following hooks will run on every commit:"
-echo "  - pre-commit: scans staged changes for customer names (PII)"
+echo "  - pre-commit: scans staged changes for customer names (PII) and secrets (gitleaks, if installed)"
 echo "  - commit-msg: scans commit messages for customer names (PII)"
 
 # Make the placeholder-only state obvious: if the local list is still identical
