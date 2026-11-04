@@ -715,6 +715,7 @@ impl MultiConnectorRunner {
                 shutdown: self.shutdown_requested.clone(),
                 metrics: entry.metrics,
                 opts: self.opts.clone(),
+                jobs: crate::jobs::JobRegistry::new(),
                 request_semaphore: Arc::new(Semaphore::new(
                     self.opts.max_concurrent_requests.max(1),
                 )),
@@ -769,6 +770,9 @@ impl MultiConnectorRunner {
                     config,
                     connector: e.connector,
                     metrics: e.metrics,
+                    // Created once per entry; the driver reuses it across
+                    // every socket rebuild.
+                    jobs: crate::jobs::JobRegistry::new(),
                 }
             })
             .collect();

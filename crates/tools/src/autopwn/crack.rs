@@ -188,6 +188,7 @@ async fn crack_wep(capture_file: &str, bssid: &str) -> Result<CrackResult> {
 
     let output = Command::new("aircrack-ng")
         .args(["-b", bssid, capture_file])
+        .kill_on_drop(true)
         .output()
         .await
         .map_err(|e| {
@@ -353,6 +354,7 @@ async fn crack_with_wordlist(
         .args(["-w", wordlist, "-b", bssid, capture_file])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| {
             tracing::error!("✗ Failed to spawn aircrack-ng: {}", e);
@@ -498,6 +500,7 @@ async fn crack_wpa_mask(
     // (`where` on Windows, `which` elsewhere). See #183.
     let hashcat_check = Command::new(pentest_platform::common::host_which_command())
         .arg("hashcat")
+        .kill_on_drop(true)
         .output()
         .await
         .ok();

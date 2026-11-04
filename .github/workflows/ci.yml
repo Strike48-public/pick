@@ -136,6 +136,15 @@ jobs:
       # the job reports ALL failures in one run; exit code is unchanged, so any
       # failure still fails the job.
       - run: cargo test --workspace --locked --no-fail-fast --features pentest-platform/desktop-pcap
+      # The vendored connector fork declares its own `[workspace]`
+      # (vendor/strike48-connector/Cargo.toml), so `cargo test --workspace`
+      # above never compiles or runs it. Run its suite explicitly against its own
+      # manifest so the fork's tests actually gate CI. `--lib` runs the SDK unit
+      # tests (the vendored tree carries src/ only — its examples/ and tests/
+      # targets are declared but not vendored, so a bare `cargo test` would try
+      # to compile missing files; see the fork's PATCHES.md).
+      - name: Vendored connector fork tests
+        run: cargo test --manifest-path vendor/strike48-connector/Cargo.toml --lib --locked
 
   chart-xss-guard:
     name: Chart XSS Guard

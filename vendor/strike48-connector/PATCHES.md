@@ -181,12 +181,73 @@ after the owner goes away registers without a restart. Applied on top of this
 fork with fuzz (only a test-module context line differs).
 
 **Tests:** the sdk-rs#67 unit tests ride along in `src/connector.rs`
-(`cargo test --lib` from inside `vendor/strike48-connector`). Pick CI does not
-run them yet: the fork has its own `[workspace]`, so `cargo test --workspace`
-skips it. The paced retry and self-heal are covered by sdk-rs#67's
+(`cargo test --lib` from inside `vendor/strike48-connector`, which pick CI now
+runs as its own step). The paced retry and self-heal are covered by sdk-rs#67's
 `tests/duplicate_fence.rs` in sdk-rs CI, which is not vendored.
 
 **Tracking:** Strike48/sdk-rs#67, merged as `78d6c2d` (identical to the
 vendored head `8e51029`). Not in a release yet (latest tag v0.6.3).
 
 **Drop when:** sdk-rs#67 ships in a release and pick moves to that release.
+
+## matrix-cancel-and-deadline
+
+**Files:** `src/jobs.rs` (new), `src/connector.rs`, `src/client.rs`,
+`src/multi/mod.rs`, `src/multi/registration_runner.rs`,
+`src/multi/ws_multiplex.rs`, `src/process.rs`, `src/context.rs`, `src/lib.rs`,
+`Cargo.toml` / `Cargo.toml.orig` (Unix-only `libc` dependency for the
+process-group kill)
+
+**Problem.** Pressing Stop in Matrix kills the agent's worker, but a tool
+already dispatched to pick keeps running against the target, while Matrix
+records it as cancelled (Strike48/matrix#4684). The SDK discarded each job's
+task handle, so nothing could recall it.
+
+**Change.** Mirrors https://github.com/Strike48/sdk-rs/pull/69 at its final
+head **`10ab102`** (branch `fix/sdk-rs/connector-job-cancel-v1`), which is based
+on sdk-rs `main` `78d6c2d` and so already contains the duplicate-instance fence
+below. Applied as a per-file three-way merge of the sdk-rs diff
+`78d6c2d..10ab102` of `crates/connector/src` onto this fork, so the fork's
+other patches are untouched: the fork-vs-upstream delta is the same 660 lines
+before (sdk-rs `78d6c2d` vs this fork without the change) and after (sdk-rs
+`10ab102` vs this fork with it). `jobs.rs`, `process.rs`, `context.rs`,
+`lib.rs` and `client.rs` are byte-identical to sdk-rs `10ab102`.
+
+- Every `ExecuteRequest` is tracked in a `JobRegistry` keyed by `request_id`.
+- An `ExecuteRequest` with the reserved capability `matrix.cancel` and
+  `{"cancel_request_id": "<job>"}` is answered by the SDK before any tool sees
+  it: `success: true` = stopped, `success: false` + `unknown request_id` = not
+  in flight. Exactly one answer per job reaches Matrix.
+- `context["matrix.deadline_ms"]` bounds a job's execution.
+- `process::run_command*` set `kill_on_drop(true)`, and on Unix run each child
+  in its own process group and SIGKILL the whole group on a
+  dropped-before-completion future (grandchildren die too).
+- A reused in-flight `request_id` aborts the displaced job.
+- The WS multiplex keeps one `JobRegistry` per entry across socket rebuilds.
+- Lost cancel-reply sends are logged.
+- Tools named `matrix.*` are not advertised in the auto-derived `tool_schemas`.
+
+All three runners are covered. No proto change.
+
+The deadline wrapping in the three `handle_*` functions was re-applied by hand
+around the fork's `never-blank-failure` sanitizer; the fork-local tests that
+call `handle_request` / `handle_execute` pass the new `ticket` argument as
+`None`.
+
+**Pick side.** Aborting a job only stops a child process if it was spawned with
+`kill_on_drop(true)`. Pick's own spawn sites set it as part of the same change
+(`crates/platform/src/desktop/`).
+
+**Tests.** The registry, ticket, deadline, multi-runner dispatch, WS
+reconnect, `complete()`-window and process-group tests run with
+`cargo test --manifest-path vendor/strike48-connector/Cargo.toml --lib` here
+(434 at the `10ab102` mirror). The gRPC end-to-end tests (including the one
+that cancels a job running a real child process) live upstream in
+`crates/connector/tests/cancel_e2e.rs`.
+
+**Tracking:** Strike48/matrix#4684. Upstream: Strike48/sdk-rs#69, merged as
+`3a72dd6` (identical to the vendored head `10ab102` in `crates/connector/src`).
+Not in a release yet (latest tag v0.6.3).
+
+**Drop when:** the equivalent lands upstream in Strike48/sdk-rs and pick moves to
+that release.

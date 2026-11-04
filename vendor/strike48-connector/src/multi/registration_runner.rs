@@ -34,6 +34,7 @@ use crate::connector::{
     should_engage_slow_retry_lane,
 };
 use crate::error::{ConnectorError, Result};
+use crate::jobs::{self, JobRegistry, JobTicket};
 use crate::logger::Logger;
 use crate::multi::MultiTransportOptions;
 use crate::multi::RegistrationKey;
@@ -66,6 +67,9 @@ pub(crate) struct RegistrationRunner {
     /// Mirrors the single-runner `max_concurrent_requests` pattern; protects
     /// the runtime from OOM under burst load.
     pub request_semaphore: Arc<Semaphore>,
+    /// In-flight `ExecuteRequest` jobs, so `matrix.cancel` can recall them.
+    /// Lives on the runner so entries survive stream reconnects.
+    pub jobs: JobRegistry,
     /// Session token granted by the server on a successful `RegisterResponse`.
     /// Sent back on subsequent in-stream re-registrations (e.g. after an
     /// OTT-driven `CredentialsIssued`) so the server can recognise this
@@ -580,6 +584,24 @@ impl RegistrationRunner {
         logger: &Logger,
     ) -> Option<StreamOutcome> {
         match msg.message {
+            Some(stream_message::Message::ExecuteRequest(req))
+                if req.capability_id == jobs::CANCEL_CAPABILITY =>
+            {
+                // Platform verb: recall an in-flight job (see `crate::jobs`).
+                let response = self
+                    .jobs
+                    .answer_cancel(req.request_id.clone(), &req.payload);
+                if let Err(e) = tx.send(jobs::execute_response_message(response)).await {
+                    // The job was already aborted; only the reply failed to
+                    // send (stream torn down). Log it so a lost cancel ack is
+                    // visible instead of silent.
+                    logger.warn(&format!(
+                        "registration {}: failed to send matrix.cancel reply: {e}",
+                        self.key
+                    ));
+                }
+                None
+            }
             Some(stream_message::Message::ExecuteRequest(req)) => {
                 let request = SdkExecuteRequest {
                     request_id: req.request_id.clone(),
@@ -599,29 +621,47 @@ impl RegistrationRunner {
                 let key = self.key.clone();
                 let semaphore = self.request_semaphore.clone();
                 let logger = Logger::new("multi/registration/execute");
+                let (ticket, abort_reg) = self.jobs.track(request.request_id.clone());
 
                 tokio::spawn(async move {
-                    // Acquire a permit BEFORE doing user work; released on
-                    // task exit. If the semaphore is closed (only happens
-                    // on runner teardown), drop the request silently.
-                    let permit = match semaphore.acquire_owned().await {
-                        Ok(p) => p,
-                        Err(_) => {
-                            logger.debug(&format!(
-                                "registration {key}: request semaphore closed, dropping execute"
-                            ));
-                            return;
+                    let ticket = ticket;
+                    let work = async {
+                        // Acquire a permit BEFORE doing user work; released on
+                        // task exit. If the semaphore is closed (only happens
+                        // on runner teardown), drop the request silently.
+                        let permit = match semaphore.acquire_owned().await {
+                            Ok(p) => p,
+                            Err(_) => {
+                                logger.debug(&format!(
+                                    "registration {key}: request semaphore closed, dropping execute"
+                                ));
+                                return;
+                            }
+                        };
+                        if let Err(e) = handle_execute(
+                            connector,
+                            request,
+                            tx,
+                            metrics,
+                            &logger,
+                            &key,
+                            Some(&ticket),
+                        )
+                        .await
+                        {
+                            logger.error(
+                                &format!("registration {key}: execute dispatch failed"),
+                                &e.to_string(),
+                            );
                         }
+                        drop(permit);
                     };
-                    if let Err(e) =
-                        handle_execute(connector, request, tx, metrics, &logger, &key).await
+                    if futures::future::Abortable::new(work, abort_reg)
+                        .await
+                        .is_err()
                     {
-                        logger.error(
-                            &format!("registration {key}: execute dispatch failed"),
-                            &e.to_string(),
-                        );
+                        tracing::info!("Job aborted via matrix.cancel");
                     }
-                    drop(permit);
                 });
                 None
             }
@@ -1184,6 +1224,7 @@ async fn handle_execute(
     metrics: Arc<Mutex<ConnectorMetrics>>,
     logger: &Logger,
     key: &RegistrationKey,
+    ticket: Option<&JobTicket>,
 ) -> Result<()> {
     let start = Instant::now();
     {
@@ -1197,9 +1238,15 @@ async fn handle_execute(
         &request.payload,
         request.payload_encoding,
     ) {
-        Ok(req_data) => match connector
-            .execute_with_context(req_data, request.capability_id.as_deref(), &request.context)
-            .await
+        Ok(req_data) => match jobs::run_with_deadline(
+            &request.context,
+            connector.execute_with_context(
+                req_data,
+                request.capability_id.as_deref(),
+                &request.context,
+            ),
+        )
+        .await
         {
             Ok(resp_data) => {
                 // Never put a blank failure on the wire (Strike48/matrix#4715,
@@ -1295,6 +1342,14 @@ async fn handle_execute(
             },
         )),
     };
+
+    // A cancel that claimed this job already answered for it.
+    if ticket.is_some_and(|t| !t.complete()) {
+        logger.info(&format!(
+            "registration {key}: job cancelled before its result was sent; result dropped"
+        ));
+        return Ok(());
+    }
 
     tx.send(message).await.map_err(|e| {
         ConnectorError::StreamError(format!("failed to send execute response: {e}"))
@@ -1537,6 +1592,7 @@ mod tests {
             shutdown: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(Mutex::new(ConnectorMetrics::default())),
             opts,
+            jobs: crate::jobs::JobRegistry::new(),
             request_semaphore: Arc::new(Semaphore::new(8)),
             session_token: Arc::new(RwLock::new(None)),
             consecutive_rejections: Arc::new(AtomicU32::new(0)),
@@ -1814,6 +1870,7 @@ mod tests {
             shutdown: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(Mutex::new(ConnectorMetrics::default())),
             opts: MultiTransportOptions::default(),
+            jobs: crate::jobs::JobRegistry::new(),
             request_semaphore: Arc::new(Semaphore::new(8)),
             session_token: Arc::new(RwLock::new(None)),
             consecutive_rejections: Arc::new(AtomicU32::new(0)),
@@ -1953,6 +2010,7 @@ mod tests {
             shutdown: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(Mutex::new(ConnectorMetrics::default())),
             opts: opts.clone(),
+            jobs: crate::jobs::JobRegistry::new(),
             request_semaphore: Arc::new(Semaphore::new(8)),
             session_token: Arc::new(RwLock::new(None)),
             consecutive_rejections: Arc::new(AtomicU32::new(0)),
@@ -2098,7 +2156,7 @@ mod tests {
         };
 
         let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
-        handle_execute(connector, request, tx, metrics, &logger, &key)
+        handle_execute(connector, request, tx, metrics, &logger, &key, None)
             .await
             .expect("handle_execute should succeed");
 
@@ -2151,7 +2209,7 @@ mod tests {
         };
 
         let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
-        handle_execute(connector, request, tx, metrics, &logger, &key)
+        handle_execute(connector, request, tx, metrics, &logger, &key, None)
             .await
             .expect("handle_execute should succeed");
 
@@ -2233,7 +2291,7 @@ mod tests {
         };
 
         let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
-        handle_execute(connector, request, tx, metrics, &logger, &key)
+        handle_execute(connector, request, tx, metrics, &logger, &key, None)
             .await
             .expect("handle_execute should succeed");
 
@@ -2636,6 +2694,257 @@ mod tests {
             runner.session_token.read().await.as_deref(),
             Some("fresh-token"),
             "successful re-register must persist the freshly issued session token"
+        );
+    }
+
+    fn cancel_msg(reply_id: &str, target: &str) -> StreamMessage {
+        StreamMessage {
+            message: Some(stream_message::Message::ExecuteRequest(
+                proto::ExecuteRequest {
+                    request_id: reply_id.into(),
+                    payload: serde_json::json!({ "cancel_request_id": target })
+                        .to_string()
+                        .into_bytes(),
+                    payload_encoding: PayloadEncoding::Json as i32,
+                    capability_id: crate::jobs::CANCEL_CAPABILITY.into(),
+                    ..Default::default()
+                },
+            )),
+        }
+    }
+
+    fn execute_reply(msg: StreamMessage) -> proto::ExecuteResponse {
+        match msg.message {
+            Some(stream_message::Message::ExecuteResponse(r)) => r,
+            other => panic!("expected ExecuteResponse, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_matrix_cancel_stops_a_tracked_job() {
+        let runner = make_runner_for_dispatch_tests();
+        let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
+        let mut last_hb = Instant::now();
+        let logger = Logger::new("test");
+        let (ticket, _reg) = runner.jobs.track("job-1".into());
+
+        let outcome = runner
+            .dispatch_inbound(
+                cancel_msg("c-1", "job-1"),
+                &tx,
+                &mut last_hb,
+                &mut HashMap::new(),
+                &logger,
+            )
+            .await;
+        assert!(outcome.is_none());
+        let reply = execute_reply(rx.try_recv().expect("cancel must be answered"));
+        assert_eq!(reply.request_id, "c-1");
+        assert!(reply.success);
+        assert!(
+            !ticket.complete(),
+            "the cancelled job must not send its result"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_matrix_cancel_for_unknown_job_is_not_observed() {
+        let runner = make_runner_for_dispatch_tests();
+        let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
+        let mut last_hb = Instant::now();
+        let logger = Logger::new("test");
+
+        runner
+            .dispatch_inbound(
+                cancel_msg("c-2", "job-never"),
+                &tx,
+                &mut last_hb,
+                &mut HashMap::new(),
+                &logger,
+            )
+            .await;
+        let reply = execute_reply(rx.try_recv().expect("cancel must be answered"));
+        assert!(!reply.success);
+        assert!(
+            reply
+                .error
+                .starts_with(crate::jobs::UNKNOWN_REQUEST_ERROR_PREFIX)
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatched_job_is_tracked_until_it_answers() {
+        let runner = make_runner_for_dispatch_tests();
+        let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
+        let mut last_hb = Instant::now();
+        let logger = Logger::new("test");
+        let msg = StreamMessage {
+            message: Some(stream_message::Message::ExecuteRequest(
+                proto::ExecuteRequest {
+                    request_id: "job-2".into(),
+                    payload: b"{}".to_vec(),
+                    payload_encoding: PayloadEncoding::Json as i32,
+                    ..Default::default()
+                },
+            )),
+        };
+
+        runner
+            .dispatch_inbound(msg, &tx, &mut last_hb, &mut HashMap::new(), &logger)
+            .await;
+        let reply = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("job must answer")
+            .expect("channel open");
+        assert_eq!(execute_reply(reply).request_id, "job-2");
+        assert!(
+            runner.jobs.is_empty(),
+            "a finished job leaves no registry entry"
+        );
+    }
+
+    /// A connector whose `execute` never finishes on its own, so only the
+    /// deadline can end the job.
+    struct SleepyConn;
+    impl BaseConnector for SleepyConn {
+        fn connector_type(&self) -> &str {
+            "test_conn"
+        }
+        fn version(&self) -> &str {
+            "0.0.0"
+        }
+        fn execute(
+            &self,
+            _: serde_json::Value,
+            _: Option<&str>,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + '_>>
+        {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok(serde_json::json!({}))
+            })
+        }
+    }
+
+    fn make_runner_with_connector(connector: Arc<dyn BaseConnector>) -> RegistrationRunner {
+        let mut runner = make_runner_for_dispatch_tests();
+        runner.connector = connector;
+        runner
+    }
+
+    /// Finding #2: a dispatched job whose `context["matrix.deadline_ms"]`
+    /// elapses before `execute` finishes is answered on the job's own id with
+    /// `success: false` and the `Timeout: deadline exceeded: …` error text,
+    /// and leaves no registry entry.
+    #[tokio::test]
+    async fn dispatch_execute_honours_deadline() {
+        let runner = make_runner_with_connector(Arc::new(SleepyConn));
+        let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
+        let mut last_hb = Instant::now();
+        let logger = Logger::new("test");
+
+        let mut ctx = HashMap::new();
+        ctx.insert(
+            crate::context::keys::MATRIX_DEADLINE_MS.to_string(),
+            "50".to_string(),
+        );
+        let msg = StreamMessage {
+            message: Some(stream_message::Message::ExecuteRequest(
+                proto::ExecuteRequest {
+                    request_id: "job-deadline".into(),
+                    payload: b"{}".to_vec(),
+                    payload_encoding: PayloadEncoding::Json as i32,
+                    context: ctx,
+                    ..Default::default()
+                },
+            )),
+        };
+
+        runner
+            .dispatch_inbound(msg, &tx, &mut last_hb, &mut HashMap::new(), &logger)
+            .await;
+
+        let reply = execute_reply(
+            tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("deadline must produce a reply")
+                .expect("channel open"),
+        );
+        assert_eq!(reply.request_id, "job-deadline");
+        assert!(!reply.success, "a deadline overrun must fail the job");
+        assert!(
+            reply.error.contains("deadline"),
+            "error should name the deadline, got: {}",
+            reply.error
+        );
+        assert!(
+            runner.jobs.is_empty(),
+            "a timed-out job leaves no registry entry"
+        );
+    }
+
+    /// A cancel that lands while `handle_execute` is parked at the
+    /// post-execute `metrics.lock().await` (the window before `complete()`)
+    /// must claim the job's outcome, so the job's own `ExecuteResponse` is
+    /// never sent. The window is made observable by holding the metrics lock.
+    /// Removing the `complete()` check in this runner's `handle_execute` turns
+    /// this RED (the result is then sent). Mirrors the single runner's
+    /// `single_runner_cancel_before_complete_drops_the_jobs_result`.
+    #[tokio::test]
+    async fn grpc_multi_cancel_before_complete_drops_the_jobs_result() {
+        use crate::jobs::CancelOutcome;
+
+        let registry = JobRegistry::new();
+        let (ticket, _abort_reg) = registry.track("job-race".into());
+        let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
+        let metrics = Arc::new(Mutex::new(ConnectorMetrics::default()));
+        let key = RegistrationKey {
+            tenant_id: "t".into(),
+            connector_type: "test_conn".into(),
+            instance_id: "i".into(),
+        };
+        let logger = Logger::new("test");
+        let request = SdkExecuteRequest {
+            request_id: "job-race".into(),
+            payload: b"{}".to_vec(),
+            payload_encoding: PayloadEncoding::Json,
+            context: HashMap::new(),
+            capability_id: None,
+        };
+
+        // Park handle_execute at a metrics.lock() await by holding the lock.
+        let guard = metrics.lock().await;
+        let fut = handle_execute(
+            Arc::new(NoopConn),
+            request,
+            tx,
+            metrics.clone(),
+            &logger,
+            &key,
+            Some(&ticket),
+        );
+        tokio::pin!(fut);
+        tokio::select! {
+            _ = &mut fut => panic!("handle_execute must block on the held metrics lock"),
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+
+        // The cancel lands while the job is parked: it claims the entry.
+        assert_eq!(
+            registry.cancel("job-race"),
+            CancelOutcome::Stopped {
+                request_id: "job-race".into()
+            }
+        );
+
+        // Release the lock; handle_execute sees complete()==false and drops
+        // its result instead of sending it.
+        drop(guard);
+        fut.await
+            .expect("handle_execute returns Ok even when it drops the result");
+        assert!(
+            rx.try_recv().is_err(),
+            "a cancelled job must not send its own ExecuteResponse"
         );
     }
 }
