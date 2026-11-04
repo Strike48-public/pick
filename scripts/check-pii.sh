@@ -22,12 +22,17 @@
 # Lines beginning with '#' and blank lines in the file/variable are ignored.
 # If no source yields at least one name, the scanner FAILS LOUD (exit 2) rather
 # than silently passing - a scanner with an empty list protects nothing.
+#
+# Set PII_REDACT=1 (CI does this) to print only the location of a hit and never
+# the matched text, so customer names never reach a public CI log. Unset (local
+# dev) the offending line is shown so the developer can find and fix it.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO_ROOT
 readonly LOCAL_NAMES_FILE="${REPO_ROOT}/.pii-names.local"
+readonly REDACT="${PII_REDACT:-0}"
 
 # Populate PII_NAMES from the first available source. Returns non-zero if none
 # of the sources provided any names.
@@ -60,32 +65,45 @@ load_names() {
     [[ ${#NAMES[@]} -gt 0 ]]
 }
 
-# Build grep arguments for FIXED-STRING, whole-word, case-insensitive matching.
-# Names are operator-supplied (via $PII_NAMES / $PII_NAMES_FILE / .pii-names.local),
-# so they must never be treated as a regex. With `grep -F` each name matches
-# literally: a name containing an ERE metacharacter (an unbalanced '(', a '.',
-# etc.) can neither corrupt the alternation - which would make grep error out
-# and silently pass while scanning nothing - nor introduce a false positive.
-# `-w` supplies the word boundaries the previous \b(...)\b pattern provided.
-# Populates the global GREP_PATTERNS array.
-build_grep_patterns() {
-    GREP_PATTERNS=()
-    local name
-    for name in "${NAMES[@]}"; do
-        GREP_PATTERNS+=(-e "$name")
-    done
-}
-
-# Scan stdin or arguments, print matches with file:line prefix, return status.
-scan() {
-    local source_label="$1"
-    local input="$2"
-    # -F fixed strings (names are literals, never regex), -i case-insensitive,
-    # -w whole-word, -n line numbers, -H/--label label prefix.
-    if echo "$input" | grep -FiwHn --label="$source_label" --color=never "${GREP_PATTERNS[@]}"; then
-        return 1
+# Match the banned names against the stream on this function's stdin.
+#
+# Matching is FIXED-STRING (grep -F), not regex: a customer name may contain
+# regex metacharacters (an unbalanced '(' or '[', a '+', a '.'), and folding it
+# raw into an alternation would corrupt the pattern - grep would error and, if
+# that error were mistaken for "no match", the scanner would silently pass every
+# name. Fixed strings are immune to that, and grep errors (exit >= 2) FAIL LOUD.
+#
+# Reads the named file, or this function's stdin when no file is given.
+# Returns 0 if a name was found, 1 if clean; exits 2 on a grep error.
+match_stream() {
+    local label="$1" file="${2:-}"
+    local out rc=0
+    # -F fixed strings, -i case-insensitive, -w whole-word, -n line numbers.
+    if [[ -n "$file" ]]; then
+        out="$(grep -Fiwn -f "$NAMES_FILE" -- "$file" 2>/dev/null)" || rc=$?
+    else
+        out="$(grep -Fiwn -f "$NAMES_FILE" 2>/dev/null)" || rc=$?
     fi
-    return 0
+    case "$rc" in
+        0) : ;;          # match(es) found - fall through to report
+        1) return 0 ;;   # no match = clean
+        *)
+            echo "ERROR: PII scanner grep failed (exit $rc) while scanning ${label}." >&2
+            exit 2 ;;
+    esac
+
+    # A name was found. Emit locations on stderr (diagnostic). In redact mode
+    # print only the line number so the name never reaches a public CI log.
+    local m lineno
+    while IFS= read -r m; do
+        lineno="${m%%:*}"
+        if [[ "$REDACT" == "1" ]]; then
+            printf '%s:%s: [PII match redacted]\n' "$label" "$lineno" >&2
+        else
+            printf '%s:%s\n' "$label" "$m" >&2
+        fi
+    done <<< "$out"
+    return 1
 }
 
 main() {
@@ -96,7 +114,10 @@ main() {
         exit 2
     fi
 
-    build_grep_patterns
+    # Materialize the names as a fixed-string pattern file for grep -F -f.
+    NAMES_FILE="$(mktemp)"
+    trap 'rm -f "$NAMES_FILE"' EXIT
+    printf '%s\n' "${NAMES[@]}" > "$NAMES_FILE"
 
     local found=0
 
@@ -105,14 +126,14 @@ main() {
         local input
         input="$(cat)"
         if [[ -n "$input" ]]; then
-            scan "stdin" "$input" || found=1
+            match_stream "stdin" <<< "$input" || found=1
         fi
     elif [[ "$1" == "--text" ]]; then
         if [[ $# -lt 2 ]]; then
             echo "Error: --text requires an argument" >&2
             exit 2
         fi
-        scan "text" "$2" || found=1
+        match_stream "text" <<< "$2" || found=1
     else
         # File mode
         for file in "$@"; do
@@ -120,9 +141,7 @@ main() {
                 echo "Warning: $file is not a regular file, skipping" >&2
                 continue
             fi
-            if grep -FiwHn --color=never "${GREP_PATTERNS[@]}" -- "$file"; then
-                found=1
-            fi
+            match_stream "$file" "$file" || found=1
         done
     fi
 

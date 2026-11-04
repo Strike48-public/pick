@@ -10,14 +10,32 @@ permissions:
   pull-requests: read
 
 jobs:
+  # Self-test the scanner itself. Needs no secret (each case supplies its own
+  # names), so it always runs, forks included, and guards the fixed-string,
+  # fail-loud and redaction behavior.
+  self-test:
+    name: Scanner self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run scanner regression tests
+        run: bash scripts/check-pii.test.sh
+
   check-pii:
     name: Scan for customer names
     runs-on: ubuntu-latest
-    # The banned-name list is injected from a repository secret so the customer
-    # names never live in this public repo. Configure it under Settings ->
-    # Secrets and variables -> Actions -> PII_NAMES (newline- or comma-separated).
+    # Fork PRs: GitHub withholds secrets from pull_request runs triggered by a
+    # fork, so PII_NAMES is always empty there and the guard below could never
+    # pass. Skip this job for fork PRs (pii-scan-fork-notice says why) and keep
+    # it fully active, guard included, for branches in this repo.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    # The banned-name list comes from the PII_NAMES org secret so the customer
+    # names never live in this public repo (newline- or comma-separated).
     env:
       PII_NAMES: ${{ secrets.PII_NAMES }}
+      # Redact matched content: on a hit the scanner prints only the location,
+      # never the name, so a customer name never lands in this public CI log.
+      PII_REDACT: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,33 +44,17 @@ jobs:
       - name: Ensure scanner is executable
         run: chmod +x scripts/check-pii.sh
 
-      # Runs regardless of the PII_NAMES secret (it supplies its own names), so
-      # the metacharacter-name regression is guarded on every PR, forks included.
-      - name: Scanner self-test (metacharacter names)
-        run: |
-          chmod +x scripts/check-pii.test.sh
-          scripts/check-pii.test.sh
-
-      # GitHub does NOT pass repository secrets to workflows triggered by a
-      # pull_request from a fork, so `PII_NAMES` is empty on every fork PR. A
-      # hard failure there would permanently red-x external contributions for a
-      # reason they cannot fix. Instead: when the list is available (same-repo
-      # PRs), the scan below is MANDATORY and hard-fails on a match; when it is
-      # absent (fork PRs), we skip the scan with a loud warning and rely on the
-      # same-repo re-run + maintainer review as the backstop. The skip is never
-      # silent.
-      - name: Detect whether PII name list is available
-        id: pii_config
+      # An empty secret on a same-repo run means the scan would check nothing:
+      # fail instead of passing green.
+      - name: Verify PII name list is configured
         run: |
           if [[ -z "${PII_NAMES:-}" ]]; then
-            echo "::warning::PII_NAMES secret unavailable - customer-name scan SKIPPED for this run. Expected for fork PRs (GitHub does not pass secrets to them). Coverage backstop: the scan runs on same-repo branches (set the PII_NAMES secret under Settings -> Secrets and variables -> Actions) and on maintainer review before merge."
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "::error::PII_NAMES secret is not set - the scanner cannot run."
+            echo "It is the Strike48-public org secret, synced from dev-secrets with 'just pii-sync' in strikehub."
+            exit 1
           fi
 
       - name: Check PR title
-        if: steps.pii_config.outputs.configured == 'true'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
@@ -60,7 +62,6 @@ jobs:
           printf '%s\n' "$PR_TITLE" | scripts/check-pii.sh
 
       - name: Check PR body
-        if: steps.pii_config.outputs.configured == 'true'
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
@@ -68,7 +69,6 @@ jobs:
           printf '%s\n' "${PR_BODY:-<empty>}" | scripts/check-pii.sh
 
       - name: Check commit messages
-        if: steps.pii_config.outputs.configured == 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -77,7 +77,6 @@ jobs:
           git log --format='%H%n%s%n%b%n---' "$BASE_SHA..$HEAD_SHA" | scripts/check-pii.sh
 
       - name: Check changed file contents
-        if: steps.pii_config.outputs.configured == 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -85,6 +84,21 @@ jobs:
           echo "Scanning diff for added lines between $BASE_SHA..$HEAD_SHA"
           # Only scan added lines (lines starting with '+' but not '+++') to avoid
           # tripping on unchanged historical content or on removal of bad content.
-          git diff "$BASE_SHA..$HEAD_SHA" -- . ':!scripts/check-pii.sh' ':!scripts/check-pii.test.sh' ':!.github/workflows/pii-check.yml' \
-            | grep -E '^\+[^+]' \
-            | scripts/check-pii.sh
+          # `|| true` keeps a deletion-only diff (grep finds nothing, exits 1)
+          # from failing the step under the runner's `pipefail` shell.
+          added="$(
+            git diff "$BASE_SHA..$HEAD_SHA" -- . ':!scripts/check-pii.sh' ':!scripts/check-pii.test.sh' ':!.github/workflows/pii-check.yml' \
+              | grep -E '^\+[^+]' || true
+          )"
+          printf '%s\n' "$added" | scripts/check-pii.sh
+
+  # Notice-only companion to check-pii for fork PRs, where the job above is
+  # skipped because the PII_NAMES secret is withheld. It puts a clear reason in
+  # the check list instead of leaving the scan silently absent.
+  pii-scan-fork-notice:
+    name: PII scan skipped (fork PR)
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    steps:
+      - name: Explain why the PII scan is skipped
+        run: echo "::notice::PII scan skipped - fork PR, secret unavailable"
