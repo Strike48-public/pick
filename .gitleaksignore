@@ -1,3 +1,6 @@
 # Example JWT token in archived .env.example (removed from main, exists in feature/launcher-scripts branch)
 00da944e23ebbddf2cb50998d1cdcdc647cf0e70:.env.example:generic-api-key:24
 80176cc2ad25b9c75226d147dc182b49d277b49b:.env.example:generic-api-key:24
+# Fake bearer token in a redaction test fixture (pick#581, first commit only; the
+# line was rephrased in a later commit of the same PR)
+a39d0b9b7f394038b916301e73cef9ca93b081b8:crates/core/src/failure_fields.rs:curl-auth-header:229

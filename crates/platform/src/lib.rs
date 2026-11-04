@@ -19,6 +19,23 @@ pub mod ios;
 
 pub use traits::*;
 
+/// Best-effort local default route as `(gateway, local_ipv4, prefix_len)`, for
+/// callers whose primary lookup is blocked. Android reads it from
+/// ConnectivityManager via JNI (#549), since an unprivileged app cannot read the
+/// routing table that `default_net` relies on; other builds return `None` and
+/// leave the caller's primary path in charge. `None` means "unknown" - never a
+/// guessed subnet.
+pub fn local_default_route() -> Option<(std::net::IpAddr, std::net::IpAddr, Option<u8>)> {
+    #[cfg(feature = "android")]
+    {
+        android::local_default_route()
+    }
+    #[cfg(not(feature = "android"))]
+    {
+        None
+    }
+}
+
 /// Re-export PtyShell for the current platform
 #[cfg(feature = "desktop")]
 pub use desktop::pty_shell::PtyShell;
@@ -55,6 +72,19 @@ pub fn set_use_sandbox(_use_sandbox: bool) {}
 #[cfg(not(feature = "desktop"))]
 pub fn sandbox_available_blocking() -> bool {
     false
+}
+
+/// Host facts for the support diagnostics bundle. Desktop reports the OS and
+/// the sandbox state; other targets have no host sandbox and report defaults.
+#[cfg(feature = "desktop")]
+pub use desktop::diagnostic_facts;
+
+#[cfg(not(feature = "desktop"))]
+pub fn diagnostic_facts() -> pentest_core::diagnostics::PlatformFacts {
+    pentest_core::diagnostics::PlatformFacts {
+        os_name: Some(std::env::consts::OS.to_string()),
+        ..Default::default()
+    }
 }
 
 /// Re-export capture session management for desktop

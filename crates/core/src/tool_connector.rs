@@ -247,28 +247,13 @@ impl BaseConnector for ToolConnector {
 
                 let tools = self.tools.read().await;
                 let result = match tools.execute(&tool_name, params, &ctx).await {
-                    Ok(result) => {
-                        let duration_ms = start.elapsed().as_millis() as u64;
-                        tracing::info!(
-                            tool = tool_name.as_str(),
-                            duration_ms,
-                            success = result.success,
-                            "tool execution completed"
-                        );
-                        result
-                    }
-                    Err(e) => {
-                        // Render the full cause chain here: this line and the
-                        // result below are where the error leaves the process.
-                        let error = e.chain();
-                        tracing::warn!(
-                            tool = tool_name.as_str(),
-                            error = %error,
-                            "tool execution failed"
-                        );
-                        crate::tools::ToolResult::error(error)
-                    }
+                    Ok(result) => result,
+                    // Render the full cause chain here: the failure line and
+                    // this result are where the error leaves the process.
+                    Err(e) => crate::tools::ToolResult::error(e.chain()),
                 };
+                let duration_ms = start.elapsed().as_millis() as u64;
+                crate::failure_fields::log_tool_result(&tool_name, duration_ms, &result);
 
                 let result_json = serde_json::to_value(&result).unwrap_or(Value::Null);
                 Ok(result_json)
@@ -373,10 +358,37 @@ mod tests {
         }
     }
 
+    /// Fails as a probe the way `execute_command` does: the process ran, so
+    /// the tool returns `Ok`, but it exited nonzero with the cause on stderr.
+    struct FailedProbeTool;
+
+    #[async_trait]
+    impl PentestTool for FailedProbeTool {
+        fn name(&self) -> &str {
+            "failed_probe_tool"
+        }
+        fn description(&self) -> &str {
+            "A tool whose probe exits nonzero"
+        }
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new("failed_probe_tool", "A tool whose probe exits nonzero")
+        }
+        async fn execute(&self, _params: Value, _ctx: &ToolContext) -> ToolFnResult<ToolResult> {
+            Ok(ToolResult::success(serde_json::json!({
+                "stdout": "",
+                "stderr": "nmap: connection refused",
+                "exit_code": 2,
+                "timed_out": false,
+            }))
+            .with_outcome(crate::tools::ToolOutcome::Failed))
+        }
+    }
+
     fn test_connector() -> ToolConnector {
         let mut registry = ToolRegistry::new();
         registry.register(StubTool);
         registry.register(FailingTool);
+        registry.register(FailedProbeTool);
         ToolConnector::new(
             Arc::new(RwLock::new(registry)),
             "pentest-connector",
@@ -558,5 +570,60 @@ mod tests {
             "no tool_execution close event in {output:?}"
         );
         assert!(!output.contains("secret-token-value"), "{output}");
+    }
+
+    /// A probe that ran and failed returns `Ok`, so its cause lives in the
+    /// result data. The failure line must carry that cause as fields next to
+    /// the correlation ids, not just `success=false` (pick#476).
+    #[tokio::test]
+    async fn failed_probe_line_carries_exit_code_and_stderr_tail() {
+        use crate::logging::test_support::Capture;
+        use tracing_subscriber::{fmt, prelude::*};
+
+        let capture = Capture::default();
+        let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(
+            crate::logging::apply_span_policy(
+                fmt::layer().with_ansi(false).with_writer(capture.clone()),
+            ),
+        ));
+        // Other tests in this binary drive the hop with no subscriber; heal
+        // any Interest::NEVER they cached (see the test above).
+        tracing::callsite::rebuild_interest_cache();
+
+        let context: HashMap<String, String> = [("tool_call_id", "call-7")]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let result = connector_result(&context, "failed_probe_tool").await;
+        assert_eq!(result["success"], false);
+
+        let output = capture.contents();
+        let failure_line = output
+            .lines()
+            .find(|l| l.contains("tool execution failed"))
+            .unwrap_or_else(|| panic!("no failure line in {output:?}"));
+        for expected in [
+            "tool_call_id=call-7",
+            "exit_code=2",
+            "timed_out=false",
+            "duration_ms=",
+            "stderr_tail=\"nmap: connection refused\"",
+        ] {
+            assert!(
+                failure_line.contains(expected),
+                "missing {expected} in {failure_line}"
+            );
+        }
+    }
+
+    async fn connector_result(context: &HashMap<String, String>, tool: &str) -> Value {
+        test_connector()
+            .execute_with_context(
+                serde_json::json!({"tool": tool, "parameters": {}}),
+                None,
+                context,
+            )
+            .await
+            .expect("hop returns Ok(ToolResult) even when the tool fails")
     }
 }

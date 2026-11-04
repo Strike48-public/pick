@@ -35,6 +35,66 @@ A multiplatform penetration testing connector built with [Dioxus](https://dioxus
 | **Android** | dioxus-mobile | Android device |
 | **iOS** | dioxus-mobile | iOS device |
 
+## Install
+
+- **Docker (Linux host):** follow [docs/DOCKER_INSTALL.md](docs/DOCKER_INSTALL.md). It starts with a setup choice, runs a preflight check, and has a section for installing with an AI coding agent.
+- **Native app (macOS, Windows, Linux):** download it from the [releases page](https://github.com/Strike48-public/pick/releases).
+- **From source:** see [docs/INSTALLATION.md](docs/INSTALLATION.md) and [Building](#building) below.
+
+## Demo: Pick + vulnerable scan targets
+
+`docker-compose.targets.yml` (the target-agnostic base) plus one self-contained
+fragment per target under `targets/` stand up a self-contained demo: the
+headless Pick connector scanning two deliberately vulnerable web apps (DVWA and
+OWASP Juice Shop) and registering with a Strike48 backend.
+
+```bash
+just targets-check   # render the merged compose model + assert target isolation (no daemon needed)
+just targets-up      # build + start detached; pick starts only after both targets are healthy
+just targets-down    # tear down (add --volumes to also drop the creds volume)
+```
+
+Topology: one shared internal bridge network `scan-net` (pinned to
+`10.250.0.0/24` — outside Docker's default address pools, so a clean host's
+auto-assigned `backend-net` cannot steal its parent /16; the pin is the
+default: the subnet is overridable via `SCAN_NET_SUBNET` when running
+concurrent instances on one host, and per-instance values are written
+automatically by init-dev's per-instance env generation) carries pick, DVWA
+(direct) and the Juice Shop GUARD (the "door"); a second internal bridge
+`juice-net` carries Juice Shop's app behind that door; a third network
+`backend-net` carries pick's egress to the Strike48 backend. The door is the
+only member of both scan-net and juice-net, so pick has no path to the app
+except through it. Targets are published nowhere on the host. Engagement URLs,
+as reached from pick over scan-net: `http://dvwa` (direct, port 80) and
+`http://juice-shop` (port 80 through the door).
+
+Benchmark determinism on the juice target: the app image is DIGEST-PINNED
+(interim — the digest of the version this box already runs; re-pin to the
+benchmark fixture manifest's digest when that fixture freezes), the door
+DENIES the challenge/hint meta-intel data routes AND the solution-state
+routes (CASE-INSENSITIVE `/api/Challenges` + `/api/Hints` — the app's routes
+are case-insensitive, so the deny must be too — plus `/metrics`,
+`/rest/continue-code` and its findIt/fixIt variants, and the `/snippets`
+surface, which leak what pick has solved; an interim list
+proven BY REQUEST in `targets-check`'s live guard probe (where a docker
+daemon runs — daemonless boxes run the render + text assertions only); the
+deny-list comes from the benchmark fixture's filtering-proxy contract when
+the shared range freezes, matrix#2422), the app runs the image's own SHIPPED
+QUIET VARIANT (`NODE_ENV=quiet`: no hints UI, no hacking instructor, no
+first-start modal, no solved notifications). The repo-tree `SOLUTIONS.md`
+walkthrough file stays in the container (the benchmark fixture ships it too —
+it is never web-served, so the scanner cannot read it), and `targets-up`
+FORCE-RECREATES juice-app on every run so each engagement starts fresh
+(`JUICE_FRESH=0` keeps the running app). DVWA needs none of this — it stays
+direct on scan-net.
+
+Adding a future scan target is one new `targets/<name>.yml` fragment plus one
+more `-f` flag (targets needing route filtering add the door fragment the
+same way — the door pattern). The legacy `dvwa-up` / `dvwa-down` /
+`dvwa-check` recipe names still work as aliases. See [RUNNING.md](RUNNING.md)
+for the full walkthrough (env file, registration approval, Juice Shop state
+reset).
+
 ## Features
 
 ### UI Customization
@@ -127,6 +187,67 @@ pick/
 - For desktop: Native development tools for your OS
 - For mobile: `cargo-mobile2` and platform SDKs
 - Linux builds target glibc >= 2.35 (Ubuntu 22.04 / Debian 12+).
+
+### Linux runtime requirements (release binaries)
+
+The Linux release tarballs are self-contained for their shared-library
+dependencies: every shared library a binary links other than the
+desktop's webkit stack is bundled inside the tarball under `lib/` and
+resolved through an `$ORIGIN/lib` rpath baked into the binaries at link
+time. That includes the **transitive closure of each bundled library**,
+not just the direct links — `libpcap` (agent, web, desktop), OpenSSL 3
+(`libssl`/`libcrypto`; agent, web, desktop), `libxcb` (agent, web,
+desktop) and `libxdo` (desktop) drag along the libdbus → libsystemd →
+lzma/zstd/lz4/gcrypt/gpg-error/cap stack and libXau/libXdmcp →
+libbsd/libmd. The closure is the difference between "resolves on the
+release runner" and "resolves on NixOS or in a minimal container". The
+release pipeline enforces this with `scripts/check-linux-deps.sh`
+(every `ldd` resolution must land in `lib/` or be a base-system/allowed
+library, whole-entry rpath present, glibc floor held). What a host must
+still provide:
+
+| Requirement | Applies to | Where it comes from |
+|-------------|-----------|---------------------|
+| glibc >= 2.35 (Ubuntu 22.04 / Debian 12+) plus the libgcc runtime | All Linux binaries | Host base system (floor enforced by `scripts/check-glibc-floor.sh`) |
+| `libwebkit2gtk-4.1-0` **and its package dependencies** | Desktop app only — the web engine behind the UI plus the GTK/X11 stack it pulls (libgtk-3, libX11, …); intentionally not bundled (50MB+ with helper processes) | `sudo apt install libwebkit2gtk-4.1-0` (Fedora: `sudo dnf install webkit2gtk4.1`) — one package pulls the whole closure |
+| everything else | — | Bundled in the tarball's `lib/` (the desktop's X11 libraries are carried by the `libwebkit2gtk-4.1-0` closure, so no second copy is bundled — except `libXtst`, which libxdo needs but the closure does not ship, so it is bundled) |
+
+License attribution for the redistributed libraries (BSD-3-clause,
+Apache-2.0/OpenSSL dual, MIT/X11) ships inside each Linux tarball as
+`THIRD-PARTY-NOTICES.md`.
+
+The headless agent (`pick-agent-linux-x86_64.tar.gz`) has **no host
+library dependencies** beyond the glibc/libgcc base system — the binary
+and the bundled `lib/` are enough on any glibc-2.35+ host, including
+NixOS and minimal containers. One caveat for consumers: StrikeHub's
+fetch path currently stages only the binary and drops the sibling
+`lib/`, so a strikehub-fetched agent is still affected on minimal hosts
+until https://github.com/Strike48-public/strikehub/issues/108 lands;
+extract the tarball directly in the meantime.
+
+The desktop tarball's entry point is the `pentest-connector` launcher
+(next to the real `pentest-connector-bin`). Because the binary links
+WebKit2GTK as a `NEEDED` library, a host without it used to die inside
+the dynamic loader before any of Pick's own code could print an error.
+The launcher probes for that gap up front and turns it into an
+actionable message with the exact package line. The failure mode it
+replaces, verbatim from the field (released agent, NixOS host, stderr
+discarded by its supervisor):
+
+    error while loading shared libraries: libpcap.so.0.8
+
+`libpcap` is now bundled; the only remaining host gap on the desktop
+app is the WebKit2GTK stack (the web engine plus its GTK/X11 package
+closure), which the launcher names by its exact apt package.
+
+Two notes about the bundled OpenSSL: the `$ORIGIN/lib` rpath makes the
+bundled `libcrypto`/`libssl` win over any host copy (rpath is searched
+before `LD_LIBRARY_PATH` and the default directories), so OpenSSL
+security fixes reach users through Pick releases rather than host
+package updates. And legacy OpenSSL *provider* operations (e.g. legacy
+PKCS#12/RC4 paths) are dlopen'd from the host's compiled-in
+`ossl-modules` directory; a host that needs them must ship the
+`libssl3`/`openssl` package's module directory alongside.
 
 ### Headless Agent (Pick)
 

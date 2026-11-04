@@ -106,7 +106,7 @@ release: the compose file, the settings template, the preflight check, and
 this runbook.
 
 ```bash
-PICK_VERSION=0.1.10
+PICK_VERSION=0.1.13
 mkdir -p pick-connector && cd pick-connector
 base="https://github.com/Strike48-public/pick/releases/download/v${PICK_VERSION}"
 curl -fsSL "$base/pick-docker-compose.yml" -o docker-compose.yml

@@ -215,6 +215,33 @@ pub async fn get_network_interfaces() -> Result<Vec<NetworkInterface>> {
         }
     }
 
+    // `ip addr` is not runnable from the unprivileged app sandbox, so every
+    // non-loopback interface above usually comes back with no IPv4 address,
+    // which silently starves subnet discovery (#549). When that happens, fill
+    // in the active network's address + prefix from ConnectivityManager.
+    if interfaces
+        .iter()
+        .all(|i| i.is_loopback || i.addresses.is_empty())
+    {
+        let link = super::network::active_link_info();
+        if !link.addresses.is_empty() {
+            match link
+                .interface
+                .as_deref()
+                .and_then(|n| interfaces.iter_mut().find(|i| i.name == n))
+            {
+                Some(iface) => iface.addresses = link.addresses,
+                None => interfaces.push(NetworkInterface {
+                    name: link.interface.unwrap_or_else(|| "net0".to_string()),
+                    addresses: link.addresses,
+                    mac_address: None,
+                    is_up: true,
+                    is_loopback: false,
+                }),
+            }
+        }
+    }
+
     Ok(interfaces)
 }
 

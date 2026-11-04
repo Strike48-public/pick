@@ -14,7 +14,9 @@
 
 use async_trait::async_trait;
 use pentest_core::error::Result as CoreResult;
-use pentest_core::tools::{PentestTool, ToolContext, ToolRegistry, ToolResult, ToolSchema};
+use pentest_core::tools::{
+    PentestTool, ToolContext, ToolOutcome, ToolRegistry, ToolResult, ToolSchema,
+};
 use serde_json::{json, Value};
 
 /// A tool that fails with a BLANK error — the exact shape that broke the
@@ -62,6 +64,32 @@ impl PentestTool for HonestErrorTool {
     }
 }
 
+/// Fails as a probe the way `execute_command` does: the process ran and
+/// exited nonzero, the cause is in `data`, and there is no error message.
+struct FailedProbeTool;
+
+#[async_trait]
+impl PentestTool for FailedProbeTool {
+    fn name(&self) -> &str {
+        "failed_probe_tool"
+    }
+
+    fn description(&self) -> &str {
+        "A test tool whose probe exits nonzero without an error message."
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(self.name(), self.description())
+    }
+
+    async fn execute(&self, _params: Value, _ctx: &ToolContext) -> CoreResult<ToolResult> {
+        Ok(
+            ToolResult::success(json!({"exit_code": 2, "stderr": "connection refused"}))
+                .with_outcome(ToolOutcome::Failed),
+        )
+    }
+}
+
 /// A tool that succeeds — must pass through untouched.
 struct SuccessTool;
 
@@ -103,6 +131,31 @@ async fn blank_tool_error_is_replaced_with_actionable_message() {
     assert!(
         error.contains("blank_error_tool"),
         "the actionable message should name the tool: {error}"
+    );
+}
+
+/// Filling in the message must not discard the failure's cause: the exit
+/// code and stderr in `data` are what the model and the hop's failure line
+/// need to say why the probe failed (pick#476).
+#[tokio::test]
+async fn blank_error_replacement_keeps_the_failure_data() {
+    let mut registry = ToolRegistry::new();
+    registry.register(FailedProbeTool);
+
+    let result = registry
+        .execute("failed_probe_tool", json!({}), &ToolContext::default())
+        .await
+        .expect("registry execute must not Err for a tool-level failure");
+
+    assert!(!result.success);
+    assert_eq!(result.outcome, ToolOutcome::Failed);
+    assert!(result
+        .error
+        .as_deref()
+        .is_some_and(|e| e.contains("failed_probe_tool")));
+    assert_eq!(
+        result.data,
+        json!({"exit_code": 2, "stderr": "connection refused"})
     );
 }
 

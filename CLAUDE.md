@@ -170,7 +170,7 @@ Screenshot capture fails gracefully in headless CI environments (Wayland/X11 not
 | Workflow | Purpose | Trigger |
 |----------|---------|---------|
 | CI (`ci.yml`) | check / clippy `-D warnings` / test (Linux + macOS lanes) | PR, push |
-| Multi-Arch Docker | Build arm64/amd64 images | PR, push, tags |
+| Multi-Arch Docker | Build arm64/amd64 images | PR, push, tags, dispatch (backfill `-f tag=vX.Y.Z`) |
 | Helm Publish | Package Helm chart | PR, push, tags |
 | PII Check | Scan for sensitive data | PR, push |
 | Build proot | Build the pinned `openat2` proot binary | push, tags, manual |
