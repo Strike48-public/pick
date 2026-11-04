@@ -103,7 +103,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::sync::{Mutex, RwLock, Semaphore};
@@ -191,6 +191,16 @@ pub struct MultiTransportOptions {
     /// trust store. Ignored when `use_tls` is false.
     pub tls_ca_pem: Option<Vec<u8>>,
 
+    /// Reduced-frequency duplicate-retry pacing (#3134, ms) for the multi
+    /// lanes. After `DUPLICATE_REJECTION_STOP_THRESHOLD` consecutive
+    /// duplicate-instance rejections a registration retries at THIS interval
+    /// instead of stopping: the paced retry keeps the loud per-cycle log AND
+    /// self-heals when the other live connector goes away, while the shared
+    /// channel's other registrations are unaffected. Default: 300_000
+    /// (5 minutes). Mirrors
+    /// `ConnectorConfig::duplicate_slow_retry_interval_ms` (single lane).
+    pub duplicate_slow_retry_interval_ms: u64,
+
     /// Skip TLS certificate verification entirely for the outbound connection.
     /// `false` (default) validates against the system roots plus `tls_ca_pem`.
     /// Takes precedence over `tls_ca_pem` when both are set. Intended only for
@@ -235,6 +245,7 @@ impl Default for MultiTransportOptions {
             tls_ca_pem: None,
             tls_insecure: false,
             max_handlers_per_socket: 512,
+            duplicate_slow_retry_interval_ms: 300_000,
         }
     }
 }
@@ -299,6 +310,14 @@ impl MultiTransportOptionsBuilder {
     /// Override the initial connect timeout (ms).
     pub fn connect_timeout_ms(mut self, ms: u64) -> Self {
         self.opts().connect_timeout_ms = ms;
+        self
+    }
+
+    /// Override the reduced-frequency duplicate-retry pacing (ms) for the
+    /// multi lanes (#3134). Default 300_000 (5 minutes). See
+    /// `MultiTransportOptions::duplicate_slow_retry_interval_ms`.
+    pub fn duplicate_slow_retry_interval_ms(mut self, ms: u64) -> Self {
+        self.opts().duplicate_slow_retry_interval_ms = ms;
         self
     }
 
@@ -702,6 +721,7 @@ impl MultiConnectorRunner {
                 )),
                 session_token: Arc::new(RwLock::new(None)),
                 consecutive_rejections: Arc::new(AtomicU32::new(0)),
+                consecutive_duplicate_rejections: Arc::new(AtomicU64::new(0)),
             };
             tasks.push(tokio::spawn(async move { runner.run().await }));
         }

@@ -157,6 +157,39 @@ against Strike48/sdk-rs when landing this there.
 **Drop when:** the equivalent lands upstream in Strike48/sdk-rs and pick moves to
 that release.
 
+## duplicate-instance-fence
+
+**Files:** `src/connector.rs`, `src/behaviors/serve.rs`, `src/multi/mod.rs`,
+`src/multi/registration_runner.rs`, `src/multi/ws_multiplex.rs`,
+`src/transport/proxy.rs`
+
+**Problem.** When a second connector process runs under the same
+`instance_id` (two containers sharing one creds volume), the server used to
+let the newcomer take over the session; the original connector was left
+running but orphaned, with no reconnect. Strike48/matrix#5353 makes the server
+refuse the second live connection with a `duplicate_instance` rejection. On
+the 0.6.2 kit that rejection lands in the generic "Registration failed (will
+retry)" path: harmless, but it retries on the normal backoff forever.
+
+**Change.** The client half of the fence, applied from Strike48/sdk-rs#67
+(head `8e51029`): the `duplicate_instance` token is classified first (it never
+reaches the credential-wipe path), the rejection is logged as an actionable
+"another live connector owns instance_id ..." line, and after 3 consecutive
+duplicate rejections the runner drops to one paced attempt every
+`duplicate_slow_retry_interval_ms` (default 300000). The next paced attempt
+after the owner goes away registers without a restart. Applied on top of this
+fork with fuzz (only a test-module context line differs).
+
+**Tests:** the sdk-rs#67 unit tests ride along in `src/connector.rs`
+(`cargo test --lib` from inside `vendor/strike48-connector`, which pick CI now
+runs as its own step). The paced retry and self-heal are covered by sdk-rs#67's
+`tests/duplicate_fence.rs` in sdk-rs CI, which is not vendored.
+
+**Tracking:** Strike48/sdk-rs#67, merged as `78d6c2d` (identical to the
+vendored head `8e51029`). Not in a release yet (latest tag v0.6.3).
+
+**Drop when:** sdk-rs#67 ships in a release and pick moves to that release.
+
 ## matrix-cancel-and-deadline
 
 **Files:** `src/jobs.rs` (new), `src/connector.rs`, `src/client.rs`,
@@ -170,22 +203,15 @@ already dispatched to pick keeps running against the target, while Matrix
 records it as cancelled (Strike48/matrix#4684). The SDK discarded each job's
 task handle, so nothing could recall it.
 
-**Change.** Mirrors the sdk-rs branch `fix/sdk-rs/connector-job-cancel-v1`
-at **`eff0dbd`** (https://github.com/Strike48/sdk-rs/pull/69, final review
-round). Applied as the sdk-rs diff `2e1fe5e..eff0dbd` of `crates/connector/src`
-on top of the previous mirror (POC `aa49af6` + `2e1fe5e`), so the fork's other
-patches are untouched. After the re-copy, `jobs.rs`, `process.rs`,
-`context.rs`, `lib.rs` and `multi/mod.rs` are byte-identical to sdk-rs
-`eff0dbd`; `connector.rs`, `client.rs`, `multi/registration_runner.rs` and
-`multi/ws_multiplex.rs` differ only by this fork's other patches (same delta
-as before the re-copy).
-
-Then `jobs.rs` was re-copied from sdk-rs **`10ab102`**, the same PR rebased onto
-sdk-rs `main` (0.6.4), to pick up a docs-only fix: a doc comment's code span
-that rustdoc rejected under `-Dwarnings`. The rebase changed none of the PR's
-other code in the files this fork mirrors. The other differences between
-`eff0dbd` and `10ab102` are sdk-rs `main`'s duplicate-instance fence
-(https://github.com/Strike48/sdk-rs/pull/67), which this fork does not carry.
+**Change.** Mirrors https://github.com/Strike48/sdk-rs/pull/69 at its final
+head **`10ab102`** (branch `fix/sdk-rs/connector-job-cancel-v1`), which is based
+on sdk-rs `main` `78d6c2d` and so already contains the duplicate-instance fence
+below. Applied as a per-file three-way merge of the sdk-rs diff
+`78d6c2d..10ab102` of `crates/connector/src` onto this fork, so the fork's
+other patches are untouched: the fork-vs-upstream delta is the same 660 lines
+before (sdk-rs `78d6c2d` vs this fork without the change) and after (sdk-rs
+`10ab102` vs this fork with it). `jobs.rs`, `process.rs`, `context.rs`,
+`lib.rs` and `client.rs` are byte-identical to sdk-rs `10ab102`.
 
 - Every `ExecuteRequest` is tracked in a `JobRegistry` keyed by `request_id`.
 - An `ExecuteRequest` with the reserved capability `matrix.cancel` and
@@ -215,7 +241,7 @@ call `handle_request` / `handle_execute` pass the new `ticket` argument as
 **Tests.** The registry, ticket, deadline, multi-runner dispatch, WS
 reconnect, `complete()`-window and process-group tests run with
 `cargo test --manifest-path vendor/strike48-connector/Cargo.toml --lib` here
-(427 at the `eff0dbd` mirror). The gRPC end-to-end tests (including the one
+(434 at the `10ab102` mirror). The gRPC end-to-end tests (including the one
 that cancels a job running a real child process) live upstream in
 `crates/connector/tests/cancel_e2e.rs`.
 
