@@ -42,14 +42,18 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use rand::{Rng, thread_rng};
 use tokio::sync::{Mutex, RwLock, Semaphore, mpsc, oneshot};
 
 use crate::auth::CallbackNote;
-use crate::connector::{BaseConnector, ConnectorConfig};
+use crate::connector::{
+    BaseConnector, ConnectorConfig, DUPLICATE_REJECTION_STOP_THRESHOLD,
+    duplicate_rejection_log_message, effective_slow_retry_interval_ms, is_duplicate_instance_error,
+    should_engage_slow_retry_lane,
+};
 use crate::error::{ConnectorError, Result};
 use crate::logger::Logger;
 use crate::multi::registration_runner::{REJECTIONS_BEFORE_TOKEN_DROP, auth_mint_budget};
@@ -760,6 +764,16 @@ pub(crate) struct WsMultiplexHandle {
     /// the gRPC runner's `consecutive_rejections`; see that field for the full
     /// rationale (K=2 absorbs a spurious rejection; reset on any success).
     pub consecutive_rejections: Arc<AtomicU32>,
+    /// Consecutive duplicate-instance rejections (#3134) since the last
+    /// successful register. A fence rejection is NOT a credential problem, so
+    /// it never counts toward [`consecutive_rejections`] and never triggers
+    /// the token drop; at
+    /// [`crate::connector::DUPLICATE_REJECTION_STOP_THRESHOLD`] consecutive
+    /// duplicates this handle paces its retries at the reduced frequency and
+    /// self-heals when the owner goes away, leaving the other handles on the
+    /// shared connection unaffected. Reset to 0 on any success or
+    /// non-duplicate failure. Mirrors the single-runner lane in connector.rs.
+    pub consecutive_duplicate_rejections: Arc<AtomicU64>,
 }
 
 impl WsMultiplexHandle {
@@ -884,44 +898,115 @@ impl WsMultiplexHandle {
             };
 
             if !resp.success {
-                logger.warn(&format!(
-                    "ws multiplex handle {}: register rejected: status='{}' error='{}'",
-                    self.key, resp.status, resp.error
-                ));
-                // An in-band `success=false` is a credential rejection (the WS
-                // analogue of the gRPC `RegistrationError`) — the usual cause
-                // is a cached session token that no longer validates after a
-                // Matrix redeploy rotates its session-signing secret. After
-                // REJECTIONS_BEFORE_TOKEN_DROP consecutive rejections, drop the
-                // token and re-mint auth so the next attempt re-registers from
-                // scratch instead of replaying a credential the server keeps
-                // refusing. Shares the counter with the in-stream re-register
-                // path below.
-                if self
-                    .note_rejection_and_maybe_reset_credentials(&logger)
-                    .await
-                {
+                // Duplicate fence (#3134): the server refused a second distinct
+                // live connection for an instance_id that already has a live,
+                // responsive session. A fence rejection is NOT a credential
+                // problem — the token stays (the credential-drop path below is
+                // skipped for duplicates); the streak counts toward the
+                // reduced-frequency retry lane instead.
+                let error_lower = resp.error.to_lowercase();
+                let mut paced = false;
+                if is_duplicate_instance_error(&error_lower) {
+                    let failures = self
+                        .consecutive_duplicate_rejections
+                        .fetch_add(1, Ordering::SeqCst)
+                        + 1;
+                    let instance_id = self.config.read().await.instance_id.clone();
+                    logger.error(
+                        "Duplicate connector registration rejected",
+                        &duplicate_rejection_log_message(&instance_id, &resp.error),
+                    );
+
+                    if should_engage_slow_retry_lane(failures) {
+                        // Reduced-frequency retry lane (#3134, per review: never
+                        // stop retrying on an unattended remote deployment).
+                        // Log the engagement once at the threshold, then pace
+                        // THIS cycle at the slow interval — the lane's sleep
+                        // replaces the fast backoff below — and fall through to
+                        // the evict + retry. The fence rejects every attempt
+                        // while the owner is alive (a rejected attempt strands
+                        // nothing); when the owner goes away the next paced
+                        // attempt self-heals. The shared connection and the
+                        // other handles are unaffected.
+                        if failures == DUPLICATE_REJECTION_STOP_THRESHOLD {
+                            logger.error(
+                                "Reduced-frequency retry engaged (duplicate instance_id)",
+                                &format!(
+                                    "another live connector owns instance_id '{}': retrying every {} ms until it goes away. Check for a duplicate connector process.",
+                                    instance_id,
+                                    effective_slow_retry_interval_ms(
+                                        self.opts.duplicate_slow_retry_interval_ms,
+                                    )
+                                ),
+                            );
+                        }
+                        // The lane's sleep replaces the fast backoff below.
+                        if !sleep_with_shutdown(
+                            Duration::from_millis(effective_slow_retry_interval_ms(
+                                self.opts.duplicate_slow_retry_interval_ms,
+                            )),
+                            &self.shutdown,
+                            Some(&self.socket.shutdown),
+                        )
+                        .await
+                        {
+                            return Ok(());
+                        }
+                        paced = true;
+                    }
+                    // Below threshold: fall through to today's evict + backoff +
+                    // retry with the credentials intact.
+                } else {
+                    // Any non-duplicate failure breaks the consecutive-duplicate
+                    // streak (only back-to-back duplicate rejections stop
+                    // re-registering).
+                    self.consecutive_duplicate_rejections
+                        .store(0, Ordering::SeqCst);
                     logger.warn(&format!(
-                        "ws multiplex handle {}: reset rejected credentials after \
-                         {REJECTIONS_BEFORE_TOKEN_DROP} consecutive rejections; \
-                         re-registering from scratch",
-                        self.key
+                        "ws multiplex handle {}: register rejected: status='{}' error='{}'",
+                        self.key, resp.status, resp.error
                     ));
+                    // An in-band `success=false` is a credential rejection (the WS
+                    // analogue of the gRPC `RegistrationError`) — the usual cause
+                    // is a cached session token that no longer validates after a
+                    // Matrix redeploy rotates its session-signing secret. After
+                    // REJECTIONS_BEFORE_TOKEN_DROP consecutive rejections, drop the
+                    // token and re-mint auth so the next attempt re-registers from
+                    // scratch instead of replaying a credential the server keeps
+                    // refusing. Shares the counter with the in-stream re-register
+                    // path below.
+                    if self
+                        .note_rejection_and_maybe_reset_credentials(&logger)
+                        .await
+                    {
+                        logger.warn(&format!(
+                            "ws multiplex handle {}: reset rejected credentials after \
+                             {REJECTIONS_BEFORE_TOKEN_DROP} consecutive rejections; \
+                             re-registering from scratch",
+                            self.key
+                        ));
+                    }
                 }
                 self.socket.evict(&self.key, current_arn.as_deref()).await;
                 if !self.opts.reconnect_enabled {
                     return Ok(());
                 }
                 attempt = attempt.saturating_add(1);
-                let backoff = compute_backoff(&self.opts, attempt);
-                {
-                    let mut m = self.metrics.lock().await;
-                    m.reconnection_attempts += 1;
-                    m.current_backoff_ms = backoff.as_millis() as u64;
-                }
-                if !sleep_with_shutdown(backoff, &self.shutdown, Some(&self.socket.shutdown)).await
-                {
-                    return Ok(());
+                if !paced {
+                    // Under the reduced-frequency lane the reject block's sleep
+                    // already paced this cycle — skip the fast backoff so the
+                    // attempt cadence is exactly the lane interval.
+                    let backoff = compute_backoff(&self.opts, attempt);
+                    {
+                        let mut m = self.metrics.lock().await;
+                        m.reconnection_attempts += 1;
+                        m.current_backoff_ms = backoff.as_millis() as u64;
+                    }
+                    if !sleep_with_shutdown(backoff, &self.shutdown, Some(&self.socket.shutdown))
+                        .await
+                    {
+                        return Ok(());
+                    }
                 }
                 continue;
             }
@@ -1110,6 +1195,8 @@ impl WsMultiplexHandle {
     /// Mirrors the gRPC runner's `note_registration_success`.
     fn note_registration_success(&self) {
         self.consecutive_rejections.store(0, Ordering::SeqCst);
+        self.consecutive_duplicate_rejections
+            .store(0, Ordering::SeqCst);
     }
 
     /// Inbound drive loop for a registered handle. Runs until the handle's
@@ -1215,26 +1302,57 @@ impl WsMultiplexHandle {
                         self.key, resp.connector_arn
                     ));
                 } else {
-                    logger.warn(&format!(
-                        "ws multiplex handle {}: in-stream re-register failed: status='{}' error='{}'",
-                        self.key, resp.status, resp.error
-                    ));
-                    // Rejected re-registration: after REJECTIONS_BEFORE_TOKEN_DROP
-                    // consecutive rejections, drop the cached session token and
-                    // re-mint auth so the reconnect after this stream tears down
-                    // re-registers from scratch instead of replaying the
-                    // credential the server just refused. Shares the counter
-                    // with the initial-register path.
-                    if self
-                        .note_rejection_and_maybe_reset_credentials(logger)
-                        .await
-                    {
+                    let error_lower = resp.error.to_lowercase();
+                    if is_duplicate_instance_error(&error_lower) {
+                        // Fence rejection on the in-stream path: count toward
+                        // the shared streak (the outer initial-register loop
+                        // engages the reduced-frequency retry lane when it reaches
+                        // the threshold) and keep the credentials intact — never
+                        // count toward the token-drop counter.
+                        let failures = self
+                            .consecutive_duplicate_rejections
+                            .fetch_add(1, Ordering::SeqCst)
+                            + 1;
+                        let instance_id = self.config.read().await.instance_id.clone();
+                        logger.error(
+                            "Duplicate connector registration rejected (in-stream re-register)",
+                            &duplicate_rejection_log_message(&instance_id, &resp.error),
+                        );
+                        if should_engage_slow_retry_lane(failures) {
+                            logger.error(
+                                "Reduced-frequency retry engaged (duplicate instance_id)",
+                                &format!(
+                                    "{} consecutive duplicate rejections for instance_id '{}': the outer register loop paces at the reduced frequency and self-heals when the owner goes away.",
+                                    failures, instance_id
+                                ),
+                            );
+                        }
+                    } else {
+                        // Non-duplicate failure: reset the duplicate streak and
+                        // run the existing credential-drop path.
+                        self.consecutive_duplicate_rejections
+                            .store(0, Ordering::SeqCst);
                         logger.warn(&format!(
-                            "ws multiplex handle {}: reset rejected credentials after \
-                             {REJECTIONS_BEFORE_TOKEN_DROP} consecutive rejections \
-                             (in-stream re-register)",
-                            self.key
+                            "ws multiplex handle {}: in-stream re-register failed: status='{}' error='{}'",
+                            self.key, resp.status, resp.error
                         ));
+                        // Rejected re-registration: after REJECTIONS_BEFORE_TOKEN_DROP
+                        // consecutive rejections, drop the cached session token and
+                        // re-mint auth so the reconnect after this stream tears down
+                        // re-registers from scratch instead of replaying the
+                        // credential the server just refused. Shares the counter
+                        // with the initial-register path.
+                        if self
+                            .note_rejection_and_maybe_reset_credentials(logger)
+                            .await
+                        {
+                            logger.warn(&format!(
+                                "ws multiplex handle {}: reset rejected credentials after \
+                                 {REJECTIONS_BEFORE_TOKEN_DROP} consecutive rejections \
+                                 (in-stream re-register)",
+                                self.key
+                            ));
+                        }
                     }
                 }
             }
@@ -1921,6 +2039,7 @@ async fn run_tenant_group(
                 request_semaphore: Arc::new(Semaphore::new(opts.max_concurrent_requests.max(1))),
                 session_token: Arc::new(RwLock::new(None)),
                 consecutive_rejections: Arc::new(AtomicU32::new(0)),
+                consecutive_duplicate_rejections: Arc::new(AtomicU64::new(0)),
             };
             handle_tasks.push(tokio::spawn(async move { handle.run().await }));
         }
@@ -2471,6 +2590,7 @@ mod tests {
             request_semaphore: Arc::new(Semaphore::new(8)),
             session_token: Arc::new(RwLock::new(None)),
             consecutive_rejections: Arc::new(AtomicU32::new(0)),
+            consecutive_duplicate_rejections: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -2598,6 +2718,77 @@ mod tests {
             handle.session_token.read().await.as_deref(),
             Some("fresh-token"),
             "successful re-register must persist the freshly issued session token"
+        );
+    }
+
+    /// A duplicate-instance fence rejection on the in-stream re-register path
+    /// must never feed the K=2 token-drop counter: it counts the shared
+    /// duplicate streak instead, and a non-duplicate failure resets the
+    /// streak and resumes the K=2 path. Pin for the classify-first branch
+    /// above (the gRPC twin is
+    /// `dispatch_in_stream_reregister_duplicate_never_drops_token`).
+    #[tokio::test]
+    async fn ws_dispatch_in_stream_duplicate_rejection_never_drops_token() {
+        let handle = make_ws_handle_for_reset_tests();
+        let logger = Logger::new("test");
+        *handle.session_token.write().await = Some("stale-token".into());
+        let (entry, _rx) = admit_with_rx(&handle.socket, "inst-1").await;
+
+        let duplicate_rejection = StreamMessage {
+            message: Some(stream_message::Message::RegisterResponse(
+                proto::RegisterConnectorResponse {
+                    success: false,
+                    status: 3,
+                    error: "duplicate_instance: another live connector is already registered"
+                        .into(),
+                    ..Default::default()
+                },
+            )),
+        };
+
+        for i in 1..=3 {
+            handle
+                .dispatch_inbound(duplicate_rejection.clone(), &entry, &logger)
+                .await;
+            assert!(
+                handle.session_token.read().await.is_some(),
+                "duplicate rejection {i} must NOT drop the session token"
+            );
+            assert_eq!(
+                handle.consecutive_rejections.load(Ordering::SeqCst),
+                0,
+                "duplicate rejection {i} must not feed the token-drop counter"
+            );
+        }
+        assert_eq!(
+            handle
+                .consecutive_duplicate_rejections
+                .load(Ordering::SeqCst),
+            3,
+            "the duplicate streak must count the fence rejections"
+        );
+
+        // Non-duplicate rejection: resets the streak, resumes the K=2 path.
+        handle
+            .dispatch_inbound(register_response(false, 3), &entry, &logger)
+            .await;
+        assert_eq!(
+            handle
+                .consecutive_duplicate_rejections
+                .load(Ordering::SeqCst),
+            0,
+            "a non-duplicate failure must reset the duplicate streak"
+        );
+        assert!(
+            handle.session_token.read().await.is_some(),
+            "first non-duplicate rejection must retain the token (K=2)"
+        );
+        handle
+            .dispatch_inbound(register_response(false, 3), &entry, &logger)
+            .await;
+        assert!(
+            handle.session_token.read().await.is_none(),
+            "second consecutive non-duplicate rejection must drop the token (K=2)"
         );
     }
 

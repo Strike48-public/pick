@@ -156,3 +156,37 @@ against Strike48/sdk-rs when landing this there.
 
 **Drop when:** the equivalent lands upstream in Strike48/sdk-rs and pick moves to
 that release.
+
+## duplicate-instance-fence
+
+**Files:** `src/connector.rs`, `src/behaviors/serve.rs`, `src/multi/mod.rs`,
+`src/multi/registration_runner.rs`, `src/multi/ws_multiplex.rs`,
+`src/transport/proxy.rs`
+
+**Problem.** When a second connector process runs under the same
+`instance_id` (two containers sharing one creds volume), the server used to
+let the newcomer take over the session; the original connector was left
+running but orphaned, with no reconnect. Strike48/matrix#5353 makes the server
+refuse the second live connection with a `duplicate_instance` rejection. On
+the 0.6.2 kit that rejection lands in the generic "Registration failed (will
+retry)" path: harmless, but it retries on the normal backoff forever.
+
+**Change.** The client half of the fence, applied from Strike48/sdk-rs#67
+(head `8e51029`): the `duplicate_instance` token is classified first (it never
+reaches the credential-wipe path), the rejection is logged as an actionable
+"another live connector owns instance_id ..." line, and after 3 consecutive
+duplicate rejections the runner drops to one paced attempt every
+`duplicate_slow_retry_interval_ms` (default 300000). The next paced attempt
+after the owner goes away registers without a restart. Applied on top of this
+fork with fuzz (only a test-module context line differs).
+
+**Tests:** the sdk-rs#67 unit tests ride along in `src/connector.rs`
+(`cargo test --lib` from inside `vendor/strike48-connector`). Pick CI does not
+run them yet: the fork has its own `[workspace]`, so `cargo test --workspace`
+skips it. The paced retry and self-heal are covered by sdk-rs#67's
+`tests/duplicate_fence.rs` in sdk-rs CI, which is not vendored.
+
+**Tracking:** Strike48/sdk-rs#67, merged as `78d6c2d` (identical to the
+vendored head `8e51029`). Not in a release yet (latest tag v0.6.3).
+
+**Drop when:** sdk-rs#67 ships in a release and pick moves to that release.
