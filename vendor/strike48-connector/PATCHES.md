@@ -245,8 +245,9 @@ reconnect, `complete()`-window and process-group tests run with
 that cancels a job running a real child process) live upstream in
 `crates/connector/tests/cancel_e2e.rs`.
 
-**Tracking:** Strike48/matrix#4684. Upstream: Strike48/sdk-rs branch
-`fix/sdk-rs/connector-job-cancel-v1`.
+**Tracking:** Strike48/matrix#4684. Upstream: Strike48/sdk-rs#69, merged as
+`3a72dd6` (identical to the vendored head `10ab102` in `crates/connector/src`).
+Not in a release yet (latest tag v0.6.3).
 
 **Drop when:** the equivalent lands upstream in Strike48/sdk-rs and pick moves to
 that release.
