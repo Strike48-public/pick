@@ -225,6 +225,10 @@ pub struct PreparedTargets {
 ///    `netdiscover`, `masscan_fast`, and `nmap_vuln` shelled a raw string.
 /// 3. Log any out-of-subnet advisory and return it for the tool result. The
 ///    advisory never blocks the scan (routed/pivot targets are legitimate).
+/// 4. When a sentinel resolved on a bridged container, append the
+///    container-bridge caveat from [`crate::container_network`] so agents
+///    without the Pick persona still learn that the resolved subnets are the
+///    container's private bridge network (pick#510).
 ///
 /// # Errors
 ///
@@ -235,19 +239,48 @@ pub async fn prepare_scan_targets(raw: &str) -> pentest_core::error::Result<Prep
         .await
         .map_err(|e| Error::InvalidParams(e.to_string()))?;
 
+    // pick#510 acceptance: "persona injection AND auto/current resolution
+    // carry that fact". Only sentinel resolutions need the caveat: a sentinel
+    // expands to this host's subnets, which ARE the container's bridge subnets
+    // when the connector is bridged; a literal target scans whatever it names.
+    // classify_current_host re-enumerates interfaces (the resolver's own
+    // enumeration only produced the subnet list); one extra enumeration per
+    // sentinel scan is noise next to the scan itself.
+    let bridge_caveat = if is_sentinel(raw) {
+        crate::container_network::scan_target_caveat(
+            &crate::container_network::classify_current_host().await,
+        )
+    } else {
+        None
+    };
+    prepare_resolved(resolved, bridge_caveat)
+}
+
+/// Validate + warn assembly over an already-resolved target set.
+///
+/// Split from [`prepare_scan_targets`] so the sentinel bridge-caveat wiring is
+/// unit-testable without depending on the host's real container state.
+fn prepare_resolved(
+    resolved: ResolvedTargets,
+    bridge_caveat: Option<String>,
+) -> pentest_core::error::Result<PreparedTargets> {
+    // The out-of-subnet advisory (literal targets) takes precedence; the
+    // bridge caveat only fills the empty sentinel slot.
+    let warning = resolved.out_of_subnet_warning.or(bridge_caveat);
+
+    if let Some(ref w) = warning {
+        tracing::warn!("{}", w);
+    }
+
     // Validate every concrete target (closes the bypass-tool gap).
     let mut validated = Vec::with_capacity(resolved.targets.len());
     for t in &resolved.targets {
         validated.push(validate_target(t)?);
     }
 
-    if let Some(ref w) = resolved.out_of_subnet_warning {
-        tracing::warn!("{}", w);
-    }
-
     Ok(PreparedTargets {
         targets: validated,
-        warning: resolved.out_of_subnet_warning,
+        warning,
     })
 }
 
@@ -374,6 +407,65 @@ mod tests {
         assert!(is_sentinel("ALL"));
         assert!(!is_sentinel("10.0.8.0/22"));
         assert!(!is_sentinel("scanme.nmap.org"));
+    }
+
+    #[test]
+    fn sentinel_resolution_carries_bridge_caveat_in_tool_result() {
+        // pick#510 AC: "persona injection AND auto/current resolution carry
+        // that fact". Agents without the Pick persona see only tool results,
+        // so the bridge caveat must ride on PreparedTargets.warning.
+        let caveat = crate::container_network::scan_target_caveat(
+            &crate::container_network::ContainerNetworking::Bridged {
+                subnet: "172.18.0.0/16".to_string(),
+            },
+        )
+        .expect("bridged classification yields a caveat");
+        for sentinel in ["auto", "current", "all"] {
+            let resolved = resolve_against_subnets(sentinel, &[sn("172.18.0.0/16", true)]).unwrap();
+            let prepared = prepare_resolved(resolved, Some(caveat.clone())).unwrap();
+            let warning = prepared.warning.expect("bridge caveat should ride");
+            assert!(
+                warning.contains("172.18.0.0/16"),
+                "sentinel {sentinel} warning should name the bridge subnet"
+            );
+            assert!(
+                warning.contains("host networking"),
+                "sentinel {sentinel} warning should point at host networking"
+            );
+        }
+    }
+
+    #[test]
+    fn silent_classification_yields_no_sentinel_warning() {
+        // Host networking / bare metal: no caveat, scan proceeds as before.
+        let resolved = resolve_against_subnets("auto", &[sn("10.0.8.0/22", true)]).unwrap();
+        let prepared = prepare_resolved(resolved, None).unwrap();
+        assert!(prepared.warning.is_none());
+    }
+
+    #[test]
+    fn out_of_subnet_advisory_takes_precedence_over_bridge_caveat() {
+        // The two warnings cannot co-occur by construction (sentinel vs
+        // literal), but the combination logic must not let the bridge caveat
+        // overwrite a real out-of-subnet advisory.
+        let resolved =
+            resolve_against_subnets("192.168.1.0/24", &[sn("10.0.8.0/22", true)]).unwrap();
+        let expected = resolved
+            .out_of_subnet_warning
+            .clone()
+            .expect("out-of-subnet advisory present");
+        let prepared = prepare_resolved(resolved, Some("bridge caveat".to_string())).unwrap();
+        assert_eq!(prepared.warning.unwrap(), expected);
+    }
+
+    #[test]
+    fn literal_target_never_carries_the_bridge_caveat() {
+        // A literal target scans whatever it names (through the NAT when
+        // bridged): no caveat. Guarded at the call site (is_sentinel gate);
+        // here the pure seam proves None-in -> None-out for literals.
+        let resolved = resolve_against_subnets("10.0.8.50", &[sn("10.0.8.0/22", true)]).unwrap();
+        let prepared = prepare_resolved(resolved, None).unwrap();
+        assert!(prepared.warning.is_none());
     }
 
     #[test]
