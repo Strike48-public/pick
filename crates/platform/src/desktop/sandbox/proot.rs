@@ -323,7 +323,8 @@ impl ProotExecutor {
         // drop/timeout. It is left as a follow-up for this backend because proot
         // execution cannot be exercised in CI here (no proot/BlackArch rootfs),
         // so the change would ship unverified. bwrap is unaffected (it uses
-        // `--die-with-parent`). Tracked as a follow-up.
+        // `--die-with-parent`). Tracked in
+        // https://github.com/Strike48-public/pick/issues/603.
         command.kill_on_drop(true);
         let child = command.spawn().map_err(SandboxError::Io)?;
 

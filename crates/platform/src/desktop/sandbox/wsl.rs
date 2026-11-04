@@ -555,7 +555,8 @@ impl WslExecutor {
         // `wsl --terminate <distro>`; the cancel path does not. A correct fix
         // (e.g. terminate/signal the distro-side process group on drop) needs a
         // Windows host to develop and verify and is deliberately NOT attempted
-        // blind here. Tracked as a follow-up.
+        // blind here. Tracked in
+        // https://github.com/Strike48-public/pick/issues/605.
         command.kill_on_drop(true);
         let child = command.spawn().map_err(SandboxError::Io)?;
 

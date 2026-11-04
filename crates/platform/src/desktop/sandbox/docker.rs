@@ -194,20 +194,15 @@ impl DockerExecutor {
         Ok(())
     }
 
-    /// Execute a command inside a Docker container
+    /// Build the `docker run` argument list for `cmd` together with the
+    /// armed [`ContainerKiller`] for the same container.
     ///
-    /// `known_secret` is accepted for signature parity with the other executors
-    /// (the bwrap executor redacts its inner-command log line with it, pick#335);
-    /// this executor does not log the inner command, so it is unused here.
-    pub async fn execute(
-        &self,
-        cmd: &str,
-        timeout: Duration,
-        working_dir: Option<&Path>,
-        _known_secret: Option<&str>,
-    ) -> SandboxResult<CommandResult> {
-        let start = Instant::now();
-
+    /// `kill_on_drop(true)` only kills the local `docker run` client, so a
+    /// cancelled job is halted by the guard's `docker kill <name>`. That only
+    /// works if the container really runs under the guard's name, so the
+    /// unique name is minted here once and used for both the `--name` argument
+    /// and the guard (Strike48/matrix#4684).
+    fn prepare_run(&self, cmd: &str, working_dir: Option<&Path>) -> (Vec<String>, ContainerKiller) {
         // Unique container name so a drop guard can stop THIS container.
         // `kill_on_drop(true)` only kills the local `docker run` client; the
         // container keeps running the scan (and `--rm` only cleans up after the
@@ -262,6 +257,27 @@ impl DockerExecutor {
         args.push("-c".to_string());
         args.push(cmd.to_string());
 
+        (args, ContainerKiller::new(container_name))
+    }
+
+    /// Execute a command inside a Docker container
+    ///
+    /// `known_secret` is accepted for signature parity with the other executors
+    /// (the bwrap executor redacts its inner-command log line with it, pick#335);
+    /// this executor does not log the inner command, so it is unused here.
+    pub async fn execute(
+        &self,
+        cmd: &str,
+        timeout: Duration,
+        working_dir: Option<&Path>,
+        _known_secret: Option<&str>,
+    ) -> SandboxResult<CommandResult> {
+        let start = Instant::now();
+
+        // The run args and the drop guard come from one helper so they always
+        // name the same container (see `prepare_run`).
+        let (args, mut container_guard) = self.prepare_run(cmd, working_dir);
+
         let mut command = Command::new("docker");
         command
             .args(&args)
@@ -272,12 +288,18 @@ impl DockerExecutor {
         // NOT enough: the container keeps running (see `ContainerKiller`), so we
         // pair it with the name-based drop guard below.
         command.kill_on_drop(true);
-        let child = command.spawn().map_err(SandboxError::Io)?;
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                // Nothing was started, so there is no container to kill.
+                container_guard.disarm();
+                return Err(SandboxError::Io(e));
+            }
+        };
 
-        // Arm a guard that `docker kill`s the named container on cancel/timeout.
-        // Disarmed on observed normal exit (`--rm` already removed it, and the
-        // name could be reused by then).
-        let mut container_guard = ContainerKiller::new(container_name);
+        // `container_guard` (armed by `prepare_run`) `docker kill`s the named
+        // container on cancel/timeout. Disarmed on observed normal exit
+        // (`--rm` already removed it, and the name could be reused by then).
 
         // Wait with timeout
         match tokio::time::timeout(timeout, crate::desktop::wait_for_child_output(child)).await {
@@ -377,8 +399,10 @@ mod tests {
     /// `kill_on_drop` on the `docker run` client does not do.
     ///
     /// Gated on a live daemon and a lightweight `alpine` image: skips (does not
-    /// fail) when Docker is unavailable, so it is a no-op in CI (the Test job
-    /// has no daemon) and runs only on a developer box with Docker.
+    /// fail) when Docker is unavailable. CI's Test job runs on ubuntu-latest,
+    /// which has a daemon, so it runs there too. It drives `ContainerKiller`
+    /// directly; `docker_run_is_named_after_its_kill_guard` covers that the
+    /// executor actually names its container and arms the guard for it.
     #[tokio::test]
     async fn container_killer_stops_a_running_container() {
         if !DockerExecutor::is_available().await {
@@ -432,6 +456,39 @@ mod tests {
             .status()
             .await;
         assert!(gone, "the drop guard must stop the running container");
+    }
+
+    /// The executor must launch its container under the exact name its drop
+    /// guard kills, or a cancelled job's `docker kill` misses and the scan
+    /// keeps running. Pure (no daemon needed), so it runs everywhere: dropping
+    /// `--name` from the run args, or arming the guard with a different name,
+    /// turns this red.
+    #[test]
+    fn docker_run_is_named_after_its_kill_guard() {
+        let executor = DockerExecutor::new(SandboxConfig::default());
+        let (args, mut guard) = executor.prepare_run("nmap -sV target", None);
+
+        assert!(guard.armed, "the guard must be armed before the run starts");
+        let name_at = args
+            .iter()
+            .position(|a| a == "--name")
+            .expect("docker run must name its container");
+        assert_eq!(
+            args.get(name_at + 1),
+            Some(&guard.name),
+            "the container must run under the name the guard kills"
+        );
+        let image_at = args
+            .iter()
+            .position(|a| a == DOCKER_IMAGE)
+            .expect("image arg");
+        assert!(
+            name_at < image_at,
+            "--name must be a docker run option, not part of the command"
+        );
+
+        // Do not fire a real `docker kill` from the test's drop.
+        guard.disarm();
     }
 
     // Today's x86_64 Dockerfile, verbatim — regression guard so the arch-aware

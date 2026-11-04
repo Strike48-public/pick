@@ -377,12 +377,19 @@ pub(crate) async fn execute_command_direct(
     // therefore survive a cancel on Windows. Full process-tree teardown on
     // Windows (a Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, or a
     // `taskkill /T /F` on the child pid) is a deliberate follow-up: it needs a
-    // real Windows host to verify and is NOT implemented blind here.
+    // real Windows host to verify and is NOT implemented blind here. Tracked in
+    // https://github.com/Strike48-public/pick/issues/604.
     //
     // Severity note: the headless, Matrix-dispatched connector runs on Linux,
     // so the PRIMARY cancel path is Unix and IS fully covered by the group
     // kill below. Windows is only the desktop app surface; the gap is confined
-    // to that surface. See the PR "Known limits" and the tracked follow-up.
+    // to that surface. See the PR "Known limits".
+    //
+    // KNOWN LIMIT (Unix): `setpgid` below takes the child out of the
+    // terminal's foreground process group. For a Pick launched from an
+    // interactive shell, Ctrl-C no longer reaches a running tool, and a tool
+    // that reads the tty gets SIGTTIN. Desktop-from-GUI and headless (Docker)
+    // runs are unaffected.
     #[cfg(unix)]
     unsafe {
         // `tokio::process::Command::pre_exec` is inherent (Unix-only).
