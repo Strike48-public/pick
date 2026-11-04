@@ -181,8 +181,12 @@ after the owner goes away registers without a restart. Applied on top of this
 fork with fuzz (only a test-module context line differs).
 
 **Tests:** the sdk-rs#67 unit tests ride along in `src/connector.rs`
-(`cargo test --lib` from inside `vendor/strike48-connector`).
+(`cargo test --lib` from inside `vendor/strike48-connector`). Pick CI does not
+run them yet: the fork has its own `[workspace]`, so `cargo test --workspace`
+skips it. The paced retry and self-heal are covered by sdk-rs#67's
+`tests/duplicate_fence.rs` in sdk-rs CI, which is not vendored.
 
-**Tracking:** Strike48/sdk-rs#67 (not merged at the time of vendoring).
+**Tracking:** Strike48/sdk-rs#67, merged as `78d6c2d` (identical to the
+vendored head `8e51029`). Not in a release yet (latest tag v0.6.3).
 
 **Drop when:** sdk-rs#67 ships in a release and pick moves to that release.
