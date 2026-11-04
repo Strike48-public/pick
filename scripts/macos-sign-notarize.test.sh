@@ -249,7 +249,10 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 
     # The team clause against a real Developer ID signature from another team.
     # GitHub's macOS runners ship these browsers; a developer Mac usually has
-    # one of them too.
+    # one of them too. A runner image can ship an app whose own signature no
+    # longer verifies, so a candidate is used only if it is a sound fixture:
+    # its signature verifies strictly and carries the hardened runtime. That
+    # leaves the team clause as the only thing the two cases below can test.
     third_party=""
     third_party_team=""
     for candidate in \
@@ -258,17 +261,31 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         "/Applications/Firefox.app/Contents/MacOS/firefox" \
         "/Applications/1Password.app/Contents/MacOS/1Password"; do
         [[ -x "$candidate" ]] || continue
-        team_line="$(codesign -dv "$candidate" 2>&1 | grep '^TeamIdentifier=' || true)"
+        details="$(codesign -dv "$candidate" 2>&1)"
+        team_line="$(grep '^TeamIdentifier=' <<<"$details" || true)"
         team_id="${team_line#TeamIdentifier=}"
-        if [[ -n "$team_id" && "$team_id" != "not set" ]]; then
-            third_party="$candidate"
-            third_party_team="$team_id"
-            break
+        if [[ -z "$team_id" || "$team_id" == "not set" ]]; then
+            continue
         fi
+        if ! verify_out="$(codesign --verify --strict "$candidate" 2>&1)"; then
+            printf 'note - %s is not a usable fixture, its signature fails to verify:\n%s\n' \
+                "$candidate" "$verify_out"
+            continue
+        fi
+        if ! grep -q '^CodeDirectory.*flags=.*(.*runtime.*)' <<<"$details"; then
+            printf 'note - %s is not a usable fixture, no hardened runtime\n' "$candidate"
+            continue
+        fi
+        third_party="$candidate"
+        third_party_team="$team_id"
+        break
     done
     if [[ -n "$third_party" ]]; then
-        check "a Developer ID binary passes the check for its own team" "0" \
-            "$(APPLE_TEAM_ID="$third_party_team" verify_signature "$third_party" >/dev/null 2>&1 && echo 0 || echo 1)"
+        printf 'note - team check fixture: %s (team %s)\n' "$third_party" "$third_party_team"
+        own_out="$(APPLE_TEAM_ID="$third_party_team" verify_signature "$third_party" 2>&1)" \
+            && own_rc=0 || own_rc=1
+        check "a Developer ID binary passes the check for its own team" "0" "$own_rc"
+        ((own_rc == 0)) || printf '%s\n' "$own_out"
         check "a Developer ID binary of another team fails our team check" "1" \
             "$(APPLE_TEAM_ID="$TEAM" verify_signature "$third_party" >/dev/null 2>&1 && echo 0 || echo 1)"
     elif [[ -n "${CI:-}" ]]; then
