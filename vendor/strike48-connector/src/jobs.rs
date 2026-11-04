@@ -87,9 +87,9 @@ use crate::types::{ExecuteResponse, PayloadEncoding};
 
 /// Reserved platform capability for recalling an in-flight `ExecuteRequest`.
 ///
-/// Matrix dispatches `ExecuteRequest { capability_id: "matrix.cancel", payload:
-/// `{"cancel_request_id": "<id>"}` }. The SDK intercepts it before connector
-/// tools and aborts the tracked task. See [module docs](self) for the reply
+/// Matrix dispatches an `ExecuteRequest` with `capability_id: "matrix.cancel"`
+/// and the payload `{"cancel_request_id": "<id>"}`. The SDK intercepts it before
+/// connector tools and aborts the tracked task. See [module docs](self) for the reply
 /// contract.
 pub const CANCEL_CAPABILITY: &str = "matrix.cancel";
 

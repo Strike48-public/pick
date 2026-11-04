@@ -180,6 +180,13 @@ patches are untouched. After the re-copy, `jobs.rs`, `process.rs`,
 `multi/ws_multiplex.rs` differ only by this fork's other patches (same delta
 as before the re-copy).
 
+Then `jobs.rs` was re-copied from sdk-rs **`10ab102`**, the same PR rebased onto
+sdk-rs `main` (0.6.4), to pick up a docs-only fix: a doc comment's code span
+that rustdoc rejected under `-Dwarnings`. The rebase changed none of the PR's
+other code in the files this fork mirrors. The other differences between
+`eff0dbd` and `10ab102` are sdk-rs `main`'s duplicate-instance fence
+(https://github.com/Strike48/sdk-rs/pull/67), which this fork does not carry.
+
 - Every `ExecuteRequest` is tracked in a `JobRegistry` keyed by `request_id`.
 - An `ExecuteRequest` with the reserved capability `matrix.cancel` and
   `{"cancel_request_id": "<job>"}` is answered by the SDK before any tool sees
