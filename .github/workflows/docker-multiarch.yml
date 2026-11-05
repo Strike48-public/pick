@@ -364,3 +364,64 @@ jobs:
           echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "**Platforms:** linux/amd64, linux/arm64" >> $GITHUB_STEP_SUMMARY
+
+  # pick#445: registry hygiene. PR runs publish ephemeral images tagged
+  # `pr-<n>-<sha>`; left alone they bury the release tags in the GHCR tag
+  # list. This runs on the same event that publishes a release image (a real
+  # STABLE tag push — the same #563 gate the float tags use) and deletes
+  # exactly the `pr-*` tags. Everything else is kept: semver tags (incl.
+  # prereleases), `latest`, `main`, sha tags, and any unrecognized tag shape
+  # (conservative: we never delete what we do not positively recognize as an
+  # ephemeral PR tag). Fully-untagged manifests are not listable through the
+  # registry tags API and cannot occur here — every publish in this workflow
+  # applies at least one tag — so pr-* deletion covers the ephemeral set.
+  prune-pr-images:
+    name: Prune PR images (GHCR retention)
+    runs-on: ubuntu-latest
+    needs: [merge-manifests]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    steps:
+      - name: Delete pr-* tags
+        env:
+          REGISTRY: ghcr.io
+          # Lowercase package, same invariant as REGISTRY_IMAGE above.
+          PACKAGE: strike48-public/pick
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          token="$(curl -fsS "https://${REGISTRY}/token?scope=repository:${PACKAGE}:pull,delete" | jq -r .token)"
+          mapfile -t tags < <(curl -fsS -H "Authorization: Bearer ${token}" \
+            "${REGISTRY}/v2/${PACKAGE}/tags/list?n=1000" | jq -r '.tags[] // empty')
+          deleted=0; kept=0
+          for tag in "${tags[@]}"; do
+            # Protection list: semver (with optional prerelease), latest,
+            # main, full commit sha.
+            if [[ "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
+              || [ "$tag" = "latest" ] || [ "$tag" = "main" ] \
+              || [[ "$tag" =~ ^[0-9a-f]{40}$ ]]; then
+              kept=$((kept+1))
+              continue
+            fi
+            case "$tag" in
+              pr-*)
+                # A multi-arch tag may point at several manifest digests;
+                # delete every one of them.
+                digests="$(curl -fsS -H "Authorization: Bearer ${token}" \
+                  "${REGISTRY}/v2/${PACKAGE}/tags/${tag}" | jq -r '.tags[] // empty')"
+                for digest in $digests; do
+                  code="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+                    -H "Authorization: Bearer ${token}" \
+                    "${REGISTRY}/v2/${PACKAGE}/manifests/${digest}")"
+                  if [ "$code" != "202" ] && [ "$code" != "200" ]; then
+                    echo "::error::DELETE ${tag}@${digest} -> HTTP ${code}" >&2
+                    exit 1
+                  fi
+                  deleted=$((deleted+1))
+                done
+                ;;
+              *)
+                kept=$((kept+1))
+                ;;
+            esac
+          done
+          echo "GHCR retention: deleted ${deleted} PR manifest digests, kept ${kept} tags"
