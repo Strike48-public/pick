@@ -1021,8 +1021,7 @@ mod tests {
         // A server that answers without the field must read as "nothing was
         // stopped", never as a confirmed halt (StopAgentData::stop_agent_stream
         // is Option<bool>; callers apply unwrap_or(false)).
-        let absent: super::StopAgentData =
-            serde_json::from_value(serde_json::json!({})).unwrap();
+        let absent: super::StopAgentData = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(absent.stop_agent_stream, None);
     }
 

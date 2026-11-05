@@ -1344,8 +1344,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 // response racing a new message would otherwise mark the wrong
                 // turn's state (or the new turn's "Stopped" flag) with stale
                 // results.
-                let still_here = conversation_id.peek().as_deref() == Some(cid.as_str())
-                    && !agent_thinking();
+                let still_here =
+                    conversation_id.peek().as_deref() == Some(cid.as_str()) && !agent_thinking();
                 if still_here {
                     // The optimistic "Stopped" flag survives only a confirmed
                     // halt (see keep_stopped_flag) — never a false "stopped".
@@ -1359,8 +1359,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             chat_notice.set(Some(ChatNotice {
                                 kind: ChatNoticeKind::Success,
                                 title: "Turn stopped".to_string(),
-                                detail: "Strike48 confirmed the agent turn was halted."
-                                    .to_string(),
+                                detail: "Strike48 confirmed the agent turn was halted.".to_string(),
                                 studio_url: None,
                             }));
                         }
@@ -1372,8 +1371,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                             chat_notice.set(Some(ChatNotice {
                                 kind: ChatNoticeKind::Info,
                                 title: "Nothing to stop".to_string(),
-                                detail: "No agent turn was in flight."
-                                    .to_string(),
+                                detail: "No agent turn was in flight.".to_string(),
                                 studio_url: None,
                             }));
                         }
@@ -2172,7 +2170,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
 #[cfg(test)]
 mod turn_stopped_tests {
     use super::{keep_stopped_flag, status_label, turn_stopped_after};
-    use pentest_core::matrix::{AgentStatus, apply_event, ConversationStreamEvent};
+    use pentest_core::matrix::{apply_event, AgentStatus, ConversationStreamEvent};
 
     #[test]
     fn stop_with_confirmed_halt_keeps_the_stopped_flag() {
@@ -2292,10 +2290,14 @@ mod turn_stopped_tests {
         // discarded by the CANCELLED/IDLE events) and the turn is flagged
         // interrupted so the UI renders the "Stopped" marker.
         assert!(
-            msgs.iter().any(|m| m.text == "Let me start the scan against the target"),
+            msgs.iter()
+                .any(|m| m.text == "Let me start the scan against the target"),
             "partial text must survive the stop, got: {:?}",
             msgs.iter().map(|m| m.text.as_str()).collect::<Vec<_>>()
         );
-        assert!(stopped, "turn must be flagged interrupted after CANCELLED->IDLE");
+        assert!(
+            stopped,
+            "turn must be flagged interrupted after CANCELLED->IDLE"
+        );
     }
 }
