@@ -836,6 +836,49 @@ jobs:
         with:
           subject-checksums: release/SHA256SUMS.txt
 
+      # pick#445: the release must not advertise an image that does not
+      # exist. docker-multiarch.yml publishes on the same tag push, in
+      # parallel, so this polls until the immutable version tag lands and
+      # fails the release (no release page is created) if it never does.
+      # The digest it captures goes into the release body below, and the
+      # index check asserts the manifest covers both released architectures.
+      # The package is public, so an anonymous pull token is sufficient.
+      - name: Verify Docker image published (multi-arch, immutable tag)
+        id: docker_image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          pkg="strike48-public/pick"   # GHCR packages are lowercase
+          token="$(curl -fsS "https://ghcr.io/token?scope=repository:${pkg}:pull" | jq -r .token)"
+          accept="application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json"
+          hdrs="$(mktemp)"
+          manifest=""
+          for attempt in $(seq 1 25); do
+            code="$(curl -s -o /dev/null -D "$hdrs" -w '%{http_code}' \
+              -H "Authorization: Bearer ${token}" -H "Accept: ${accept}" \
+              "https://ghcr.io/v2/${pkg}/manifests/${VERSION}")"
+            if [ "$code" = "200" ]; then
+              manifest="$(curl -fsS -H "Authorization: Bearer ${token}" -H "Accept: ${accept}" "https://ghcr.io/v2/${pkg}/manifests/${VERSION}")"
+              break
+            fi
+            echo "attempt ${attempt}/25: ghcr.io/${pkg}:${VERSION} not published yet (HTTP ${code}) — waiting 60s"
+            sleep 60
+          done
+          if [ -z "${manifest}" ]; then
+            echo "::error::ghcr.io/${pkg}:${VERSION} was not published within 25 minutes — the Multi-Arch Docker publish failed; failing the release so it does not advertise a missing image." >&2
+            exit 1
+          fi
+          echo "${manifest}" | jq -e '(.manifests | length > 0) and ([.manifests[].platform.architecture] | index("amd64") and index("arm64"))' >/dev/null \
+            || { echo "::error::published manifest for ${VERSION} is not a multi-arch index covering linux/amd64 and linux/arm64" >&2; exit 1; }
+          digest="$(grep -i '^docker-content-digest:' "$hdrs" | awk '{print $2}' | tr -d '\r')"
+          case "${digest}" in
+            sha256:*) ;;
+            *) echo "::error::no docker-content-digest header for ${VERSION}" >&2; exit 1 ;;
+          esac
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "ghcr.io/${pkg}:${VERSION} verified multi-arch (amd64+arm64), digest ${digest}"
+
       - name: Create Release
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
@@ -928,6 +971,22 @@ jobs:
             `docs/DOCKER_INSTALL.md`. `pick-docker-preflight.sh` checks a host
             before install, and `pick-docker-agent-setup.md` is a runbook an
             AI coding agent can follow to do the install with you.
+
+            #### Docker image
+
+            The container image for this release (the one the compose
+            bundle above pins):
+
+            - Image: `ghcr.io/strike48-public/pick`
+            - Tag: `${{ steps.version.outputs.version }}` — the immutable version tag. **Container tags have no `v` prefix**; this release's git tag is `v${{ steps.version.outputs.version }}` but the image tag is not.
+            - Digest: `${{ steps.docker_image.outputs.digest }}`
+
+            ```
+            docker pull ghcr.io/strike48-public/pick@${{ steps.docker_image.outputs.digest }}
+            ```
+
+            Pin the version tag (or the digest) in long-lived configuration;
+            `latest` moves on the next release.
 
             ### Verifying a download
 
