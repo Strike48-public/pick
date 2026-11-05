@@ -97,6 +97,16 @@ fn turn_stopped_after(was_stopped: bool, status: AgentStatus) -> bool {
     }
 }
 
+/// Whether the transcript "Stopped" flag survives the resolution of a stop
+/// request. Only a server-confirmed halt (`Ok(true)`) keeps the optimistic
+/// flag: `Ok(false)` (the server answered, nothing was in flight) and
+/// `Err(..)` (the request never reached an answering server — the turn may
+/// still be running) must clear it, so the operator is never shown a false
+/// "Stopped" while the turn keeps working the target (pick#490 guardrail).
+fn keep_stopped_flag(outcome: &Result<bool, pentest_core::error::Error>) -> bool {
+    matches!(outcome, Ok(true))
+}
+
 /// Merge server-truth messages with any local-only (`local-*`) messages the user
 /// has sent that the backend has not echoed yet, so a (re)connect catch-up never
 /// drops the in-flight user turn. Server messages win by id; unechoed locals are
@@ -405,6 +415,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // True when the last turn ended because the user stopped it (CANCELLED).
     // Kept across the IDLE that follows; cleared when a new turn starts.
     let mut turn_stopped = use_signal(|| false);
+    // A Stop request is in flight. Makes Stop idempotent: pressing it again
+    // while the server is still answering is a no-op.
+    let mut stop_pending = use_signal(|| false);
     let mut error_msg = use_signal(|| None::<String>);
     // Subtle inline notice driven by the stream applier — distinct from
     // `error_msg` (which renders the loud red banner for call-failures). Used for
@@ -1274,6 +1287,116 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
         }
     };
 
+    // Handler: stop an in-flight agent turn (pick#490).
+    //
+    // (1) Immediately returns local control: re-enables the input (it is gated
+    //     on `agent_thinking`) and clears "Responding...". The partially
+    //     streamed text already lives in `messages` and is never discarded.
+    // (2) Cuts the server-side turn via the Matrix `stopAgentStream` mutation
+    //     (matrix#4684): the server halts the turn, recalls in-flight connector
+    //     jobs, and publishes CANCELLED -> IDLE on the stream, which confirms
+    //     the transcript "Stopped" marker.
+    // (3) Honest status: the optimistic "Stopped" flag is only kept when the
+    //     server CONFIRMS a halt. If it reports nothing was in flight, or the
+    //     request never reached it, the flag is cleared and the operator is
+    //     told — no false "stopped" while the turn keeps running. If the
+    //     server is genuinely still running, the next non-terminal stream
+    //     status re-enables the thinking state on its own.
+    //
+    // Idempotent: a stop already in flight is never re-issued, and a Stop with
+    // no active turn is a no-op. The subscription is deliberately kept open:
+    // it delivers the CANCELLED/IDLE confirmation and the partial-text echo.
+    let on_stop = EventHandler::new({
+        let make_client = make_client.clone();
+        move |_: ()| {
+            // Idempotency: one stop in flight at a time.
+            if stop_pending() {
+                return;
+            }
+            let Some(cid) = conversation_id.peek().clone() else {
+                return;
+            };
+            let Some(agent) = selected_agent.peek().clone() else {
+                return;
+            };
+            // No turn in flight locally: nothing to stop (the button is only
+            // rendered while `agent_thinking`, this guards programmatic calls).
+            if !agent_thinking() {
+                return;
+            }
+
+            stop_pending.set(true);
+
+            // (1) Return local control immediately.
+            agent_thinking.set(false);
+            agent_status_text.set(String::new());
+            // Optimistically flag the transcript as interrupted. The stream's
+            // CANCELLED confirms it; a server "nothing in flight" / delivery
+            // failure clears it below.
+            turn_stopped.set(true);
+
+            let client = make_client();
+            spawn(async move {
+                let span = pentest_core::telemetry::start_ui_span("stop_agent");
+                let outcome = client.stop_agent(&cid, &agent.id).await;
+                // Only stamp the outcome if the operator is still in this
+                // conversation AND no newer turn has started since — a Stop
+                // response racing a new message would otherwise mark the wrong
+                // turn's state (or the new turn's "Stopped" flag) with stale
+                // results.
+                let still_here =
+                    conversation_id.peek().as_deref() == Some(cid.as_str()) && !agent_thinking();
+                if still_here {
+                    // The optimistic "Stopped" flag survives only a confirmed
+                    // halt (see keep_stopped_flag) — never a false "stopped".
+                    turn_stopped.set(keep_stopped_flag(&outcome));
+                    match outcome {
+                        Ok(true) => {
+                            // Confirmed halt: keep the optimistic flag; the
+                            // stream's CANCELLED -> IDLE lands the transcript
+                            // marker. Tell the operator the server agreed.
+                            span.finish("confirmed");
+                            chat_notice.set(Some(ChatNotice {
+                                kind: ChatNoticeKind::Success,
+                                title: "Turn stopped".to_string(),
+                                detail: "Strike48 confirmed the agent turn was halted.".to_string(),
+                                studio_url: None,
+                            }));
+                        }
+                        Ok(false) => {
+                            // The server says no turn was running (it ended in
+                            // the gap, or the stop raced the turn's start).
+                            // Do not show a false "Stopped".
+                            span.finish("nothing_in_flight");
+                            chat_notice.set(Some(ChatNotice {
+                                kind: ChatNoticeKind::Info,
+                                title: "Nothing to stop".to_string(),
+                                detail: "No agent turn was in flight.".to_string(),
+                                studio_url: None,
+                            }));
+                        }
+                        Err(e) => {
+                            // The stop never reached a server that could answer
+                            // — the server-side state is unknown. Be explicit
+                            // that the turn may still be running.
+                            span.finish("error");
+                            chat_notice.set(Some(ChatNotice {
+                                kind: ChatNoticeKind::UpstreamError,
+                                title: "Stop request failed".to_string(),
+                                detail: format!(
+                                    "The stop request did not reach Strike48 — the turn may \
+                                     still be running server-side. ({e})"
+                                ),
+                                studio_url: None,
+                            }));
+                        }
+                    }
+                }
+                stop_pending.set(false);
+            });
+        }
+    });
+
     // Consume messages from the send mailbox.
     // Wrapped in use_effect so it only fires when the mailbox signal changes,
     // avoiding an infinite re-render loop when selected_agent is None or is_sending.
@@ -1982,10 +2105,14 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     let kind_class = match notice.kind {
                         ChatNoticeKind::TokenLimit => "chat-notice chat-notice--limit",
                         ChatNoticeKind::UpstreamError => "chat-notice chat-notice--error",
+                        ChatNoticeKind::Success => "chat-notice chat-notice--success",
+                        ChatNoticeKind::Info => "chat-notice chat-notice--info",
                     };
                     let icon = match notice.kind {
                         ChatNoticeKind::TokenLimit => "⏱",
                         ChatNoticeKind::UpstreamError => "⚠",
+                        ChatNoticeKind::Success => "✓",
+                        ChatNoticeKind::Info => "ℹ",
                     };
                     let title = notice.title.clone();
                     let detail = notice.detail.clone();
@@ -2033,6 +2160,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     on_send: send_message.clone(),
                     is_sending: is_sending,
                     agent_thinking: agent_thinking,
+                    on_stop,
                 }
             }
         }
@@ -2041,8 +2169,27 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
 
 #[cfg(test)]
 mod turn_stopped_tests {
-    use super::{status_label, turn_stopped_after};
-    use pentest_core::matrix::AgentStatus;
+    use super::{keep_stopped_flag, status_label, turn_stopped_after};
+    use pentest_core::matrix::{apply_event, AgentStatus, ConversationStreamEvent};
+
+    #[test]
+    fn stop_with_confirmed_halt_keeps_the_stopped_flag() {
+        let confirmed: Result<bool, pentest_core::error::Error> = Ok(true);
+        assert!(keep_stopped_flag(&confirmed));
+    }
+
+    #[test]
+    fn stop_with_nothing_in_flight_clears_the_flag() {
+        let nothing: Result<bool, pentest_core::error::Error> = Ok(false);
+        assert!(!keep_stopped_flag(&nothing));
+    }
+
+    #[test]
+    fn stop_with_undelivered_request_clears_the_flag() {
+        let failed: Result<bool, pentest_core::error::Error> =
+            Err(pentest_core::error::Error::Matrix("unreachable".into()));
+        assert!(!keep_stopped_flag(&failed));
+    }
 
     /// Fold a status sequence the way `apply_outcome` does.
     fn fold(start: bool, seq: &[AgentStatus]) -> bool {
@@ -2100,5 +2247,57 @@ mod turn_stopped_tests {
         assert!(AgentStatus::Cancelled.is_terminal());
         // status_label is only used for non-terminal statuses; unchanged.
         assert_eq!(status_label(AgentStatus::Processing), "Thinking...");
+    }
+
+    #[test]
+    fn stop_preserves_partial_streamed_text_and_flags_interrupted() {
+        // Simulate a Stop during a live turn: partial text has streamed in,
+        // then the server publishes CANCELLED and the IDLE that follows it
+        // (the sequence matrix#4684's stopAgentStream produces).
+        let mut msgs = Vec::new();
+        let _ = apply_event(
+            &mut msgs,
+            &ConversationStreamEvent::PartStreaming {
+                message_id: "m1".to_string(),
+                content: "Let me start the scan".to_string(),
+            },
+        );
+        let _ = apply_event(
+            &mut msgs,
+            &ConversationStreamEvent::PartStreaming {
+                message_id: "m1".to_string(),
+                content: "Let me start the scan against the target".to_string(),
+            },
+        );
+
+        let mut stopped = false;
+        let ev_cancelled = ConversationStreamEvent::Status {
+            status: AgentStatus::Cancelled,
+            error: None,
+            tool_name: None,
+        };
+        let _ = apply_event(&mut msgs, &ev_cancelled);
+        stopped = turn_stopped_after(stopped, AgentStatus::Cancelled);
+        let ev_idle = ConversationStreamEvent::Status {
+            status: AgentStatus::Idle,
+            error: None,
+            tool_name: None,
+        };
+        let _ = apply_event(&mut msgs, &ev_idle);
+        stopped = turn_stopped_after(stopped, AgentStatus::Idle);
+
+        // The partial streamed content is retained in the transcript (never
+        // discarded by the CANCELLED/IDLE events) and the turn is flagged
+        // interrupted so the UI renders the "Stopped" marker.
+        assert!(
+            msgs.iter()
+                .any(|m| m.text == "Let me start the scan against the target"),
+            "partial text must survive the stop, got: {:?}",
+            msgs.iter().map(|m| m.text.as_str()).collect::<Vec<_>>()
+        );
+        assert!(
+            stopped,
+            "turn must be flagged interrupted after CANCELLED->IDLE"
+        );
     }
 }
