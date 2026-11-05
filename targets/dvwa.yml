@@ -24,9 +24,10 @@ services:
     # fixture (red-team-docs analysis/benchmark-fixture/fixture-v1.yaml) pins this same
     # digest, so demo stacks and benchmark runs measure identical targets. A moving tag
     # would silently change the target under a published number. The pinned image is
-    # DVWA '1.10 *Development*' (PHP 7.0.30 / MariaDB 10.1.26), all 13 vulnerability
-    # classes present. Advancing the digest means a new fixture version on the
-    # red-team-docs side first - never edit a frozen fixture manifest.
+    # DVWA '1.10 *Development*' (PHP 7.0.30 / MariaDB 10.1.26), per the fixture's in-image
+    # verification and re-read from the image's dpkg status on 2026-11-04. Advancing the
+    # digest means a new fixture version on the red-team-docs side first - never edit a
+    # frozen fixture manifest.
     image: docker.io/vulnerables/web-dvwa@sha256:dae203fe11646a86937bf04db0079adef295f426da68a92b40e3b181f337daa7
     restart: unless-stopped
     networks:
