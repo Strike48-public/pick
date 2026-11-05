@@ -573,6 +573,23 @@ const DELETE_CONVERSATION_QUERY: &str = r#"
     }
 "#;
 
+/// Stop an in-flight agent turn (matrix#4684). The server-side `stopAgentStream`
+/// is non-retiring and bounded: it halts the running turn, recalls in-flight
+/// connector jobs, and publishes `CANCELLED` then `IDLE` on the conversation
+/// stream. The `Boolean` return is honest — `true` means a live turn was
+/// actually stopped, `false` means nothing was in flight.
+const STOP_AGENT_QUERY: &str = r#"
+    mutation StopAgentStream($conversationId: ID!, $agentId: ID!) {
+        stopAgentStream(conversationId: $conversationId, agentId: $agentId)
+    }
+"#;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StopAgentData {
+    stop_agent_stream: Option<bool>,
+}
+
 const GET_TOKEN_USAGE_STATS_QUERY: &str = r#"
     query GetTokenUsageStats {
         tokenUsageStats {
@@ -902,6 +919,40 @@ impl ChatClient for MatrixChatClient {
 // ---------------------------------------------------------------------------
 
 impl MatrixChatClient {
+    /// Stop the in-flight agent turn on `conversation_id` (the UI "Stop" control,
+    /// pick#490). Three-state result:
+    ///
+    /// * `Ok(true)` — the server confirmed a live turn was halted. The
+    ///   conversation stream then publishes `CANCELLED` followed by `IDLE`.
+    /// * `Ok(false)` — the server answered but nothing was in flight (the turn
+    ///   already ended, or the stop raced the turn's start). No turn was cut.
+    /// * `Err(..)` — the stop request never reached a server that could answer
+    ///   (network failure, older Matrix without the mutation, GraphQL error).
+    ///   The server-side state is UNKNOWN: the turn may still be running.
+    ///
+    /// Idempotent and safe to call repeatedly. This is a stop, not a retire:
+    /// the conversation remains fully usable afterwards.
+    pub async fn stop_agent(
+        &self,
+        conversation_id: &str,
+        agent_id: &str,
+    ) -> crate::error::Result<bool> {
+        tracing::info!(
+            "[Matrix] stop_agent conv={} agent={}",
+            conversation_id,
+            agent_id
+        );
+        self.require_auth()?;
+
+        let variables = serde_json::json!({
+            "conversationId": conversation_id,
+            "agentId": agent_id,
+        });
+
+        let data: StopAgentData = self.execute_gql(STOP_AGENT_QUERY, variables).await?;
+        Ok(data.stop_agent_stream.unwrap_or(false))
+    }
+
     /// Send a system message (configuration update) to an agent.
     /// This sends a regular message prefixed with [SYSTEM] to indicate it's a
     /// configuration change rather than user input.
@@ -956,6 +1007,24 @@ impl MatrixChatClient {
 #[cfg(test)]
 mod tests {
     use super::truncate_body;
+
+    #[test]
+    fn stop_agent_data_decodes_honest_boolean() {
+        let true_case: super::StopAgentData =
+            serde_json::from_value(serde_json::json!({ "stopAgentStream": true })).unwrap();
+        assert_eq!(true_case.stop_agent_stream, Some(true));
+
+        let false_case: super::StopAgentData =
+            serde_json::from_value(serde_json::json!({ "stopAgentStream": false })).unwrap();
+        assert_eq!(false_case.stop_agent_stream, Some(false));
+
+        // A server that answers without the field must read as "nothing was
+        // stopped", never as a confirmed halt (StopAgentData::stop_agent_stream
+        // is Option<bool>; callers apply unwrap_or(false)).
+        let absent: super::StopAgentData =
+            serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(absent.stop_agent_stream, None);
+    }
 
     #[test]
     fn returns_short_body_unchanged() {
