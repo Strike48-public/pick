@@ -6,6 +6,7 @@
 use dioxus::prelude::*;
 use pentest_core::matrix::{AgentInfo, ChatMessage, ConversationInfo};
 
+use super::super::scan_progress::{derive_scan_progress, is_scan_conversation, ScanProgressStrip};
 use super::agent_selector::SuggestedActions;
 use super::next_steps::NextStepsActions;
 use super::render::render_message;
@@ -101,6 +102,21 @@ pub fn MessageList(props: MessageListProps) -> Element {
 
     rsx! {
         div { class: "chat-messages-wrapper",
+            // Scan-in-progress strip: identifiable phases + expected duration +
+            // live elapsed timer above the running log. Shown only while a scan
+            // conversation is actively running (agent working or a scan tool in
+            // flight); the running log below is untouched and keeps streaming.
+            if is_scan_conversation(&messages.read())
+                && matches!(
+                    derive_scan_progress(&messages.read(), agent_thinking()),
+                    Some(ref p) if p.is_in_progress(agent_thinking())
+                )
+            {
+                ScanProgressStrip {
+                    messages: messages,
+                    agent_thinking: agent_thinking,
+                }
+            }
             div {
                 class: "chat-messages",
                 onscroll: move |_| {
