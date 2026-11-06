@@ -51,15 +51,10 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           config-file: .github/codeql/codeql-config.yml
-          # Rust: build the workspace the same way CI does so extraction
-          # covers the desktop feature set. JS: no build step (the bundles
-          # are plain files; only first-party TS outside paths-ignore is in
-          # scope).
-          build-mode: ${{ matrix.language == 'rust' && 'manual' || 'none' }}
-
-      - name: Build (rust)
-        if: matrix.language == 'rust'
-        run: cargo build --workspace --locked --features pentest-platform/desktop-pcap
+          # Both extractors are source-only: the Rust extractor supports
+          # build-mode none exclusively (it parses .rs directly and never
+          # instruments a build), and the JS bundles are plain files.
+          build-mode: none
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
