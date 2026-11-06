@@ -24,6 +24,7 @@ pub mod paths;
 pub mod provenance;
 pub mod rendering;
 pub mod sanitize;
+pub mod scan_stats;
 pub mod secure_store;
 pub mod seed;
 pub mod settings;

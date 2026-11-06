@@ -1,0 +1,242 @@
+//! Locally observed scan durations, used to ground the "how long will this
+//! take?" UX copy in real run times instead of a hardcoded guess that rots.
+//!
+//! Each completed Easy Mode scan records how long it took (wall clock from the
+//! scan button press to the report document appearing). The rolling window of
+//! recent durations is stored in its own small JSON file — deliberately NOT in
+//! `settings.json`, so a detached write here can never be clobbered by the
+//! signal-based `AppSettings` save path (the same failure mode as #373).
+//!
+//! No PII or target data: only integer durations, capped at the last
+//! [`MAX_ENTRIES`] entries.
+
+use std::fs;
+use std::path::Path;
+use std::time::Duration;
+
+use crate::settings::settings_dir;
+
+/// Keep at most this many recent scan durations.
+const MAX_ENTRIES: usize = 10;
+/// Ignore measurements outside this plausible window: a "scan" that finishes in
+/// under a half-minute almost certainly never really scanned, and anything over
+/// an hour is a wedged run, not a data point.
+const MIN_SECS: u64 = 30;
+const MAX_SECS: u64 = 3600;
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct ScanStatsFile {
+    durations_secs: Vec<u64>,
+}
+
+fn file_path() -> std::path::PathBuf {
+    settings_dir().join("scan_stats.json")
+}
+
+fn load_from(path: &Path) -> ScanStatsFile {
+    match fs::read_to_string(path) {
+        Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+        Err(_) => ScanStatsFile::default(),
+    }
+}
+
+fn save_to(path: &Path, stats: &ScanStatsFile) -> anyhow::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_string_pretty(stats)?)?;
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Merge one completed scan's wall-clock duration into a history. Out-of-range
+/// measurements are dropped so a wedged or no-op run can't skew the estimate,
+/// and the window is capped to the newest [`MAX_ENTRIES`] entries.
+fn merge_entry(durations: &mut Vec<u64>, secs: u64) {
+    if !(MIN_SECS..=MAX_SECS).contains(&secs) {
+        return;
+    }
+    durations.push(secs);
+    if durations.len() > MAX_ENTRIES {
+        durations.drain(0..durations.len() - MAX_ENTRIES);
+    }
+}
+
+/// Record one completed scan's wall-clock duration (see [`merge_entry`] for the
+/// sanity rules).
+pub fn record_scan_duration(secs: u64) {
+    let path = file_path();
+    let mut stats = load_from(&path);
+    merge_entry(&mut stats.durations_secs, secs);
+    if let Err(e) = save_to(&path, &stats) {
+        tracing::warn!("Failed to save scan duration stats: {e}");
+    }
+}
+
+/// Recent completed-scan durations, oldest first (empty on a fresh install).
+pub fn recent_scan_durations() -> Vec<u64> {
+    load_from(&file_path()).durations_secs
+}
+
+/// Lower median of a duration history — robust to one slow or one fast
+/// outlier, and biased toward the shorter side so a typical run does not
+/// overshoot the stated expectation. `None` on an empty history.
+fn typical_secs_from(durations: &[u64]) -> Option<u64> {
+    let mut v = durations.to_vec();
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_unstable();
+    Some(v[(v.len() - 1) / 2])
+}
+
+/// Median of the recent local durations. `None` until at least one scan has
+/// completed locally.
+pub fn typical_scan_duration_secs() -> Option<u64> {
+    typical_secs_from(&recent_scan_durations())
+}
+
+/// Format a duration as a lay-friendly "about N minutes" label.
+fn format_minutes_label(secs: u64) -> String {
+    let minutes = (secs as f64 / 60.0).round().max(1.0) as u64;
+    if minutes == 1 {
+        "about a minute".to_string()
+    } else {
+        format!("about {minutes} minutes")
+    }
+}
+
+/// Human-readable estimate for a duration history: "about 3 minutes" from
+/// observed history, or the deliberately vague "a few minutes" with no history
+/// (calibrated so a typical 2-4 minute run never overshoots the stated
+/// expectation).
+fn typical_label_from(durations: &[u64]) -> String {
+    match typical_secs_from(durations) {
+        Some(secs) => format_minutes_label(secs),
+        None => "a few minutes".to_string(),
+    }
+}
+
+/// Human-readable estimate for the user's own observed history.
+pub fn typical_scan_duration_label() -> String {
+    typical_label_from(&recent_scan_durations())
+}
+
+/// Whole seconds formatted as `m:ss` (e.g. "1:24"), for the live elapsed timer.
+pub fn format_elapsed(secs: u64) -> String {
+    let m = secs / 60;
+    let s = secs % 60;
+    format!("{m}:{s:02}")
+}
+
+/// True when the elapsed scan exceeds the hard cap that flags a stall
+/// regardless of activity (a normal scan takes a few minutes, not 10+).
+pub fn is_overall_stall(elapsed: Duration) -> bool {
+    elapsed > Duration::from_secs(10 * 60)
+}
+
+/// True when the scan has been silent (no new messages or tool activity) long
+/// enough that normal slowness stops being a reasonable explanation.
+pub fn is_silence_stall(silence: Duration) -> bool {
+    silence > Duration::from_secs(3 * 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Per-test temp file so the suite never touches the user's real
+    /// `~/.config/pentest-connector/` state.
+    fn temp_stats_file(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "pick-scan-stats-test-{}-{name}.json",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn empty_history_yields_vague_label() {
+        // No data, so the copy stays "a few minutes" rather than a fabricated
+        // precise guess.
+        assert_eq!(typical_secs_from(&[]), None);
+        assert_eq!(typical_label_from(&[]), "a few minutes");
+    }
+
+    #[test]
+    fn lower_median_of_durations() {
+        // Lower median: with an even count the shorter value wins, so a
+        // typical run does not overshoot the stated expectation.
+        assert_eq!(typical_secs_from(&[120, 300, 180]), Some(180));
+        assert_eq!(typical_secs_from(&[300, 120, 180, 240]), Some(180));
+        assert_eq!(typical_secs_from(&[42]), Some(42));
+    }
+
+    #[test]
+    fn format_minutes_labels() {
+        assert_eq!(format_minutes_label(45), "about a minute");
+        assert_eq!(format_minutes_label(75), "about a minute");
+        assert_eq!(format_minutes_label(180), "about 3 minutes");
+        assert_eq!(format_minutes_label(330), "about 6 minutes");
+        assert_eq!(format_minutes_label(10), "about a minute");
+    }
+
+    #[test]
+    fn typical_label_from_history() {
+        assert_eq!(typical_label_from(&[180, 200]), "about 3 minutes");
+        assert_eq!(typical_label_from(&[55]), "about a minute");
+    }
+
+    #[test]
+    fn format_elapsed_counts_up() {
+        assert_eq!(format_elapsed(0), "0:00");
+        assert_eq!(format_elapsed(84), "1:24");
+        assert_eq!(format_elapsed(600), "10:00");
+    }
+
+    #[test]
+    fn merge_entry_records_and_caps() {
+        let mut d: Vec<u64> = Vec::new();
+        for i in 1..=MAX_ENTRIES + 5 {
+            merge_entry(&mut d, 60 + i as u64);
+        }
+        assert_eq!(d.len(), MAX_ENTRIES);
+        // Oldest entries are the ones dropped.
+        assert_eq!(*d.first().unwrap(), 60 + 6);
+    }
+
+    #[test]
+    fn out_of_range_durations_are_dropped() {
+        let mut d: Vec<u64> = Vec::new();
+        merge_entry(&mut d, 5);
+        merge_entry(&mut d, 999_999);
+        merge_entry(&mut d, MIN_SECS - 1);
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn record_and_read_back_roundtrip() {
+        let path = temp_stats_file("roundtrip");
+        let _ = fs::remove_file(&path);
+        let mut stats = load_from(&path);
+        merge_entry(&mut stats.durations_secs, 175);
+        save_to(&path, &stats).unwrap();
+        let read = load_from(&path).durations_secs;
+        assert!(read.contains(&175), "recorded 175 not in {read:?}");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn corrupt_file_falls_back_to_empty() {
+        let path = temp_stats_file("corrupt");
+        fs::write(&path, "{not json").unwrap();
+        assert!(load_from(&path).durations_secs.is_empty());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn stall_thresholds() {
+        assert!(!is_silence_stall(Duration::from_secs(179)));
+        assert!(is_silence_stall(Duration::from_secs(181)));
+        assert!(!is_overall_stall(Duration::from_secs(9 * 60)));
+        assert!(is_overall_stall(Duration::from_secs(11 * 60)));
+    }
+}
