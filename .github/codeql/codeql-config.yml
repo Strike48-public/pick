@@ -1,0 +1,21 @@
+# CodeQL configuration for Pick (pick#154).
+#
+# GitHub's DEFAULT code scanning setup never loads this file — paths-ignore is
+# silently ignored there (verified against GitHub docs). This config is only
+# effective via the advanced workflow .github/workflows/codeql.yml, which
+# references it with `config-file`.
+#
+# Why the exclusions:
+# - vendor/strike48-connector/: vendored fork of Strike48's connector SDK. It
+#   is maintained (and scanned) in its own repo; its TLS config warnings are a
+#   known, intentional property of the connector transport, not of Pick.
+# - crates/ui/src/assets/: vendored third-party JS bundles (restty.js is a
+#   2.6 MB terminal bundle). We do not maintain minified vendor code and
+#   cannot meaningfully patch it; CodeQL alerts in it are noise (the original
+#   HIGH js/incomplete-sanitization alert came from here).
+name: "Pick CodeQL configuration"
+queries:
+  - uses: security-and-quality
+paths-ignore:
+  - 'vendor/strike48-connector/**'
+  - 'crates/ui/src/assets/**'

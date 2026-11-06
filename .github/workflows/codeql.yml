@@ -1,0 +1,67 @@
+# Advanced CodeQL workflow for Pick (pick#154).
+#
+# Replaces GitHub's default (automatic) setup. The default setup never loads
+# .github/codeql/codeql-config.yml, so the paths-ignore exclusions for
+# vendored code (vendor/strike48-connector/, crates/ui/src/assets/) are
+# silently ignored unless this workflow references the config file.
+#
+# OPERATOR STEP (one-time, not possible via API): Settings → Code security →
+# Code scanning → switch to "advanced setup" (this disables default setup so
+# the two don't double-scan and duplicate alerts).
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly scan of the default branch.
+    - cron: '30 2 * * 0'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same languages the default setup was analyzing (rust + javascript).
+        include:
+          - language: rust
+          - language: javascript-typescript
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          config-file: .github/codeql/codeql-config.yml
+          # Rust: build the workspace the same way CI does so extraction
+          # covers the desktop feature set. JS: no build step (the bundles
+          # are plain files; only first-party TS outside paths-ignore is in
+          # scope).
+          build-mode: ${{ matrix.language == 'rust' && 'manual' || 'none' }}
+
+      - name: Build (rust)
+        if: matrix.language == 'rust'
+        run: cargo build --workspace --locked --features pentest-platform/desktop-pcap
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
