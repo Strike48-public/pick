@@ -199,6 +199,32 @@ jobs:
       - name: Release signing script self-test
         run: scripts/macos-sign-notarize.test.sh
 
+  check-windows-arm64:
+    name: Check (Windows arm64)
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64-pc-windows-msvc-check
+      # Compile proof for the arm64 Windows target (native ARM runner),
+      # mirroring exactly what the Windows release jobs build (desktop +
+      # headless, easy-mode, no pcap feature). The release jobs only run on
+      # tag pushes, so without this, PRs could land with the arm64 Windows
+      # half never compiled.
+      - name: cargo check (aarch64-pc-windows-msvc)
+        env:
+          PICK_EASY_MODE: "true"
+        run: cargo check --locked --package pentest-desktop --package pentest-headless --target aarch64-pc-windows-msvc
+
   # Windows exes ship from release.yml, and before this job no PR ever compiled
   # or ran the cfg(windows) code, so Windows-only bugs reached customers
   # unnoticed (pick#533). Builds the two shipped packages with the release
