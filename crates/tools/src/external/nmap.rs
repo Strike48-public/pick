@@ -227,8 +227,12 @@ fn parse_nmap_xml(xml: &str, stderr: &str) -> Result<Value> {
 
     let mut hosts = Vec::new();
 
-    // Extract host blocks with regex
-    let host_re = regex::Regex::new(r#"<host\s+[^>]*>(.*?)</host>"#).unwrap();
+    // Extract host blocks with regex. `(?s)` is required: nmap writes every
+    // `<host>` element across many lines, and without dot-matches-newline the
+    // lazy `.*?` never reaches `</host>`, so every scan parsed as zero hosts
+    // (spurious #347 zero-host scope hint, no nmap evidence nodes). `<host\s+`
+    // still never matches nmap's `<hosthint>` element.
+    let host_re = regex::Regex::new(r#"(?s)<host\s+[^>]*>(.*?)</host>"#).unwrap();
 
     for host_match in host_re.captures_iter(xml) {
         if let Some(host_xml) = host_match.get(1) {
@@ -261,8 +265,10 @@ fn parse_host_xml(xml: &str) -> Value {
 
     // Extract open ports
     let mut ports = Vec::new();
+    // `(?s)` for the same reason as the host regex: a `<port>` element can span
+    // lines (e.g. a `<service>` carrying `<cpe>` children).
     let port_re =
-        regex::Regex::new(r#"<port\s+protocol="([^"]+)"\s+portid="([^"]+)"[^>]*>(.*?)</port>"#)
+        regex::Regex::new(r#"(?s)<port\s+protocol="([^"]+)"\s+portid="([^"]+)"[^>]*>(.*?)</port>"#)
             .unwrap();
 
     for port_match in port_re.captures_iter(xml) {
@@ -1124,6 +1130,85 @@ fn should_force_pn(no_ping: bool, unprivileged: bool, scan_type: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Real `nmap -oX` shape (7.9x): a `<hosthint>` block, then each `<host>`
+    /// element spread over many lines. One host has an open + a closed port and
+    /// a multi-line `<service>` with `<cpe>` children; the other has a single
+    /// open port.
+    const MULTILINE_NMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="/usr/lib/nmap/nmap -sT -p 80,443 -T 3 -oX /tmp/nmap-output.xml 10.250.0.0/30" start="1762581860" version="7.95" xmloutputversion="1.05">
+<scaninfo type="connect" protocol="tcp" numservices="2" services="80,443"/>
+<verbose level="0"/>
+<debugging level="0"/>
+<hosthint><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="10.250.0.3" addrtype="ipv4"/>
+<hostnames>
+</hostnames>
+</hosthint>
+<host starttime="1762581860" endtime="1762581860"><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="10.250.0.3" addrtype="ipv4"/>
+<address addr="02:42:0A:FA:00:03" addrtype="mac"/>
+<hostnames>
+<hostname name="juice-guard" type="PTR"/>
+</hostnames>
+<ports><port protocol="tcp" portid="80"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="http" product="nginx" method="probed" conf="10">
+<cpe>cpe:/a:igor_sysoev:nginx</cpe>
+</service></port>
+<port protocol="tcp" portid="443"><state state="closed" reason="conn-refused" reason_ttl="0"/><service name="https" method="table" conf="3"/></port>
+</ports>
+<times srtt="76" rttvar="3756" to="100000"/>
+</host>
+<host starttime="1762581860" endtime="1762581860"><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="10.250.0.4" addrtype="ipv4"/>
+<hostnames>
+</hostnames>
+<ports><port protocol="tcp" portid="80"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="http" method="table" conf="3"/></port>
+</ports>
+<times srtt="50" rttvar="3750" to="100000"/>
+</host>
+<runstats><finished time="1762581861" timestr="Sat Nov  8 06:04:21 2026" summary="Nmap done at Sat Nov  8 06:04:21 2026; 4 IP addresses (2 hosts up) scanned in 0.62 seconds" elapsed="0.62" exit="success"/><hosts up="2" down="2" total="4"/>
+</runstats>
+</nmaprun>
+"#;
+
+    #[test]
+    fn parse_nmap_xml_reads_multiline_host_blocks() {
+        let data = parse_nmap_xml(MULTILINE_NMAP_XML, "").unwrap();
+
+        assert_eq!(data["count"], 2, "both multi-line <host> blocks must parse");
+        assert_eq!(data["summary"], "Scanned 2 host(s)");
+
+        let hosts = data["hosts"].as_array().unwrap();
+        assert_eq!(hosts[0]["ip"], "10.250.0.3");
+        assert_eq!(hosts[0]["hostname"], "juice-guard");
+        assert_eq!(hosts[0]["state"], "up");
+        assert_eq!(hosts[1]["ip"], "10.250.0.4");
+    }
+
+    #[test]
+    fn parse_nmap_xml_keeps_only_open_ports_including_multiline_service() {
+        let data = parse_nmap_xml(MULTILINE_NMAP_XML, "").unwrap();
+        let hosts = data["hosts"].as_array().unwrap();
+
+        // 10.250.0.3: 80 open (multi-line <service> with <cpe>), 443 closed.
+        let ports = hosts[0]["ports"].as_array().unwrap();
+        assert_eq!(ports.len(), 1, "closed 443 must be dropped: {ports:?}");
+        assert_eq!(ports[0]["port"], 80);
+        assert_eq!(ports[0]["service"], "http");
+        assert_eq!(ports[0]["version"], "nginx");
+        assert_eq!(hosts[0]["port_count"], 1);
+
+        assert_eq!(hosts[1]["port_count"], 1);
+    }
+
+    #[test]
+    fn parse_nmap_xml_does_not_count_the_hosthint_element() {
+        // A sweep where nothing answered: only a <hosthint>, no <host>.
+        let xml = "<nmaprun>\n<hosthint><status state=\"up\" reason=\"arp-response\"/>\n<address addr=\"10.250.0.9\" addrtype=\"ipv4\"/>\n</hosthint>\n<runstats><hosts up=\"0\" down=\"1\" total=\"1\"/></runstats>\n</nmaprun>";
+        let data = parse_nmap_xml(xml, "").unwrap();
+        assert_eq!(data["count"], 0);
+    }
+
     use super::*;
 
     // ========================================
