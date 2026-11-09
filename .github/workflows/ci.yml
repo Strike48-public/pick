@@ -215,15 +215,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: aarch64-pc-windows-msvc-check
-      # Compile proof for the arm64 Windows target (native ARM runner),
-      # mirroring exactly what the Windows release jobs build (desktop +
-      # headless, easy-mode, no pcap feature). The release jobs only run on
-      # tag pushes, so without this, PRs could land with the arm64 Windows
-      # half never compiled.
+      # Compile proof + native test run for the arm64 Windows target (native
+      # ARM runner), mirroring what the Windows release jobs build (desktop +
+      # headless, easy-mode env, STRIKE48_HOST baked, no pcap feature). The
+      # release jobs only run on tag pushes, so without this, PRs could land
+      # with the arm64 Windows half never compiled or tested (review on
+      # pick#611).
       - name: cargo check (aarch64-pc-windows-msvc)
         env:
           PICK_EASY_MODE: "true"
+          STRIKE48_HOST: "https://studio.strike48.com"
         run: cargo check --locked --package pentest-desktop --package pentest-headless --target aarch64-pc-windows-msvc
+      # The x64 check runs these tests on windows-latest; the ARM runner is a
+      # native aarch64 host, so the same tests close the native-arm64 test gap
+      # without any cross-compile toolchain.
+      - name: cargo test platform+core (aarch64-pc-windows-msvc)
+        env:
+          DISABLE_SANDBOX: "true"
+          PICK_EASY_MODE: "true"
+          STRIKE48_HOST: "https://studio.strike48.com"
+        run: cargo test --locked --package pentest-platform --package pentest-core --lib --target aarch64-pc-windows-msvc
 
   # Windows exes ship from release.yml, and before this job no PR ever compiled
   # or ran the cfg(windows) code, so Windows-only bugs reached customers
@@ -237,6 +248,9 @@ jobs:
     # Same rationale as the Test job: no sandbox backend on the runner.
     env:
       DISABLE_SANDBOX: "true"
+      # Compile-time-baked (option_env!) — the same value the Windows release
+      # jobs bake, so this check mirrors the release env (review on pick#611).
+      STRIKE48_HOST: "https://studio.strike48.com"
     steps:
       - uses: actions/checkout@v5
       - name: Install protoc

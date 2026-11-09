@@ -879,6 +879,7 @@ jobs:
             |----------|--------------|----------|
             | Linux | x86_64 | `pick-linux-x86_64.tar.gz` |
             | Windows | x86_64 | `pick-windows-x86_64.zip` |
+            | Windows | arm64 | `pick-windows-arm64.zip` |
             | macOS | x86_64 | `pick-macos-x86_64.tar.gz` |
             | macOS | Apple Silicon | `pick-macos-aarch64.tar.gz` |
             | Web | WASM | `pick-web.tar.gz` |
@@ -892,6 +893,7 @@ jobs:
             |----------|--------------|----------|
             | Linux | x86_64 | `pick-agent-linux-x86_64.tar.gz` |
             | Windows | x86_64 | `pick-agent-windows-x86_64.zip` |
+            | Windows | arm64 | `pick-agent-windows-arm64.zip` |
             | macOS | x86_64 | `pick-agent-darwin-x86_64.tar.gz` |
             | macOS | Apple Silicon | `pick-agent-darwin-aarch64.tar.gz` |
 
