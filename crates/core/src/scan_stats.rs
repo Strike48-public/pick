@@ -12,12 +12,17 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::settings::settings_dir;
 
 /// Keep at most this many recent scan durations.
 const MAX_ENTRIES: usize = 10;
+/// Minimum completed scans before the estimate gets specific (a single
+/// observation is not a pattern — see `typical_label_from`).
+const MIN_OBSERVATIONS: usize = 2;
 /// Ignore measurements outside this plausible window: a "scan" that finishes in
 /// under a half-minute almost certainly never really scanned, and anything over
 /// an hour is a wedged run, not a data point.
@@ -31,6 +36,13 @@ struct ScanStatsFile {
 }
 
 fn file_path() -> std::path::PathBuf {
+    // Test/dev seam: a controlled path so the record/read wiring through
+    // `file_path()` itself can be exercised without touching the user's real
+    // config dir (the roundtrip test otherwise bypasses it with temp paths —
+    // review nit on pick#610).
+    if let Ok(p) = std::env::var("PICK_SCAN_STATS_FILE") {
+        return std::path::PathBuf::from(p);
+    }
     settings_dir().join("scan_stats.json")
 }
 
@@ -69,6 +81,9 @@ pub fn record_scan_duration(secs: u64) {
     merge_entry(&mut stats.durations_secs, secs);
     if let Err(e) = save_to(&path, &stats) {
         tracing::warn!("Failed to save scan duration stats: {e}");
+    } else {
+        // Invalidate the memoized label (see `typical_scan_duration_label`).
+        STATS_GENERATION.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -110,15 +125,47 @@ fn format_minutes_label(secs: u64) -> String {
 /// (calibrated so a typical 2-4 minute run never overshoots the stated
 /// expectation).
 fn typical_label_from(durations: &[u64]) -> String {
+    // One observation is not a pattern: with fewer than two completed scans
+    // the copy stays vague instead of turning a single sample into a precise
+    // "about N minutes" (review nit on pick#610).
     match typical_secs_from(durations) {
-        Some(secs) => format_minutes_label(secs),
-        None => "a few minutes".to_string(),
+        Some(secs) if durations.len() >= MIN_OBSERVATIONS => format_minutes_label(secs),
+        _ => "a few minutes".to_string(),
     }
 }
 
+/// Bumped after every successful stats save. The label cache below keys on
+/// it, so a fresh recording invalidates the memoized label without the
+/// render path re-reading the file on every tick.
+static STATS_GENERATION: AtomicU64 = AtomicU64::new(0);
+struct LabelCache {
+    generation: u64,
+    label: String,
+}
+static LABEL_CACHE: OnceLock<Mutex<Option<LabelCache>>> = OnceLock::new();
+
 /// Human-readable estimate for the user's own observed history.
+///
+/// Memoized: the call sites sit in per-second render paths (the progress
+/// strip ticks once a second, and the Easy Mode hero re-renders with it),
+/// so the stats file is read only when the history actually changed since
+/// the last call (a successful [`record_scan_duration`]) — never per tick
+/// (review nit on pick#610).
 pub fn typical_scan_duration_label() -> String {
-    typical_label_from(&recent_scan_durations())
+    let generation = STATS_GENERATION.load(Ordering::Relaxed);
+    let cache = LABEL_CACHE.get_or_init(Default::default);
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(c) = guard.as_ref() {
+        if c.generation == generation {
+            return c.label.clone();
+        }
+    }
+    let label = typical_label_from(&recent_scan_durations());
+    *guard = Some(LabelCache {
+        generation,
+        label: label.clone(),
+    });
+    label
 }
 
 /// Whole seconds formatted as `m:ss` (e.g. "1:24"), for the live elapsed timer.
@@ -182,7 +229,9 @@ mod tests {
     #[test]
     fn typical_label_from_history() {
         assert_eq!(typical_label_from(&[180, 200]), "about 3 minutes");
-        assert_eq!(typical_label_from(&[55]), "about a minute");
+        // n=1 stays vague: one completed scan is not a pattern yet.
+        assert_eq!(typical_label_from(&[55]), "a few minutes");
+        assert_eq!(typical_label_from(&[55, 65]), "about a minute");
     }
 
     #[test]
@@ -221,6 +270,30 @@ mod tests {
         save_to(&path, &stats).unwrap();
         let read = load_from(&path).durations_secs;
         assert!(read.contains(&175), "recorded 175 not in {read:?}");
+        let _ = fs::remove_file(&path);
+    }
+
+    /// Exercises the real `file_path()` wiring (the roundtrip test above
+    /// bypasses it with temp paths) via the `PICK_SCAN_STATS_FILE` seam, and
+    /// the memoized label end-to-end: record -> generation bump -> the label
+    /// picks up the fresh history without an extra file read.
+    #[test]
+    fn record_scan_duration_file_path_wiring() {
+        let path = temp_stats_file("file_path_wiring");
+        let _ = fs::remove_file(&path);
+        std::env::set_var("PICK_SCAN_STATS_FILE", &path);
+        // n=1: recorded, but the label stays vague (single observation).
+        record_scan_duration(175);
+        assert_eq!(recent_scan_durations(), vec![175]);
+        assert_eq!(typical_scan_duration_label(), "a few minutes");
+        // n=2: the estimate turns specific (lower median of 175/205 is 175
+        // -> "about 3 minutes"), and the memo reflects the new save.
+        record_scan_duration(205);
+        assert_eq!(recent_scan_durations(), vec![175, 205]);
+        assert_eq!(typical_scan_duration_label(), "about 3 minutes");
+        // A repeated read is served from the memo (no new save, same label).
+        assert_eq!(typical_scan_duration_label(), "about 3 minutes");
+        std::env::remove_var("PICK_SCAN_STATS_FILE");
         let _ = fs::remove_file(&path);
     }
 

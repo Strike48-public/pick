@@ -131,7 +131,20 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     // conversation's report document shows up in the docs poll below, the wall
     // clock is recorded via `pentest_core::scan_stats`.
     let mut scan_armed = use_signal(|| None::<std::time::Instant>);
-    let mut scan_started = use_signal(|| None::<(String, std::time::Instant)>);
+    // The in-flight scan measurement. `latest_doc` tracks the NEWEST document
+    // in the scan's conversation (doc id + when we first saw it): the report
+    // is the LAST document the scan writes (the prompt sends the findings
+    // save after the scan), so the measurement anchors on the newest doc and
+    // only records once that doc has stayed newest across the stability
+    // window. The recorded duration is measured to when THAT doc first
+    // appeared — an intermediate `document_write` re-anchors the observation
+    // instead of truncating the measurement (review nit on pick#610).
+    #[derive(Clone)]
+    struct ScanMeas {
+        sid: String,
+        latest_doc: Option<(String, std::time::Instant)>,
+    }
+    let mut scan_started = use_signal(|| None::<ScanMeas>);
     // Bumped after a duration is recorded so the hero's estimate text
     // refreshes without re-reading the stats file on every render.
     let mut est_tick = use_signal(|| 0u32);
@@ -143,8 +156,8 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
         let cid = conversation_id();
         // Clone the values out before mutating: `peek()` would return a borrow
         // guard that keeps the signal immutably borrowed.
-        if let Some((sid, _)) = scan_started.cloned() {
-            if cid.as_deref() != Some(sid.as_str()) {
+        if let Some(meas) = scan_started.cloned() {
+            if cid.as_deref() != Some(meas.sid.as_str()) {
                 scan_started.set(None);
             }
         } else if let Some(armed_at) = scan_armed.cloned() {
@@ -152,7 +165,10 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                 if std::time::Instant::now().duration_since(armed_at)
                     <= std::time::Duration::from_secs(60)
                 {
-                    scan_started.set(Some((c.clone(), std::time::Instant::now())));
+                    scan_started.set(Some(ScanMeas {
+                        sid: c.clone(),
+                        latest_doc: None,
+                    }));
                 }
             }
             scan_armed.set(None);
@@ -225,16 +241,56 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                         // Newest first (timestamp is ISO-8601, lexical sort works).
                         list.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
                         // A completed scan = its report document appearing in
-                        // the scan's conversation. Record the observed wall
-                        // clock so the expected-duration copy tracks real runs
-                        // instead of a hardcoded guess (issue #430).
-                        if let Some((sid, start)) = scan_started.cloned() {
-                            if list.iter().any(|d| d.conversation_id == sid) {
-                                pentest_core::scan_stats::record_scan_duration(
-                                    start.elapsed().as_secs(),
-                                );
-                                scan_started.set(None);
-                                est_tick.with_mut(|t| *t = t.wrapping_add(1));
+                        // the scan's conversation. The report is the LAST
+                        // document the scan writes, so the measurement tracks
+                        // the NEWEST document of the conversation and records
+                        // only once that doc has stayed newest for the
+                        // stability window below; the duration is measured to
+                        // when THAT doc first appeared, so an intermediate
+                        // `document_write` cannot truncate the measurement
+                        // (issue #430; review nit on pick#610).
+                        const SCAN_DOC_STABLE_SECS: u64 = 30;
+                        if let Some(mut meas) = scan_started.cloned() {
+                            let now = std::time::Instant::now();
+                            let newest = list.iter().find(|d| d.conversation_id == meas.sid);
+                            // Read the currently-tracked doc id up front (owned
+                            // copy) so the match below never holds a borrow
+                            // across a mutation of `meas.latest_doc`.
+                            let tracked_id = meas.latest_doc.as_ref().map(|(id, _)| id.clone());
+                            let mut record_secs: Option<u64> = None;
+                            if let Some(d) = newest {
+                                match tracked_id.as_deref() {
+                                    // Same newest doc as the last poll: the
+                                    // scan's writes have settled.
+                                    Some(tid) if tid == d.id.as_str() => {
+                                        if let Some((_, appeared)) = meas.latest_doc.as_ref() {
+                                            if now.duration_since(*appeared)
+                                                >= std::time::Duration::from_secs(
+                                                    SCAN_DOC_STABLE_SECS,
+                                                )
+                                            {
+                                                record_secs = Some(appeared.elapsed().as_secs());
+                                            }
+                                        }
+                                    }
+                                    // First doc, or a NEWER doc than the one
+                                    // tracked (the report landing after an
+                                    // intermediate write): re-anchor the
+                                    // observation.
+                                    _ => {
+                                        meas.latest_doc = Some((d.id.clone(), now));
+                                    }
+                                }
+                            }
+                            match record_secs {
+                                Some(secs) => {
+                                    pentest_core::scan_stats::record_scan_duration(secs);
+                                    scan_started.set(None);
+                                    est_tick.with_mut(|t| *t = t.wrapping_add(1));
+                                }
+                                None => {
+                                    scan_started.set(Some(meas));
+                                }
                             }
                         }
                         docs.set(list);

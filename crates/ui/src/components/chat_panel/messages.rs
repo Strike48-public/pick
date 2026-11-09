@@ -28,8 +28,12 @@ pub struct MessageListProps {
     pub selected_agent: Signal<Option<AgentInfo>>,
     /// Callback to send a message (used by suggested actions).
     pub on_send: EventHandler<String>,
+    /// ID of the conversation the messages belong to (None before one is
+    /// selected) — keys the scan strip's wall-clock anchors.
+    pub conversation_id: Signal<Option<String>>,
     /// Recent conversations shown in the empty-chat state.
     pub conversation_list: Signal<Vec<ConversationInfo>>,
+
     /// Called when the user clicks a recent conversation in the empty state.
     pub on_select_conversation: EventHandler<String>,
     /// Easy Mode: show lay-friendly empty-state prompts instead of the expert
@@ -111,6 +115,7 @@ pub fn MessageList(props: MessageListProps) -> Element {
                 ScanProgressStrip {
                     messages: messages,
                     agent_thinking: agent_thinking,
+                    conversation_id: props.conversation_id,
                 }
             }
             div {

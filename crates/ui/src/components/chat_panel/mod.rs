@@ -1911,6 +1911,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             // Messages area
             MessageList {
                 messages: messages,
+                conversation_id: conversation_id,
                 expanded_tools: expanded_tools,
                 user_scrolled_up: user_scrolled_up,
                 agent_thinking: agent_thinking,

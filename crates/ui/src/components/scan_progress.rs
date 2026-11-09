@@ -13,8 +13,9 @@
 
 use dioxus::prelude::*;
 use pentest_core::matrix::{ChatMessage, MessagePart, ToolCallStatus};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Phase 0 has no tools of its own: it is "the scan has started but the first
@@ -59,6 +60,14 @@ const SCAN_TOOLS: &[&str] = &[
 /// message lets the strip appear in phase 0, before any tool has started.
 const SCAN_PROMPT_SIGNATURE: &str = "Scan my local network";
 
+/// True for a user message that STARTS with the scan prompt signature.
+/// Start-of-message (prefix) matching, not substring: a question like
+/// "Can I scan my local network from a locked phone?" must not flip the
+/// strip on for the whole conversation (review nit on pick#610).
+pub fn is_scan_prompt_message(text: &str) -> bool {
+    text.trim_start().starts_with(SCAN_PROMPT_SIGNATURE)
+}
+
 /// Ordered, user-facing scan phases (labels only — see `PHASES`).
 pub fn phase_labels() -> Vec<&'static str> {
     PHASES.iter().map(|(l, _)| *l).collect()
@@ -71,7 +80,7 @@ pub fn is_scan_conversation(messages: &[ChatMessage]) -> bool {
         m.parts.iter().any(|p| match p {
             MessagePart::ToolCall(tc) => SCAN_TOOLS.contains(&tc.name.as_str()),
             _ => false,
-        }) || (m.sender_type == "USER" && m.text.contains(SCAN_PROMPT_SIGNATURE))
+        }) || (m.sender_type == "USER" && is_scan_prompt_message(&m.text))
     })
 }
 
@@ -259,12 +268,130 @@ pub fn conversation_fingerprint(messages: &[ChatMessage]) -> u64 {
     h.finish()
 }
 
+/// Wall-clock anchors for the strip, keyed by conversation so they survive
+/// the strip's unmount/remount cycles while a scan is still running
+/// (navigating away and back, agent-idle gaps between tool batches,
+/// reconnect re-seeds). The strip only renders while the scan is in
+/// progress, so instance-scoped signals would reset the elapsed timer and
+/// the stall clocks on every remount (blocker A5 in the review of
+/// pick#610). `ChatMessage` carries no timestamps, so the clocks cannot be
+/// derived from the message list and must be held outside the strip.
+#[derive(Debug, Clone, Copy)]
+pub struct ScanClocks {
+    /// When the current scan first went in-progress (drives the elapsed
+    /// label and the 10-minute overall stall cap).
+    pub started_at: Instant,
+    /// Last observed activity (content fingerprint or agent-thinking
+    /// change). Drives the 3-minute silence stall clock.
+    pub last_change: Instant,
+    /// How many scan-prompt user messages were in the conversation when this
+    /// clock was anchored. A NEW prompt message means a NEW scan started in
+    /// this conversation -> the clocks reset.
+    pub prompt_count: u32,
+    /// Conversation fingerprint at the last activity observation.
+    pub last_fp: u64,
+    /// Agent-thinking flag at the last activity observation.
+    pub last_thinking: bool,
+}
+
+/// One render's view of the conversation, for stepping its scan clocks.
+#[derive(Debug, Clone, Copy)]
+pub struct ScanClockObservation {
+    pub prompt_count: u32,
+    pub fingerprint: u64,
+    pub agent_thinking: bool,
+}
+
+/// Pure step for a conversation's scan clocks:
+///
+/// - No previous clock (first sighting of an in-progress scan): anchor now.
+/// - The prompt count grew (a new "Scan my local network" was sent after a
+///   finished scan): a new scan started — anchor now.
+/// - The fingerprint or the thinking flag changed since the last
+///   observation: that IS activity — refresh `last_change` only.
+/// - Nothing changed (the common remount case: the scan is still running,
+///   nothing new since we last looked): the clocks carry over untouched.
+pub fn step_scan_clocks(
+    prev: Option<ScanClocks>,
+    obs: ScanClockObservation,
+    now: Instant,
+) -> ScanClocks {
+    match prev {
+        Some(c)
+            if c.prompt_count == obs.prompt_count
+                && (c.last_fp != obs.fingerprint || c.last_thinking != obs.agent_thinking) =>
+        {
+            ScanClocks {
+                last_change: now,
+                last_fp: obs.fingerprint,
+                last_thinking: obs.agent_thinking,
+                ..c
+            }
+        }
+        Some(c) if c.prompt_count == obs.prompt_count => c,
+        _ => ScanClocks {
+            started_at: now,
+            last_change: now,
+            prompt_count: obs.prompt_count,
+            last_fp: obs.fingerprint,
+            last_thinking: obs.agent_thinking,
+        },
+    }
+}
+
+/// Count of user messages that start a scan — the "a new scan began in this
+/// conversation" marker (see [`step_scan_clocks`]).
+pub fn scan_prompt_count(messages: &[ChatMessage]) -> u32 {
+    messages
+        .iter()
+        .filter(|m| m.sender_type == "USER" && is_scan_prompt_message(&m.text))
+        .count() as u32
+}
+
+fn scan_clocks_registry() -> &'static OnceLock<Mutex<HashMap<String, ScanClocks>>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<String, ScanClocks>>> = OnceLock::new();
+    &REGISTRY
+}
+
+/// Step this conversation's clocks for one render and return the resulting
+/// anchors. Plain data under a lock — NOT a dioxus signal — so stepping
+/// during render cannot trip re-render semantics (the pre-fix code set a
+/// signal during render). The registry is bounded: the app realistically
+/// has few active conversations, and clearing beats unbounded growth.
+fn step_conversation_clocks(
+    conversation_id: &str,
+    obs: ScanClockObservation,
+    now: Instant,
+) -> ScanClocks {
+    let mut reg = scan_clocks_registry()
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if reg.len() >= 16 {
+        reg.clear();
+    }
+    let next = step_scan_clocks(reg.get(conversation_id).copied(), obs, now);
+    reg.insert(conversation_id.to_string(), next);
+    next
+}
+
+/// Test seam: drop all registered clocks between tests.
+#[cfg(test)]
+pub fn clear_scan_clocks_registry() {
+    if let Some(reg) = scan_clocks_registry().get() {
+        reg.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+}
+
 /// Scan-in-progress strip: phase checklist + expected duration + live elapsed
 /// timer, with a distinct warning state when the scan has genuinely stalled.
 #[component]
 pub fn ScanProgressStrip(
     messages: Signal<Vec<ChatMessage>>,
     agent_thinking: Signal<bool>,
+    /// The conversation these messages belong to — the key for the
+    /// conversation-keyed wall-clock anchors (see [`ScanClocks`]).
+    conversation_id: Signal<Option<String>>,
 ) -> Element {
     // 1s tick while mounted: the elapsed timer (and the silence/stall
     // thresholds) re-evaluate every second, so the strip is always visibly
@@ -288,22 +415,6 @@ pub fn ScanProgressStrip(
         });
     });
 
-    // Wall-clock anchors, fixed the first time the strip mounts.
-    let mut started_at = use_signal(|| None::<Instant>);
-    if started_at.peek().is_none() {
-        started_at.set(Some(Instant::now()));
-    }
-    let mut last_change = use_signal(Instant::now);
-    let fp = conversation_fingerprint(&messages());
-    let at = agent_thinking();
-    use_effect(move || {
-        // Re-runs whenever the fingerprint (or the thinking flag) changes:
-        // that IS "new activity" from the client's point of view.
-        let _ = fp;
-        let _ = at;
-        last_change.set(Instant::now());
-    });
-
     let msgs = messages.read();
     let thinking = agent_thinking();
     let Some(progress) = derive_scan_progress(&msgs, thinking) else {
@@ -315,9 +426,22 @@ pub fn ScanProgressStrip(
 
     let _ = tick();
     let now = Instant::now();
-    let started = started_at.cloned().unwrap_or(now);
-    let elapsed = now - started;
-    let silence = now - *last_change.peek();
+    // Conversation-keyed clocks, held OUTSIDE the strip (see `ScanClocks`):
+    // they survive this component's unmount/remount cycles while the scan is
+    // still running, so the elapsed timer and the stall clocks never restart
+    // mid-scan (blocker A5 in the review of pick#610).
+    let conv_key = conversation_id.cloned().unwrap_or_default();
+    let clocks = step_conversation_clocks(
+        &conv_key,
+        ScanClockObservation {
+            prompt_count: scan_prompt_count(&msgs),
+            fingerprint: conversation_fingerprint(&msgs),
+            agent_thinking: thinking,
+        },
+        now,
+    );
+    let elapsed = now - clocks.started_at;
+    let silence = now - clocks.last_change;
 
     let stalled = pentest_core::scan_stats::is_silence_stall(silence)
         || pentest_core::scan_stats::is_overall_stall(elapsed);
@@ -607,5 +731,99 @@ mod tests {
     fn phase_labels_cover_all_five_phases() {
         assert_eq!(phase_labels().len(), 5);
         assert_eq!(phase_labels()[4], "Writing up your report");
+    }
+
+    #[test]
+    fn scan_prompt_match_is_start_of_message() {
+        assert!(is_scan_prompt_message(
+            "Scan my local network: find the devices…"
+        ));
+        assert!(is_scan_prompt_message("  Scan my local network"));
+        // Mid-sentence questions must NOT flip the strip on (review nit).
+        assert!(!is_scan_prompt_message(
+            "Can I scan my local network from a locked phone?"
+        ));
+        assert!(!is_scan_prompt_message(
+            "Please say \"Scan my local network\" later"
+        ));
+    }
+
+    fn obs(fp: u64, thinking: bool, prompts: u32) -> ScanClockObservation {
+        ScanClockObservation {
+            prompt_count: prompts,
+            fingerprint: fp,
+            agent_thinking: thinking,
+        }
+    }
+
+    #[test]
+    fn clocks_anchor_on_first_sighting() {
+        let now = Instant::now();
+        let c = step_scan_clocks(None, obs(1, true, 1), now);
+        assert_eq!(c.started_at, now);
+        assert_eq!(c.last_change, now);
+        assert_eq!(c.prompt_count, 1);
+        assert_eq!(c.last_fp, 1);
+        assert!(c.last_thinking);
+    }
+
+    #[test]
+    fn clocks_survive_remount_without_activity() {
+        // The A5 scenario: the strip unmounts (navigate away / agent-idle
+        // gap) and remounts with no new events — the elapsed anchor and the
+        // silence clock must carry over, not restart.
+        let t0 = Instant::now();
+        let first = step_scan_clocks(None, obs(1, true, 1), t0);
+        let t1 = t0 + Duration::from_secs(300);
+        let remounted = step_scan_clocks(Some(first), obs(1, true, 1), t1);
+        assert_eq!(remounted.started_at, first.started_at);
+        assert_eq!(remounted.last_change, first.last_change);
+        // A scan that was already past the silence threshold when the user
+        // left must still read as stalled on return — the pre-fix code gave
+        // it a fresh 3-minute grace period.
+        assert!(pentest_core::scan_stats::is_silence_stall(
+            t1 - remounted.last_change
+        ));
+    }
+
+    #[test]
+    fn activity_refreshes_last_change_only() {
+        let t0 = Instant::now();
+        let first = step_scan_clocks(None, obs(1, true, 1), t0);
+        // Content changed: last_change moves, started_at does not.
+        let t1 = t0 + Duration::from_secs(60);
+        let stepped = step_scan_clocks(Some(first), obs(2, true, 1), t1);
+        assert_eq!(stepped.started_at, first.started_at);
+        assert_eq!(stepped.last_change, t1);
+        // Thinking-flag flip with unchanged content also counts as activity.
+        let t2 = t1 + Duration::from_secs(30);
+        let stepped2 = step_scan_clocks(Some(stepped), obs(2, false, 1), t2);
+        assert_eq!(stepped2.started_at, first.started_at);
+        assert_eq!(stepped2.last_change, t2);
+    }
+
+    #[test]
+    fn new_scan_prompt_resets_clocks() {
+        let t0 = Instant::now();
+        let first = step_scan_clocks(None, obs(1, true, 1), t0);
+        let t1 = t0 + Duration::from_secs(600);
+        // A second "Scan my local network" in the same conversation starts a
+        // NEW scan: the elapsed timer restarts instead of counting from the
+        // first run.
+        let reset = step_scan_clocks(Some(first), obs(2, true, 2), t1);
+        assert_eq!(reset.started_at, t1);
+        assert_eq!(reset.last_change, t1);
+        assert_eq!(reset.prompt_count, 2);
+    }
+
+    #[test]
+    fn prompt_count_counts_only_scan_prompt_user_messages() {
+        let msgs = vec![
+            user_msg("Scan my local network: find the devices…"),
+            user_msg("Can I scan my local network from a locked phone?"),
+            user_msg("Scan my local network"),
+            agent_msg(vec![]),
+        ];
+        assert_eq!(scan_prompt_count(&msgs), 2);
     }
 }
