@@ -110,6 +110,8 @@ RUN printf 'deb http://kali.download/kali kali-rolling main contrib non-free non
         openssl \
         libpcap0.8 \
         nmap \
+        netdiscover \
+        arp-scan \
         nikto \
         sqlmap \
         gobuster \
