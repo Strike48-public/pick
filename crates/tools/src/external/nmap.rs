@@ -49,8 +49,10 @@ impl PentestTool for NmapTool {
             .param(ToolParam::required(
                 "target",
                 ParamType::String,
-                "Target IP, hostname, or range. Supported range forms: CIDR ('192.168.1.0/24'), \
+                "Target IP, hostname, or range, or a comma-separated list of them ('10.0.0.5,10.0.0.9'). \
+                 Supported range forms: CIDR ('192.168.1.0/24'), \
                  or IPv4 dash ranges — last-octet ('10.0.0.1-50') or full-IP ('10.0.0.1-10.0.5.20'). \
+                 IPv4 must be a dotted quad: decimal, hex and short forms ('167772165', '10.5') are rejected. \
                  Prefer CIDR or a simple IP1-IP2 dash range; nmap's multi-octet form ('10.0.0-1.1-254') \
                  is not scope-checked and is rejected.",
             ))
@@ -192,7 +194,9 @@ impl PentestTool for NmapTool {
             // empty one. Attach a scope hint naming the connector's real subnets
             // (and any raw-socket degradation, #251) so the agent re-targets
             // instead of reporting "nothing found".
-            if data.get("count").and_then(Value::as_u64) == Some(0) {
+            // Keyed on hosts that actually answered, not on parsed host blocks:
+            // a `-Pn` sweep of a dead network lists every address as "up".
+            if data.get("responsive_count").and_then(Value::as_u64) == Some(0) {
                 let active_subnets = crate::network_context::network_context()
                     .await
                     .unwrap_or_default();
@@ -241,9 +245,20 @@ fn parse_nmap_xml(xml: &str, stderr: &str) -> Result<Value> {
         }
     }
 
+    // Hosts nmap only *assumed* up (`-Pn` marks every target up with
+    // reason="user-set") and that answered on no port are not evidence of a
+    // live host. They are still listed and counted, but the zero-host scope
+    // hint (#347) keys on `responsive_count`, so a dead-network `-Pn` sweep
+    // still gets it.
+    let responsive_count = hosts
+        .iter()
+        .filter(|h| h["responded"].as_bool().unwrap_or(false))
+        .count();
+
     Ok(json!({
         "hosts": hosts,
         "count": hosts.len(),
+        "responsive_count": responsive_count,
         "summary": format!("Scanned {} host(s)", hosts.len()),
         "stderr": stderr,
         "raw_xml": xml, // Include raw XML for advanced parsing
@@ -262,6 +277,13 @@ fn parse_host_xml(xml: &str) -> Value {
     // Extract state (up/down)
     let state = extract_xml_attribute(xml, r#"<status\s+state="([^"]+)""#)
         .unwrap_or_else(|| "unknown".to_string());
+    let reason =
+        extract_xml_attribute(xml, r#"<status\s+[^>]*reason="([^"]+)""#).unwrap_or_default();
+
+    // Did the host itself answer? Up for a real reason (echo-reply, syn-ack,
+    // arp-response, ...), or any port that answered (open / closed /
+    // unfiltered all mean a packet came back).
+    let mut responded = state == "up" && reason != "user-set" && !reason.is_empty();
 
     // Extract open ports
     let mut ports = Vec::new();
@@ -278,6 +300,9 @@ fn parse_host_xml(xml: &str) -> Value {
 
         let port_state = extract_xml_attribute(port_xml, r#"<state\s+state="([^"]+)""#)
             .unwrap_or_else(|| "unknown".to_string());
+        if matches!(port_state.as_str(), "open" | "closed" | "unfiltered") {
+            responded = true;
+        }
 
         // Only include open ports
         if port_state == "open" {
@@ -300,6 +325,8 @@ fn parse_host_xml(xml: &str) -> Value {
         "ip": ip,
         "hostname": hostname,
         "state": state,
+        "reason": reason,
+        "responded": responded,
         "ports": ports,
         "port_count": ports.len(),
     })
@@ -405,8 +432,11 @@ fn plan_nmap_invocation(params: &Value, unprivileged: bool) -> Result<NmapInvoca
             "target parameter is required".into(),
         ));
     }
-    // Validate target format (IP, hostname, or CIDR)
-    let target = validate_target(&target)?;
+    // Validate target format (IP, hostname, CIDR, dash range, or a
+    // comma-separated list of those). Each member is validated on its own and
+    // passed to nmap as its own argument, never joined into a shell string.
+    let members = validate_target_list(&target)?;
+    let target = members.join(",");
 
     let scan_type = param_str_or(params, "scan_type", "connect");
     let resolved = resolve_scan_params(params);
@@ -437,11 +467,12 @@ fn plan_nmap_invocation(params: &Value, unprivileged: bool) -> Result<NmapInvoca
         builder = builder.arg("--exclude", &exclude);
     }
 
-    // Output format: XML for parsing, then the target.
-    let args = builder
-        .arg("-oX", NMAP_XML_OUTPUT)
-        .positional(&target)
-        .build();
+    // Output format: XML for parsing, then the target(s).
+    let mut builder = builder.arg("-oX", NMAP_XML_OUTPUT);
+    for member in &members {
+        builder = builder.positional(member);
+    }
+    let args = builder.build();
 
     Ok(NmapInvocation {
         target,
@@ -912,6 +943,41 @@ fn apply_flag_tokens(tokens: &[String]) -> (serde_json::Map<String, Value>, Opti
 /// + (service_detection_overhead if enabled)
 ///
 /// Returns timeout in seconds with reasonable min/max bounds.
+/// Most members accepted in one comma-separated `target`. nmap has no limit,
+/// but a longer list is almost certainly a malformed or runaway value.
+const MAX_TARGET_LIST_MEMBERS: usize = 256;
+
+/// Split a `target` on commas and validate every member with the same rules as
+/// a single target (#612). nmap accepts several targets, and callers (agents,
+/// scope filters that drop one member of a list) naturally produce comma lists.
+fn validate_target_list(target: &str) -> Result<Vec<String>> {
+    if !target.contains(',') {
+        return Ok(vec![validate_target(target)?]);
+    }
+
+    let members: Vec<&str> = target.split(',').map(str::trim).collect();
+    if members.iter().any(|m| m.is_empty()) {
+        return Err(pentest_core::error::Error::InvalidParams(format!(
+            "target list '{target}' has an empty member; separate targets with single commas"
+        )));
+    }
+    if members.len() > MAX_TARGET_LIST_MEMBERS {
+        return Err(pentest_core::error::Error::InvalidParams(format!(
+            "target list has {} members; at most {MAX_TARGET_LIST_MEMBERS} are accepted (use a CIDR or dash range)",
+            members.len()
+        )));
+    }
+
+    let mut validated: Vec<String> = Vec::with_capacity(members.len());
+    for member in members {
+        let member = validate_target(member)?;
+        if !validated.contains(&member) {
+            validated.push(member);
+        }
+    }
+    Ok(validated)
+}
+
 fn calculate_timeout(
     target: &str,
     ports: &str,
@@ -984,6 +1050,17 @@ fn calculate_timeout(
 
 /// Estimate the number of target hosts from target specification
 fn estimate_host_count(target: &str) -> usize {
+    // A comma list (#612) is the sum of its members, so a list that mixes a
+    // CIDR with single hosts is sized correctly.
+    if target.contains(',') {
+        return target
+            .split(',')
+            .filter(|m| !m.trim().is_empty())
+            .map(|m| estimate_host_count(m.trim()))
+            .sum::<usize>()
+            .min(65536);
+    }
+
     // Check for CIDR notation (e.g., "192.168.1.0/24")
     if let Some(cidr_pos) = target.find('/') {
         if let Ok(prefix_len) = target[cidr_pos + 1..].parse::<u32>() {
@@ -1207,6 +1284,56 @@ mod tests {
         let xml = "<nmaprun>\n<hosthint><status state=\"up\" reason=\"arp-response\"/>\n<address addr=\"10.250.0.9\" addrtype=\"ipv4\"/>\n</hosthint>\n<runstats><hosts up=\"0\" down=\"1\" total=\"1\"/></runstats>\n</nmaprun>";
         let data = parse_nmap_xml(xml, "").unwrap();
         assert_eq!(data["count"], 0);
+    }
+
+    /// `-Pn` sweep of a dead network: nmap lists every address as "up" with
+    /// reason="user-set" and only filtered ports.
+    const PN_DEAD_SWEEP_XML: &str = r#"<nmaprun>
+<host starttime="1" endtime="2"><status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="10.250.0.200" addrtype="ipv4"/>
+<ports><extraports state="filtered" count="1"/>
+<port protocol="tcp" portid="80"><state state="filtered" reason="no-response" reason_ttl="0"/></port>
+</ports>
+</host>
+<host starttime="1" endtime="2"><status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="10.250.0.201" addrtype="ipv4"/>
+<ports>
+<port protocol="tcp" portid="80"><state state="filtered" reason="no-response" reason_ttl="0"/></port>
+</ports>
+</host>
+<runstats><hosts up="2" down="0" total="2"/></runstats>
+</nmaprun>"#;
+
+    #[test]
+    fn parse_nmap_xml_pn_dead_sweep_has_no_responsive_hosts() {
+        let data = parse_nmap_xml(PN_DEAD_SWEEP_XML, "").unwrap();
+        // Still listed and counted as nmap reports them ...
+        assert_eq!(data["count"], 2);
+        // ... but nothing answered, so the zero-host scope hint keys off this.
+        assert_eq!(data["responsive_count"], 0);
+        assert_eq!(data["hosts"][0]["reason"], "user-set");
+        assert_eq!(data["hosts"][0]["responded"], false);
+    }
+
+    #[test]
+    fn parse_nmap_xml_counts_a_host_as_responsive_when_any_port_answers() {
+        // -Pn on a live host whose only port is closed: the RST proves it is up.
+        let xml = PN_DEAD_SWEEP_XML.replacen(
+            r#"<state state="filtered" reason="no-response" reason_ttl="0"/>"#,
+            r#"<state state="closed" reason="reset" reason_ttl="64"/>"#,
+            1,
+        );
+        let data = parse_nmap_xml(&xml, "").unwrap();
+        assert_eq!(data["responsive_count"], 1);
+        assert_eq!(data["hosts"][0]["responded"], true);
+        assert_eq!(
+            data["hosts"][0]["port_count"], 0,
+            "closed ports are still not listed"
+        );
+
+        // A host up for a real reason (arp-response) is responsive with no ports.
+        let data = parse_nmap_xml(MULTILINE_NMAP_XML, "").unwrap();
+        assert_eq!(data["responsive_count"], data["count"]);
     }
 
     use super::*;
@@ -2114,6 +2241,70 @@ mod tests {
         assert_eq!(plan.args.last().map(String::as_str), Some("192.0.2.105"));
         assert_eq!(plan.target, "192.0.2.105");
         assert!(plan.scripts.is_none());
+    }
+
+    #[test]
+    fn execute_plan_passes_each_comma_list_member_as_its_own_argument() {
+        // #612 part 2: a comma list used to fail hostname validation as a whole.
+        let plan = plan_nmap_invocation(
+            &json!({"target": " 10.250.0.2, 10.250.0.3 ,10.250.0.0/30,10.250.0.2", "ports": "80"}),
+            false,
+        )
+        .expect("comma list must plan");
+
+        let n = plan.args.len();
+        assert_eq!(
+            &plan.args[n - 3..],
+            ["10.250.0.2", "10.250.0.3", "10.250.0.0/30"],
+            "members are trimmed, de-duplicated and passed separately"
+        );
+        assert!(
+            !plan
+                .args
+                .iter()
+                .any(|a| a.contains(',') && a.contains("10.250")),
+            "never joined into one argument"
+        );
+        assert_eq!(plan.target, "10.250.0.2,10.250.0.3,10.250.0.0/30");
+    }
+
+    #[test]
+    fn execute_plan_rejects_bad_comma_list_members() {
+        for bad in [
+            "10.250.0.2,,10.250.0.3",
+            "10.250.0.2,",
+            "10.250.0.2,; rm -rf /",
+            "10.250.0.2,184156162",
+            "10.250.0.2,10.0.0-1.1-254",
+        ] {
+            assert!(
+                plan_nmap_invocation(&json!({"target": bad}), false).is_err(),
+                "{bad} must be rejected"
+            );
+        }
+
+        let too_many = (0..=MAX_TARGET_LIST_MEMBERS)
+            .map(|i| format!("10.0.{}.{}", i / 256, i % 256))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(plan_nmap_invocation(&json!({"target": too_many}), false).is_err());
+    }
+
+    #[test]
+    fn execute_plan_rejects_non_canonical_ipv4_targets() {
+        for spelling in ["184156162", "0x0afa0002", "10.250.2", "010.250.0.2"] {
+            let err = match plan_nmap_invocation(&json!({"target": spelling}), false) {
+                Ok(_) => panic!("{spelling} must be rejected"),
+                Err(e) => e.to_string(),
+            };
+            assert!(err.contains("dotted quad"), "{spelling}: {err}");
+        }
+    }
+
+    #[test]
+    fn estimate_host_count_sums_comma_list_members() {
+        assert_eq!(estimate_host_count("10.0.0.0/24,10.0.1.5"), 257);
+        assert_eq!(estimate_host_count("10.0.0.1,10.0.0.2,10.0.0.3"), 3);
     }
 
     #[test]
