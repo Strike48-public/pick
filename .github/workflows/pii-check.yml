@@ -81,16 +81,22 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          echo "Scanning diff for added lines between $BASE_SHA..$HEAD_SHA"
-          # Only scan added lines (lines starting with '+' but not '+++') to avoid
-          # tripping on unchanged historical content or on removal of bad content.
+          echo "Scanning added lines and added/renamed paths between $BASE_SHA..$HEAD_SHA"
+          # Only scan added lines, to avoid tripping on unchanged historical
+          # content or on removal of bad content. Added lines are marked '>' so
+          # one whose own text starts with '+' is not mistaken for the
+          # '+++ b/<path>' header and skipped. The paths of added and renamed
+          # files are scanned too: a file named after a customer leaks the name
+          # even when its content is clean.
           # `|| true` keeps a deletion-only diff (grep finds nothing, exits 1)
           # from failing the step under the runner's `pipefail` shell.
+          scope=(-- . ':!scripts/check-pii.sh' ':!scripts/check-pii.test.sh' ':!.github/workflows/pii-check.yml')
           added="$(
-            git diff "$BASE_SHA..$HEAD_SHA" -- . ':!scripts/check-pii.sh' ':!scripts/check-pii.test.sh' ':!.github/workflows/pii-check.yml' \
-              | grep -E '^\+[^+]' || true
+            git diff --output-indicator-new='>' "$BASE_SHA..$HEAD_SHA" "${scope[@]}" \
+              | grep -E '^>' || true
           )"
-          printf '%s\n' "$added" | scripts/check-pii.sh
+          paths="$(git diff --name-only --diff-filter=AR "$BASE_SHA..$HEAD_SHA" "${scope[@]}")"
+          printf '%s\n%s\n' "$added" "$paths" | scripts/check-pii.sh
 
   # Notice-only companion to check-pii for fork PRs, where the job above is
   # skipped because the PII_NAMES secret is withheld. It puts a clear reason in
