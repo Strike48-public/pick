@@ -429,9 +429,11 @@ Then say one sentence: "No pending evidence to validate." Do not pad.
 /// Why the assistant persona could not be created (pick#393).
 ///
 /// Every Matrix client failure is a flat `Error::Matrix(String)`, so the class
-/// is read from the error text. Session problems are checked first: an HTTP 401
-/// renders as "401 Unauthorized", which means "not signed in", not "signed in
-/// without permission".
+/// is read from the error text. A non-2xx response carries its HTTP status
+/// (`GraphQL request failed: <status> - <body>`), and the status decides the
+/// class, because the body is free text that can say anything. The text
+/// markers apply only to GraphQL-level errors, which carry no status. There,
+/// session problems are checked first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AssistantSetupFailure {
     /// The session token is missing, expired, or rejected: sign in again.
@@ -449,13 +451,35 @@ const SESSION_INVALID_MARKERS: &[&str] = &[
     "auth token required",
     "jwt",
     "token expired",
+    "token has expired",
     "session expired",
+    "session has expired",
 ];
 
 const NOT_AUTHORIZED_MARKERS: &[&str] = &["not authorized", "forbidden", "permission denied"];
 
+/// Prefix of the Matrix client's non-2xx error (`crates/core/src/matrix/client.rs`).
+const HTTP_FAILURE_PREFIX: &str = "graphql request failed: ";
+
+/// The HTTP status of a non-2xx Matrix response, if `err` carries one.
+fn http_status(err: &str) -> Option<u16> {
+    let rest = &err[err.find(HTTP_FAILURE_PREFIX)? + HTTP_FAILURE_PREFIX.len()..];
+    let digits = rest.get(..3)?;
+    if digits.bytes().all(|b| b.is_ascii_digit()) {
+        digits.parse().ok()
+    } else {
+        None
+    }
+}
+
 fn classify_assistant_setup_failure(err: &str) -> AssistantSetupFailure {
     let err = err.to_ascii_lowercase();
+    match http_status(&err) {
+        Some(401) => return AssistantSetupFailure::SessionInvalid,
+        Some(403) => return AssistantSetupFailure::NotAuthorized,
+        Some(_) => return AssistantSetupFailure::Other,
+        None => {}
+    }
     let has_any = |markers: &[&str]| markers.iter().any(|m| err.contains(m));
     if has_any(SESSION_INVALID_MARKERS) {
         AssistantSetupFailure::SessionInvalid
@@ -516,12 +540,61 @@ mod tests {
     }
 
     #[test]
+    fn http_status_decides_over_body_text() {
+        // The body is free text: a 403 that says "unauthorized" is still a
+        // permission denial, not an expired session.
+        let err = "Matrix error: GraphQL request failed: 403 Forbidden - \
+                   {\"errors\":[{\"message\":\"unauthorized\"}]}";
+        assert_eq!(
+            classify_assistant_setup_failure(err),
+            AssistantSetupFailure::NotAuthorized
+        );
+        let err = "GraphQL request failed: 401 Unauthorized - permission denied";
+        assert_eq!(
+            classify_assistant_setup_failure(err),
+            AssistantSetupFailure::SessionInvalid
+        );
+        // A 5xx is a server fault, whatever its body mentions: neither signing
+        // in again nor asking an admin for permission would fix it.
+        let err = "Matrix error: GraphQL request failed: 500 Internal Server Error - \
+                   ** (Joken.Error) jwt signer misconfigured";
+        assert_eq!(
+            classify_assistant_setup_failure(err),
+            AssistantSetupFailure::Other
+        );
+    }
+
+    #[test]
+    fn permission_markers_are_not_authorized() {
+        // GraphQL-level inputs, one per marker ("not authorized" is covered
+        // by the pick#393 case above).
+        for err in [
+            "GraphQL errors: Forbidden",
+            "GraphQL errors: Permission denied",
+        ] {
+            assert_eq!(
+                classify_assistant_setup_failure(err),
+                AssistantSetupFailure::NotAuthorized,
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
     fn session_failures_ask_for_sign_in() {
+        // One GraphQL-level input per session marker, each matching only that
+        // marker, so dropping any marker turns this test red.
         for err in [
             "GraphQL request failed: 401 Unauthorized - {}",
+            "GraphQL errors: User is unauthorized",
+            "GraphQL errors: Unauthenticated",
             "Matrix error: Auth token required",
             "GraphQL errors: JWT has expired",
             "GraphQL errors: not authenticated",
+            "GraphQL errors: Token expired",
+            "GraphQL errors: Token has expired",
+            "GraphQL errors: Session expired",
+            "GraphQL errors: Session has expired",
         ] {
             assert_eq!(
                 classify_assistant_setup_failure(err),
