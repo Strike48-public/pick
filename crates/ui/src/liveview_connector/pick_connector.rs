@@ -1430,10 +1430,15 @@ mod tests {
             .expect("first call never started");
 
         let ctx: HashMap<String, String> = HashMap::new();
-        let refused = connector
-            .execute_with_context(request(), None, &ctx)
-            .await
-            .expect("busy refusal must be a payload, not a transport error");
+        // Bounded so a missing guard fails here instead of hanging the suite:
+        // without it the second call enters the parked tool and never returns.
+        let refused = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            connector.execute_with_context(request(), None, &ctx),
+        )
+        .await
+        .expect("a call past the limit must be refused at once, not run")
+        .expect("busy refusal must be a payload, not a transport error");
         assert_eq!(refused["success"], json!(false), "{refused}");
         assert_eq!(refused["error_code"], json!(BUSY_ERROR_CODE), "{refused}");
         assert_eq!(
