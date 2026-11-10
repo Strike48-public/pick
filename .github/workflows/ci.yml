@@ -248,8 +248,11 @@ jobs:
     # Same rationale as the Test job: no sandbox backend on the runner.
     env:
       DISABLE_SANDBOX: "true"
-      # Compile-time-baked (option_env!) — the same value the Windows release
+      # Compile-time-baked (option_env!) — the same values the Windows release
       # jobs bake, so this check mirrors the release env (review on pick#611).
+      # PICK_EASY_MODE: the release ships easy-mode-ON; without it this check
+      # compiles the easy-mode-OFF tree (pick#611 residual nit).
+      PICK_EASY_MODE: "true"
       STRIKE48_HOST: "https://studio.strike48.com"
     steps:
       - uses: actions/checkout@v5
