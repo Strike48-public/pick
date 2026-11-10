@@ -64,6 +64,9 @@ pub(crate) struct PickConnector {
     /// Pick's own limit on concurrent tool calls (pick#513). Matrix schedules
     /// against the advertised value; this is the backstop when it does not.
     pub call_slots: CallSlots,
+    /// Reports the sandbox backend confining tool commands, if any. A field so
+    /// tests can fix it; production uses `pentest_platform::workspace_confining_sandbox`.
+    pub sandbox_probe: fn() -> Option<String>,
 }
 
 /// Registration metadata key: this Pick keeps evidence per engagement, so
@@ -126,6 +129,24 @@ impl CallSlots {
 }
 
 impl PickConnector {
+    /// Why this Pick cannot keep engagements apart, or `None` when it can.
+    /// Matrix runs several engagements on a Pick (Shared mode) only if it
+    /// advertises isolation, so every check fails closed.
+    fn isolation_blocker(&self) -> Option<&'static str> {
+        // Test identities come from one operator file per Pick and serve every
+        // engagement on it; per-engagement provisioning waits on pick#312.
+        if !self.identities.is_empty() {
+            return Some("test identities are loaded Pick-wide");
+        }
+        // Evidence is scoped per engagement (#616), but a command running on
+        // the host, or under WSL with the Windows drives mounted, can still
+        // read another engagement's files.
+        if (self.sandbox_probe)().is_none() {
+            return Some("tool commands are not confined to their workspace by a sandbox");
+        }
+        None
+    }
+
     /// Proxy an app request to the local LiveView server over IPC.
     async fn proxy_to_liveview(&self, request: &AppPageRequest) -> AppPageResponse {
         let path = &request.path;
@@ -219,20 +240,17 @@ impl BaseConnector for PickConnector {
         let mut metadata = HashMap::new();
         metadata.insert("app_manifest".to_string(), manifest_json);
         metadata.insert("timeout_ms".to_string(), "300000".to_string());
-        // Test identities come from one operator file per Pick and serve every
-        // engagement on it; per-engagement provisioning waits on pick#312. A
-        // Pick holding them must stay Exclusive, so it does not claim isolation.
-        if self.identities.is_empty() {
-            metadata.insert(
-                ENGAGEMENT_ISOLATION_METADATA_KEY.to_string(),
-                ENGAGEMENT_ISOLATION_VERSION.to_string(),
-            );
-        } else {
-            tracing::info!(
-                identities = self.identities.len(),
-                "test identities are loaded Pick-wide; not advertising engagement isolation, \
-                 so Matrix keeps this Pick Exclusive"
-            );
+        match self.isolation_blocker() {
+            None => {
+                metadata.insert(
+                    ENGAGEMENT_ISOLATION_METADATA_KEY.to_string(),
+                    ENGAGEMENT_ISOLATION_VERSION.to_string(),
+                );
+            }
+            Some(reason) => tracing::info!(
+                reason,
+                "not advertising engagement isolation, so Matrix keeps this Pick Exclusive"
+            ),
         }
         metadata.insert(
             MAX_CONCURRENT_TOOLS_METADATA_KEY.to_string(),
@@ -861,6 +879,16 @@ mod tests {
 
     // Build a PickConnector backed by the real tool registry so `capabilities()`
     // exercises the exact production schema-emission path.
+    /// Probe stubs, so metadata tests do not depend on the process-wide
+    /// sandbox state that other tests toggle with `set_use_sandbox`.
+    fn confined_by_bwrap() -> Option<String> {
+        Some("bwrap".to_string())
+    }
+
+    fn unconfined() -> Option<String> {
+        None
+    }
+
     fn test_connector() -> PickConnector {
         let (event_tx, _event_rx) = broadcast::channel(16);
         PickConnector {
@@ -878,6 +906,7 @@ mod tests {
             identities: Arc::new(pentest_core::identity::IdentityStore::new()),
             budget: pentest_core::budget::SessionBudget::default(),
             call_slots: CallSlots::new(DEFAULT_MAX_CONCURRENT_TOOLS),
+            sandbox_probe: confined_by_bwrap,
         }
     }
 
@@ -1334,6 +1363,25 @@ mod tests {
         );
     }
 
+    /// Per-engagement evidence does not stop a host command from reading
+    /// another engagement's files, so a Pick whose commands are not confined by
+    /// a sandbox must not claim isolation. Dropping the probe check in
+    /// `isolation_blocker` turns this red.
+    #[test]
+    fn metadata_withholds_isolation_without_a_confining_sandbox() {
+        let mut connector = test_connector();
+        connector.sandbox_probe = unconfined;
+        let metadata = connector.metadata();
+        assert!(
+            !metadata.contains_key(ENGAGEMENT_ISOLATION_METADATA_KEY),
+            "an unconfined Pick must not advertise isolation: {metadata:?}"
+        );
+        assert!(
+            metadata.contains_key(MAX_CONCURRENT_TOOLS_METADATA_KEY),
+            "the call limit is advertised either way"
+        );
+    }
+
     #[test]
     fn call_limit_override_can_only_lower_the_default() {
         assert_eq!(CallSlots::resolve_limit(None), DEFAULT_MAX_CONCURRENT_TOOLS);
@@ -1472,6 +1520,7 @@ mod tests {
             identities: Arc::new(pentest_core::identity::IdentityStore::new()),
             budget: pentest_core::budget::SessionBudget::default(),
             call_slots: CallSlots::new(DEFAULT_MAX_CONCURRENT_TOOLS),
+            sandbox_probe: confined_by_bwrap,
         }
     }
 

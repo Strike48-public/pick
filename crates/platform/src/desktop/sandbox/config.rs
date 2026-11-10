@@ -71,6 +71,19 @@ impl std::fmt::Display for SandboxBackend {
     }
 }
 
+impl SandboxBackend {
+    /// Whether this backend confines a command to its own workspace, so one
+    /// engagement's commands cannot read another's files. Bwrap, proot and
+    /// Docker bind only the workspace at `/workspace`; WSL mounts the Windows
+    /// drives at `/mnt/c`, so the host disk stays visible.
+    pub fn confines_workspace(self) -> bool {
+        match self {
+            SandboxBackend::Bwrap | SandboxBackend::Proot | SandboxBackend::Docker => true,
+            SandboxBackend::Wsl => false,
+        }
+    }
+}
+
 /// Configuration for the sandbox environment
 #[derive(Debug, Clone)]
 pub struct SandboxConfig {

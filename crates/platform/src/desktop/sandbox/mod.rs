@@ -91,6 +91,19 @@ pub fn current_backend() -> Option<config::SandboxBackend> {
     SANDBOX_MANAGER.get().map(|manager| manager.backend())
 }
 
+/// The backend that confines tool commands to their own workspace right now,
+/// or `None` when commands run on the host (sandbox off), the manager has not
+/// initialized yet, or the backend leaves the host disk visible (WSL). Fails
+/// closed: only a known, confining backend counts. Like [`current_backend`],
+/// it never initializes the manager.
+pub fn workspace_confining_backend() -> Option<SandboxBackend> {
+    confining(super::command::is_sandbox_enabled(), current_backend())
+}
+
+fn confining(enabled: bool, backend: Option<SandboxBackend>) -> Option<SandboxBackend> {
+    backend.filter(|backend| enabled && backend.confines_workspace())
+}
+
 /// Get or initialize the global sandbox manager
 pub async fn get_sandbox_manager() -> SandboxResult<Arc<SandboxManager>> {
     tracing::debug!("[get_sandbox_manager] Attempting to get or initialize sandbox manager");
@@ -494,6 +507,23 @@ impl SandboxManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Engagement isolation (pick#513) rests on this: only an enabled sandbox
+    /// with a backend that hides the host disk counts. Treating WSL, a disabled
+    /// sandbox or an uninitialized manager as confining turns this red.
+    #[test]
+    fn confining_requires_an_enabled_workspace_only_backend() {
+        for backend in [
+            SandboxBackend::Bwrap,
+            SandboxBackend::Proot,
+            SandboxBackend::Docker,
+        ] {
+            assert_eq!(confining(true, Some(backend)), Some(backend));
+            assert_eq!(confining(false, Some(backend)), None, "{backend} while off");
+        }
+        assert_eq!(confining(true, Some(SandboxBackend::Wsl)), None);
+        assert_eq!(confining(true, None), None);
+    }
 
     // Ignored: this touches the network. On a host without bwrap/proot (e.g. a
     // CI runner), `detect_backend` falls through to `download_proot`, which now
