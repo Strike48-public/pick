@@ -21,11 +21,12 @@
 //! buffer keeps flowing (the old page compared line counts, which stop
 //! changing at the cap).
 
+use crate::diagnostics::cap_bytes;
 use crate::provenance::redact;
 use crate::terminal::{LogLevel, TerminalLine};
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use tokio::sync::watch;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
@@ -34,6 +35,10 @@ use tracing_subscriber::Layer;
 
 /// Most lines held. The oldest line is dropped when a new one would exceed it.
 pub const UI_LOG_CAPACITY: usize = 5000;
+
+/// Most bytes of [`TerminalLine::details`] kept per line. Details carry full
+/// tool results, so the line cap alone does not bound the buffer's memory.
+pub const UI_LOG_DETAILS_MAX_BYTES: usize = 64 * 1024;
 
 /// Most previous-session lines restored at start-up.
 pub const SEED_MAX_LINES: usize = 500;
@@ -57,7 +62,8 @@ pub struct UiLog {
 
 #[derive(Default)]
 struct Inner {
-    lines: VecDeque<(u64, TerminalLine)>,
+    /// `Arc` so [`UiLog::since`] copies refcounts, not details, under the lock.
+    lines: VecDeque<(u64, Arc<TerminalLine>)>,
     last_seq: u64,
 }
 
@@ -81,7 +87,9 @@ impl UiLog {
     /// Add `line` to the buffer and wake the pages. Emits no tracing event,
     /// so it is safe to call from inside a tracing layer. Returns the line's
     /// sequence number (the first line is 1).
-    pub fn push(&self, line: TerminalLine) -> u64 {
+    pub fn push(&self, mut line: TerminalLine) -> u64 {
+        line.details = line.details.map(|d| cap_bytes(d, UI_LOG_DETAILS_MAX_BYTES));
+        let line = Arc::new(line);
         let seq = {
             let mut inner = self.lock();
             inner.last_seq += 1;
@@ -99,19 +107,28 @@ impl UiLog {
     /// The lines numbered after `seq`, oldest first, and the newest number.
     /// Lines already dropped from the buffer are not returned.
     pub fn since(&self, seq: u64) -> (Vec<TerminalLine>, u64) {
-        let inner = self.lock();
-        // Numbers are contiguous, so the first wanted line is found by
-        // arithmetic instead of a scan held under the lock.
-        let first = inner.lines.front().map_or(0, |(s, _)| *s);
-        let start = usize::try_from(seq.saturating_add(1).saturating_sub(first))
-            .unwrap_or(usize::MAX)
-            .min(inner.lines.len());
-        let lines = inner
-            .lines
-            .range(start..)
-            .map(|(_, line)| line.clone())
+        let (shared, last_seq) = {
+            let inner = self.lock();
+            // Numbers are contiguous, so the first wanted line is found by
+            // arithmetic instead of a scan held under the lock.
+            let first = inner.lines.front().map_or(0, |(s, _)| *s);
+            let start = usize::try_from(seq.saturating_add(1).saturating_sub(first))
+                .unwrap_or(usize::MAX)
+                .min(inner.lines.len());
+            let shared: Vec<Arc<TerminalLine>> = inner
+                .lines
+                .range(start..)
+                .map(|(_, line)| Arc::clone(line))
+                .collect();
+            (shared, inner.last_seq)
+        };
+        // The deep copies happen after the lock is released, so a page
+        // reading the whole buffer never stalls a tracing call site.
+        let lines = shared
+            .iter()
+            .map(|line| TerminalLine::clone(line))
             .collect();
-        (lines, inner.last_seq)
+        (lines, last_seq)
     }
 
     /// A receiver whose `changed()` resolves after each [`push`](Self::push).
@@ -324,7 +341,7 @@ fn seed_line(record: &str) -> Option<TerminalLine> {
             .get(SOURCE_FIELD)
             .filter(|_| is_ui)
             .and_then(|v| v.as_str())
-            .map(str::to_string),
+            .map(redact),
         details: None,
     })
 }
@@ -399,6 +416,20 @@ mod tests {
         assert_eq!(*rx.borrow_and_update(), 1);
     }
 
+    /// Details carry full tool results; the line cap alone would let the
+    /// buffer hold 5000 of them at any size.
+    #[test]
+    fn push_caps_details_by_bytes() {
+        let log = UiLog::new(10);
+        log.push(TerminalLine::info("big").with_details("x".repeat(UI_LOG_DETAILS_MAX_BYTES * 4)));
+        log.push(TerminalLine::info("small").with_details("kept whole"));
+        let (lines, _) = log.since(0);
+        let big = lines[0].details.as_deref().expect("details");
+        assert!(big.len() <= UI_LOG_DETAILS_MAX_BYTES + 20, "{}", big.len());
+        assert!(big.ends_with("...<truncated>"));
+        assert_eq!(lines[1].details.as_deref(), Some("kept whole"));
+    }
+
     fn with_layer(log: &'static UiLog, f: impl FnOnce()) {
         let subscriber = tracing_subscriber::registry().with(UiLogLayer::new(log));
         tracing::subscriber::with_default(subscriber, f);
@@ -462,14 +493,28 @@ mod tests {
                 TerminalLine::success("[tool] nmap completed token=supersecretvalue1")
                     .with_details("SECRET-TOOL-OUTPUT"),
             );
+            log.emit(TerminalLine::with_source(
+                LogLevel::Warning,
+                "retrying",
+                "connector token=supersecretvalue2",
+            ));
         });
         let out = capture.contents();
-        let record: serde_json::Value = serde_json::from_str(out.trim()).expect("one JSON record");
+        let records: Vec<serde_json::Value> = out
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("JSON record"))
+            .collect();
+        assert_eq!(records.len(), 2, "{out}");
+        let record = &records[0];
         assert_eq!(record["level"], "INFO");
         assert_eq!(record["fields"]["ui"], true);
         assert_eq!(record["fields"]["outcome"], "success");
+        assert!(records[1]["fields"]["source"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("connector")));
         assert!(!out.contains("SECRET-TOOL-OUTPUT"), "{out}");
         assert!(!out.contains("supersecretvalue1"), "{out}");
+        assert!(!out.contains("supersecretvalue2"), "{out}");
         let (lines, _) = log.since(0);
         assert_eq!(lines[0].details.as_deref(), Some("SECRET-TOOL-OUTPUT"));
     }
@@ -552,13 +597,22 @@ mod tests {
 
     #[test]
     fn seed_redacts_restored_warnings() {
-        let (_dir, path) = write_log(&[serde_json::json!({
+        let (_dir, path) = write_log(&[
+            serde_json::json!({
             "timestamp": "2026-10-19T08:00:00Z", "level": "ERROR",
-            "fields": {"message": "failed: Authorization: Bearer abcdefghijklmnop"}})]);
+            "fields": {"message": "failed: Authorization: Bearer abcdefghijklmnop"}}),
+            serde_json::json!({
+            "timestamp": "2026-10-19T08:00:01Z", "level": "WARN",
+            "fields": {"message": "retrying", "ui": true,
+                "source": "connector token=supersecretvalue3"}}),
+        ]);
         let log = UiLog::new(10);
         seed_from_log_file(&log, &path);
         let (lines, _) = log.since(0);
         assert!(!lines[1].message.contains("abcdefghijklmnop"), "{lines:?}");
+        let source = lines[2].source.as_deref().expect("source restored");
+        assert!(source.starts_with("connector"), "{source}");
+        assert!(!source.contains("supersecretvalue3"), "{source}");
     }
 
     #[test]
