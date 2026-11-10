@@ -229,7 +229,7 @@ fn parse_nmap_xml(xml: &str, stderr: &str) -> Result<Value> {
     // For Phase 1, we'll do simple regex-based parsing
     // TODO: Add proper XML parsing with quick-xml crate in Phase 2
 
-    let mut hosts = Vec::new();
+    let mut hosts: Vec<Value> = Vec::new();
 
     // Extract host blocks with regex. `(?s)` is required: nmap writes every
     // `<host>` element across many lines, and without dot-matches-newline the
@@ -243,7 +243,16 @@ fn parse_nmap_xml(xml: &str, stderr: &str) -> Result<Value> {
     for host_match in host_re.captures_iter(xml) {
         if let Some(host_xml) = host_match.get(1) {
             let host_data = parse_host_xml(host_xml.as_str());
-            hosts.push(host_data);
+            // Overlapping targets (`10.0.0.0/30,10.0.0.2`) make nmap report the
+            // same host twice. Merge the repeat into the first block so the
+            // host is listed, counted and turned into evidence once.
+            let existing = hosts
+                .iter_mut()
+                .find(|h| host_data["ip"] != "unknown" && h["ip"] == host_data["ip"]);
+            match existing {
+                Some(first) => merge_host(first, &host_data),
+                None => hosts.push(host_data),
+            }
         }
     }
 
@@ -261,8 +270,9 @@ fn parse_nmap_xml(xml: &str, stderr: &str) -> Result<Value> {
         "hosts": hosts,
         "count": hosts.len(),
         "responsive_count": responsive_count,
-        // `count` is what nmap reported; under `-Pn` that includes hosts it only
-        // assumed up, so the summary also states how many actually responded.
+        // `count` is the unique hosts nmap reported; under `-Pn` that includes
+        // hosts it only assumed up, so the summary also states how many
+        // actually responded.
         "summary": format!("Scanned {} host(s), {} responded", hosts.len(), responsive_count),
         "stderr": stderr,
         "raw_xml": xml, // Include raw XML for advanced parsing
@@ -274,6 +284,28 @@ fn parse_nmap_xml(xml: &str, stderr: &str) -> Result<Value> {
 /// `-Pn` sweep of a dead network (every address listed as up) still gets it.
 fn needs_scope_hint(data: &Value) -> bool {
     data.get("responsive_count").and_then(Value::as_u64) == Some(0)
+}
+
+/// Fold a repeated block for the same host into the first one: it responded
+/// if either block did, and its open ports are the union of both.
+fn merge_host(first: &mut Value, repeat: &Value) {
+    if repeat["responded"] == true {
+        first["responded"] = json!(true);
+    }
+    if first["hostname"] == "" && repeat["hostname"] != "" {
+        first["hostname"] = repeat["hostname"].clone();
+    }
+    let mut ports = first["ports"].as_array().cloned().unwrap_or_default();
+    for port in repeat["ports"].as_array().into_iter().flatten() {
+        let seen = ports
+            .iter()
+            .any(|p| p["protocol"] == port["protocol"] && p["port"] == port["port"]);
+        if !seen {
+            ports.push(port.clone());
+        }
+    }
+    first["port_count"] = json!(ports.len());
+    first["ports"] = json!(ports);
 }
 
 /// Parse a single host block from nmap XML
@@ -295,6 +327,18 @@ fn parse_host_xml(xml: &str) -> Value {
     // arp-response, ...), or any port that answered (open / closed /
     // unfiltered all mean a packet came back).
     let mut responded = state == "up" && reason != "user-set" && !reason.is_empty();
+
+    // nmap condenses a run of same-state ports into one `<extraports>` element
+    // instead of `<port>` elements. A host that refused every probed port
+    // (`<extraports state="closed">`, reason conn-refused) answered, even with no
+    // `<port>` listed; this is the normal shape for an unprivileged `-Pn` scan of
+    // a live host with nothing listening. Combined states such as
+    // "closed|filtered" mean no reply and do not count; neither does "filtered".
+    let extraports_re =
+        regex::Regex::new(r#"(?s)<extraports\s[^>]*state="(closed|unfiltered)""#).unwrap();
+    if extraports_re.is_match(xml) {
+        responded = true;
+    }
 
     // Extract open ports
     let mut ports = Vec::new();
@@ -950,8 +994,9 @@ const MAX_TARGET_LIST_MEMBERS: usize = 256;
 ///
 /// De-duplication is exact-string only. Overlapping members such as
 /// `10.0.0.0/24,10.0.0.5` are both passed on, and nmap then scans and reports
-/// the overlapping host twice (verified against nmap 7.9x); that only costs
-/// time, never scope.
+/// the overlapping host twice (verified against nmap 7.9x). That costs scan
+/// time but never scope, and `parse_nmap_xml` merges the repeated host block,
+/// so the host is listed, counted and turned into evidence once.
 fn validate_target_list(target: &str) -> Result<Vec<String>> {
     if !target.contains(',') {
         return Ok(vec![validate_target(target)?]);
@@ -1467,6 +1512,137 @@ mod tests {
         // A host up for a real reason (arp-response) is responsive with no ports.
         let data = parse_nmap_xml(MULTILINE_NMAP_XML, "").unwrap();
         assert_eq!(data["responsive_count"], data["count"]);
+    }
+
+    /// Real `nmap -Pn -sT --unprivileged -p 1-100 127.0.0.1 -oX -` output
+    /// (nmap 7.9x) with nothing listening: nmap condenses the 100 refused
+    /// ports into one multi-line `<extraports state="closed">` and lists no
+    /// `<port>` element.
+    const PN_ALL_CLOSED_XML: &str = r#"<nmaprun>
+<host starttime="1794337411" endtime="1794337411"><status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="127.0.0.1" addrtype="ipv4"/>
+<hostnames>
+<hostname name="localhost" type="PTR"/>
+</hostnames>
+<ports><extraports state="closed" count="100">
+<extrareasons reason="conn-refused" count="100" proto="tcp" ports="1-100"/>
+</extraports>
+</ports>
+<times srtt="103" rttvar="86" to="100000"/>
+</host>
+<runstats><hosts up="1" down="0" total="1"/></runstats>
+</nmaprun>"#;
+
+    #[test]
+    fn parse_nmap_xml_host_refusing_every_port_via_extraports_is_responsive() {
+        let data = parse_nmap_xml(PN_ALL_CLOSED_XML, "").unwrap();
+        assert_eq!(data["count"], 1);
+        assert_eq!(data["responsive_count"], 1);
+        assert_eq!(data["hosts"][0]["responded"], true);
+        assert_eq!(data["hosts"][0]["port_count"], 0);
+        assert_eq!(data["summary"], "Scanned 1 host(s), 1 responded");
+        assert!(
+            !needs_scope_hint(&data),
+            "a host that refused every port is live"
+        );
+
+        // `unfiltered` extraports also mean a reply came back.
+        let unfiltered = PN_ALL_CLOSED_XML.replace(r#"state="closed""#, r#"state="unfiltered""#);
+        assert_eq!(
+            parse_nmap_xml(&unfiltered, "").unwrap()["responsive_count"],
+            1
+        );
+
+        // Combined "no reply" states do not count.
+        let ambiguous =
+            PN_ALL_CLOSED_XML.replace(r#"state="closed""#, r#"state="closed|filtered""#);
+        assert_eq!(
+            parse_nmap_xml(&ambiguous, "").unwrap()["responsive_count"],
+            0
+        );
+
+        // The dead-sweep fixture's `<extraports state="filtered">` stays non-responsive.
+        let dead = parse_nmap_xml(PN_DEAD_SWEEP_XML, "").unwrap();
+        assert_eq!(dead["responsive_count"], 0);
+        assert!(needs_scope_hint(&dead));
+    }
+
+    /// Real `nmap -sT -Pn --unprivileged -p 80 10.250.0.2/31 10.250.0.3 -oX -`
+    /// output (targets stack): the overlapping member makes nmap report
+    /// 10.250.0.3 twice and `<hosts up="3">`.
+    const OVERLAPPING_TARGETS_XML: &str = r#"<nmaprun>
+<host starttime="1" endtime="2"><status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="10.250.0.2" addrtype="ipv4"/>
+<ports><port protocol="tcp" portid="80"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="http" method="table" conf="3"/></port>
+</ports>
+</host>
+<host starttime="1" endtime="2"><status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="10.250.0.3" addrtype="ipv4"/>
+<ports><port protocol="tcp" portid="80"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="http" method="table" conf="3"/></port>
+</ports>
+</host>
+<host starttime="1" endtime="2"><status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="10.250.0.3" addrtype="ipv4"/>
+<ports><port protocol="tcp" portid="80"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="http" method="table" conf="3"/></port>
+</ports>
+</host>
+<runstats><hosts up="3" down="0" total="3"/></runstats>
+</nmaprun>"#;
+
+    #[test]
+    fn parse_nmap_xml_merges_a_host_reported_twice_by_overlapping_targets() {
+        let data = parse_nmap_xml(OVERLAPPING_TARGETS_XML, "").unwrap();
+        assert_eq!(data["count"], 2, "10.250.0.3 is listed once");
+        assert_eq!(data["responsive_count"], 2);
+        let ips: Vec<&str> = data["hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["ip"].as_str().unwrap())
+            .collect();
+        assert_eq!(ips, ["10.250.0.2", "10.250.0.3"]);
+        assert_eq!(
+            data["hosts"][1]["port_count"], 1,
+            "the same port is not duplicated"
+        );
+
+        // Repeats are folded in: open ports are unioned and a reply in either
+        // block marks the host responsive.
+        let block = |port: &str, state: &str| {
+            format!(
+                r#"<host starttime="1" endtime="2"><status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="10.250.0.3" addrtype="ipv4"/>
+<ports><port protocol="tcp" portid="{port}"><state state="{state}" reason="x" reason_ttl="0"/><service name="s" method="table" conf="3"/></port>
+</ports>
+</host>"#
+            )
+        };
+        let xml = format!(
+            "<nmaprun>\n{}\n{}\n</nmaprun>",
+            block("80", "open"),
+            block("443", "open")
+        );
+        let data = parse_nmap_xml(&xml, "").unwrap();
+        assert_eq!(data["count"], 1);
+        let ports: Vec<u64> = data["hosts"][0]["ports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["port"].as_u64().unwrap())
+            .collect();
+        assert_eq!(ports, [80, 443]);
+        assert_eq!(data["hosts"][0]["port_count"], 2);
+
+        let xml = format!(
+            "<nmaprun>\n{}\n{}\n</nmaprun>",
+            block("80", "filtered"),
+            block("80", "open")
+        );
+        let data = parse_nmap_xml(&xml, "").unwrap();
+        assert_eq!(data["count"], 1);
+        assert_eq!(data["hosts"][0]["responded"], true);
+        assert_eq!(data["responsive_count"], 1);
+        assert_eq!(data["hosts"][0]["port_count"], 1);
     }
 
     use super::*;
