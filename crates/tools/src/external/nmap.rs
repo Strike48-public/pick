@@ -196,7 +196,7 @@ impl PentestTool for NmapTool {
             // instead of reporting "nothing found".
             // Keyed on hosts that actually answered, not on parsed host blocks:
             // a `-Pn` sweep of a dead network lists every address as "up".
-            if data.get("responsive_count").and_then(Value::as_u64) == Some(0) {
+            if needs_scope_hint(&data) {
                 let active_subnets = crate::network_context::network_context()
                     .await
                     .unwrap_or_default();
@@ -234,9 +234,11 @@ fn parse_nmap_xml(xml: &str, stderr: &str) -> Result<Value> {
     // Extract host blocks with regex. `(?s)` is required: nmap writes every
     // `<host>` element across many lines, and without dot-matches-newline the
     // lazy `.*?` never reaches `</host>`, so every scan parsed as zero hosts
-    // (spurious #347 zero-host scope hint, no nmap evidence nodes). `<host\s+`
+    // (spurious #347 zero-host scope hint, no nmap evidence nodes). The
+    // attributes are optional: port scans write `<host starttime=.. endtime=..>`
+    // but ping / list scans (`-sn`) write a bare `<host>`. `<host(?:\s[^>]*)?>`
     // still never matches nmap's `<hosthint>` element.
-    let host_re = regex::Regex::new(r#"(?s)<host\s+[^>]*>(.*?)</host>"#).unwrap();
+    let host_re = regex::Regex::new(r#"(?s)<host(?:\s[^>]*)?>(.*?)</host>"#).unwrap();
 
     for host_match in host_re.captures_iter(xml) {
         if let Some(host_xml) = host_match.get(1) {
@@ -259,10 +261,19 @@ fn parse_nmap_xml(xml: &str, stderr: &str) -> Result<Value> {
         "hosts": hosts,
         "count": hosts.len(),
         "responsive_count": responsive_count,
-        "summary": format!("Scanned {} host(s)", hosts.len()),
+        // `count` is what nmap reported; under `-Pn` that includes hosts it only
+        // assumed up, so the summary also states how many actually responded.
+        "summary": format!("Scanned {} host(s), {} responded", hosts.len(), responsive_count),
         "stderr": stderr,
         "raw_xml": xml, // Include raw XML for advanced parsing
     }))
+}
+
+/// True when the parsed result should carry the #347 zero-host scope hint:
+/// no host actually responded. Keyed on `responsive_count`, not `count`, so a
+/// `-Pn` sweep of a dead network (every address listed as up) still gets it.
+fn needs_scope_hint(data: &Value) -> bool {
+    data.get("responsive_count").and_then(Value::as_u64) == Some(0)
 }
 
 /// Parse a single host block from nmap XML
@@ -929,20 +940,6 @@ fn apply_flag_tokens(tokens: &[String]) -> (serde_json::Map<String, Value>, Opti
     (derived, target)
 }
 
-/// Calculate smart timeout based on scan parameters
-///
-/// Factors considered:
-/// - Number of target hosts (from CIDR, space-separated IPs, etc.)
-/// - Port range (top100=100, top1000=1000, all=65535, custom=parsed)
-/// - Scan type (ping < connect/syn < udp)
-/// - Timing template (0-5, faster = less time per port)
-/// - Service detection (adds 2-10s per open port)
-///
-/// Formula:
-/// base = (hosts * ports * scan_multiplier) / (timing_speed * 1000)
-/// + (service_detection_overhead if enabled)
-///
-/// Returns timeout in seconds with reasonable min/max bounds.
 /// Most members accepted in one comma-separated `target`. nmap has no limit,
 /// but a longer list is almost certainly a malformed or runaway value.
 const MAX_TARGET_LIST_MEMBERS: usize = 256;
@@ -950,6 +947,11 @@ const MAX_TARGET_LIST_MEMBERS: usize = 256;
 /// Split a `target` on commas and validate every member with the same rules as
 /// a single target (#612). nmap accepts several targets, and callers (agents,
 /// scope filters that drop one member of a list) naturally produce comma lists.
+///
+/// De-duplication is exact-string only. Overlapping members such as
+/// `10.0.0.0/24,10.0.0.5` are both passed on, and nmap then scans and reports
+/// the overlapping host twice (verified against nmap 7.9x); that only costs
+/// time, never scope.
 fn validate_target_list(target: &str) -> Result<Vec<String>> {
     if !target.contains(',') {
         return Ok(vec![validate_target(target)?]);
@@ -978,6 +980,20 @@ fn validate_target_list(target: &str) -> Result<Vec<String>> {
     Ok(validated)
 }
 
+/// Calculate smart timeout based on scan parameters
+///
+/// Factors considered:
+/// - Number of target hosts (from CIDR, space-separated IPs, etc.)
+/// - Port range (top100=100, top1000=1000, all=65535, custom=parsed)
+/// - Scan type (ping < connect/syn < udp)
+/// - Timing template (0-5, faster = less time per port)
+/// - Service detection (adds 2-10s per open port)
+///
+/// Formula:
+/// base = (hosts * ports * scan_multiplier) / (timing_speed * 1000)
+/// + (service_detection_overhead if enabled)
+///
+/// Returns timeout in seconds with reasonable min/max bounds.
 fn calculate_timeout(
     target: &str,
     ports: &str,
@@ -1048,40 +1064,70 @@ fn calculate_timeout(
     with_buffer.clamp(min_timeout, max_timeout)
 }
 
+/// Upper bound on the host estimate (a /16), so a huge range does not size an
+/// unbounded timeout.
+const HOST_ESTIMATE_CAP: usize = 65536;
+
 /// Estimate the number of target hosts from target specification
 fn estimate_host_count(target: &str) -> usize {
+    let target = target.trim();
+
     // A comma list (#612) is the sum of its members, so a list that mixes a
-    // CIDR with single hosts is sized correctly.
+    // CIDR, a dash range and single hosts is sized correctly.
     if target.contains(',') {
         return target
             .split(',')
             .filter(|m| !m.trim().is_empty())
-            .map(|m| estimate_host_count(m.trim()))
-            .sum::<usize>()
-            .min(65536);
+            .map(estimate_host_count)
+            .fold(0usize, usize::saturating_add)
+            .min(HOST_ESTIMATE_CAP);
     }
 
-    // Check for CIDR notation (e.g., "192.168.1.0/24")
-    if let Some(cidr_pos) = target.find('/') {
-        if let Ok(prefix_len) = target[cidr_pos + 1..].parse::<u32>() {
-            // Calculate hosts from CIDR prefix length
-            // /24 = 256 hosts, /16 = 65536 hosts, etc.
-            let host_bits = 32 - prefix_len;
-            return (2_u32.pow(host_bits) as usize).min(65536); // Cap at /16
+    // IPv6: an address is one host; any IPv6 prefix is too large to size, so
+    // use the cap (the old IPv4-only math underflowed on `/64`).
+    if target.contains(':') {
+        return if target.contains('/') {
+            HOST_ESTIMATE_CAP
+        } else {
+            1
+        };
+    }
+
+    // IPv4 CIDR. Computed in u64 so `/0` does not overflow.
+    if let Some((_, prefix)) = target.split_once('/') {
+        if let Ok(prefix_len) = prefix.parse::<u32>() {
+            let host_bits = 32u32.saturating_sub(prefix_len);
+            return 1u64.checked_shl(host_bits).map_or(HOST_ESTIMATE_CAP, |n| {
+                n.min(HOST_ESTIMATE_CAP as u64) as usize
+            });
         }
     }
 
-    // Check for space-separated or comma-separated IPs
-    let separators = [' ', ','];
-    for sep in separators {
-        let parts: Vec<&str> = target.split(sep).filter(|s| !s.is_empty()).collect();
-        if parts.len() > 1 {
-            return parts.len();
-        }
+    // IPv4 dash range: last-octet (`10.0.0.1-50`) or full-IP form.
+    if let Some(n) = ipv4_dash_range_size(target) {
+        return n.min(HOST_ESTIMATE_CAP);
+    }
+
+    // Space-separated IPs
+    let parts = target.split(' ').filter(|s| !s.is_empty()).count();
+    if parts > 1 {
+        return parts;
     }
 
     // Single host or hostname
     1
+}
+
+/// Number of addresses in an IPv4 dash range, or None if `target` is not one.
+fn ipv4_dash_range_size(target: &str) -> Option<usize> {
+    let (left, right) = target.split_once('-')?;
+    let lo = u32::from(left.trim().parse::<std::net::Ipv4Addr>().ok()?);
+    let right = right.trim();
+    let hi = match right.parse::<std::net::Ipv4Addr>() {
+        Ok(ip) => u32::from(ip),
+        Err(_) => (lo & 0xFFFF_FF00) | u32::from(right.parse::<u8>().ok()?),
+    };
+    (hi >= lo).then(|| (hi - lo) as usize + 1)
 }
 
 /// Resolve the `ports` param into nmap CLI arg(s).
@@ -1253,7 +1299,7 @@ mod tests {
         let data = parse_nmap_xml(MULTILINE_NMAP_XML, "").unwrap();
 
         assert_eq!(data["count"], 2, "both multi-line <host> blocks must parse");
-        assert_eq!(data["summary"], "Scanned 2 host(s)");
+        assert_eq!(data["summary"], "Scanned 2 host(s), 2 responded");
 
         let hosts = data["hosts"].as_array().unwrap();
         assert_eq!(hosts[0]["ip"], "10.250.0.3");
@@ -1303,6 +1349,93 @@ mod tests {
 </host>
 <runstats><hosts up="2" down="0" total="2"/></runstats>
 </nmaprun>"#;
+
+    /// Real `nmap -sn -oX -` output (nmap 7.9x, targets stack): ping scans
+    /// write a bare `<host>` with no attributes.
+    const PING_SCAN_XML: &str = r#"<nmaprun>
+<hosthint><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="10.250.0.2" addrtype="ipv4"/>
+</hosthint>
+<host><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="10.250.0.2" addrtype="ipv4"/>
+<address addr="26:58:72:75:42:7D" addrtype="mac"/>
+<hostnames>
+<hostname name="pick-dvwa-1.pick_scan-net" type="PTR"/>
+</hostnames>
+<times srtt="20" rttvar="5000" to="100000"/>
+</host>
+<host><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="10.250.0.3" addrtype="ipv4"/>
+<address addr="C2:F3:A0:AA:A8:47" addrtype="mac"/>
+<hostnames>
+<hostname name="pick-juice-guard-1.pick_scan-net" type="PTR"/>
+</hostnames>
+<times srtt="22" rttvar="5000" to="100000"/>
+</host>
+<runstats><hosts up="2" down="0" total="2"/>
+</runstats>
+</nmaprun>"#;
+
+    #[test]
+    fn parse_nmap_xml_reads_bare_host_tags_from_ping_scans() {
+        let data = parse_nmap_xml(PING_SCAN_XML, "").unwrap();
+        assert_eq!(
+            data["count"], 2,
+            "bare <host> blocks must parse; hosthint must not"
+        );
+        assert_eq!(data["responsive_count"], 2);
+        assert_eq!(data["hosts"][0]["ip"], "10.250.0.2");
+        assert_eq!(data["hosts"][1]["ip"], "10.250.0.3");
+        assert_eq!(
+            data["hosts"][1]["hostname"],
+            "pick-juice-guard-1.pick_scan-net"
+        );
+        assert!(
+            !needs_scope_hint(&data),
+            "a ping sweep that found hosts gets no hint"
+        );
+    }
+
+    #[test]
+    fn scope_hint_keys_on_responsive_hosts_not_parsed_blocks() {
+        // count > 0 and hosts responded: no hint.
+        let live = parse_nmap_xml(MULTILINE_NMAP_XML, "").unwrap();
+        assert!(
+            live["count"].as_u64().unwrap() > 0 && live["responsive_count"].as_u64().unwrap() > 0
+        );
+        assert!(!needs_scope_hint(&live));
+
+        // count > 0 but nothing responded (-Pn dead sweep): hint.
+        let dead = parse_nmap_xml(PN_DEAD_SWEEP_XML, "").unwrap();
+        assert_eq!(dead["count"], 2);
+        assert!(needs_scope_hint(&dead));
+        assert_eq!(dead["summary"], "Scanned 2 host(s), 0 responded");
+
+        // Nothing parsed at all (hosthint only): hint.
+        let empty = parse_nmap_xml("<nmaprun><hosthint><status state=\"up\" reason=\"arp-response\"/></hosthint></nmaprun>", "").unwrap();
+        assert!(needs_scope_hint(&empty));
+    }
+
+    #[test]
+    fn parse_nmap_xml_timed_out_host_is_responsive_only_if_a_port_answered() {
+        let silent = r#"<nmaprun>
+<host starttime="1" endtime="2" timedout="true"><status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="10.250.0.200" addrtype="ipv4"/>
+<ports><port protocol="tcp" portid="80"><state state="filtered" reason="no-response" reason_ttl="0"/></port>
+</ports>
+</host>
+</nmaprun>"#;
+        let data = parse_nmap_xml(silent, "").unwrap();
+        assert_eq!(data["count"], 1);
+        assert_eq!(data["responsive_count"], 0);
+
+        let answered = silent.replace(
+            r#"<state state="filtered" reason="no-response" reason_ttl="0"/>"#,
+            r#"<state state="closed" reason="conn-refused" reason_ttl="0"/>"#,
+        );
+        let data = parse_nmap_xml(&answered, "").unwrap();
+        assert_eq!(data["responsive_count"], 1);
+    }
 
     #[test]
     fn parse_nmap_xml_pn_dead_sweep_has_no_responsive_hosts() {
@@ -2305,6 +2438,38 @@ mod tests {
     fn estimate_host_count_sums_comma_list_members() {
         assert_eq!(estimate_host_count("10.0.0.0/24,10.0.1.5"), 257);
         assert_eq!(estimate_host_count("10.0.0.1,10.0.0.2,10.0.0.3"), 3);
+    }
+
+    #[test]
+    fn estimate_host_count_never_panics_on_ipv6_slash_zero_or_ranges() {
+        // IPv6: one address is one host, any prefix uses the cap (no underflow).
+        assert_eq!(estimate_host_count("2001:db8::/64"), HOST_ESTIMATE_CAP);
+        assert_eq!(estimate_host_count("2001:db8::/128"), HOST_ESTIMATE_CAP);
+        assert_eq!(estimate_host_count("::1"), 1);
+        // /0 and /32 do not overflow.
+        assert_eq!(estimate_host_count("0.0.0.0/0"), HOST_ESTIMATE_CAP);
+        assert_eq!(estimate_host_count("10.0.0.5/32"), 1);
+        // Dash ranges are sized from their interval, alone and in a list.
+        assert_eq!(estimate_host_count("10.0.0.1-50"), 50);
+        assert_eq!(estimate_host_count("10.0.0.250-10.0.1.4"), 11);
+        assert_eq!(estimate_host_count("10.0.0.1-50,10.0.1.1-10,10.0.2.7"), 61);
+        // A mixed IPv6 / IPv4 list sums without panicking.
+        assert_eq!(estimate_host_count("10.0.0.5,::1"), 2);
+        assert_eq!(
+            estimate_host_count("10.0.0.0/24,2001:db8::/64"),
+            HOST_ESTIMATE_CAP
+        );
+    }
+
+    #[test]
+    fn execute_plan_accepts_a_mixed_ipv6_ipv4_comma_list() {
+        // Pinned on purpose: Pick validation accepts IPv6 members (an external
+        // scope gate may deny IPv6, but standalone Pick passes them on). nmap
+        // itself skips an IPv6 target without `-6`, as for a single IPv6 target.
+        let plan = plan_nmap_invocation(&json!({"target": "10.250.0.3,::1,2001:db8::/126"}), false)
+            .expect("mixed list must plan");
+        let n = plan.args.len();
+        assert_eq!(&plan.args[n - 3..], ["10.250.0.3", "::1", "2001:db8::/126"]);
     }
 
     #[test]
