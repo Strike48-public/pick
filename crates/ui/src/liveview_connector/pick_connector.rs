@@ -61,6 +61,68 @@ pub(crate) struct PickConnector {
     /// Enforced in [`PickConnector::execute_with_context`]; reset on
     /// `begin_scan`. Defaults to the configured aggression level's envelope.
     pub budget: pentest_core::budget::SessionBudget,
+    /// Pick's own limit on concurrent tool calls (pick#513). Matrix schedules
+    /// against the advertised value; this is the backstop when it does not.
+    pub call_slots: CallSlots,
+}
+
+/// Registration metadata key: this Pick keeps evidence per engagement, so
+/// Matrix may let it serve several engagements at once (Shared mode).
+pub(crate) const ENGAGEMENT_ISOLATION_METADATA_KEY: &str = "engagement_isolation";
+/// Version of the isolation contract this Pick implements.
+pub(crate) const ENGAGEMENT_ISOLATION_VERSION: &str = "v1";
+/// Registration metadata key carrying [`CallSlots::limit`].
+pub(crate) const MAX_CONCURRENT_TOOLS_METADATA_KEY: &str = "max_concurrent_tools";
+/// Stable `error_code` on a refused call, so Matrix requeues it instead of
+/// recording a tool failure.
+pub(crate) const BUSY_ERROR_CODE: &str = "pick_busy";
+
+/// Operator override for [`CallSlots`]; it can only lower the default.
+const MAX_CONCURRENT_TOOLS_ENV: &str = "PICK_MAX_CONCURRENT_TOOLS";
+/// The highest aggression level's specialist cap, so Pick never throttles its
+/// own most aggressive mode.
+const DEFAULT_MAX_CONCURRENT_TOOLS: usize = 16;
+
+/// A fixed pool of tool-call slots. A call takes one before anything starts
+/// and refuses at once when none is free; the slot returns when the call ends.
+#[derive(Clone)]
+pub(crate) struct CallSlots {
+    limit: usize,
+    semaphore: Arc<tokio::sync::Semaphore>,
+}
+
+impl CallSlots {
+    pub(crate) fn new(limit: usize) -> Self {
+        let limit = limit.max(1);
+        Self {
+            limit,
+            semaphore: Arc::new(tokio::sync::Semaphore::new(limit)),
+        }
+    }
+
+    /// The default, lowered by `PICK_MAX_CONCURRENT_TOOLS` when set to a
+    /// smaller positive integer.
+    pub(crate) fn from_env() -> Self {
+        let requested = std::env::var(MAX_CONCURRENT_TOOLS_ENV)
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok());
+        Self::new(Self::resolve_limit(requested))
+    }
+
+    fn resolve_limit(requested: Option<usize>) -> usize {
+        match requested {
+            Some(n) if n >= 1 => n.min(DEFAULT_MAX_CONCURRENT_TOOLS),
+            _ => DEFAULT_MAX_CONCURRENT_TOOLS,
+        }
+    }
+
+    pub(crate) fn limit(&self) -> usize {
+        self.limit
+    }
+
+    fn try_take(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.semaphore.clone().try_acquire_owned().ok()
+    }
 }
 
 impl PickConnector {
@@ -157,6 +219,14 @@ impl BaseConnector for PickConnector {
         let mut metadata = HashMap::new();
         metadata.insert("app_manifest".to_string(), manifest_json);
         metadata.insert("timeout_ms".to_string(), "300000".to_string());
+        metadata.insert(
+            ENGAGEMENT_ISOLATION_METADATA_KEY.to_string(),
+            ENGAGEMENT_ISOLATION_VERSION.to_string(),
+        );
+        metadata.insert(
+            MAX_CONCURRENT_TOOLS_METADATA_KEY.to_string(),
+            self.call_slots.limit().to_string(),
+        );
 
         // Advertise only tools supported on this host (platform + desktop OS)
         // so a Linux-only tool never appears in the tool list on Windows. See #183.
@@ -277,6 +347,25 @@ impl BaseConnector for PickConnector {
                         .get("parameters")
                         .cloned()
                         .unwrap_or(request.clone());
+
+                    // --- Pick's own concurrency limit (pick#513) ---
+                    // Checked first so a refused call starts nothing and spends no
+                    // budget. The slot is held until this call returns.
+                    let Some(_slot) = self.call_slots.try_take() else {
+                        let limit = self.call_slots.limit();
+                        tracing::warn!(
+                            tool = tool_name.as_str(),
+                            limit,
+                            "at the concurrent tool-call limit; refusing call as busy"
+                        );
+                        return Ok(serde_json::json!({
+                            "success": false,
+                            "error_code": BUSY_ERROR_CODE,
+                            "error": format!(
+                                "Pick is busy: all {limit} tool-call slots are in use; retry later"
+                            )
+                        }));
+                    };
 
                     // --- Session budget check (agent hardening C3) ---
                     match self.budget.check().await {
@@ -777,6 +866,7 @@ mod tests {
             matrix_api_url: String::new(),
             identities: Arc::new(pentest_core::identity::IdentityStore::new()),
             budget: pentest_core::budget::SessionBudget::default(),
+            call_slots: CallSlots::new(DEFAULT_MAX_CONCURRENT_TOOLS),
         }
     }
 
@@ -1155,6 +1245,148 @@ mod tests {
         assert!(!output.contains("secret-token-value"), "{output}");
     }
 
+    /// Counts its starts and parks until released, so a test can hold a slot.
+    struct BlockingTool {
+        starts: Arc<std::sync::atomic::AtomicUsize>,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl pentest_core::tools::PentestTool for BlockingTool {
+        fn name(&self) -> &str {
+            "blocking_tool"
+        }
+        fn description(&self) -> &str {
+            "A tool that waits until the test releases it"
+        }
+        fn schema(&self) -> pentest_core::tools::ToolSchema {
+            pentest_core::tools::ToolSchema::new("blocking_tool", "Waits until released")
+        }
+        async fn execute(
+            &self,
+            _params: Value,
+            _ctx: &pentest_core::tools::ToolContext,
+        ) -> pentest_core::error::Result<pentest_core::tools::ToolResult> {
+            self.starts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(pentest_core::tools::ToolResult::success(
+                json!({"done": true}),
+            ))
+        }
+    }
+
+    /// Matrix gates Shared mode on the isolation flag and sizes its scheduler
+    /// from the advertised limit (pick#513, spec 6.3), so both must be in the
+    /// registration metadata. Dropping either insert in `metadata()` turns this red.
+    #[test]
+    fn metadata_advertises_isolation_and_call_limit() {
+        let mut connector = test_connector();
+        connector.call_slots = CallSlots::new(3);
+        let metadata = connector.metadata();
+        assert_eq!(
+            metadata
+                .get(ENGAGEMENT_ISOLATION_METADATA_KEY)
+                .map(String::as_str),
+            Some(ENGAGEMENT_ISOLATION_VERSION)
+        );
+        assert_eq!(
+            metadata
+                .get(MAX_CONCURRENT_TOOLS_METADATA_KEY)
+                .map(String::as_str),
+            Some("3")
+        );
+    }
+
+    #[test]
+    fn call_limit_override_can_only_lower_the_default() {
+        assert_eq!(CallSlots::resolve_limit(None), DEFAULT_MAX_CONCURRENT_TOOLS);
+        assert_eq!(
+            CallSlots::resolve_limit(Some(0)),
+            DEFAULT_MAX_CONCURRENT_TOOLS
+        );
+        assert_eq!(CallSlots::resolve_limit(Some(4)), 4);
+        assert_eq!(
+            CallSlots::resolve_limit(Some(DEFAULT_MAX_CONCURRENT_TOOLS + 10)),
+            DEFAULT_MAX_CONCURRENT_TOOLS
+        );
+    }
+
+    /// Spec 6.3: a Pick at its limit refuses the next call with the busy code
+    /// and the call does not start. With one slot held by a parked call, the
+    /// second call must come back `pick_busy` while the tool's start count
+    /// stays at one; once the first call returns, its slot is free again.
+    /// Removing the `try_take` guard in `execute_with_context` turns this red.
+    #[tokio::test]
+    async fn execute_with_context_refuses_as_busy_past_the_call_limit() {
+        let starts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let mut registry = ToolRegistry::new();
+        registry.register(BlockingTool {
+            starts: starts.clone(),
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let mut connector = connector_with_registry(registry);
+        connector.call_slots = CallSlots::new(1);
+        let connector = Arc::new(connector);
+        let request = || json!({ "tool": "blocking_tool", "parameters": {} });
+
+        let holder = {
+            let connector = connector.clone();
+            let request = request();
+            tokio::spawn(async move {
+                let ctx: HashMap<String, String> = HashMap::new();
+                connector.execute_with_context(request, None, &ctx).await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .expect("first call never started");
+
+        let ctx: HashMap<String, String> = HashMap::new();
+        let refused = connector
+            .execute_with_context(request(), None, &ctx)
+            .await
+            .expect("busy refusal must be a payload, not a transport error");
+        assert_eq!(refused["success"], json!(false), "{refused}");
+        assert_eq!(refused["error_code"], json!(BUSY_ERROR_CODE), "{refused}");
+        assert_eq!(
+            starts.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the refused call must not start the tool"
+        );
+
+        release.notify_one();
+        let first = holder
+            .await
+            .expect("holder task panicked")
+            .expect("first call failed");
+        assert_eq!(first["success"], json!(true), "{first}");
+
+        let again = {
+            let connector = connector.clone();
+            let request = request();
+            tokio::spawn(async move {
+                let ctx: HashMap<String, String> = HashMap::new();
+                connector.execute_with_context(request, None, &ctx).await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .expect("the freed slot was not reused");
+        release.notify_one();
+        let again = again
+            .await
+            .expect("task panicked")
+            .expect("third call failed");
+        assert_eq!(again["success"], json!(true), "{again}");
+        assert_eq!(starts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
     /// Fails the way a real tool does when its binary is missing: a classified
     /// error with the io cause attached (mirrors tool_connector's FailingTool).
     struct FailingTool;
@@ -1205,6 +1437,7 @@ mod tests {
             matrix_api_url: String::new(),
             identities: Arc::new(pentest_core::identity::IdentityStore::new()),
             budget: pentest_core::budget::SessionBudget::default(),
+            call_slots: CallSlots::new(DEFAULT_MAX_CONCURRENT_TOOLS),
         }
     }
 
