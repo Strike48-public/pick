@@ -176,7 +176,7 @@ async fn apply_outcome(
     turn_stopped: &mut Signal<bool>,
     error_msg: &mut Signal<Option<String>>,
     chat_notice: &mut Signal<Option<ChatNotice>>,
-    pending_validator_apply: &mut Signal<Option<usize>>,
+    pending_validator_apply: &mut Signal<Option<PendingValidatorApply>>,
     messages: &mut Signal<Vec<ChatMessage>>,
     conversation_id: &str,
 ) {
@@ -213,8 +213,8 @@ async fn apply_outcome(
 
         // Validator round-trip: the turn is done, so parse its reply and apply
         // the verdicts to the evidence graph (previously done after polling).
-        let pending = *pending_validator_apply.peek();
-        if let Some(pending_count) = pending {
+        let pending = pending_validator_apply.peek().clone();
+        if let Some(pending) = pending {
             pending_validator_apply.set(None);
             // The terminal AgentStatusEvent can arrive BEFORE the final
             // Message event carrying the Validator's verdict reply. Fetch the
@@ -224,7 +224,7 @@ async fn apply_outcome(
                 merge_server_messages(messages, state.messages);
             }
             let mut em = *error_msg;
-            apply_validator_reply(&messages.peek(), pending_count, &mut em);
+            apply_validator_reply(&messages.peek(), &pending, &mut em);
         }
     } else {
         agent_thinking.set(true);
@@ -232,8 +232,18 @@ async fn apply_outcome(
     }
 }
 
+/// A Validator round-trip in flight: how many nodes were sent, and the
+/// engagement they came from. The scope is captured when the manifest is
+/// built, because another engagement's scan may start before the reply lands
+/// (pick#513).
+#[derive(Clone, Debug, PartialEq)]
+struct PendingValidatorApply {
+    pending_count: usize,
+    scope: pentest_core::evidence::EvidenceScope,
+}
+
 /// Parse the Validator Agent's latest reply and apply its verdicts to the
-/// evidence graph.
+/// evidence graph of the engagement that was validated.
 ///
 /// Called after the validation conversation finishes polling. Finds the newest
 /// non-USER message, extracts the fenced verdict JSON, and hands it to
@@ -251,9 +261,10 @@ async fn apply_outcome(
 /// `apply_validator_verdicts` tests in `crate::session`.
 fn apply_validator_reply(
     messages: &[ChatMessage],
-    pending_count: usize,
+    pending: &PendingValidatorApply,
     error_msg: &mut Signal<Option<String>>,
 ) {
+    let pending_count = pending.pending_count;
     let Some(reply) = messages
         .iter()
         .rev()
@@ -279,7 +290,7 @@ fn apply_validator_reply(
         }
     };
 
-    let report = crate::session::apply_validator_verdicts(&verdicts);
+    let report = crate::session::apply_validator_verdicts(&pending.scope, &verdicts);
 
     // Surface unmatched verdict IDs - these indicate the Validator hallucinated
     // or mistyped node IDs that don't exist in the evidence graph.
@@ -417,11 +428,12 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     // show a "Reconnecting..." chip / "Retry" button. `retry_tick` is bumped by
     // the Retry button to force the subscription effect to respawn. When the
     // active conversation is a Validator round-trip, `pending_validator_apply`
-    // holds the pending-node count so the terminal-status handler knows to parse
-    // and apply the Validator's verdicts (previously done right after polling).
+    // holds the pending-node count and engagement so the terminal-status handler
+    // knows to parse and apply the Validator's verdicts (previously done right
+    // after polling).
     let connection_state = use_signal(|| ConnectionState::Connecting);
     let mut retry_tick = use_signal(|| 0u32);
-    let mut pending_validator_apply = use_signal(|| None::<usize>);
+    let mut pending_validator_apply = use_signal(|| None::<PendingValidatorApply>);
 
     // Per-agent conversation tracking
     let mut agent_conversations: Signal<HashMap<String, String>> = use_signal(HashMap::new);
@@ -1434,7 +1446,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     let on_validate_findings = EventHandler::new({
         let make_client = make_client.clone();
         move |_: ()| {
-            let snapshot = crate::session::evidence_snapshot();
+            let scope = crate::session::active_evidence_scope();
+            let snapshot = crate::session::evidence_snapshot_for(&scope);
             let engagement = pentest_core::orchestrator::EngagementInfo::new(
                 crate::session::get_connector_name(),
                 chrono::Utc::now(),
@@ -1506,7 +1519,10 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             // Arm the terminal-status handler to parse + apply the Validator's
             // verdicts once its turn finishes over the subscription (this used
             // to run right after the poll loop returned).
-            pending_validator_apply.set(Some(pending_count));
+            pending_validator_apply.set(Some(PendingValidatorApply {
+                pending_count,
+                scope,
+            }));
 
             spawn(async move {
                 let conv_title = format!("Validation for {}", manifest.engagement.target);

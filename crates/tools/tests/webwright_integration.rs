@@ -8,6 +8,7 @@
 //! Run with: `DISABLE_SANDBOX=true cargo test -p pentest-tools --test webwright_integration`
 //! (Sandbox must be disabled for Python to execute directly on the host)
 
+use pentest_core::evidence::EvidenceScope;
 use pentest_core::tools::{PentestTool, ToolContext};
 use pentest_tools::evidence_producer::drain_pending_evidence;
 use pentest_tools::webwright::evidence::{ingest_webwright_evidence, ingest_webwright_findings};
@@ -136,7 +137,7 @@ print(json.dumps({"status": "complete", "artifacts_created": 6}))
     });
 
     // Drain any pre-existing evidence
-    let _ = drain_pending_evidence();
+    let _ = drain_pending_evidence(&EvidenceScope::Default);
 
     let result = tool.execute(params, &ctx).await.unwrap();
 
@@ -194,7 +195,7 @@ print(json.dumps({"status": "complete", "artifacts_created": 6}))
     );
 
     // Verify evidence was ingested
-    let evidence = drain_pending_evidence();
+    let evidence = drain_pending_evidence(&EvidenceScope::Default);
     assert!(
         !evidence.is_empty(),
         "Should have produced evidence nodes, got 0"
@@ -411,7 +412,7 @@ fn evidence_ingestion_produces_typed_nodes() {
     use pentest_core::provenance::ProbeCommand;
 
     let _guard = lock_evidence();
-    let _ = drain_pending_evidence();
+    let _ = drain_pending_evidence(&EvidenceScope::Default);
 
     let artifacts = json!({
         "workspace": "/tmp/webwright/test-evidence",
@@ -444,13 +445,14 @@ fn evidence_ingestion_produces_typed_nodes() {
     );
 
     ingest_webwright_evidence(
+        &EvidenceScope::Default,
         &artifacts,
         "https://target.com",
         "test-task-001",
         &provenance,
     );
 
-    let evidence = drain_pending_evidence();
+    let evidence = drain_pending_evidence(&EvidenceScope::Default);
 
     // 2 scripts + 2 screenshots + 3 logs + 1 snapshot = 8 nodes
     assert_eq!(
@@ -504,7 +506,7 @@ fn findings_ingestion_maps_all_severity_levels() {
     use pentest_core::provenance::ProbeCommand;
 
     let _guard = lock_evidence();
-    let _ = drain_pending_evidence();
+    let _ = drain_pending_evidence(&EvidenceScope::Default);
 
     let findings = json!([
         {"title": "RCE via deserialization", "severity": "critical", "type": "rce", "description": "Remote code execution", "url": "https://target.com/api"},
@@ -522,13 +524,14 @@ fn findings_ingestion_maps_all_severity_levels() {
     );
 
     ingest_webwright_findings(
+        &EvidenceScope::Default,
         &findings,
         "https://target.com",
         "task-sev-test",
         &provenance,
     );
 
-    let evidence = drain_pending_evidence();
+    let evidence = drain_pending_evidence(&EvidenceScope::Default);
     assert_eq!(evidence.len(), 5);
 
     let rce = evidence.iter().find(|e| e.title.contains("RCE")).unwrap();
@@ -560,7 +563,7 @@ fn findings_ingestion_maps_all_severity_levels() {
 async fn end_to_end_simulated_webwright_run() {
     let tool = WebwrightTool;
     let ctx = ToolContext::default();
-    let _ = drain_pending_evidence();
+    let _ = drain_pending_evidence(&EvidenceScope::Default);
 
     let script = r##"
 import os, json, sys
@@ -683,7 +686,7 @@ print(json.dumps(summary))
     assert_eq!(snapshots.len(), 1, "Should have 1 DOM snapshot");
 
     // --- Verify evidence pipeline ---
-    let evidence = drain_pending_evidence();
+    let evidence = drain_pending_evidence(&EvidenceScope::Default);
 
     let by_type = |t: &str| -> Vec<_> { evidence.iter().filter(|e| e.node_type == t).collect() };
 

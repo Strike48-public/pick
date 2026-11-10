@@ -68,7 +68,7 @@ impl PentestTool for InjectTestEvidenceTool {
         ]
     }
 
-    async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, params: Value, ctx: &ToolContext) -> Result<ToolResult> {
         execute_timed(|| async move {
             let count = params["count"].as_u64().unwrap_or(3) as usize;
             let severity_type = params["severity"].as_str().unwrap_or("mixed");
@@ -166,7 +166,7 @@ impl PentestTool for InjectTestEvidenceTool {
                     .insert("test_evidence".to_string(), true.into());
 
                 // Push to evidence graph
-                let _ = crate::evidence_producer::push_evidence(node.clone());
+                let _ = crate::evidence_producer::push_evidence(ctx.evidence_scope(), node.clone());
 
                 let severity_str = match severity {
                     Severity::Critical => "Critical",

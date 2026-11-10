@@ -30,6 +30,33 @@ pub mod metadata_keys {
     pub const TECHNIQUE: &str = "technique";
 }
 
+/// Which engagement an evidence node belongs to (pick#513).
+///
+/// One Pick can serve several StrikeKit engagements at once, so the pending
+/// buffer and the evidence graph are kept per scope: a scan start or a drain
+/// for one engagement never touches another's nodes. A call that carries no
+/// engagement id (standalone Pick use outside StrikeKit) uses `Default`, which
+/// is separate from every engagement.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub enum EvidenceScope {
+    /// No engagement id on the call.
+    #[default]
+    Default,
+    /// The StrikeKit engagement id from the call context.
+    Engagement(String),
+}
+
+impl EvidenceScope {
+    /// The scope for an optional engagement id. A missing or blank id is
+    /// `Default`, so a call cannot address an engagement named "".
+    pub fn from_engagement_id(engagement_id: Option<&str>) -> Self {
+        match engagement_id {
+            Some(id) if !id.trim().is_empty() => Self::Engagement(id.to_string()),
+            _ => Self::Default,
+        }
+    }
+}
+
 /// Lifecycle state of an evidence node as seen by the Validator Agent.
 ///
 /// The order below matches the happy-path transition the orchestrator
@@ -280,6 +307,23 @@ impl EvidenceNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evidence_scope_from_engagement_id() {
+        assert_eq!(
+            EvidenceScope::from_engagement_id(Some("eng-1")),
+            EvidenceScope::Engagement("eng-1".to_string())
+        );
+        assert_eq!(
+            EvidenceScope::from_engagement_id(None),
+            EvidenceScope::Default
+        );
+        assert_eq!(
+            EvidenceScope::from_engagement_id(Some("  ")),
+            EvidenceScope::Default,
+            "a blank id must not name an engagement"
+        );
+    }
 
     fn fixture() -> EvidenceNode {
         EvidenceNode::new(

@@ -352,6 +352,14 @@ impl BaseConnector for PickConnector {
                     // (pick#162). Loaded once at construction; cloned per call.
                     ctx = ctx.with_identities((*self.identities).clone());
 
+                    // Evidence from this call belongs to its engagement (pick#513):
+                    // one Pick can serve several engagements, so the scan-start
+                    // clear and the post-run drain below act on this scope only.
+                    let evidence_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(
+                        tools::extract_engagement_id_pub(context).as_deref(),
+                    );
+                    ctx = ctx.with_evidence_scope(evidence_scope.clone());
+
                     // Create Matrix client if API URL is available
                     let api_url = self.derive_matrix_api_url();
                     if !api_url.is_empty() {
@@ -402,23 +410,24 @@ impl BaseConnector for PickConnector {
                         self.budget.record(result.made_progress()).await;
                     }
 
-                    // A successful `begin_scan` marks the start of a fresh
-                    // engagement. Clear any evidence left over from a previous scan
-                    // so it cannot bleed into this report (pick#172). `begin_scan`
-                    // itself produces no findings, so nothing is lost by clearing
-                    // here rather than draining first.
+                    // A successful `begin_scan` marks the start of a fresh scan for
+                    // this call's engagement. Clear that engagement's evidence left
+                    // over from its previous scan so it cannot bleed into this
+                    // report (pick#172); other engagements' evidence is untouched
+                    // (pick#513). `begin_scan` itself produces no findings, so
+                    // nothing is lost by clearing here rather than draining first.
                     if tool_name == "begin_scan" && result.success {
-                        crate::session::clear_evidence();
-                        tracing::debug!("begin_scan: cleared evidence graph for new engagement");
+                        crate::session::start_scan_evidence(&evidence_scope);
+                        tracing::debug!("begin_scan: cleared evidence graph for this engagement");
                     }
 
                     // Bridge tool-produced evidence into the report graph (pick#172).
-                    // Tools push findings into the process-global PENDING_EVIDENCE
-                    // buffer as a side effect of execution; if we don't drain them
+                    // Tools push findings into PENDING_EVIDENCE under this call's
+                    // scope as a side effect of execution; if we don't drain them
                     // here they never reach `gate_for_report` and the report comes
                     // out empty. This is the single production drain point shared by
                     // both the headless and desktop connectors.
-                    let forwarded = crate::session::drain_tool_evidence_into_graph();
+                    let forwarded = crate::session::drain_tool_evidence_into_graph(&evidence_scope);
                     if forwarded > 0 {
                         tracing::debug!(
                             tool = tool_name.as_str(),
@@ -1177,6 +1186,10 @@ mod tests {
     fn failing_connector() -> PickConnector {
         let mut registry = ToolRegistry::new();
         registry.register(FailingTool);
+        connector_with_registry(registry)
+    }
+
+    fn connector_with_registry(registry: ToolRegistry) -> PickConnector {
         let (event_tx, _event_rx) = broadcast::channel(16);
         PickConnector {
             tools: Arc::new(RwLock::new(registry)),
@@ -1222,5 +1235,103 @@ mod tests {
             error,
             "Tool execution error: nmap failed: nmap: command not found"
         );
+    }
+
+    /// Pushes one evidence node, id taken from `params.id`, under the call's
+    /// evidence scope: the same write every real tool makes.
+    struct EvidenceProbeTool;
+
+    #[async_trait::async_trait]
+    impl pentest_core::tools::PentestTool for EvidenceProbeTool {
+        fn name(&self) -> &str {
+            "evidence_probe"
+        }
+        fn description(&self) -> &str {
+            "Pushes one evidence node"
+        }
+        fn schema(&self) -> pentest_core::tools::ToolSchema {
+            pentest_core::tools::ToolSchema::new("evidence_probe", "Pushes one evidence node")
+        }
+        async fn execute(
+            &self,
+            params: Value,
+            ctx: &pentest_core::tools::ToolContext,
+        ) -> pentest_core::error::Result<pentest_core::tools::ToolResult> {
+            let id = params["id"].as_str().unwrap_or("probe").to_string();
+            let node = pentest_core::evidence::EvidenceNode::new(
+                id,
+                "finding",
+                "Open port 22/tcp",
+                "SSH service detected",
+                "10.0.0.1",
+                pentest_core::export::Severity::Medium,
+                "probe",
+            );
+            pentest_tools::evidence_producer::push_evidence(ctx.evidence_scope(), node)
+                .expect("buffer accepts one node");
+            Ok(pentest_core::tools::ToolResult::success(json!({})))
+        }
+    }
+
+    async fn run(connector: &PickConnector, tool: &str, params: Value, engagement: Option<&str>) {
+        let mut ctx: HashMap<String, String> = HashMap::new();
+        if let Some(id) = engagement {
+            ctx.insert("engagement_id".to_string(), id.to_string());
+        }
+        let result = connector
+            .execute_with_context(json!({"tool": tool, "parameters": params}), None, &ctx)
+            .await
+            .expect("execute_with_context failed");
+        assert_eq!(result["success"], true, "{tool} failed: {result}");
+    }
+
+    fn evidence_ids(engagement: &str) -> Vec<String> {
+        let scope = pentest_core::evidence::EvidenceScope::Engagement(engagement.to_string());
+        crate::session::evidence_snapshot_for(&scope)
+            .into_iter()
+            .map(|n| n.id)
+            .collect()
+    }
+
+    /// pick#513: two engagements on one Pick, through the production path.
+    /// Each engagement's evidence holds only its own nodes, and B's begin_scan
+    /// leaves A's evidence intact. Reverting the connector to one shared
+    /// graph (clear everything on begin_scan, drain everything after a run)
+    /// turns this red.
+    #[tokio::test]
+    async fn engagements_on_one_pick_keep_separate_evidence() {
+        let mut registry = ToolRegistry::new();
+        registry.register(EvidenceProbeTool);
+        registry.register(pentest_tools::BeginScanTool);
+        let connector = connector_with_registry(registry);
+        let begin = json!({"conversation_id": "c", "agent_id": "a"});
+        let (a, b) = ("conn-iso-a", "conn-iso-b");
+
+        run(&connector, "begin_scan", begin.clone(), Some(a)).await;
+        run(
+            &connector,
+            "evidence_probe",
+            json!({"id": "conn-a-1"}),
+            Some(a),
+        )
+        .await;
+        run(&connector, "begin_scan", begin, Some(b)).await;
+        run(
+            &connector,
+            "evidence_probe",
+            json!({"id": "conn-b-1"}),
+            Some(b),
+        )
+        .await;
+        run(
+            &connector,
+            "evidence_probe",
+            json!({"id": "conn-a-2"}),
+            Some(a),
+        )
+        .await;
+
+        assert_eq!(evidence_ids(a), vec!["conn-a-1", "conn-a-2"]);
+        assert_eq!(evidence_ids(b), vec!["conn-b-1"]);
     }
 }

@@ -749,6 +749,11 @@ pub struct ToolContext {
     /// not cross the Matrix/LLM boundary. Empty unless identities were
     /// provisioned for the engagement.
     identities: crate::identity::IdentityStore,
+
+    /// The engagement this call serves (pick#513). Tools push evidence under
+    /// it, so one Pick can run several engagements without mixing findings.
+    /// `Default` when the call carries no engagement id.
+    evidence_scope: crate::evidence::EvidenceScope,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -761,6 +766,7 @@ impl std::fmt::Debug for ToolContext {
             .field("aggression_level", &self.aggression_level)
             .field("agent_name", &self.agent_name)
             .field("identities", &self.identities)
+            .field("evidence_scope", &self.evidence_scope)
             .finish()
     }
 }
@@ -775,6 +781,7 @@ impl Default for ToolContext {
             aggression_level: crate::aggression::AggressionLevel::default(),
             agent_name: "pentest-connector".to_string(),
             identities: crate::identity::IdentityStore::new(),
+            evidence_scope: crate::evidence::EvidenceScope::Default,
         }
     }
 }
@@ -809,6 +816,17 @@ impl ToolContext {
     pub fn with_identities(mut self, identities: crate::identity::IdentityStore) -> Self {
         self.identities = identities;
         self
+    }
+
+    /// Set the engagement this call's evidence belongs to (pick#513).
+    pub fn with_evidence_scope(mut self, scope: crate::evidence::EvidenceScope) -> Self {
+        self.evidence_scope = scope;
+        self
+    }
+
+    /// The engagement this call's evidence belongs to.
+    pub fn evidence_scope(&self) -> &crate::evidence::EvidenceScope {
+        &self.evidence_scope
     }
 
     /// Get the Matrix client if available

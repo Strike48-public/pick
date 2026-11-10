@@ -419,6 +419,7 @@ impl PentestTool for WebwrightTool {
 
             // Ingest evidence
             evidence::ingest_webwright_evidence(
+                ctx.evidence_scope(),
                 &artifacts,
                 &start_url,
                 &workspace.task_id,
@@ -433,6 +434,7 @@ impl PentestTool for WebwrightTool {
                             if let Ok(content) = std::fs::read_to_string(path) {
                                 if let Ok(findings) = serde_json::from_str::<Value>(&content) {
                                     evidence::ingest_webwright_findings(
+                                        ctx.evidence_scope(),
                                         &findings,
                                         &start_url,
                                         &workspace.task_id,

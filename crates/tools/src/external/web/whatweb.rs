@@ -46,7 +46,7 @@ impl PentestTool for WhatwebTool {
         vec![Platform::Desktop, Platform::Tui]
     }
 
-    async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, params: Value, ctx: &ToolContext) -> Result<ToolResult> {
         execute_timed_with_provenance(|| async move {
             let platform = get_platform();
             ensure_tool_installed(&platform, "whatweb", "whatweb").await?;
@@ -92,7 +92,7 @@ impl PentestTool for WhatwebTool {
                 crate::evidence_producer::evidence_from_whatweb(&data, &url, provenance.clone());
 
             for node in evidence_nodes {
-                let _ = crate::evidence_producer::push_evidence(node);
+                let _ = crate::evidence_producer::push_evidence(ctx.evidence_scope(), node);
             }
 
             Ok((data, provenance))

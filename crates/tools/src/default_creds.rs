@@ -307,7 +307,7 @@ impl PentestTool for DefaultCredsTool {
         vec![Platform::Desktop, Platform::Android, Platform::Tui]
     }
 
-    async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, params: Value, ctx: &ToolContext) -> Result<ToolResult> {
         execute_timed_with_provenance(|| async {
             let host = param_str(&params, "host");
             if host.is_empty() {
@@ -401,7 +401,7 @@ impl PentestTool for DefaultCredsTool {
             for node in
                 crate::evidence_producer::evidence_from_default_creds(&data, provenance.clone())
             {
-                let _ = crate::evidence_producer::push_evidence(node);
+                let _ = crate::evidence_producer::push_evidence(ctx.evidence_scope(), node);
             }
 
             Ok((data, provenance))

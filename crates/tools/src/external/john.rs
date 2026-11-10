@@ -78,7 +78,7 @@ impl PentestTool for JohnTool {
         vec![Platform::Desktop, Platform::Tui]
     }
 
-    async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, params: Value, ctx: &ToolContext) -> Result<ToolResult> {
         execute_timed(|| async move {
             let platform = get_platform();
 
@@ -102,7 +102,7 @@ impl PentestTool for JohnTool {
                     .await?;
 
                 let data = parse_john_show_output(&result.stdout, &hash_file)?;
-                return emit_john_evidence(data, &hash_file);
+                return emit_john_evidence(ctx.evidence_scope(), data, &hash_file);
             }
 
             // Build john cracking command
@@ -169,7 +169,7 @@ impl PentestTool for JohnTool {
                 .await?;
 
             let data = parse_john_show_output(&show_result.stdout, &hash_file)?;
-            emit_john_evidence(data, &hash_file)
+            emit_john_evidence(ctx.evidence_scope(), data, &hash_file)
         })
         .await
     }
@@ -177,13 +177,17 @@ impl PentestTool for JohnTool {
 
 /// Emit credential evidence for cracked hashes, then return the tool result.
 /// The plaintext passwords in `data` are never copied into evidence nodes.
-fn emit_john_evidence(data: Value, hash_file: &str) -> Result<Value> {
+fn emit_john_evidence(
+    scope: &pentest_core::evidence::EvidenceScope,
+    data: Value,
+    hash_file: &str,
+) -> Result<Value> {
     let prov = crate::evidence_producer::postexploit_provenance(
         "john",
         &format!("john --show {hash_file}"),
     );
     for node in crate::evidence_producer::evidence_from_john(&data, prov) {
-        let _ = crate::evidence_producer::push_evidence(node);
+        let _ = crate::evidence_producer::push_evidence(scope, node);
     }
     Ok(data)
 }
