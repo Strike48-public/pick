@@ -121,7 +121,7 @@ impl PentestTool for NmapTool {
         vec![Platform::Desktop, Platform::Tui]
     }
 
-    async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, params: Value, ctx: &ToolContext) -> Result<ToolResult> {
         // Tolerate the `execute_command`-style `{args: [...]}` / `{command: "..."}`
         // and `{flags: "-sn -T4 ...", target: "..."}` shapes some callers emit
         // instead of the structured schema. Recovers the `target` (re-validated
@@ -211,7 +211,7 @@ impl PentestTool for NmapTool {
                 crate::evidence_producer::evidence_from_nmap(&data, &target, provenance.clone());
 
             for node in evidence_nodes {
-                let _ = crate::evidence_producer::push_evidence(node);
+                let _ = crate::evidence_producer::push_evidence(ctx.evidence_scope(), node);
             }
 
             Ok((data, provenance))

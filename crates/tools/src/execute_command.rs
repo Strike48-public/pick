@@ -205,7 +205,7 @@ impl PentestTool for ExecuteCommandTool {
                     &data,
                     provenance.clone(),
                 ) {
-                    let _ = crate::evidence_producer::push_evidence(node);
+                    let _ = crate::evidence_producer::push_evidence(ctx.evidence_scope(), node);
                 }
             }
 

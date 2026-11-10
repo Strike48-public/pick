@@ -5,12 +5,14 @@
 //! `EvidenceNode`s for the Validator and Report agents).
 
 use pentest_core::evidence::metadata_keys;
-use pentest_core::evidence::EvidenceNode;
+use pentest_core::evidence::{EvidenceNode, EvidenceScope};
 use pentest_core::export::Severity;
 use pentest_core::provenance::Provenance;
 use pentest_core::sanitize::{sanitize_tool_output, SanitizeReport};
 use regex::Regex;
 use serde_json::Value;
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::sync::RwLock;
 use uuid::Uuid;
@@ -31,35 +33,40 @@ impl std::error::Error for BufferFullError {}
 ///
 /// This prevents memory exhaustion from runaway scans or malicious agents.
 /// The limit is high enough for legitimate large scans (10K findings) but
-/// low enough to prevent DOS attacks.
+/// low enough to prevent DOS attacks. It bounds the whole process, summed over
+/// every engagement's bucket, because it is a memory bound.
 const MAX_EVIDENCE_NODES: usize = 10_000;
 
-/// Global pending evidence buffer.
+/// Pending evidence, one bucket per engagement (pick#513).
 ///
-/// Tools push evidence here via [`push_evidence`]. The connector drains it after
-/// every tool run via [`drain_pending_evidence`] and forwards each node into the
-/// report evidence graph (`pentest_ui::session::drain_tool_evidence_into_graph`),
+/// Tools push evidence here via [`push_evidence`] under the call's
+/// [`EvidenceScope`]. The connector drains that scope after every tool run via
+/// [`drain_pending_evidence`] and forwards each node into the scope's report
+/// evidence graph (`pentest_ui::session::drain_tool_evidence_into_graph`),
 /// where the Validator round-trip adjudicates it before the report gate can
-/// publish it. This buffer-to-graph bridge is the fix for pick#172.
+/// publish it. This buffer-to-graph bridge is the fix for pick#172. Keying it
+/// per scope means a drain after one engagement's tool run never takes another
+/// engagement's nodes.
 ///
 /// # Thread Safety
 /// Protected by `RwLock` for concurrent access. Multiple tools can
 /// push evidence simultaneously, and a drain can run without blocking
 /// tool execution (briefly blocks during the write lock acquisition).
 #[cfg(not(target_arch = "wasm32"))]
-static PENDING_EVIDENCE: LazyLock<RwLock<Vec<EvidenceNode>>> =
-    LazyLock::new(|| RwLock::new(Vec::new()));
+static PENDING_EVIDENCE: LazyLock<RwLock<HashMap<EvidenceScope, Vec<EvidenceNode>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
-/// Push an evidence node to the global evidence buffer.
+/// Push an evidence node to `scope`'s pending buffer.
 ///
-/// This function is called by tools after producing findings. The evidence is
-/// stored in [`PENDING_EVIDENCE`], which the connector drains into the report
+/// This function is called by tools after producing findings, with the scope
+/// from their `ToolContext` (`ctx.evidence_scope()`). The evidence is stored in
+/// [`PENDING_EVIDENCE`], which the connector drains into the scope's report
 /// graph after each tool run (see that static's docs and pick#172).
 ///
 /// # Capacity
-/// The buffer has a maximum capacity of [`MAX_EVIDENCE_NODES`]. If the
-/// buffer is full, this function logs a warning and drops the new evidence.
-/// A consumer should drain evidence periodically to prevent overflow.
+/// The buffer has a maximum capacity of [`MAX_EVIDENCE_NODES`] across all
+/// scopes. If it is full, this function logs a warning and drops the new
+/// evidence. A consumer should drain evidence periodically to prevent overflow.
 ///
 /// # Thread Safety
 /// This function is thread-safe and can be called from multiple tools
@@ -85,12 +92,12 @@ static PENDING_EVIDENCE: LazyLock<RwLock<Vec<EvidenceNode>>> =
 ///     "Open SSH port requires validation".to_string(),
 /// );
 ///
-/// if let Err(e) = push_evidence(node) {
+/// if let Err(e) = push_evidence(ctx.evidence_scope(), node) {
 ///     eprintln!("Failed to push evidence: {}", e);
 /// }
 /// ```
 #[cfg(not(target_arch = "wasm32"))]
-pub fn push_evidence(node: EvidenceNode) -> Result<(), BufferFullError> {
+pub fn push_evidence(scope: &EvidenceScope, node: EvidenceNode) -> Result<(), BufferFullError> {
     let mut node = node;
     // Neutralize injected-instruction markers and redact secrets in the node's
     // free-text fields at the single evidence write path (agent-hardening C1).
@@ -115,7 +122,7 @@ pub fn push_evidence(node: EvidenceNode) -> Result<(), BufferFullError> {
 
     let mut buffer = PENDING_EVIDENCE.write().unwrap();
 
-    if buffer.len() >= MAX_EVIDENCE_NODES {
+    if buffered_nodes(&buffer) >= MAX_EVIDENCE_NODES {
         // Deliberately logs no field of `node`. Nodes can originate from
         // credential/secret-bearing tools (secretsdump, hydra, ...); even a
         // "safe" field like `title` carries an account name, and this warning
@@ -126,8 +133,13 @@ pub fn push_evidence(node: EvidenceNode) -> Result<(), BufferFullError> {
         return Err(BufferFullError);
     }
 
-    buffer.push(node);
+    buffer.entry(scope.clone()).or_default().push(node);
     Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn buffered_nodes(buffer: &HashMap<EvidenceScope, Vec<EvidenceNode>>) -> usize {
+    buffer.values().map(Vec::len).sum()
 }
 
 /// Defang `<node>`'s text-bearing fields before it enters the evidence graph.
@@ -184,15 +196,15 @@ fn sanitize_metadata_value(value: &mut Value, report: &mut SanitizeReport) {
     }
 }
 
-/// Drain all pending evidence nodes.
+/// Drain `scope`'s pending evidence nodes.
 ///
-/// Called by the UI layer to retrieve accumulated evidence. This function
-/// returns all evidence and clears the buffer atomically.
+/// Called by the UI layer to retrieve one engagement's accumulated evidence.
+/// This function returns that scope's evidence and removes its bucket
+/// atomically; every other scope's bucket is left untouched.
 ///
 /// # Thread Safety
-/// This function is thread-safe. If called concurrently from multiple threads,
-/// each call will receive a portion of the evidence (non-deterministic split).
-/// The UI should call this from a single thread for predictable behavior.
+/// This function is thread-safe. If called concurrently for the same scope,
+/// each call will receive a portion of its evidence (non-deterministic split).
 ///
 /// # Lock Ordering Safety
 /// **CRITICAL:** This function MUST NOT hold the `PENDING_EVIDENCE` lock after
@@ -201,16 +213,16 @@ fn sanitize_metadata_value(value: &mut Value, report: &mut SanitizeReport) {
 /// function. See `pentest_ui::session::EVIDENCE_GRAPH` documentation for the
 /// complete lock ordering contract (PENDING_EVIDENCE first, EVIDENCE_GRAPH second).
 ///
-/// The current implementation correctly releases the lock before returning via
-/// `std::mem::take`, which only holds the write lock for the duration of the swap.
+/// The current implementation correctly releases the lock before returning: it
+/// holds the write lock only for the duration of the bucket removal.
 ///
 /// # Returns
-/// All accumulated evidence nodes since the last drain. Empty vector if
-/// no evidence has been produced.
+/// The scope's evidence nodes since its last drain. Empty vector if
+/// no evidence has been produced for it.
 ///
 /// # Examples
 /// ```ignore
-/// let evidence = drain_pending_evidence();
+/// let evidence = drain_pending_evidence(ctx.evidence_scope());
 ///
 /// for node in evidence {
 ///     // Add to evidence graph
@@ -218,8 +230,12 @@ fn sanitize_metadata_value(value: &mut Value, report: &mut SanitizeReport) {
 /// }
 /// ```
 #[cfg(not(target_arch = "wasm32"))]
-pub fn drain_pending_evidence() -> Vec<EvidenceNode> {
-    std::mem::take(&mut *PENDING_EVIDENCE.write().unwrap())
+pub fn drain_pending_evidence(scope: &EvidenceScope) -> Vec<EvidenceNode> {
+    PENDING_EVIDENCE
+        .write()
+        .unwrap()
+        .remove(scope)
+        .unwrap_or_default()
 }
 
 /// Serializes unit tests that push to or drain `PENDING_EVIDENCE`.
@@ -235,13 +251,13 @@ pub(crate) fn lock_evidence_buffer_for_test() -> std::sync::MutexGuard<'static, 
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Get current evidence buffer size.
+/// Get current evidence buffer size, summed over every scope.
 ///
 /// Useful for monitoring and debugging. The UI can use this to detect
 /// when the buffer is approaching capacity.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn evidence_buffer_size() -> usize {
-    PENDING_EVIDENCE.read().unwrap().len()
+    buffered_nodes(&PENDING_EVIDENCE.read().unwrap())
 }
 
 /// Check if evidence buffer is approaching capacity.
@@ -255,13 +271,13 @@ pub fn evidence_buffer_near_full() -> bool {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn push_evidence(_node: EvidenceNode) -> Result<(), BufferFullError> {
+pub fn push_evidence(_scope: &EvidenceScope, _node: EvidenceNode) -> Result<(), BufferFullError> {
     // WASM cannot push evidence - no-op
     Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn drain_pending_evidence() -> Vec<EvidenceNode> {
+pub fn drain_pending_evidence(_scope: &EvidenceScope) -> Vec<EvidenceNode> {
     Vec::new()
 }
 
@@ -1423,11 +1439,11 @@ mod tests {
         );
 
         // Act: Push evidence
-        let push1_ok = push_evidence(node1.clone()).is_ok();
-        let push2_ok = push_evidence(node2.clone()).is_ok();
+        let push1_ok = push_evidence(&EvidenceScope::Default, node1.clone()).is_ok();
+        let push2_ok = push_evidence(&EvidenceScope::Default, node2.clone()).is_ok();
 
         // Assert: Drain should contain our nodes (may contain others from parallel tests)
-        let drained = drain_pending_evidence();
+        let drained = drain_pending_evidence(&EvidenceScope::Default);
 
         // Find our nodes in the drained evidence
         let our_nodes: Vec<_> = drained
@@ -1456,7 +1472,7 @@ mod tests {
             // Re-push nodes from other tests
             for node in drained {
                 if !node.id.starts_with("test-flow-unique-") {
-                    let _ = push_evidence(node);
+                    let _ = push_evidence(&EvidenceScope::Default, node);
                 }
             }
             return;
@@ -1484,7 +1500,7 @@ mod tests {
         // Re-push nodes from other tests
         for node in drained {
             if !node.id.starts_with("test-flow-unique-") {
-                let _ = push_evidence(node);
+                let _ = push_evidence(&EvidenceScope::Default, node);
             }
         }
     }
@@ -1506,11 +1522,11 @@ mod tests {
                 Severity::Info,
                 "Test".to_string(),
             );
-            let _ = push_evidence(node);
+            let _ = push_evidence(&EvidenceScope::Default, node);
         }
 
         // Assert: Drain and verify our 10 nodes are present
-        let drained = drain_pending_evidence();
+        let drained = drain_pending_evidence(&EvidenceScope::Default);
 
         // Filter to only our nodes
         let our_nodes: Vec<_> = drained
@@ -1550,7 +1566,7 @@ mod tests {
                 Severity::Info,
                 "R".to_string(),
             );
-            if push_evidence(node).is_ok() {
+            if push_evidence(&EvidenceScope::Default, node).is_ok() {
                 succeeded += 1;
             }
         }
@@ -1564,7 +1580,7 @@ mod tests {
         );
 
         // Verify our nodes arrived (drain and filter)
-        let drained = drain_pending_evidence();
+        let drained = drain_pending_evidence(&EvidenceScope::Default);
         let our_nodes: Vec<_> = drained
             .iter()
             .filter(|n| n.id.starts_with("perf-unique-"))
@@ -1579,9 +1595,72 @@ mod tests {
         // Re-push nodes from other tests
         for node in drained {
             if !node.id.starts_with("perf-unique-") {
-                let _ = push_evidence(node);
+                let _ = push_evidence(&EvidenceScope::Default, node);
             }
         }
+    }
+
+    /// pick#513: a drain for one engagement takes only that engagement's
+    /// pending nodes; another engagement's stay buffered for its own drain.
+    #[test]
+    fn drain_takes_only_its_own_engagements_nodes() {
+        let _buffer = lock_evidence_buffer_for_test();
+        let a = EvidenceScope::Engagement("producer-iso-a".to_string());
+        let b = EvidenceScope::Engagement("producer-iso-b".to_string());
+        let node = |id: &str| {
+            EvidenceNode::new(
+                id,
+                "test",
+                "Finding".to_string(),
+                "Desc".to_string(),
+                "192.168.1.1",
+                Severity::Info,
+                "R".to_string(),
+            )
+        };
+        push_evidence(&a, node("producer-a-1")).unwrap();
+        push_evidence(&b, node("producer-b-1")).unwrap();
+        push_evidence(&a, node("producer-a-2")).unwrap();
+
+        let ids = |nodes: Vec<EvidenceNode>| nodes.into_iter().map(|n| n.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(drain_pending_evidence(&a)),
+            vec!["producer-a-1", "producer-a-2"]
+        );
+        assert_eq!(ids(drain_pending_evidence(&b)), vec!["producer-b-1"]);
+        assert!(
+            drain_pending_evidence(&a).is_empty(),
+            "a drain empties its scope"
+        );
+    }
+
+    #[test]
+    fn buffered_nodes_counts_every_scope() {
+        let mut buffer: HashMap<EvidenceScope, Vec<EvidenceNode>> = HashMap::new();
+        let node = || {
+            EvidenceNode::new(
+                "n",
+                "test",
+                "F".to_string(),
+                "D".to_string(),
+                "192.168.1.1",
+                Severity::Info,
+                "R".to_string(),
+            )
+        };
+        buffer
+            .entry(EvidenceScope::Default)
+            .or_default()
+            .push(node());
+        buffer
+            .entry(EvidenceScope::Engagement("e".to_string()))
+            .or_default()
+            .extend([node(), node()]);
+        assert_eq!(
+            buffered_nodes(&buffer),
+            3,
+            "the cap bounds the whole process"
+        );
     }
 
     #[test]
@@ -1606,7 +1685,7 @@ mod tests {
                 "R".to_string(),
             );
 
-            match push_evidence(node) {
+            match push_evidence(&EvidenceScope::Default, node) {
                 Ok(()) => success_count += 1,
                 Err(BufferFullError) => rejected_count += 1,
             }
@@ -1625,11 +1704,11 @@ mod tests {
         assert_eq!(evidence_buffer_size(), MAX_EVIDENCE_NODES);
 
         // Cleanup: drain our test nodes
-        let drained = drain_pending_evidence();
+        let drained = drain_pending_evidence(&EvidenceScope::Default);
         // Re-push nodes from other tests
         for node in drained {
             if !node.id.starts_with("capacity-test-") {
-                let _ = push_evidence(node);
+                let _ = push_evidence(&EvidenceScope::Default, node);
             }
         }
     }
@@ -1638,7 +1717,7 @@ mod tests {
     #[ignore = "Requires exclusive access to global buffer - run with --test-threads=1"]
     fn evidence_buffer_near_full_detection() {
         // Arrange: Clear and fill to 85%
-        let _ = drain_pending_evidence();
+        let _ = drain_pending_evidence(&EvidenceScope::Default);
 
         let threshold = (MAX_EVIDENCE_NODES * 85) / 100;
         for i in 0..threshold {
@@ -1651,14 +1730,14 @@ mod tests {
                 Severity::Info,
                 "R".to_string(),
             );
-            let _ = push_evidence(node);
+            let _ = push_evidence(&EvidenceScope::Default, node);
         }
 
         // Assert: Should detect near-full
         assert!(evidence_buffer_near_full());
 
         // Drain completely
-        let _ = drain_pending_evidence();
+        let _ = drain_pending_evidence(&EvidenceScope::Default);
 
         // Fill to 70%
         let target = (MAX_EVIDENCE_NODES * 70) / 100;
@@ -1672,14 +1751,14 @@ mod tests {
                 Severity::Info,
                 "R".to_string(),
             );
-            let _ = push_evidence(node);
+            let _ = push_evidence(&EvidenceScope::Default, node);
         }
 
         // Assert: Should NOT detect near-full
         assert!(!evidence_buffer_near_full());
 
         // Cleanup
-        let _ = drain_pending_evidence();
+        let _ = drain_pending_evidence(&EvidenceScope::Default);
     }
 
     #[test]

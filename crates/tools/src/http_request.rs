@@ -91,7 +91,7 @@ impl PentestTool for HttpRequestTool {
         ]
     }
 
-    async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, params: Value, ctx: &ToolContext) -> Result<ToolResult> {
         execute_timed_with_provenance(|| async {
             let url = param_str(&params, "url");
             if url.is_empty() {
@@ -201,7 +201,7 @@ impl PentestTool for HttpRequestTool {
             for node in
                 crate::evidence_producer::evidence_from_http_request(&data, provenance.clone())
             {
-                let _ = crate::evidence_producer::push_evidence(node);
+                let _ = crate::evidence_producer::push_evidence(ctx.evidence_scope(), node);
             }
 
             Ok((data, provenance))

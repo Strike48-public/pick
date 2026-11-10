@@ -102,7 +102,7 @@ impl PentestTool for HydraTool {
         vec![Platform::Desktop, Platform::Tui]
     }
 
-    async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, params: Value, ctx: &ToolContext) -> Result<ToolResult> {
         execute_timed(|| async move {
             let platform = get_platform();
 
@@ -233,7 +233,7 @@ impl PentestTool for HydraTool {
                 &format!("hydra {service}://{target}"),
             );
             for node in crate::evidence_producer::evidence_from_hydra(&data, prov) {
-                let _ = crate::evidence_producer::push_evidence(node);
+                let _ = crate::evidence_producer::push_evidence(ctx.evidence_scope(), node);
             }
             Ok(data)
         })

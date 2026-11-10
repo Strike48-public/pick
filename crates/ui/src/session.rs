@@ -5,8 +5,9 @@
 //! The connector writes the Matrix access token here after browser OAuth
 //! succeeds; the ChatPanel reads it in `make_client`.
 
-use pentest_core::evidence::EvidenceNode;
+use pentest_core::evidence::{EvidenceNode, EvidenceScope};
 use pentest_core::tools::ToolRegistry;
+use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, PoisonError, RwLock};
 use tokio::sync::RwLock as TokioRwLock;
 
@@ -47,18 +48,23 @@ static ACTION_REGISTRY: LazyLock<pentest_tools::registry::QuickActionRegistry> =
 type SharedToolRegistry = Arc<RwLock<Option<Arc<TokioRwLock<ToolRegistry>>>>>;
 static TOOL_REGISTRY: LazyLock<SharedToolRegistry> = LazyLock::new(|| Arc::new(RwLock::new(None)));
 
-/// Process-wide evidence graph that the Generate Report action in the chat
-/// panel reads out (via [`evidence_snapshot`]) and gates into the report.
+/// Evidence graphs, one per engagement (pick#513), plus the engagement the
+/// desktop panels show.
 ///
 /// Populated in production by [`drain_tool_evidence_into_graph`], which the
-/// connector calls after every tool execution to forward the tool-side buffer
-/// (`pentest_tools::evidence_producer::PENDING_EVIDENCE`) into this graph. The
-/// Validator round-trip then transitions each node's `validation_status` via
-/// [`apply_validator_verdicts`] before the report gate will publish it. This is
-/// the bridge that pick#172 identified as missing.
+/// connector calls after every tool execution to forward that call's scope of
+/// the tool-side buffer (`pentest_tools::evidence_producer::PENDING_EVIDENCE`)
+/// into the same scope's graph. The Validator round-trip then transitions each
+/// node's `validation_status` via [`apply_validator_verdicts`] before the
+/// report gate will publish it. This is the bridge that pick#172 identified as
+/// missing.
 ///
-/// Kept as a flat `Vec` rather than an index because the orchestrator gate
-/// iterates the whole graph anyway, and the UI never looks up nodes by id.
+/// `active` is the scope of the most recent [`start_scan_evidence`]. The chat
+/// panel and the post-exploit panel have no engagement picker, so they read
+/// `active`, which is today's single-engagement behaviour.
+///
+/// Each graph is a flat `Vec` rather than an index because the orchestrator
+/// gate iterates the whole graph anyway, and the UI never looks up nodes by id.
 ///
 /// LOCK ORDERING: the only place that touches two evidence locks is
 /// [`drain_tool_evidence_into_graph`], and it fully releases the tool-side
@@ -66,8 +72,26 @@ static TOOL_REGISTRY: LazyLock<SharedToolRegistry> = LazyLock::new(|| Arc::new(R
 /// acquires this one — the locks are never held simultaneously, so there is no
 /// deadlock even under concurrent tool execution. Any future code that needs
 /// both must keep that order (PENDING_EVIDENCE first, EVIDENCE_GRAPH second).
-static EVIDENCE_GRAPH: LazyLock<RwLock<Vec<EvidenceNode>>> =
-    LazyLock::new(|| RwLock::new(Vec::new()));
+static EVIDENCE_GRAPH: LazyLock<RwLock<EvidenceGraphs>> =
+    LazyLock::new(|| RwLock::new(EvidenceGraphs::default()));
+
+#[derive(Default)]
+struct EvidenceGraphs {
+    active: EvidenceScope,
+    graphs: HashMap<EvidenceScope, Vec<EvidenceNode>>,
+}
+
+fn read_graphs() -> std::sync::RwLockReadGuard<'static, EvidenceGraphs> {
+    EVIDENCE_GRAPH
+        .read()
+        .unwrap_or_else(|e| recover_poisoned(e, "EVIDENCE_GRAPH"))
+}
+
+fn write_graphs() -> std::sync::RwLockWriteGuard<'static, EvidenceGraphs> {
+    EVIDENCE_GRAPH
+        .write()
+        .unwrap_or_else(|e| recover_poisoned(e, "EVIDENCE_GRAPH"))
+}
 
 /// Read the current session auth token (Matrix access token for GraphQL).
 pub fn get_auth_token() -> String {
@@ -292,69 +316,86 @@ pub fn get_tool_registry() -> Option<Arc<TokioRwLock<ToolRegistry>>> {
         .cloned()
 }
 
-/// Snapshot the current evidence graph. Cheap clone — the graph is
-/// typically small (dozens of nodes at most) and the snapshot avoids
-/// leaking the internal lock into async code.
+/// The scope the desktop panels show: the one whose scan started last.
+pub fn active_evidence_scope() -> EvidenceScope {
+    read_graphs().active.clone()
+}
+
+/// Snapshot the active scope's evidence graph (see [`active_evidence_scope`]).
+/// For a specific engagement use [`evidence_snapshot_for`].
+pub fn evidence_snapshot() -> Vec<EvidenceNode> {
+    let graphs = read_graphs();
+    graphs
+        .graphs
+        .get(&graphs.active)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Snapshot `scope`'s evidence graph. Cheap clone: a graph is typically small
+/// (dozens of nodes at most) and the snapshot avoids leaking the internal lock
+/// into async code.
 ///
 /// The snapshot is **point-in-time**: nodes pushed after this call returns
 /// are invisible to the caller until the next snapshot. This is by design —
 /// `on_generate_report` takes a snapshot at button-press time so the
 /// manifest reflects the operator's intent at that moment, not whatever
 /// races in during the handoff to the Report Agent.
-pub fn evidence_snapshot() -> Vec<EvidenceNode> {
-    EVIDENCE_GRAPH
-        .read()
-        .unwrap_or_else(|e| recover_poisoned(e, "EVIDENCE_GRAPH"))
-        .clone()
+pub fn evidence_snapshot_for(scope: &EvidenceScope) -> Vec<EvidenceNode> {
+    read_graphs().graphs.get(scope).cloned().unwrap_or_default()
 }
 
-/// Append a node to the evidence graph.
+/// Append a node to `scope`'s evidence graph.
 ///
 /// Called by [`drain_tool_evidence_into_graph`] for each finding a tool
 /// produces. Prefer that drain helper at call sites; this is the low-level
 /// primitive it (and tests) build on.
-pub fn push_evidence(node: EvidenceNode) {
-    EVIDENCE_GRAPH
-        .write()
-        .unwrap_or_else(|e| recover_poisoned(e, "EVIDENCE_GRAPH"))
+pub fn push_evidence(scope: &EvidenceScope, node: EvidenceNode) {
+    write_graphs()
+        .graphs
+        .entry(scope.clone())
+        .or_default()
         .push(node);
 }
 
-/// Drain the tool-side evidence buffer into the report evidence graph.
+/// Drain `scope`'s part of the tool-side evidence buffer into `scope`'s report
+/// evidence graph.
 ///
 /// This is the production bridge pick#172 identified as missing. Tools push
 /// findings into `pentest_tools::evidence_producer::PENDING_EVIDENCE` as a side
-/// effect of execution; that buffer is process-global and unbounded-until-cap,
-/// so it must be drained into the report graph or the findings never reach
-/// [`evidence_snapshot`] / `gate_for_report`.
+/// effect of execution, under their call's scope; it must be drained into the
+/// report graph or the findings never reach [`evidence_snapshot_for`] /
+/// `gate_for_report`.
 ///
-/// The connector calls this after every tool run (see
-/// `liveview_connector::tools`). Draining the *whole* buffer each time is safe
-/// under the parallel-tool execution the connector allows: the `RwLock`
-/// serializes the take, so no node is lost or double-counted.
+/// The connector calls this after every tool run with that call's scope (see
+/// `liveview_connector::pick_connector`). Another engagement's pending nodes
+/// stay in the buffer for that engagement's own drain. Under parallel tool
+/// execution within one scope the `RwLock` serializes the take, so no node is
+/// lost or double-counted.
 ///
 /// Returns the number of nodes forwarded, for logging and tests. A zero return
 /// is normal — most tool runs produce no evidence.
-pub fn drain_tool_evidence_into_graph() -> usize {
-    let drained = pentest_tools::evidence_producer::drain_pending_evidence();
+pub fn drain_tool_evidence_into_graph(scope: &EvidenceScope) -> usize {
+    let drained = pentest_tools::evidence_producer::drain_pending_evidence(scope);
     let count = drained.len();
     if count > 0 {
-        let mut graph = EVIDENCE_GRAPH
-            .write()
-            .unwrap_or_else(|e| recover_poisoned(e, "EVIDENCE_GRAPH"));
-        graph.extend(drained);
+        write_graphs()
+            .graphs
+            .entry(scope.clone())
+            .or_default()
+            .extend(drained);
     }
     count
 }
 
-/// Clear the evidence graph. Called at the start of a new engagement
-/// (`begin_scan` completion) so findings from a prior scan do not bleed into
-/// the next report.
-pub fn clear_evidence() {
-    EVIDENCE_GRAPH
-        .write()
-        .unwrap_or_else(|e| recover_poisoned(e, "EVIDENCE_GRAPH"))
-        .clear();
+/// Start a scan for `scope`: clear only that scope's graph, so findings from
+/// its own prior scan do not bleed into the next report, and make it the scope
+/// the desktop panels show. Called on `begin_scan` completion. Every other
+/// engagement's evidence is left intact.
+pub fn start_scan_evidence(scope: &EvidenceScope) {
+    let mut graphs = write_graphs();
+    graphs.graphs.remove(scope);
+    graphs.active = scope.clone();
 }
 
 /// Outcome of applying a batch of Validator verdicts to the evidence graph.
@@ -383,7 +424,12 @@ impl VerdictApplyReport {
     }
 }
 
-/// Apply a batch of Validator verdicts to the evidence graph in place.
+/// Apply a batch of Validator verdicts to `scope`'s evidence graph in place.
+///
+/// The caller passes the scope it validated, captured when the manifest was
+/// built: the Validator round-trip takes a while, and another engagement's
+/// scan may start meanwhile, so the active scope at reply time is not
+/// necessarily the one the verdicts are for.
 ///
 /// Each verdict is matched to a node by `node_id` and drives the node through
 /// its lifecycle transition (`apply_validator_decision` / `reject_as_false_
@@ -398,13 +444,13 @@ impl VerdictApplyReport {
 /// Returns a [`VerdictApplyReport`] describing what matched and what is still
 /// outstanding. Nothing is dropped silently.
 pub fn apply_validator_verdicts(
+    scope: &EvidenceScope,
     verdicts: &[pentest_core::orchestrator::Verdict],
 ) -> VerdictApplyReport {
     use pentest_core::orchestrator::VerdictDecision;
 
-    let mut graph = EVIDENCE_GRAPH
-        .write()
-        .unwrap_or_else(|e| recover_poisoned(e, "EVIDENCE_GRAPH"));
+    let mut graphs = write_graphs();
+    let graph = graphs.graphs.entry(scope.clone()).or_default();
 
     let mut report = VerdictApplyReport::default();
 
@@ -485,7 +531,9 @@ mod tests {
     }
 
     fn snapshot_contains(id: &str) -> bool {
-        evidence_snapshot().iter().any(|n| n.id == id)
+        evidence_snapshot_for(&EvidenceScope::Default)
+            .iter()
+            .any(|n| n.id == id)
     }
 
     #[test]
@@ -493,7 +541,7 @@ mod tests {
         let _guard = serial();
         let id = "session-bridge-forward-1";
         // A tool pushed a finding into the tool-side buffer...
-        pentest_tools::evidence_producer::push_evidence(node(id))
+        pentest_tools::evidence_producer::push_evidence(&EvidenceScope::Default, node(id))
             .expect("buffer should accept one node");
         assert!(
             !snapshot_contains(id),
@@ -501,7 +549,7 @@ mod tests {
         );
 
         // ...the connector drains it into the report graph.
-        let forwarded = drain_tool_evidence_into_graph();
+        let forwarded = drain_tool_evidence_into_graph(&EvidenceScope::Default);
 
         assert!(forwarded >= 1, "at least our node should be forwarded");
         assert!(
@@ -516,7 +564,7 @@ mod tests {
         // Ensure the tool buffer is empty for our purposes, then draining must
         // not invent our node.
         let id = "session-bridge-empty-1";
-        let _ = drain_tool_evidence_into_graph();
+        let _ = drain_tool_evidence_into_graph(&EvidenceScope::Default);
         assert!(
             !snapshot_contains(id),
             "draining an empty buffer must not surface an unpushed node"
@@ -524,23 +572,133 @@ mod tests {
     }
 
     #[test]
-    fn clear_evidence_drops_forwarded_nodes() {
+    fn start_scan_drops_its_scopes_forwarded_nodes() {
         let _guard = serial();
         let id = "session-bridge-clear-1";
-        pentest_tools::evidence_producer::push_evidence(node(id))
+        pentest_tools::evidence_producer::push_evidence(&EvidenceScope::Default, node(id))
             .expect("buffer should accept one node");
-        drain_tool_evidence_into_graph();
+        drain_tool_evidence_into_graph(&EvidenceScope::Default);
         assert!(
             snapshot_contains(id),
             "node should be in the graph pre-clear"
         );
 
-        clear_evidence();
+        start_scan_evidence(&EvidenceScope::Default);
 
         assert!(
             !snapshot_contains(id),
-            "clear_evidence must empty the report graph for a fresh engagement"
+            "start_scan_evidence must empty the scope's graph for a fresh scan"
         );
+    }
+
+    // --- Per-engagement isolation (pick#513) ---
+
+    fn engagement(id: &str) -> EvidenceScope {
+        EvidenceScope::Engagement(id.to_string())
+    }
+
+    fn ids(scope: &EvidenceScope) -> Vec<String> {
+        evidence_snapshot_for(scope)
+            .into_iter()
+            .map(|n| n.id)
+            .collect()
+    }
+
+    fn tool_push(scope: &EvidenceScope, id: &str) {
+        pentest_tools::evidence_producer::push_evidence(scope, node(id))
+            .expect("buffer should accept one node");
+    }
+
+    #[test]
+    fn interleaved_engagements_keep_their_own_evidence() {
+        let _guard = serial();
+        let (a, b) = (engagement("iso-a"), engagement("iso-b"));
+        start_scan_evidence(&a);
+        start_scan_evidence(&b);
+
+        // A's tool runs and B's tool runs finish in interleaved order; each
+        // run drains only its own scope.
+        tool_push(&a, "iso-a-1");
+        tool_push(&b, "iso-b-1");
+        assert_eq!(drain_tool_evidence_into_graph(&a), 1);
+        tool_push(&a, "iso-a-2");
+        assert_eq!(drain_tool_evidence_into_graph(&b), 1);
+        assert_eq!(drain_tool_evidence_into_graph(&a), 1);
+
+        assert_eq!(ids(&a), vec!["iso-a-1", "iso-a-2"]);
+        assert_eq!(ids(&b), vec!["iso-b-1"]);
+    }
+
+    #[test]
+    fn drain_for_one_engagement_leaves_anothers_pending_nodes() {
+        let _guard = serial();
+        let (a, b) = (engagement("pend-a"), engagement("pend-b"));
+        start_scan_evidence(&a);
+        start_scan_evidence(&b);
+        tool_push(&b, "pend-b-1");
+
+        assert_eq!(drain_tool_evidence_into_graph(&a), 0);
+        assert!(ids(&a).is_empty(), "A's drain must not take B's node");
+
+        assert_eq!(drain_tool_evidence_into_graph(&b), 1);
+        assert_eq!(ids(&b), vec!["pend-b-1"]);
+    }
+
+    #[test]
+    fn second_engagements_scan_start_leaves_the_first_intact() {
+        let _guard = serial();
+        let (a, b) = (engagement("start-a"), engagement("start-b"));
+        start_scan_evidence(&a);
+        tool_push(&a, "start-a-1");
+        drain_tool_evidence_into_graph(&a);
+
+        start_scan_evidence(&b);
+
+        assert_eq!(ids(&a), vec!["start-a-1"]);
+        assert_eq!(active_evidence_scope(), b);
+        assert!(
+            evidence_snapshot().is_empty(),
+            "the panels show the engagement whose scan started last"
+        );
+    }
+
+    #[test]
+    fn call_without_engagement_lands_in_default_only() {
+        let _guard = serial();
+        let a = engagement("dflt-a");
+        start_scan_evidence(&a);
+        start_scan_evidence(&EvidenceScope::Default);
+        let scope = EvidenceScope::from_engagement_id(None);
+
+        tool_push(&scope, "dflt-1");
+        drain_tool_evidence_into_graph(&scope);
+
+        assert_eq!(ids(&EvidenceScope::Default), vec!["dflt-1"]);
+        assert!(ids(&a).is_empty());
+    }
+
+    #[test]
+    fn verdicts_apply_only_to_their_engagement() {
+        let _guard = serial();
+        let (a, b) = (engagement("vd-a"), engagement("vd-b"));
+        start_scan_evidence(&a);
+        start_scan_evidence(&b);
+        push_evidence(&a, node("vd-shared-id"));
+        push_evidence(&b, node("vd-shared-id"));
+
+        let report = apply_validator_verdicts(
+            &a,
+            &[verdict(
+                "vd-shared-id",
+                VerdictDecision::FalsePositive,
+                None,
+            )],
+        );
+
+        assert_eq!(report.applied, 1);
+        let status = |s: &EvidenceScope| evidence_snapshot_for(s)[0].validation_status;
+        assert_eq!(status(&a), ValidationStatus::FalsePositive);
+        assert_eq!(status(&b), ValidationStatus::Pending);
     }
 
     // --- Verdict writeback (pick#174 seam 3) ---
@@ -559,7 +717,7 @@ mod tests {
     }
 
     fn status_of(id: &str) -> Option<ValidationStatus> {
-        evidence_snapshot()
+        evidence_snapshot_for(&EvidenceScope::Default)
             .into_iter()
             .find(|n| n.id == id)
             .map(|n| n.validation_status)
@@ -568,22 +726,25 @@ mod tests {
     #[test]
     fn writeback_applies_each_decision_type() {
         let _guard = serial();
-        clear_evidence();
-        push_evidence(node("wb-confirmed"));
-        push_evidence(node("wb-revised"));
-        push_evidence(node("wb-fp"));
-        push_evidence(node("wb-info"));
+        start_scan_evidence(&EvidenceScope::Default);
+        push_evidence(&EvidenceScope::Default, node("wb-confirmed"));
+        push_evidence(&EvidenceScope::Default, node("wb-revised"));
+        push_evidence(&EvidenceScope::Default, node("wb-fp"));
+        push_evidence(&EvidenceScope::Default, node("wb-info"));
 
-        let report = apply_validator_verdicts(&[
-            verdict(
-                "wb-confirmed",
-                VerdictDecision::Confirmed,
-                Some(Severity::Medium),
-            ),
-            verdict("wb-revised", VerdictDecision::Revised, Some(Severity::High)),
-            verdict("wb-fp", VerdictDecision::FalsePositive, None),
-            verdict("wb-info", VerdictDecision::InfoOnly, None),
-        ]);
+        let report = apply_validator_verdicts(
+            &EvidenceScope::Default,
+            &[
+                verdict(
+                    "wb-confirmed",
+                    VerdictDecision::Confirmed,
+                    Some(Severity::Medium),
+                ),
+                verdict("wb-revised", VerdictDecision::Revised, Some(Severity::High)),
+                verdict("wb-fp", VerdictDecision::FalsePositive, None),
+                verdict("wb-info", VerdictDecision::InfoOnly, None),
+            ],
+        );
 
         assert_eq!(report.applied, 4);
         assert!(report.unmatched_verdict_ids.is_empty());
@@ -599,23 +760,26 @@ mod tests {
     #[test]
     fn writeback_reports_unmatched_verdict_ids() {
         let _guard = serial();
-        clear_evidence();
-        push_evidence(node("wb-real"));
+        start_scan_evidence(&EvidenceScope::Default);
+        push_evidence(&EvidenceScope::Default, node("wb-real"));
 
         // node() starts at Medium; confirm at Medium so the status is a clean
         // Confirmed (this test is about the unmatched id, not severity revision).
-        let report = apply_validator_verdicts(&[
-            verdict(
-                "wb-real",
-                VerdictDecision::Confirmed,
-                Some(Severity::Medium),
-            ),
-            verdict(
-                "wb-ghost",
-                VerdictDecision::Confirmed,
-                Some(Severity::Medium),
-            ),
-        ]);
+        let report = apply_validator_verdicts(
+            &EvidenceScope::Default,
+            &[
+                verdict(
+                    "wb-real",
+                    VerdictDecision::Confirmed,
+                    Some(Severity::Medium),
+                ),
+                verdict(
+                    "wb-ghost",
+                    VerdictDecision::Confirmed,
+                    Some(Severity::Medium),
+                ),
+            ],
+        );
 
         assert_eq!(report.applied, 1);
         assert_eq!(report.unmatched_verdict_ids, vec!["wb-ghost".to_string()]);
@@ -625,16 +789,19 @@ mod tests {
     #[test]
     fn writeback_reports_nodes_left_pending() {
         let _guard = serial();
-        clear_evidence();
-        push_evidence(node("wb-adjudicated"));
-        push_evidence(node("wb-forgotten"));
+        start_scan_evidence(&EvidenceScope::Default);
+        push_evidence(&EvidenceScope::Default, node("wb-adjudicated"));
+        push_evidence(&EvidenceScope::Default, node("wb-forgotten"));
 
         // The Validator only ruled on one of the two nodes.
-        let report = apply_validator_verdicts(&[verdict(
-            "wb-adjudicated",
-            VerdictDecision::Confirmed,
-            Some(Severity::Medium),
-        )]);
+        let report = apply_validator_verdicts(
+            &EvidenceScope::Default,
+            &[verdict(
+                "wb-adjudicated",
+                VerdictDecision::Confirmed,
+                Some(Severity::Medium),
+            )],
+        );
 
         assert_eq!(report.applied, 1);
         assert_eq!(report.still_pending_ids, vec!["wb-forgotten".to_string()]);
@@ -647,12 +814,14 @@ mod tests {
     #[test]
     fn writeback_confirmed_without_severity_uses_current() {
         let _guard = serial();
-        clear_evidence();
+        start_scan_evidence(&EvidenceScope::Default);
         // node() starts at Medium.
-        push_evidence(node("wb-nosev"));
+        push_evidence(&EvidenceScope::Default, node("wb-nosev"));
 
-        let report =
-            apply_validator_verdicts(&[verdict("wb-nosev", VerdictDecision::Confirmed, None)]);
+        let report = apply_validator_verdicts(
+            &EvidenceScope::Default,
+            &[verdict("wb-nosev", VerdictDecision::Confirmed, None)],
+        );
 
         assert_eq!(report.applied, 1);
         // Confirmed at the same (current) severity stays Confirmed, not Revised.

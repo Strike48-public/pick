@@ -216,7 +216,7 @@ impl PentestTool for PortScanTool {
         ]
     }
 
-    async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, params: Value, ctx: &ToolContext) -> Result<ToolResult> {
         execute_timed_with_provenance(|| async {
             // Gather targets from host / hosts[] / subnet (CIDR).
             let hosts = collect_hosts(&params)?;
@@ -384,7 +384,7 @@ impl PentestTool for PortScanTool {
 
             for node in crate::evidence_producer::evidence_from_port_scan(&data, provenance.clone())
             {
-                let _ = crate::evidence_producer::push_evidence(node);
+                let _ = crate::evidence_producer::push_evidence(ctx.evidence_scope(), node);
             }
 
             Ok((data, provenance))

@@ -153,8 +153,9 @@ impl PentestTool for ServiceBannerTool {
         ]
     }
 
-    async fn execute(&self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, params: Value, ctx: &ToolContext) -> Result<ToolResult> {
         let timeout_ms = param_u64(&params, "timeout_ms", 5000);
+        let scope = ctx.evidence_scope();
 
         // Batch mode: a `targets` list grabs every {host, port} in one call so
         // the agent doesn't fan out one service_banner per open port.
@@ -183,7 +184,7 @@ impl PentestTool for ServiceBannerTool {
                         let sem = sem.clone();
                         async move {
                             let _permit = sem.acquire().await.expect("semaphore not closed");
-                            match Self::grab_one(&host, port, timeout_ms).await {
+                            match Self::grab_one(scope, &host, port, timeout_ms).await {
                                 Ok((data, _prov)) => data,
                                 Err(e) => json!({
                                     "host": host, "port": port, "error": e.to_string(),
@@ -216,7 +217,7 @@ impl PentestTool for ServiceBannerTool {
             let port = param_u16_opt(&params, "port")
                 .ok_or_else(|| Error::InvalidParams("port parameter is required".into()))?;
 
-            Self::grab_one(&host, port, timeout_ms).await
+            Self::grab_one(scope, &host, port, timeout_ms).await
         })
         .await
     }
@@ -227,6 +228,7 @@ impl ServiceBannerTool {
     /// data object and its provenance. Shared by the single- and batch-mode
     /// paths so both produce identical per-service output and evidence.
     async fn grab_one(
+        scope: &pentest_core::evidence::EvidenceScope,
         host: &str,
         port: u16,
         timeout_ms: u64,
@@ -298,7 +300,7 @@ impl ServiceBannerTool {
             provenance.clone(),
         );
         for node in evidence_nodes {
-            let _ = crate::evidence_producer::push_evidence(node);
+            let _ = crate::evidence_producer::push_evidence(scope, node);
         }
 
         Ok((data, provenance))
