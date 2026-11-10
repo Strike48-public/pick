@@ -14,14 +14,16 @@
 //!   without a second call at the call site. It skips `ui = true` events,
 //!   which are already in the buffer.
 //! * [`seed_from_log_file`] restores the previous session's UI lines and
-//!   warnings from the newest log file at start-up (pick#399).
+//!   warnings from the newest log file at start-up (pick#399). The file
+//!   holds them unredacted, so each restored line gets the same by-value
+//!   known-secrets pass and pattern redaction as the support bundle's tail.
 //!
 //! Every line gets a sequence number. A page keeps the last number it has
 //! shown and appends only newer lines, so its own Clear sticks and a full
 //! buffer keeps flowing (the old page compared line counts, which stop
 //! changing at the cap).
 
-use crate::diagnostics::cap_bytes;
+use crate::diagnostics::{cap_bytes, redact_with_secrets};
 use crate::provenance::redact;
 use crate::terminal::{LogLevel, TerminalLine};
 use std::collections::VecDeque;
@@ -263,19 +265,21 @@ impl Visit for EventFields {
 /// Restore the previous session from the JSON log file at `path` into `log`:
 /// the last [`SEED_MAX_LINES`] records that were UI lines (`fields.ui`) or
 /// `WARN`/`ERROR` events, with their original timestamps, after one marker
-/// line. Pushed straight to the buffer, not through tracing, so they are not
+/// line. Each line's message and source are redacted against `secrets` (see
+/// [`crate::diagnostics::local_known_secrets`]) and by pattern. Pushed
+/// straight to the buffer, not through tracing, so they are not
 /// written to the log file a second time. Returns how many records were
 /// restored; nothing (not even the marker) is pushed when there are none.
 ///
 /// Call it before this process writes to the file, so its own records are
 /// not mistaken for the previous session's.
-pub fn seed_from_log_file(log: &UiLog, path: &Path) -> usize {
+pub fn seed_from_log_file(log: &UiLog, path: &Path, secrets: &[String]) -> usize {
     let Ok(records) = crate::diagnostics::read_tail_lines(path, usize::MAX) else {
         return 0;
     };
     let lines: Vec<TerminalLine> = records
         .iter()
-        .filter_map(|record| seed_line(record))
+        .filter_map(|record| seed_line(record, secrets))
         .collect();
     let skip = lines.len().saturating_sub(SEED_MAX_LINES);
     let restored = &lines[skip..];
@@ -302,7 +306,7 @@ pub fn seed_from_log_file(log: &UiLog, path: &Path) -> usize {
 
 /// One JSON log record as a Logs line, or `None` when it is not a UI line or
 /// a warning/error, or does not parse.
-fn seed_line(record: &str) -> Option<TerminalLine> {
+fn seed_line(record: &str, secrets: &[String]) -> Option<TerminalLine> {
     let value: serde_json::Value = serde_json::from_str(record).ok()?;
     let fields = value.get("fields")?.as_object()?;
     let is_ui = fields.get(UI_FIELD).and_then(|v| v.as_bool()) == Some(true);
@@ -336,12 +340,12 @@ fn seed_line(record: &str) -> Option<TerminalLine> {
     Some(TerminalLine {
         timestamp,
         level,
-        message: redact(&text),
+        message: redact_with_secrets(&text, secrets),
         source: fields
             .get(SOURCE_FIELD)
             .filter(|_| is_ui)
             .and_then(|v| v.as_str())
-            .map(redact),
+            .map(|s| redact_with_secrets(s, secrets)),
         details: None,
     })
 }
@@ -542,7 +546,7 @@ mod tests {
                 "fields": {"message": "debug ui", "ui": true}}),
         ]);
         let log = UiLog::new(100);
-        assert_eq!(seed_from_log_file(&log, &path), 4);
+        assert_eq!(seed_from_log_file(&log, &path, &[]), 4);
         let (lines, _) = log.since(0);
         assert!(
             lines[0].message.starts_with("Restored 4 lines"),
@@ -586,7 +590,7 @@ mod tests {
             .collect();
         let (_dir, path) = write_log(&records);
         let log = UiLog::new(UI_LOG_CAPACITY);
-        assert_eq!(seed_from_log_file(&log, &path), SEED_MAX_LINES);
+        assert_eq!(seed_from_log_file(&log, &path, &[]), SEED_MAX_LINES);
         let (lines, _) = log.since(0);
         assert_eq!(lines[1].message, "w5");
         assert_eq!(
@@ -607,7 +611,7 @@ mod tests {
                 "source": "connector token=supersecretvalue3"}}),
         ]);
         let log = UiLog::new(10);
-        seed_from_log_file(&log, &path);
+        seed_from_log_file(&log, &path, &[]);
         let (lines, _) = log.since(0);
         assert!(!lines[1].message.contains("abcdefghijklmnop"), "{lines:?}");
         let source = lines[2].source.as_deref().expect("source restored");
@@ -616,13 +620,43 @@ mod tests {
     }
 
     #[test]
+    fn seed_replaces_known_secrets_by_value() {
+        // A saved token mentioned in free text has no shape pattern
+        // redaction recognises; only the by-value pass removes it.
+        let secret = "fake-odd!shape-secret".to_string();
+        let (_dir, path) = write_log(&[
+            serde_json::json!({
+            "timestamp": "2026-10-19T08:00:00Z", "level": "WARN",
+            "fields": {"message": "auth with fake-odd!shape-secret failed"}}),
+            serde_json::json!({
+            "timestamp": "2026-10-19T08:00:01Z", "level": "INFO",
+            "fields": {"message": "connected", "ui": true,
+                "source": "connector fake-odd!shape-secret"}}),
+        ]);
+        let log = UiLog::new(10);
+        assert_eq!(
+            seed_from_log_file(&log, &path, std::slice::from_ref(&secret)),
+            2
+        );
+        let (lines, _) = log.since(0);
+        assert!(!lines[1].message.contains(&secret), "{lines:?}");
+        assert!(lines[1].message.starts_with("auth with"), "{lines:?}");
+        let source = lines[2].source.as_deref().expect("source restored");
+        assert!(!source.contains(&secret), "{source}");
+        assert!(source.starts_with("connector"), "{source}");
+    }
+
+    #[test]
     fn seed_pushes_nothing_without_a_restorable_record() {
         let (_dir, path) = write_log(&[serde_json::json!({
             "timestamp": "2026-10-19T08:00:00Z", "level": "INFO",
             "fields": {"message": "plain"}})]);
         let log = UiLog::new(10);
-        assert_eq!(seed_from_log_file(&log, &path), 0);
-        assert_eq!(seed_from_log_file(&log, Path::new("/nonexistent/x.log")), 0);
+        assert_eq!(seed_from_log_file(&log, &path, &[]), 0);
+        assert_eq!(
+            seed_from_log_file(&log, Path::new("/nonexistent/x.log"), &[]),
+            0
+        );
         assert!(log.since(0).0.is_empty());
     }
 }

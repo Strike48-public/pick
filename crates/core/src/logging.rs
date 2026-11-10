@@ -464,7 +464,11 @@ pub fn init_logging_with_file(default_level: &str) -> Option<PathBuf> {
     // Found before the appender opens: it pre-creates today's (empty) file,
     // which would otherwise hide yesterday's session.
     if let Some(previous) = newest_log_file(&log_dir) {
-        crate::ui_log::seed_from_log_file(crate::ui_log::global(), &previous);
+        crate::ui_log::seed_from_log_file(
+            crate::ui_log::global(),
+            &previous,
+            &crate::diagnostics::local_known_secrets(),
+        );
     }
     match open_log_appender(&log_dir) {
         Ok(appender) => {
