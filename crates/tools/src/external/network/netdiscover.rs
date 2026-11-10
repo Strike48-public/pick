@@ -6,7 +6,7 @@ use pentest_core::tools::{
     execute_timed, ExternalDependency, ParamType, PentestTool, Platform, ToolCategory, ToolContext,
     ToolParam, ToolResult, ToolSchema,
 };
-use pentest_platform::{get_platform, CommandExec};
+use pentest_platform::{get_platform, CommandExec, CommandResult};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -34,11 +34,54 @@ fn range_label(range: Option<&str>) -> &str {
     range.unwrap_or("(auto-scan)")
 }
 
+/// Arguments for one netdiscover run. Pure so the flags are unit-testable.
+///
+/// `-P` gives parsable output and makes the active scan exit once the range is
+/// swept. Without it netdiscover redraws its screen every second until killed,
+/// so every run hit the timeout, whose result carries no stdout. `-N` drops the
+/// header, leaving host rows and the closing summary.
+fn netdiscover_args(range: Option<&str>, interface: Option<&str>, passive: bool) -> Vec<String> {
+    let mut builder = CommandBuilder::new().flag("-P").flag("-N");
+    if let Some(r) = range {
+        builder = builder.arg("-r", r);
+    }
+    if let Some(i) = interface.filter(|i| !i.is_empty()) {
+        builder = builder.arg("-i", i);
+    }
+    if passive {
+        builder = builder.flag("-p");
+    }
+    builder.build()
+}
+
+/// One range's outcome from its command result. A timed-out run is a failed
+/// range, not "found nothing": the timeout result's stdout is empty whatever
+/// the scan saw.
+fn range_outcome(
+    result: Result<CommandResult>,
+    timeout: Duration,
+) -> std::result::Result<String, String> {
+    match result {
+        Err(e) => Err(e.to_string()),
+        Ok(r) if r.timed_out => Err(format!("timed out after {}s", timeout.as_secs())),
+        Ok(r) => Ok(r.stdout),
+    }
+}
+
 /// Host lines from one netdiscover run's stdout.
+///
+/// netdiscover prints every host row with a leading space
+/// (` 10.0.8.1      aa:bb:cc:...`), in screen mode and in `-P` mode alike, so a
+/// row is recognised by its first field parsing as an IPv4 address. That also
+/// drops the `-- Active scan completed, N Hosts found.` summary `-P` ends with.
 fn parse_hosts(stdout: &str) -> Vec<String> {
     stdout
         .lines()
-        .filter(|line| line.contains('.') && !line.starts_with(' '))
+        .filter(|line| {
+            line.split_whitespace()
+                .next()
+                .is_some_and(|field| field.parse::<std::net::Ipv4Addr>().is_ok())
+        })
         .map(|line| line.trim().to_string())
         .collect()
 }
@@ -188,33 +231,15 @@ impl PentestTool for NetdiscoverTool {
 
             let mut runs = Vec::with_capacity(ranges.len());
             for range_opt in ranges {
-                let mut builder = CommandBuilder::new();
-
-                if let Some(ref r) = range_opt {
-                    builder = builder.arg("-r", r);
-                }
-
-                if let Some(ref i) = interface {
-                    if !i.is_empty() {
-                        builder = builder.arg("-i", i);
-                    }
-                }
-
-                if passive {
-                    builder = builder.flag("-p");
-                }
-
-                let args = builder.build();
+                let args = netdiscover_args(range_opt.as_deref(), interface.as_deref(), passive);
                 let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
                 // Per-subnet failure is non-fatal: one unreachable subnet must
                 // not discard the hosts already found on the others. Record the
                 // outcome and continue; `summarize_runs` sorts it out.
-                let outcome = platform
+                let result = platform
                     .execute_command("netdiscover", &args_refs, per_range_timeout)
-                    .await
-                    .map(|result| result.stdout)
-                    .map_err(|e| e.to_string());
-                runs.push((range_opt, outcome));
+                    .await;
+                runs.push((range_opt, range_outcome(result, per_range_timeout)));
             }
 
             summarize_runs(&runs, out_of_subnet_warning)
@@ -252,11 +277,73 @@ mod tests {
         (Some(range.to_string()), Ok(stdout.to_string()))
     }
 
-    const WIRED: &str = " Currently scanning: 10.0.8.0/24\n\
-                         10.0.8.1      aa:bb:cc:00:00:01      1      60  Gateway\n\
-                         10.0.8.42     aa:bb:cc:00:00:42      1      60  Unknown\n";
-    const VPN: &str = "10.9.0.5      aa:bb:cc:00:09:05      1      60  Unknown\n\
-                       10.0.8.42     aa:bb:cc:00:00:42      1      60  Unknown\n";
+    // Real `netdiscover -P -N` shape: every host row starts with a space, and
+    // the run ends with a blank line and a summary line. (No `\n\` line
+    // continuations here: they strip the leading space the real output has.)
+    const WIRED: &str = concat!(
+        " 10.0.8.1      aa:bb:cc:00:00:01      1      60  Gateway\n",
+        " 10.0.8.42     aa:bb:cc:00:00:42      1      60  Unknown vendor\n",
+        "\n",
+        "-- Active scan completed, 2 Hosts found.\n",
+    );
+    const VPN: &str = concat!(
+        " 10.9.0.5      aa:bb:cc:00:09:05      1      60  Unknown vendor\n",
+        " 10.0.8.42     aa:bb:cc:00:00:42      1      60  Unknown vendor\n",
+        "\n",
+        "-- Active scan completed, 2 Hosts found.\n",
+    );
+
+    /// Captured verbatim from netdiscover 0.10 (Debian bookworm) run as
+    /// `netdiscover -r 10.252.7.0/24 -i eth0 -P -N` against a two-host
+    /// container network.
+    const CAPTURED_P_N: &str = concat!(
+        " 10.252.7.1      be:7e:f6:31:a1:1d      1      42  Unknown vendor\n",
+        " 10.252.7.20     3a:5c:46:97:39:58      1      42  Unknown vendor\n",
+        "\n",
+        "-- Active scan completed, 2 Hosts found.\n",
+    );
+
+    #[test]
+    fn every_run_asks_for_parsable_output_without_header() {
+        let args = netdiscover_args(Some("10.0.8.0/24"), Some("eth0"), false);
+        assert_eq!(args, ["-P", "-N", "-r", "10.0.8.0/24", "-i", "eth0"]);
+        // Auto-scan, empty interface, passive: -P -N still lead.
+        let args = netdiscover_args(None, Some(""), true);
+        assert_eq!(args, ["-P", "-N", "-p"]);
+    }
+
+    #[test]
+    fn a_timed_out_run_is_a_failed_range_not_an_empty_one() {
+        let t = Duration::from_secs(15);
+        let timed_out = CommandResult::timeout(String::new(), "Command timed out".into(), 15_000);
+        assert_eq!(
+            range_outcome(Ok(timed_out), t),
+            Err("timed out after 15s".into())
+        );
+        let done = CommandResult::success(CAPTURED_P_N.to_string(), String::new(), 0, 900);
+        assert_eq!(range_outcome(Ok(done), t), Ok(CAPTURED_P_N.to_string()));
+    }
+
+    #[test]
+    fn parse_hosts_reads_real_parsable_output() {
+        let hosts = parse_hosts(CAPTURED_P_N);
+        assert_eq!(hosts.len(), 2, "{hosts:?}");
+        assert!(hosts[0].starts_with("10.252.7.1 "), "{hosts:?}");
+        assert!(hosts[1].starts_with("10.252.7.20 "), "{hosts:?}");
+    }
+
+    #[test]
+    fn parse_hosts_skips_screen_chrome_and_summary() {
+        // Lines the default screen mode and the -P summary print that contain
+        // dots but are not host rows.
+        let chrome = concat!(
+            " Currently scanning: 10.0.8.0/24   |   Screen View: Unique Hosts\n",
+            " 2 Captured ARP Req/Rep packets, from 2 hosts.   Total size: 84\n",
+            "   IP            At MAC Address     Count     Len  MAC Vendor / Hostname\n",
+            "-- Active scan completed, 2 Hosts found.\n",
+        );
+        assert!(parse_hosts(chrome).is_empty(), "{:?}", parse_hosts(chrome));
+    }
 
     #[test]
     fn hosts_are_attributed_to_the_range_that_surfaced_them() {
