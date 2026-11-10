@@ -1,6 +1,7 @@
 use crate::auth::{CallbackNote, OttProvider};
 use crate::client::{ClientOptions, ConnectorClient, InvokeOptions};
 use crate::error::{ConnectorError, Result};
+use crate::jobs::{self, JobRegistry, JobTicket};
 use crate::logger::Logger;
 use crate::transport::TransportType;
 use crate::types::*;
@@ -38,7 +39,30 @@ pub(crate) fn build_registration_metadata(
         .any(|b| matches!(b, ConnectorBehavior::Tool));
 
     if tool_declared && !metadata.contains_key("tool_schemas") {
-        let task_types = connector.capabilities();
+        // Reserved-namespace guard: a connector-authored tool in the
+        // `matrix.` platform namespace is not advertised, so it cannot clash
+        // with a current or future platform verb. The SDK only actually
+        // intercepts the exact `matrix.cancel`; a different `matrix.*` name is
+        // simply left out of `tool_schemas` (it would still reach `execute` if
+        // the server dispatched it).
+        let task_types: Vec<_> = connector
+            .capabilities()
+            .into_iter()
+            .filter(|schema| {
+                let reserved = jobs::is_reserved_capability(&schema.name)
+                    || jobs::is_reserved_capability(&schema.task_type_id);
+                if reserved {
+                    tracing::warn!(
+                        target: "strike48_connector::reserved_capability",
+                        name = %schema.name,
+                        task_type_id = %schema.task_type_id,
+                        "connector capability uses the reserved 'matrix.' namespace; \
+                         not advertised (reserved for platform verbs)"
+                    );
+                }
+                !reserved
+            })
+            .collect();
         if !task_types.is_empty() {
             let schemas: Vec<serde_json::Value> = task_types
                 .iter()
@@ -88,6 +112,91 @@ fn calculate_reconnect_delay(
     let jitter = rng.gen_range(0..=jitter_ms);
 
     capped_delay + jitter
+}
+
+// ============================================================================
+// Duplicate fencing (#3134)
+// ============================================================================
+
+/// The stable token the server's duplicate fence carries in a REJECTED
+/// `RegisterConnectorResponse` (#3134): another DISTINCT live connector
+/// process is already registered under this instance_id, so the arrival was
+/// refused instead of stream-swapped.
+///
+/// Classification here is substring-based, exactly like the auth errors
+/// below. The token deliberately collides with NONE of the auth
+/// classification strings (expired, jwt_invalid, jwt_decode, invalid_token,
+/// token_expired, invalid token, auth_invalid, unauthorized,
+/// unauthenticated) so:
+///
+/// - old kit builds fall through to their harmless catch-all retry (a
+///   duplicate rejection is loud log noise, never a flap), and
+/// - the duplicate branch can never trip the identity-level credential wipe
+///   (see the no-collision test in the tests module).
+const DUPLICATE_INSTANCE_ERROR_TOKEN: &str = "duplicate_instance";
+
+/// Number of consecutive duplicate-instance rejections after which the
+/// connector engages the reduced-frequency retry lane (paced at
+/// [`ConnectorConfig::duplicate_slow_retry_interval_ms`], default 5 minutes:
+/// the loud per-cycle log stays AND self-healing happens when the other live
+/// connector goes away). Three is safely above the ms-scale reconnect-race
+/// band: a genuine reconnect whose owned stream just died succeeds on its
+/// next attempt and resets the counter.
+pub(crate) const DUPLICATE_REJECTION_STOP_THRESHOLD: u64 = 3;
+
+/// Effective reduced-frequency retry interval. Clamps the configured value to
+/// a sane floor: a misconfigured `0` would otherwise hot-loop the register
+/// attempt while the lane is engaged (the pacing sleep is the only thing
+/// spacing the attempts out), which is exactly the noise class the fence
+/// exists to kill.
+pub(crate) fn effective_slow_retry_interval_ms(configured_ms: u64) -> u64 {
+    configured_ms.max(1_000)
+}
+
+/// Classify a registration-rejection error string (lowercased) as the
+/// server's duplicate fence rejection (#3134).
+pub(crate) fn is_duplicate_instance_error(error_lower: &str) -> bool {
+    error_lower.contains(DUPLICATE_INSTANCE_ERROR_TOKEN)
+}
+
+/// Should the connector stop re-registering after `consecutive_rejections`
+/// consecutive duplicate-instance rejections?
+pub(crate) fn should_engage_slow_retry_lane(consecutive_rejections: u64) -> bool {
+    consecutive_rejections >= DUPLICATE_REJECTION_STOP_THRESHOLD
+}
+
+/// Token-level registration-rejection classification (the JWT itself is bad
+/// — expired, malformed, clock skew — but the credentials/client_id/key pair
+/// are fine: clear the cached token and fetch a fresh one on reconnect; no
+/// approval flow needed). SINGLE SOURCE for the single-runner message loop
+/// AND the no-collision guard test: a future colliding substring added here
+/// must turn the guard test red.
+pub(crate) fn is_token_error(error_lower: &str) -> bool {
+    error_lower.contains("expired")
+        || error_lower.contains("jwt_invalid")
+        || error_lower.contains("jwt_decode")
+        || error_lower.contains("invalid_token")
+        || error_lower.contains("token_expired")
+        || error_lower.contains("invalid token")
+}
+
+/// Identity-level registration-rejection classification (the connector's
+/// identity itself is rejected — de-registered, Keycloak client deleted):
+/// full credential wipe needed. SINGLE SOURCE for the single-runner message
+/// loop AND the no-collision guard test (see [`is_token_error`]).
+pub(crate) fn is_identity_error(error_lower: &str) -> bool {
+    error_lower.contains("auth_invalid")
+        || error_lower.contains("unauthorized")
+        || error_lower.contains("unauthenticated")
+}
+
+/// Actionable duplicate-rejection log line (#3134): names the instance_id and
+/// tells the operator exactly what to check.
+pub(crate) fn duplicate_rejection_log_message(instance_id: &str, server_error: &str) -> String {
+    format!(
+        "Another live connector is already registered as instance_id '{}' — refusing to flap; check for a duplicate connector (run exactly one connector per instance_id). Server said: {}",
+        instance_id, server_error
+    )
 }
 
 /// Get current timestamp in milliseconds since Unix epoch.
@@ -218,6 +327,19 @@ pub struct ConnectorConfig {
     /// within this window the runner declares the stream dead and
     /// reconnects. `None` (default) means use the SDK default of 45s.
     pub heartbeat_timeout: Option<Duration>,
+
+    /// Reduced-frequency duplicate-retry pacing (#3134, ms). After
+    /// `DUPLICATE_REJECTION_STOP_THRESHOLD` consecutive duplicate-instance
+    /// rejections the runner retries at THIS interval instead of stopping:
+    /// connectors run unattended on remote machines, so a full stop would
+    /// leave a running-but-dead process no one notices; the paced retry keeps
+    /// the loud per-cycle log AND self-heals when the other live connector
+    /// goes away. The interval sits far above every server-side cleanup
+    /// window (owner-death DOWN cleanup is ms-scale, the session reaper
+    /// seconds-scale), so a paced attempt never races a cleanup, and far
+    /// below the old ~60 s rejection cadence, so the noise class the fence
+    /// killed stays dead. Default: 300_000 (5 minutes).
+    pub duplicate_slow_retry_interval_ms: u64,
 }
 
 impl ConnectorConfig {
@@ -286,6 +408,7 @@ impl ConnectorConfig {
                 .map(|s| s.split(',').map(|t| t.trim().to_string()).collect())
                 .unwrap_or_default(),
             metadata: std::collections::HashMap::new(),
+            duplicate_slow_retry_interval_ms: 300_000,
             metrics_enabled: std::env::var("STRIKE48_METRICS_ENABLED")
                 .map(|v| v != "false" && v != "0")
                 .unwrap_or(true),
@@ -412,6 +535,7 @@ impl Default for ConnectorConfig {
             metrics_interval_ms: 30000,
             heartbeat_interval: None,
             heartbeat_timeout: None,
+            duplicate_slow_retry_interval_ms: 300_000,
         }
     }
 }
@@ -874,6 +998,19 @@ pub struct ConnectorRunner {
     /// after credentials have already been cleared (e.g. Keycloak client deleted,
     /// future-dated JWT, server misconfiguration).
     consecutive_auth_failures: Arc<AtomicU64>,
+    /// Consecutive duplicate-instance rejections (#3134) without a successful
+    /// registration in between. When this reaches
+    /// DUPLICATE_REJECTION_STOP_THRESHOLD the connector engages the
+    /// reduced-frequency retry lane: another live connector process owns
+    /// the instance_id; the connector keeps retrying at the reduced
+    /// frequency (never stopping) and self-heals when the owner goes away.
+    consecutive_duplicate_rejections: Arc<AtomicU64>,
+    /// In-flight `ExecuteRequest` jobs keyed by `request_id`, so a dispatched
+    /// job can be recalled via the `matrix.cancel` capability. Lives on the
+    /// runner (not the stream handler) so entries survive transient
+    /// disconnects: on a network blip jobs keep running and remain
+    /// cancellable after re-registration.
+    jobs: JobRegistry,
 }
 
 impl ConnectorRunner {
@@ -901,6 +1038,8 @@ impl ConnectorRunner {
             metrics_reporter_running: Arc::new(AtomicBool::new(false)),
             metrics_storage,
             consecutive_auth_failures: Arc::new(AtomicU64::new(0)),
+            consecutive_duplicate_rejections: Arc::new(AtomicU64::new(0)),
+            jobs: JobRegistry::new(),
         }
     }
 
@@ -985,6 +1124,42 @@ impl ConnectorRunner {
         while !self.shutdown_requested.load(Ordering::SeqCst) {
             // Reset reconnection flag at start of each iteration
             self.reconnect_with_jwt.store(false, Ordering::SeqCst);
+
+            // Reduced-frequency duplicate-retry lane (#3134, per review:
+            // never stop retrying on an unattended remote deployment). After N
+            // consecutive duplicate-instance rejections the instance_id is
+            // owned by a LIVE connector process: the fence rejects every
+            // attempt while the owner is alive (a rejected attempt strands
+            // nothing server-side), so the cadence only trades log noise vs
+            // recovery latency. Pace the next attempt at
+            // `duplicate_slow_retry_interval_ms`: the loud per-cycle log stays
+            // AND self-healing happens — when the owner goes away the next
+            // paced attempt registers cleanly and the streak resets to the
+            // normal cadence.
+            let consecutive_dups = self.consecutive_duplicate_rejections.load(Ordering::SeqCst);
+            if should_engage_slow_retry_lane(consecutive_dups) {
+                let instance_id = self.config.read().await.instance_id.clone();
+                let interval_ms = effective_slow_retry_interval_ms(
+                    self.config.read().await.duplicate_slow_retry_interval_ms,
+                );
+                self.logger.error(
+                    "Duplicate instance_id — retrying at reduced frequency",
+                    &format!(
+                        "Another live connector owns instance_id '{}' ({} consecutive duplicate rejections). Retrying every {} ms until it goes away; check for a duplicate connector (run exactly one connector per instance_id).",
+                        instance_id, consecutive_dups, interval_ms
+                    ),
+                );
+
+                let mut remaining = interval_ms;
+                while remaining > 0 && !self.shutdown_requested.load(Ordering::SeqCst) {
+                    let wait = std::cmp::min(remaining, 100);
+                    sleep(Duration::from_millis(wait)).await;
+                    remaining = remaining.saturating_sub(wait);
+                }
+                // Fall through: the outer loop proceeds to connect/register.
+                // The rejection path below skips its own fast backoff while the
+                // lane is engaged — this sleep IS the pacing.
+            }
 
             // Refresh token before (re)connecting to ensure it's not expired
             // The get_token() call checks expiry with 30s buffer and fetches fresh if needed
@@ -1226,6 +1401,7 @@ impl ConnectorRunner {
                                         // Reset reconnect attempts and auth failure counter on success
                                         self.reconnect_attempts.store(0, Ordering::SeqCst);
                                         self.consecutive_auth_failures.store(0, Ordering::SeqCst);
+                                        self.consecutive_duplicate_rejections.store(0, Ordering::SeqCst);
 
                                         // Persist session token for reconnection
                                         if !resp.session_token.is_empty() {
@@ -1255,29 +1431,74 @@ impl ConnectorRunner {
                                     } else {
                                         let error_lower = resp.error.to_lowercase();
 
+                                        // CLASSIFY FIRST — duplicate fence (#3134): the server
+                                        // REFUSED a second distinct live connection for an
+                                        // instance_id that already has a live, responsive session.
+                                        // This is NOT an auth error: credentials are intact and
+                                        // there is nothing to wipe. The check sits before the
+                                        // token-level and identity-level classification so the
+                                        // identity credential-wipe branch is structurally
+                                        // unreachable for duplicate rejections.
+                                        let is_duplicate_instance =
+                                            is_duplicate_instance_error(&error_lower);
+
                                         // Token-level errors: the JWT itself is bad (expired,
                                         // malformed, clock skew) but the credentials (client_id,
                                         // key pair) are fine. Clear cached token and fetch a
                                         // fresh one on reconnect — no approval flow needed.
-                                        let is_token_error = error_lower.contains("expired")
-                                            || error_lower.contains("jwt_invalid")
-                                            || error_lower.contains("jwt_decode")
-                                            || error_lower.contains("invalid_token")
-                                            || error_lower.contains("token_expired")
-                                            || error_lower.contains("invalid token");
-
                                         // Identity-level errors: the connector's identity
                                         // itself is rejected (de-registered, Keycloak client
                                         // deleted). Full credential wipe needed.
-                                        let is_identity_error =
-                                            error_lower.contains("auth_invalid")
-                                                || error_lower.contains("unauthorized")
-                                                || error_lower.contains("unauthenticated");
+                                        let is_token_error = is_token_error(&error_lower);
+                                        let is_identity_error = is_identity_error(&error_lower);
 
                                         let is_auth_error = is_token_error || is_identity_error;
 
                                         // Always clear session token on registration failure
                                         *self.session_token.write().await = None;
+
+                                        if is_duplicate_instance {
+                                            // Another live connector process owns this
+                                            // instance_id. Retrying against a live owner would
+                                            // flap the session — count the streak; once it
+                                            // reaches DUPLICATE_REJECTION_STOP_THRESHOLD the
+                                            // outer loop engages the stay-alive lane.
+                                            let failures = self
+                                                .consecutive_duplicate_rejections
+                                                .fetch_add(1, Ordering::SeqCst)
+                                                + 1;
+
+                                            let instance_id = config.instance_id.clone();
+                                            self.logger
+                                                .error(
+                                                    "Duplicate connector registration rejected",
+                                                    &duplicate_rejection_log_message(
+                                                        &instance_id,
+                                                        &resp.error,
+                                                    ),
+                                                );
+
+                                            if should_engage_slow_retry_lane(failures) {
+                                                self.logger.error(
+                                                    "Reduced-frequency retry engaged (duplicate instance_id)",
+                                                    &format!(
+                                                        "another live connector owns instance_id '{}': retrying every {} ms until it goes away; a rejected attempt strands nothing, and when the owner goes away the next paced attempt self-heals. Check for a duplicate connector process.",
+                                                        instance_id,
+                                                        effective_slow_retry_interval_ms(
+                                                            self.config.read().await.duplicate_slow_retry_interval_ms,
+                                                        )
+                                                    ),
+                                                );
+                                            }
+
+                                            break;
+                                        }
+
+                                        // Any non-duplicate failure breaks the
+                                        // consecutive-duplicate streak (only back-to-back
+                                        // duplicate rejections stop re-registering).
+                                        self.consecutive_duplicate_rejections
+                                            .store(0, Ordering::SeqCst);
 
                                         if is_auth_error {
                                             let failures = self
@@ -1348,6 +1569,21 @@ impl ConnectorRunner {
                                         break;
                                     }
                                 } else if let Some(proto::stream_message::Message::ExecuteRequest(req)) = msg.message.as_ref() {
+                                    // Platform verb interception: the reserved `matrix.cancel`
+                                    // capability recalls an in-flight job. Handled here, before
+                                    // connector-authored tools ever see it (capability IDs
+                                    // prefixed `matrix.` are reserved — see `crate::jobs`).
+                                    if req.capability_id == jobs::CANCEL_CAPABILITY {
+                                        let response = self
+                                            .jobs
+                                            .answer_cancel(req.request_id.clone(), &req.payload);
+                                        let client_clone = self.client.clone();
+                                        tokio::spawn(async move {
+                                            if let Err(e) = Self::send_execute_response(client_clone, response).await {
+                                                tracing::error!("Error answering matrix.cancel: {}", e);
+                                            }
+                                        });
+                                    } else {
                                     // Handle execute request
                                     let request = ExecuteRequest {
                                         request_id: req.request_id.clone(),
@@ -1369,27 +1605,50 @@ impl ConnectorRunner {
                                     let logger = Logger::new("connector");
                                     let semaphore = self.request_semaphore.clone();
 
+                                    // Track the job so `matrix.cancel` can recall it. The
+                                    // entry is inserted before the task is spawned, so a
+                                    // cancel can never race past it. The registry lives on
+                                    // the runner (not this stream) so jobs survive transient
+                                    // disconnects: on a network blip work keeps running and
+                                    // stays cancellable after re-registration.
+                                    let (ticket, abort_reg) = self.jobs.track(request.request_id.clone());
+
                                     tokio::spawn(async move {
-                                        // Acquire permit - blocks if at max concurrency
-                                        // Permit is released when dropped at end of scope
-                                        let _permit = match semaphore.acquire().await {
-                                            Ok(permit) => permit,
-                                            Err(_) => {
-                                                tracing::error!("Request semaphore closed");
-                                                return;
+                                        // The ticket removes the registry entry when the task
+                                        // finishes for any reason (success, error, deadline, abort).
+                                        let ticket = ticket;
+
+                                        let work = async {
+                                            // Acquire permit - blocks if at max concurrency
+                                            // Permit is released when dropped at end of scope
+                                            let _permit = match semaphore.acquire().await {
+                                                Ok(permit) => permit,
+                                                Err(_) => {
+                                                    tracing::error!("Request semaphore closed");
+                                                    return;
+                                                }
+                                            };
+
+                                            if let Err(e) = Self::handle_request(
+                                                connector,
+                                                request,
+                                                client_clone,
+                                                metrics,
+                                                logger,
+                                                Some(&ticket),
+                                            ).await {
+                                                tracing::error!("Error handling request: {}", e);
                                             }
                                         };
 
-                                        if let Err(e) = Self::handle_request(
-                                            connector,
-                                            request,
-                                            client_clone,
-                                            metrics,
-                                            logger,
-                                        ).await {
-                                            tracing::error!("Error handling request: {}", e);
+                                        if futures::future::Abortable::new(work, abort_reg)
+                                            .await
+                                            .is_err()
+                                        {
+                                            tracing::info!("Job aborted via matrix.cancel");
                                         }
                                     });
+                                    }
                                 } else if let Some(proto::stream_message::Message::InvokeResponse(resp)) = msg.message.as_ref() {
                                     // Handle invoke response
                                     if let Some(client) = client_for_sending.read().await.as_ref() {
@@ -1516,6 +1775,15 @@ impl ConnectorRunner {
                         // Treat as transient and retry with backoff.
                         if self.shutdown_requested.load(Ordering::SeqCst) {
                             break;
+                        }
+                        // Reduced-frequency lane (#3134): while the lane is
+                        // engaged, the top-of-loop pacing sleep already paced
+                        // this cycle — skip the fast backoff so the attempt
+                        // cadence is exactly the lane interval.
+                        if should_engage_slow_retry_lane(
+                            self.consecutive_duplicate_rejections.load(Ordering::SeqCst),
+                        ) {
+                            continue;
                         }
                         let attempt = self.reconnect_attempts.fetch_add(1, Ordering::SeqCst);
                         let cfg = self.config.read().await.clone();
@@ -1683,6 +1951,7 @@ impl ConnectorRunner {
         client: Arc<RwLock<Option<ConnectorClient>>>,
         metrics: Arc<RwLock<ConnectorMetrics>>,
         logger: Logger,
+        ticket: Option<&JobTicket>,
     ) -> Result<()> {
         let start_time = Instant::now();
         let mut metrics_guard = metrics.write().await;
@@ -1696,14 +1965,21 @@ impl ConnectorRunner {
             request.payload_encoding,
         ) {
             Ok(request_data) => {
-                match connector
-                    .execute_with_context(
+                // Server-imposed deadline (`context["matrix.deadline_ms"]`):
+                // bound the connector's execution. When it expires the
+                // execution future is dropped and the reply is a
+                // deadline-exceeded error. Absent → no deadline; the
+                // Matrix-side dispatch timeout remains the backstop.
+                let exec_result = jobs::run_with_deadline(
+                    &request.context,
+                    connector.execute_with_context(
                         request_data,
                         request.capability_id.as_deref(),
                         &request.context,
-                    )
-                    .await
-                {
+                    ),
+                )
+                .await;
+                match exec_result {
                     Ok(response_data) => {
                         // Never put a blank failure on the wire (Strike48/matrix#4715,
                         // defect 2): if the tool result inside the payload reports a
@@ -1783,7 +2059,27 @@ impl ConnectorRunner {
             }
         };
 
+        // A cancel that claimed this job already answered for it: send
+        // nothing, so Matrix never sees both "stopped" and a result.
+        if ticket.is_some_and(|t| !t.complete()) {
+            logger.info(&format!(
+                "Job {} was cancelled before its result was sent; result dropped",
+                response.request_id
+            ));
+            return Ok(());
+        }
+
         // Send response -- clone sender under lock, drop lock, then send
+        Self::send_execute_response(client, response).await
+    }
+
+    /// Send an `ExecuteResponse` back to Matrix over the current stream.
+    /// No-op when no client is attached (e.g. after shutdown, or in unit
+    /// tests that drive `handle_request` without a live stream).
+    async fn send_execute_response(
+        client: Arc<RwLock<Option<ConnectorClient>>>,
+        response: ExecuteResponse,
+    ) -> Result<()> {
         let tx = {
             let client_guard = client.read().await;
             match client_guard.as_ref() {
@@ -2433,6 +2729,98 @@ mod tests {
     use super::*;
     use std::pin::Pin;
 
+    // Duplicate fencing (#3134) — classification and lane-decision units.
+
+    #[test]
+    fn test_duplicate_instance_token_matches_the_fence_rejection() {
+        // The full server rejection line matrix sends (token is the prefix).
+        let server_error = "duplicate_instance: another live connector is already registered as this instance_id — check for a duplicate connector process";
+        assert!(is_duplicate_instance_error(&server_error.to_lowercase()));
+        assert!(is_duplicate_instance_error("duplicate_instance"));
+        assert!(is_duplicate_instance_error(
+            "DUPLICATE_INSTANCE: prefix-insensitive via lowercase"
+                .to_lowercase()
+                .as_str()
+        ));
+    }
+
+    #[test]
+    fn test_duplicate_instance_error_triggers_no_auth_classification() {
+        // No-collision property (the load-bearing guard): the FULL server
+        // rejection line must not trip ANY auth classification — token-level
+        // (token cache clear) or identity-level (FULL credential wipe). The
+        // assertion calls the PRODUCTION classification functions, so a
+        // future colliding substring added to production turns this red.
+        let server_error = "duplicate_instance: another live connector is already registered as this instance_id — check for a duplicate connector process"
+            .to_lowercase();
+
+        assert!(
+            !is_token_error(&server_error),
+            "duplicate rejection must not be classified as a token error"
+        );
+        assert!(
+            !is_identity_error(&server_error),
+            "duplicate rejection must never be classified as an identity error (credential wipe)"
+        );
+
+        // And the auth strings themselves must not match the duplicate
+        // predicate (bidirectional no-collision).
+        for auth in [
+            "expired",
+            "jwt_invalid",
+            "jwt_decode",
+            "invalid_token",
+            "token_expired",
+            "invalid token",
+            "auth_invalid",
+            "unauthorized",
+            "unauthenticated",
+        ] {
+            assert!(
+                !is_duplicate_instance_error(auth),
+                "auth string '{auth}' must not match the duplicate predicate"
+            );
+        }
+    }
+
+    #[test]
+    fn test_should_engage_slow_retry_lane_threshold() {
+        assert!(!should_engage_slow_retry_lane(0));
+        assert!(!should_engage_slow_retry_lane(1));
+        assert!(!should_engage_slow_retry_lane(2));
+        assert!(should_engage_slow_retry_lane(3));
+        assert!(should_engage_slow_retry_lane(4));
+        assert!(should_engage_slow_retry_lane(u64::MAX));
+    }
+
+    #[test]
+    fn test_duplicate_rejection_log_message_is_actionable() {
+        let msg = duplicate_rejection_log_message(
+            "pick-connector-01",
+            "duplicate_instance: another live connector is already registered",
+        );
+
+        assert!(msg.contains("pick-connector-01"));
+        assert!(msg.contains(
+            "Another live connector is already registered as instance_id 'pick-connector-01'"
+        ));
+        assert!(msg.contains("refusing to flap"));
+        assert!(msg.contains("check for a duplicate connector"));
+        assert!(msg.contains("run exactly one connector per instance_id"));
+        assert!(msg.contains("duplicate_instance"));
+    }
+
+    #[test]
+    fn test_effective_slow_retry_interval_clamps_to_one_second() {
+        // A misconfigured 0 (or sub-second) interval must not hot-loop the
+        // register attempt while the lane is engaged: the pacing sleep is the
+        // only thing spacing the attempts out.
+        assert_eq!(effective_slow_retry_interval_ms(0), 1_000);
+        assert_eq!(effective_slow_retry_interval_ms(999), 1_000);
+        assert_eq!(effective_slow_retry_interval_ms(1_000), 1_000);
+        assert_eq!(effective_slow_retry_interval_ms(300_000), 300_000);
+    }
+
     #[test]
     fn test_with_heartbeat_roundtrip() {
         let cfg = ConnectorConfig::default()
@@ -2799,6 +3187,80 @@ mod tests {
         assert_eq!(resp, serde_json::json!({}));
     }
 
+    /// A cancel that lands while `handle_request` is parked at the
+    /// post-execute `metrics.write().await` (the window before `complete()`)
+    /// must claim the job's outcome, so the job's own `ExecuteResponse` is
+    /// never sent — only the cancel's reply is. We make the window observable
+    /// by holding the metrics write lock: `handle_request` blocks at a
+    /// `metrics.write()` await, we fire the cancel, then release the lock and
+    /// let it run through `complete()`. Removing the `complete()` guard in
+    /// `handle_request` turns this RED (the result is then sent).
+    #[tokio::test]
+    async fn single_runner_cancel_before_complete_drops_the_jobs_result() {
+        use crate::jobs::{CancelOutcome, JobRegistry};
+
+        // A client whose outbound channel we can inspect.
+        #[allow(deprecated)]
+        let client = ConnectorClient::with_options(ClientOptions {
+            url: Some("grpc://localhost:1".to_string()),
+            host: None,
+            use_tls: None,
+            transport: None,
+            default_timeout_ms: Some(30000),
+        });
+        let mut outbound = client.install_test_outbound();
+        let client = Arc::new(RwLock::new(Some(client)));
+
+        let metrics = Arc::new(RwLock::new(ConnectorMetrics::default()));
+        let registry = JobRegistry::new();
+        let (ticket, _abort_reg) = registry.track("job-race".into());
+
+        let connector: Arc<dyn BaseConnector> = Arc::new(DummyConnector);
+        let request = ExecuteRequest {
+            request_id: "job-race".into(),
+            payload: b"{}".to_vec(),
+            payload_encoding: PayloadEncoding::Json,
+            context: HashMap::new(),
+            capability_id: None,
+        };
+
+        // Park handle_request at a metrics.write() await by holding the lock.
+        let guard = metrics.write().await;
+        let logger = Logger::new("test");
+        let fut = ConnectorRunner::handle_request(
+            connector,
+            request,
+            client.clone(),
+            metrics.clone(),
+            logger,
+            Some(&ticket),
+        );
+        tokio::pin!(fut);
+        tokio::select! {
+            _ = &mut fut => panic!("handle_request must block on the held metrics lock"),
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+
+        // Cancel lands while the job is parked: it claims the registry entry.
+        assert_eq!(
+            registry.cancel("job-race"),
+            CancelOutcome::Stopped {
+                request_id: "job-race".into()
+            }
+        );
+
+        // Release the lock; handle_request finishes, sees complete()==false
+        // and drops its result instead of sending it.
+        drop(guard);
+        fut.await
+            .expect("handle_request returns Ok even when it drops the result");
+
+        assert!(
+            outbound.try_recv().is_err(),
+            "a cancelled job must not send its own ExecuteResponse"
+        );
+    }
+
     #[test]
     fn test_build_register_request_with_jwt() {
         let config = ConnectorConfig {
@@ -3003,6 +3465,7 @@ mod tests {
             Arc::new(RwLock::new(Some(client))),
             metrics,
             logger,
+            None,
         )
         .await
         .expect("handle_request should succeed");

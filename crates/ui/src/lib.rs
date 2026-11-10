@@ -3,6 +3,7 @@
 //! Shared Dioxus UI components for all platforms.
 
 pub mod auth_flow;
+pub(crate) mod clipboard;
 pub mod components;
 #[cfg(feature = "connector")]
 pub mod connector_app;

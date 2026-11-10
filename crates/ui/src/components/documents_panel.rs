@@ -12,6 +12,7 @@
 //! written, newest first. The bottom chat strip ([`ConversationDocs`]) is scoped
 //! to the current conversation.
 
+use crate::clipboard::copy_to_clipboard;
 use dioxus::document;
 use dioxus::prelude::*;
 use pentest_core::matrix::{BadgeKind, DocumentSummary, MatrixChatClient, ReportMeta};
@@ -24,27 +25,6 @@ use pentest_core::social_share::{share_intent_url, SocialNetwork};
 /// then triggered against its own container.
 const UTILS_JS: &str = include_str!("../assets/utils.js");
 const CHART_PROCESSOR_JS: &str = include_str!("../assets/chart_processor.js");
-
-/// Build the JS snippet that copies `url` to the clipboard. `serde_json`
-/// produces a spec-valid JS string literal (safe for any input), unlike
-/// `{:?}` which emits `\u{..}` brace-escapes that are invalid JavaScript.
-fn clipboard_js(url: &str) -> String {
-    let literal = serde_json::to_string(url).unwrap_or_else(|_| "\"\"".to_string());
-    format!("navigator.clipboard && navigator.clipboard.writeText({literal})")
-}
-
-/// Copy `url` to the clipboard, preferring the native OS clipboard handler
-/// (registered by desktop targets) and falling back to the webview's
-/// `navigator.clipboard`. The JS path silently no-ops in WebView2 on Windows
-/// (no `navigator.clipboard` from the custom-protocol origin), so desktop must
-/// go through the native handler; mobile/web have no handler and use the JS
-/// path, which works in their (WebKit) renderers.
-async fn copy_to_clipboard(url: &str) {
-    if pentest_core::clipboard::copy_text(url).is_ok() {
-        return;
-    }
-    let _ = document::eval(&clipboard_js(url)).await;
-}
 
 /// Add `preview=1` to a share URL. Delegates to the shared
 /// `pentest_core::matrix::preview_url` so Easy Mode's crux shells and the Dioxus
@@ -718,24 +698,6 @@ const SHARE_ICON_SVG: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="cur
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn clipboard_js_produces_valid_js_string_literal() {
-        assert_eq!(
-            clipboard_js("https://studio.example.test/s/abc123"),
-            r#"navigator.clipboard && navigator.clipboard.writeText("https://studio.example.test/s/abc123")"#
-        );
-    }
-
-    #[test]
-    fn clipboard_js_escapes_quotes_and_backslashes() {
-        // A hostile/odd URL must not break out of the JS string literal.
-        let js = clipboard_js(r#"a"b\c"#);
-        assert_eq!(
-            js,
-            r#"navigator.clipboard && navigator.clipboard.writeText("a\"b\\c")"#
-        );
-    }
 
     #[test]
     fn preview_url_appends_preview_param() {

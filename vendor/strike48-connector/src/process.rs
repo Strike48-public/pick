@@ -110,6 +110,17 @@ pub async fn run_command_with_timeout(
 }
 
 /// Run an external command with full customization.
+///
+/// # Cancellation
+///
+/// The child is spawned with `kill_on_drop(true)` and, on Unix, in its own
+/// process group. If this future is dropped before the command completes — a
+/// timeout, a server `matrix.deadline_ms`, or a `matrix.cancel` abort — the
+/// direct child is killed and (Unix) its whole process group is SIGKILLed, so
+/// a grandchild spawned under a shell (`run_shell("sleep N; …")`) dies with
+/// the job instead of re-parenting to PID 1. A command that completes normally
+/// leaves any children it intentionally detached untouched. Non-Unix targets
+/// kill only the direct child.
 pub async fn run_command_opts(
     program: &str,
     args: &[&str],
@@ -136,10 +147,46 @@ pub async fn run_command_opts(
 
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    // Kill the child when this future is dropped — by the timeout below, a
+    // server deadline or a `matrix.cancel` abort. Without it the process
+    // outlives the job.
+    cmd.kill_on_drop(true);
+    // `kill_on_drop` kills only the direct child. A child spawned under a
+    // shell (`run_shell("sleep N; true")`) leaves the `sleep` grandchild
+    // re-parented to PID 1 when the future is dropped. On Unix, put the child
+    // in its own process group so the drop guard below can SIGKILL the whole
+    // group (grandchildren included). See the `ProcessGroupKillGuard`.
+    //
+    // NON-UNIX (Windows) FALLBACK: the `process_group(0)` call and the
+    // `ProcessGroupKillGuard` are `#[cfg(unix)]`-only — there is no portable
+    // process-group / `killpg` equivalent here. On Windows a dropped-before-
+    // completion future (abort / deadline / timeout) therefore kills ONLY the
+    // direct child via `kill_on_drop(true)` (set unconditionally above); a
+    // grandchild spawned under a shell can survive. Full process-tree teardown
+    // on Windows (a Job Object, or `taskkill /T /F`) is tracked in
+    // https://github.com/Strike48/sdk-rs/issues/73 and is NOT implemented
+    // here: it requires a real Windows host to verify.
+    //
+    // KNOWN LIMIT (Unix): `process_group(0)` also moves the child out of the
+    // terminal's foreground process group. For a connector started from an
+    // interactive shell, Ctrl-C no longer reaches a running tool, and a tool
+    // that reads the tty gets SIGTTIN. Headless connectors (Docker, systemd)
+    // are unaffected.
+    // Severity: the Matrix-dispatched connector runs headless on Linux, so the
+    // primary cancel path is Unix and fully covered by the group kill below.
+    #[cfg(unix)]
+    cmd.process_group(0);
 
     let mut child = cmd
         .spawn()
         .map_err(|e| ConnectorError::Other(format!("Failed to spawn '{program}': {e}")))?;
+
+    // Arm a guard that SIGKILLs the child's whole process group if this
+    // future is dropped before the command completes (abort / deadline /
+    // timeout). Disarmed on normal completion so a finished command's
+    // grandchildren are left alone, exactly as before this change.
+    #[cfg(unix)]
+    let mut process_group_guard = ProcessGroupKillGuard::new(child.id());
 
     if let Some(data) = options.stdin_data {
         use std::io::ErrorKind;
@@ -175,12 +222,64 @@ pub async fn run_command_opts(
             .map_err(|e| ConnectorError::Other(format!("Command '{program}' I/O error: {e}")))?
     };
 
+    // The command completed and we hold its output: do NOT kill the process
+    // group on the way out (a long-running grandchild the tool deliberately
+    // detached is its own business). Only a dropped-before-completion future
+    // escalates to a group kill.
+    #[cfg(unix)]
+    process_group_guard.disarm();
+
     Ok(CommandOutput {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         exit_code: output.status.code(),
         success: output.status.success(),
     })
+}
+
+/// Drop guard that SIGKILLs a child's process group when a
+/// [`run_command_opts`] future is dropped before the command completes.
+///
+/// `run_command_opts` spawns the child with `process_group(0)` (Unix), so the
+/// child is the leader of a fresh group whose id equals its pid. While the
+/// guard is armed (a grandchild may still be alive, which keeps the group id
+/// reserved) `kill(-pgid, SIGKILL)` reaches the whole subtree — the shell and
+/// any `sleep`/pipeline it spawned. The guard is disarmed on normal
+/// completion, so a finished command's intentionally-detached children are
+/// left running. `kill_on_drop(true)` still handles the direct child.
+#[cfg(unix)]
+struct ProcessGroupKillGuard {
+    /// `Some(pgid)` while armed; `None` once disarmed or if the pid is unknown.
+    pgid: Option<i32>,
+}
+
+#[cfg(unix)]
+impl ProcessGroupKillGuard {
+    fn new(child_pid: Option<u32>) -> Self {
+        Self {
+            pgid: child_pid.map(|pid| pid as i32),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.pgid = None;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ProcessGroupKillGuard {
+    fn drop(&mut self) {
+        if let Some(pgid) = self.pgid {
+            // SAFETY: `kill(2)` with a negative pid targets the process group
+            // `pgid`, which is our own child's group (created via
+            // `process_group(0)`). While armed at least the direct child was
+            // spawned into it, so the group id is ours; a stale group simply
+            // yields ESRCH, which we ignore.
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        }
+    }
 }
 
 /// Run a shell command via the system shell (`sh -c` on Unix).
@@ -461,5 +560,81 @@ mod tests {
             "20 concurrent sleeps took {:?} — thread starvation detected",
             elapsed
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_the_future_kills_grandchild_processes() {
+        // A unique argument so the probe finds only this test's grandchild.
+        let tag = format!("{}", 8_000_000 + std::process::id());
+        // `sh -c "sleep <tag>; true"`: `sh` is the direct child, `sleep` is a
+        // grandchild. `kill_on_drop(true)` kills only `sh`; without a
+        // process-group kill the `sleep` re-parents to PID 1 and survives.
+        let script = format!("sleep {tag}; true");
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_millis(300), run_shell(&script)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let ps = std::process::Command::new("ps")
+            .args(["-axo", "stat,command"])
+            .output()
+            .expect("ps");
+        let still_running = String::from_utf8_lossy(&ps.stdout)
+            .lines()
+            .any(|l| l.ends_with(&format!("sleep {tag}")) && !l.starts_with('Z'));
+        assert!(
+            !still_running,
+            "the grandchild (sleep) must die with the job's process group"
+        );
+    }
+
+    /// The other half of the guard contract: a command that COMPLETES
+    /// normally disarms the group kill, so a child it deliberately detached
+    /// keeps running. Without `disarm()` the guard would SIGKILL the group on
+    /// the way out and take the detached `sleep` with it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn completed_command_leaves_detached_children_alone() {
+        let tag = format!("{}", 9_000_000 + std::process::id());
+        // Background `sleep` with its stdio detached (so `wait_with_output`
+        // is not held open by the inherited pipes) and print its pid.
+        let script = format!("sleep {tag} >/dev/null 2>&1 & echo $!");
+        let out = run_shell(&script).await.expect("shell completes");
+        let pid: i32 = out.stdout.trim().parse().expect("background pid");
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // SAFETY: signal 0 only probes whether `pid` exists; it sends nothing.
+        let alive = unsafe { libc::kill(pid, 0) } == 0;
+        // Clean up before asserting so a failure does not leak the sleeper.
+        // SAFETY: `pid` is the detached sleep this test just started.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+        assert!(
+            alive,
+            "a command that completed must not kill the child it detached"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_the_future_kills_the_child() {
+        // A unique argument so the probe finds only this child.
+        let tag = format!("{}", 7_000_000 + std::process::id());
+        let args = [tag.as_str()];
+        // Let it spawn, then drop it the way an abort or deadline does.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            run_command("sleep", &args),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let ps = std::process::Command::new("ps")
+            .args(["-axo", "stat,command"])
+            .output()
+            .expect("ps");
+        let still_running = String::from_utf8_lossy(&ps.stdout)
+            .lines()
+            .any(|l| l.ends_with(&format!("sleep {tag}")) && !l.starts_with('Z'));
+        assert!(!still_running, "the child must die with its future");
     }
 }

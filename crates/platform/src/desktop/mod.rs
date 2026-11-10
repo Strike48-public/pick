@@ -3,6 +3,7 @@
 mod capture;
 pub mod clipboard;
 pub mod command;
+mod diagnostics;
 mod network;
 pub mod pty_shell;
 pub mod sandbox;
@@ -12,6 +13,9 @@ mod wifi_attack;
 
 // Re-export sandbox control functions
 pub use command::{is_sandbox_enabled, set_use_sandbox};
+
+// Host facts for the support diagnostics bundle (pick#476).
+pub use diagnostics::diagnostic_facts;
 
 // Re-export the OS-credential-store secure token functions so the desktop app
 // can register them with `pentest_core::secure_store` (mirrors the iOS/Android

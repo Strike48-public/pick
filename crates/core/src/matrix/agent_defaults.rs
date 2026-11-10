@@ -51,23 +51,36 @@ fn available_tools_section(tool_names: &[String]) -> String {
 ///
 /// Lists the connector's active subnets so the agent targets them directly
 /// instead of guessing a home range (the `192.168.1.0/24`-on-a-`10.0.x`
-/// failure). Empty input yields an empty string, so no section is emitted when
-/// the caller could not enumerate any subnet.
-fn host_network_facts_section(active_subnets: &[String]) -> String {
-    if active_subnets.is_empty() {
+/// failure). `network_advisory` (pick#510) carries an optional caveat paragraph
+/// rendered after the subnet list - the container-bridge warning that the
+/// listed subnets are the container's private network, not the host LAN. The
+/// section is emitted when either input is present. In practice the advisory
+/// always rides with at least the bridge subnet it names (the classifier needs
+/// that subnet to decide `Bridged`, and the same enumeration feeds both
+/// inputs), so an advisory-only section is a defensive leftover rather than a
+/// reachable state; both empty yields an empty string so no section is emitted.
+fn host_network_facts_section(active_subnets: &[String], network_advisory: Option<&str>) -> String {
+    if active_subnets.is_empty() && network_advisory.is_none() {
         return String::new();
     }
-    let list = active_subnets
-        .iter()
-        .map(|s| format!("- {s}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "# Host network facts (live, this connector)\n\n\
-         This connector is attached to the following active subnet(s). Use these \
-         as scan targets (or pass `target=\"auto\"` / `target=\"current\"`); do NOT \
-         invent other ranges:\n\n{list}"
-    )
+    let mut sections: Vec<String> = Vec::new();
+    if !active_subnets.is_empty() {
+        let list = active_subnets
+            .iter()
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        sections.push(format!(
+            "# Host network facts (live, this connector)\n\n\
+             This connector is attached to the following active subnet(s). Use these \
+             as scan targets (or pass `target=\"auto\"` / `target=\"current\"`); do NOT \
+             invent other ranges:\n\n{list}"
+        ));
+    }
+    if let Some(advisory) = network_advisory {
+        sections.push(advisory.to_string());
+    }
+    sections.join("\n\n")
 }
 
 /// Assemble the agent system message: optional live host-network facts (#347)
@@ -79,9 +92,13 @@ fn host_network_facts_section(active_subnets: &[String]) -> String {
 /// "knows" but that aren't advertised, and those calls just fail. Either
 /// preamble is omitted when its input is empty; with neither, the bare persona
 /// is returned so pre-registration paths don't break.
-fn system_message_with_available_tools(tool_names: &[String], active_subnets: &[String]) -> String {
+fn system_message_with_available_tools(
+    tool_names: &[String],
+    active_subnets: &[String],
+    network_advisory: Option<&str>,
+) -> String {
     let mut sections: Vec<String> = Vec::new();
-    let facts = host_network_facts_section(active_subnets);
+    let facts = host_network_facts_section(active_subnets, network_advisory);
     if !facts.is_empty() {
         sections.push(facts);
     }
@@ -113,13 +130,21 @@ fn system_message_with_available_tools(tool_names: &[String], active_subnets: &[
 ///
 /// `tool_names` are the registered tool names to auto-approve, and
 /// `active_subnets` are the connector's live subnet CIDRs injected into the
-/// persona (#347). Callers pass both explicitly (the Dioxus app sources them
-/// from its session / `network_context`) so this builder stays pure.
+/// persona (#347). Callers pass both explicitly - in practice sourced from
+/// `pentest_tools::container_network::persona_network_facts` (subnets plus
+/// the container-bridge advisory from one enumeration) - so this builder
+/// stays pure.
+///
+/// `network_advisory` (pick#510) is an optional caveat paragraph appended to the
+/// host-network-facts section - the container-bridge warning from
+/// `pentest_tools::container_network` that the subnets are the container's
+/// private network, not the host LAN. `None` keeps the persona unchanged.
 pub fn default_pentest_agent_input(
     tenant_id: &str,
     connector_name: &str,
     tool_names: &[String],
     active_subnets: &[String],
+    network_advisory: Option<&str>,
 ) -> CreateAgentInput {
     // The connector key must be the SDK wire type (#386), not the persona
     // `connector_name`: the platform matches it against the
@@ -152,6 +177,7 @@ pub fn default_pentest_agent_input(
         system_message: Some(system_message_with_available_tools(
             tool_names,
             active_subnets,
+            network_advisory,
         )),
         agent_greeting: Some("Ready for red team operations. What's the target?".to_string()),
         context: Some(serde_json::json!({
@@ -432,6 +458,8 @@ Rank findings by real-world attacker incentive:
 You have access to connector tools for running operations on the connected target. Always explain what you're doing before executing tools. Report findings clearly with severity ratings and remediation recommendations.
 
 Each tool takes named, structured parameters — call it with its own schema, not a generic command line. Do NOT invent an `args` array or a raw `command` string for tools other than `execute_command`.
+
+There is no `bash`, `sh` or other generic shell tool - never call one: it is not a registered tool, so the call stalls waiting for approval and then fails as an unknown tool. Prefer a first-class tool whenever one fits (`nmap`, `nikto`, `ffuf`, ...); for anything Pick does not wrap, use `execute_command(command="...")`.
 
 ### Scanning Tools
 
@@ -745,6 +773,7 @@ mod tests {
             "pentest-connector-web-app",
             &["foo".into()],
             &[],
+            None,
         );
 
         // Name matches the connector name.
@@ -802,6 +831,7 @@ mod tests {
                 "network_discover".into(),
             ],
             &[],
+            None,
         );
         assert!(
             msg.contains("Tools available on THIS connector"),
@@ -822,7 +852,7 @@ mod tests {
         );
         // Empty list -> bare persona (no preamble), so nothing breaks pre-registration.
         assert_eq!(
-            system_message_with_available_tools(&[], &[]),
+            system_message_with_available_tools(&[], &[], None),
             RED_TEAM_SYSTEM_PROMPT
         );
     }
@@ -833,7 +863,7 @@ mod tests {
         // agent targets them instead of guessing a home range. Guard both the
         // section header and every CIDR passed in.
         let subnets = vec!["10.0.8.0/22".to_string(), "172.16.4.0/24".to_string()];
-        let msg = system_message_with_available_tools(&["port_scan".into()], &subnets);
+        let msg = system_message_with_available_tools(&["port_scan".into()], &subnets, None);
         assert!(
             msg.contains("# Host network facts (live, this connector)"),
             "should carry the injected host-network-facts section"
@@ -848,18 +878,51 @@ mod tests {
 
     #[test]
     fn system_message_omits_host_facts_when_no_subnets() {
-        // With no subnets enumerated, no facts section is emitted (the agent falls
-        // back to target="auto"/discovery per the prompt rule) — and an empty
-        // tools+subnets input still yields the bare persona.
-        let msg = system_message_with_available_tools(&["port_scan".into()], &[]);
+        // With no subnets enumerated and no advisory, no facts section is emitted
+        // (the agent falls back to target="auto"/discovery per the prompt rule)
+        // - and an empty tools+subnets input still yields the bare persona.
+        let msg = system_message_with_available_tools(&["port_scan".into()], &[], None);
         assert!(
             !msg.contains("# Host network facts (live, this connector)"),
             "no facts section when no subnets are known"
         );
         assert_eq!(
-            system_message_with_available_tools(&[], &[]),
+            system_message_with_available_tools(&[], &[], None),
             RED_TEAM_SYSTEM_PROMPT
         );
+    }
+
+    #[test]
+    fn system_message_appends_docker_bridge_advisory_to_facts() {
+        // pick#510: when the connector runs in a container on a Docker bridge, the
+        // advisory must ride with the subnet list so the agent reports "I can
+        // only see the container's private network" instead of an empty LAN.
+        let subnets = vec!["172.18.0.0/16".to_string()];
+        let advisory = "IMPORTANT: the subnets listed above are this connector's private \
+                        container bridge network (172.18.0.0/16), not the operator's LAN.";
+        let msg =
+            system_message_with_available_tools(&["port_scan".into()], &subnets, Some(advisory));
+        assert!(
+            msg.contains("# Host network facts (live, this connector)"),
+            "facts section still present"
+        );
+        assert!(msg.contains("172.18.0.0/16"), "subnet still listed");
+        assert!(
+            msg.contains("not the operator's LAN"),
+            "advisory paragraph appended after the list"
+        );
+        // Advisory without subnets still emits its section (defensive: the
+        // classifier cannot currently produce an advisory without the subnet
+        // that produced it, since the same enumeration feeds both inputs).
+        let advisory_only =
+            system_message_with_available_tools(&["port_scan".into()], &[], Some(advisory));
+        assert!(
+            advisory_only.contains("not the operator's LAN"),
+            "advisory-only section is emitted"
+        );
+        // And the advisory alone never leaks into an otherwise bare persona.
+        let bare = system_message_with_available_tools(&[], &[], None);
+        assert!(!bare.contains("not the operator's LAN"));
     }
 
     #[test]
@@ -877,6 +940,21 @@ mod tests {
                 sys.to_lowercase().contains(&needle.to_lowercase()),
                 "fact-first rule should mention '{needle}'"
             );
+        }
+    }
+
+    #[test]
+    fn system_prompt_forbids_a_bash_tool() {
+        // pick#176: the model invented a `bash` tool, which has no consent
+        // metadata and stalls the run. The persona must say there is none and
+        // name `execute_command` as the shell escape hatch.
+        let sys = RED_TEAM_SYSTEM_PROMPT;
+        for needle in [
+            "There is no `bash`, `sh` or other generic shell tool",
+            "execute_command(command=\"...\")",
+            "Prefer a first-class tool",
+        ] {
+            assert!(sys.contains(needle), "persona should say {needle:?}");
         }
     }
 

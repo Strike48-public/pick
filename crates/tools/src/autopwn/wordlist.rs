@@ -111,6 +111,7 @@ async fn decompress_wordlist(compressed_path: &PathBuf, filename: &str) -> Resul
         let output = tokio::process::Command::new("gunzip")
             .arg("-c")
             .arg(compressed_path)
+            .kill_on_drop(true)
             .output()
             .await
             .map_err(|e| Error::ToolExecution(format!("Failed to run gunzip: {}", e)))?;
@@ -128,6 +129,7 @@ async fn decompress_wordlist(compressed_path: &PathBuf, filename: &str) -> Resul
         let output = tokio::process::Command::new("bunzip2")
             .arg("-c")
             .arg(compressed_path)
+            .kill_on_drop(true)
             .output()
             .await
             .map_err(|e| Error::ToolExecution(format!("Failed to run bunzip2: {}", e)))?;

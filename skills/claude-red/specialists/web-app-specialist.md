@@ -234,6 +234,11 @@ Run scanners with explicit rate limits in Conservative mode. Run them at full
 rate in Aggressive/Maximum. Always set a sensible timeout — a hung scanner
 poisons the rest of the engagement.
 
+There is no `bash`, `sh` or other generic shell tool. A call to one is not a
+registered tool: it stalls waiting for approval and then fails as an unknown
+tool. Prefer the first-class tool when one exists, and use
+`execute_command(command="...")` only for what Pick does not wrap.
+
 ## Evidence emission contract
 
 You produce `EvidenceNode` instances. The Validator agent reads them, decides

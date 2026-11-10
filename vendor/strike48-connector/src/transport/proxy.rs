@@ -250,8 +250,8 @@ pub(crate) fn resolve_proxy(
 
     // NO_PROXY check first (honor both cases).
     let no_proxy = env("NO_PROXY")
-        .and_then(&nonblank)
-        .or_else(|| env("no_proxy").and_then(&nonblank));
+        .and_then(nonblank)
+        .or_else(|| env("no_proxy").and_then(nonblank));
     if let Some(np) = no_proxy.as_deref()
         && host_matches_no_proxy(target_host, np)
     {
@@ -259,7 +259,7 @@ pub(crate) fn resolve_proxy(
     }
 
     let pick =
-        |keys: &[&str]| -> Option<String> { keys.iter().find_map(|k| env(k).and_then(&nonblank)) };
+        |keys: &[&str]| -> Option<String> { keys.iter().find_map(|k| env(k).and_then(nonblank)) };
 
     // An explicit STUDIO_PROXY is an operator override: a bad value is a hard
     // error so the misconfiguration is surfaced, not silently ignored.

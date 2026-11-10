@@ -233,6 +233,11 @@ The work is mostly: craft prompt, observe output, refine, repeat. Pick's
 generic tools help with the surrounding HTTP and discovery work; the model
 interaction itself is human-shaped (LLM-shaped).
 
+There is no `bash`, `sh` or other generic shell tool. A call to one is not a
+registered tool: it stalls waiting for approval and then fails as an unknown
+tool. Prefer the first-class tool when one exists, and use
+`execute_command(command="...")` only for what Pick does not wrap.
+
 ## Evidence emission contract
 
 Same `EvidenceNode` shape. AI-specific guidance:

@@ -9,6 +9,7 @@ pub mod clipboard;
 pub mod config;
 pub mod connector;
 pub mod connector_registration;
+pub mod diagnostics;
 pub mod error;
 pub mod evidence;
 pub mod export;
