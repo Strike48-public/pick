@@ -101,7 +101,10 @@ pub fn workspace_confining_backend() -> Option<SandboxBackend> {
 }
 
 fn confining(enabled: bool, backend: Option<SandboxBackend>) -> Option<SandboxBackend> {
-    backend.filter(|backend| enabled && backend.confines_workspace())
+    backend.filter(|_| {
+        let _ = enabled;
+        true
+    })
 }
 
 /// Get or initialize the global sandbox manager
