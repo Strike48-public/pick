@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn persona_authz_denial_is_not_authorized() {
         // The error observed in pick#393, as `create_agent` surfaces it.
-        let err = "Matrix error: GraphQL errors: Not authorized to create personas";
+        let err = "matrix: GraphQL errors: Not authorized to create personas";
         assert_eq!(
             classify_assistant_setup_failure(err),
             AssistantSetupFailure::NotAuthorized
@@ -543,7 +543,7 @@ mod tests {
     fn http_status_decides_over_body_text() {
         // The body is free text: a 403 that says "unauthorized" is still a
         // permission denial, not an expired session.
-        let err = "Matrix error: GraphQL request failed: 403 Forbidden - \
+        let err = "matrix: GraphQL request failed: 403 Forbidden - \
                    {\"errors\":[{\"message\":\"unauthorized\"}]}";
         assert_eq!(
             classify_assistant_setup_failure(err),
@@ -556,7 +556,7 @@ mod tests {
         );
         // A 5xx is a server fault, whatever its body mentions: neither signing
         // in again nor asking an admin for permission would fix it.
-        let err = "Matrix error: GraphQL request failed: 500 Internal Server Error - \
+        let err = "matrix: GraphQL request failed: 500 Internal Server Error - \
                    ** (Joken.Error) jwt signer misconfigured";
         assert_eq!(
             classify_assistant_setup_failure(err),
@@ -588,7 +588,7 @@ mod tests {
             "GraphQL request failed: 401 Unauthorized - {}",
             "GraphQL errors: User is unauthorized",
             "GraphQL errors: Unauthenticated",
-            "Matrix error: Auth token required",
+            "matrix: Auth token required",
             "GraphQL errors: JWT has expired",
             "GraphQL errors: not authenticated",
             "GraphQL errors: Token expired",
