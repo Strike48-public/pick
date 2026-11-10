@@ -1344,8 +1344,16 @@ fn registration_outcome(
 /// two loops were previously duplicated inline and could silently diverge).
 /// Polls every 2s; bounded by shutdown (mirrors `LiveViewConnector::shutdown`)
 /// and by the runner stopping, so the loop never outlives the connection it
-/// watches. Returns `true` when the JWT landed (caller emits `Registered`),
-/// `false` when shutdown or runner stop ended the wait first.
+/// watches. Returns `true` when the JWT landed on an ACCEPTED registration
+/// (caller emits `Registered`), `false` when shutdown or runner stop ended the
+/// wait first.
+///
+/// JWT presence alone is not enough: a duplicate connector sharing the creds
+/// volume holds the JWT from the start while the server refuses every
+/// registration under the duplicate-instance fence (Strike48/sdk-rs#67), so it
+/// would flip to Registered without ever registering. The SDK sets
+/// `last_connected_at_ms` only on a successful `RegisterResponse`, so the same
+/// `registration_outcome` gate the 3s probe uses decides here too.
 async fn wait_for_jwt_issued(
     shutdown: &AtomicBool,
     runner: &strike48_connector::ConnectorRunner,
@@ -1363,10 +1371,25 @@ async fn wait_for_jwt_issued(
         if !running {
             return false;
         }
-        if runner.has_auth_token().await {
+        if jwt_wait_satisfied(&stats, runner.has_auth_token().await) {
             return true;
         }
     }
+}
+
+/// The `wait_for_jwt_issued` exit test, factored out so it is unit-testable:
+/// a JWT on an accepted registration, read from the runner's `get_stats()`.
+fn jwt_wait_satisfied(stats: &serde_json::Value, has_auth_token: bool) -> bool {
+    let running = stats
+        .get("running")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ever_connected = stats
+        .get("last_connected_at_ms")
+        .map(|v| !v.is_null())
+        .unwrap_or(false);
+    registration_outcome(has_auth_token, running, ever_connected)
+        == Some(RegistrationOutcome::Registered)
 }
 
 #[cfg(test)]
@@ -1399,6 +1422,26 @@ mod registration_outcome_tests {
         assert_eq!(registration_outcome(false, false, false), None);
         assert_eq!(registration_outcome(false, true, false), None);
         assert_eq!(registration_outcome(false, false, true), None);
+    }
+
+    #[test]
+    fn refused_duplicate_with_jwt_never_flips_to_registered() {
+        // A duplicate connector sharing the creds volume holds a JWT while the
+        // server's duplicate-instance fence refuses every registration, so
+        // `last_connected_at_ms` (set only on an accepted registration) stays
+        // null. `wait_for_jwt_issued` gates on this outcome; it used to check
+        // JWT presence alone and logged "transitioning to Registered" for a
+        // connector the server had refused.
+        let refused = serde_json::json!({ "running": true, "last_connected_at_ms": null });
+        assert!(!jwt_wait_satisfied(&refused, true));
+    }
+
+    #[test]
+    fn jwt_on_accepted_registration_ends_the_wait() {
+        let accepted = serde_json::json!({ "running": true, "last_connected_at_ms": 1 });
+        assert!(jwt_wait_satisfied(&accepted, true));
+        // Accepted but still pending approval: keep waiting for the JWT.
+        assert!(!jwt_wait_satisfied(&accepted, false));
     }
 }
 

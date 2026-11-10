@@ -75,6 +75,28 @@ fn status_label(status: AgentStatus) -> &'static str {
     }
 }
 
+/// Whether the current turn should show the "Stopped" state after `status`.
+///
+/// Matrix publishes `CANCELLED` when the user stops a turn and `IDLE` right
+/// after it. The flag is set by `CANCELLED`, survives the following terminal
+/// `IDLE` / `STREAM_END` of the same turn, and is cleared as soon as a new turn
+/// shows activity (any non-terminal status) or the turn ends in `ERROR` (an
+/// error is reported by its own notice, not as "Stopped"). Callers also clear it
+/// when the user sends a new message or switches conversation.
+fn turn_stopped_after(was_stopped: bool, status: AgentStatus) -> bool {
+    match status {
+        AgentStatus::Cancelled => true,
+        AgentStatus::Idle | AgentStatus::StreamEnd => was_stopped,
+        AgentStatus::Error => false,
+        AgentStatus::Processing
+        | AgentStatus::Streaming
+        | AgentStatus::ExecutingTools
+        | AgentStatus::AwaitingConsent
+        | AgentStatus::AwaitingClientTools
+        | AgentStatus::Unknown => false,
+    }
+}
+
 /// Merge server-truth messages with any local-only (`local-*`) messages the user
 /// has sent that the backend has not echoed yet, so a (re)connect catch-up never
 /// drops the in-flight user turn. Server messages win by id; unechoed locals are
@@ -106,11 +128,14 @@ async fn seed_from_conversation(
     messages: &mut Signal<Vec<ChatMessage>>,
     agent_thinking: &mut Signal<bool>,
     agent_status_text: &mut Signal<String>,
+    turn_stopped: &mut Signal<bool>,
     error_msg: &mut Signal<Option<String>>,
 ) {
     match client.get_conversation(cid).await {
         Ok(state) => {
             merge_server_messages(messages, state.messages);
+            let stopped = turn_stopped_after(*turn_stopped.peek(), state.agent_status);
+            turn_stopped.set(stopped);
             if state.agent_status.is_terminal() {
                 agent_thinking.set(false);
                 agent_status_text.set(String::new());
@@ -148,6 +173,7 @@ async fn apply_outcome(
     client: &MatrixChatClient,
     agent_thinking: &mut Signal<bool>,
     agent_status_text: &mut Signal<String>,
+    turn_stopped: &mut Signal<bool>,
     error_msg: &mut Signal<Option<String>>,
     chat_notice: &mut Signal<Option<ChatNotice>>,
     pending_validator_apply: &mut Signal<Option<usize>>,
@@ -163,6 +189,10 @@ async fn apply_outcome(
     let Some(status) = outcome.status else {
         return;
     };
+
+    // "Stopped" must outlive the IDLE that Matrix sends right after CANCELLED.
+    let stopped = turn_stopped_after(*turn_stopped.peek(), status);
+    turn_stopped.set(stopped);
 
     if status == AgentStatus::Error {
         // Richer notice (token/rate-limit classification) via the Studio usage
@@ -372,6 +402,9 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
     let mut is_sending = use_signal(|| false);
     let mut agent_thinking = use_signal(|| false);
     let mut agent_status_text = use_signal(String::new);
+    // True when the last turn ended because the user stopped it (CANCELLED).
+    // Kept across the IDLE that follows; cleared when a new turn starts.
+    let mut turn_stopped = use_signal(|| false);
     let mut error_msg = use_signal(|| None::<String>);
     // Subtle inline notice driven by the stream applier — distinct from
     // `error_msg` (which renders the loud red banner for call-failures). Used for
@@ -937,6 +970,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 let mut messages = messages;
                 let mut agent_thinking = agent_thinking;
                 let mut agent_status_text = agent_status_text;
+                let mut turn_stopped = turn_stopped;
                 let mut error_msg = error_msg;
                 let mut chat_notice = chat_notice;
                 let mut connection_state = connection_state;
@@ -967,6 +1001,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                     &mut messages,
                     &mut agent_thinking,
                     &mut agent_status_text,
+                    &mut turn_stopped,
                     &mut error_msg,
                 )
                 .await;
@@ -1021,6 +1056,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                         &client,
                                         &mut agent_thinking,
                                         &mut agent_status_text,
+                                        &mut turn_stopped,
                                         &mut error_msg,
                                         &mut chat_notice,
                                         &mut pending_validator_apply,
@@ -1064,6 +1100,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                                     &mut messages,
                                     &mut agent_thinking,
                                     &mut agent_status_text,
+                                    &mut turn_stopped,
                                     &mut error_msg,
                                 )
                                 .await;
@@ -1108,6 +1145,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             show_history.set(false);
             agent_thinking.set(false);
             agent_status_text.set(String::new());
+            turn_stopped.set(false);
 
             if let Some(ref ag) = agent {
                 let stored_cid = agent_conversations.peek().get(&ag.id).cloned();
@@ -1164,6 +1202,8 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             is_sending.set(true);
             error_msg.set(None);
             chat_notice.set(None);
+            // A new turn starts: drop the previous turn's "Stopped" state.
+            turn_stopped.set(false);
 
             spawn(async move {
                 // Telemetry (#278): time the user's "send" action as a ui.action
@@ -1259,6 +1299,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 conv_mailbox.set(None);
                 agent_thinking.set(false);
                 agent_status_text.set(String::new());
+                turn_stopped.set(false);
                 show_history.set(false);
                 // Switch the active id; the subscription resource seeds history
                 // and streams. Clear stale messages first so the previous
@@ -1291,6 +1332,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             error_msg.set(None);
             agent_thinking.set(false);
             agent_status_text.set(String::new());
+            turn_stopped.set(false);
             chat_notice.set(None);
 
             // Focus the chat input so user can start typing immediately
@@ -1447,6 +1489,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             chat_notice.set(None);
             agent_thinking.set(false);
             agent_status_text.set(String::new());
+            turn_stopped.set(false);
 
             let seed = match pentest_core::orchestrator::build_validator_seed_message(&manifest) {
                 Ok(s) => s,
@@ -1606,6 +1649,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             chat_notice.set(None);
             agent_thinking.set(false);
             agent_status_text.set(String::new());
+            turn_stopped.set(false);
 
             let seed = pentest_core::orchestrator::build_report_agent_seed_message(&manifest);
             let client = make_client();
@@ -1667,6 +1711,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
             show_history.set(false);
             agent_thinking.set(false);
             agent_status_text.set(String::new());
+            turn_stopped.set(false);
             // Switch the active id; the subscription resource seeds history and
             // streams. Clear stale messages so the previous conversation doesn't
             // flash while the seed fetch runs.
@@ -1915,6 +1960,7 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 user_scrolled_up: user_scrolled_up,
                 agent_thinking: agent_thinking,
                 agent_status_text: agent_status_text,
+                turn_stopped: turn_stopped,
                 selected_agent: selected_agent,
                 on_send: send_message.clone(),
                 conversation_list: conversation_list,
@@ -1990,5 +2036,69 @@ pub fn ChatPanel(props: ChatPanelProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod turn_stopped_tests {
+    use super::{status_label, turn_stopped_after};
+    use pentest_core::matrix::AgentStatus;
+
+    /// Fold a status sequence the way `apply_outcome` does.
+    fn fold(start: bool, seq: &[AgentStatus]) -> bool {
+        seq.iter().fold(start, |s, st| turn_stopped_after(s, *st))
+    }
+
+    #[test]
+    fn cancelled_sets_stopped() {
+        assert!(turn_stopped_after(false, AgentStatus::Cancelled));
+    }
+
+    #[test]
+    fn stopped_survives_the_idle_that_follows_cancelled() {
+        use AgentStatus::*;
+        assert!(fold(false, &[Processing, Streaming, Cancelled, Idle]));
+        assert!(fold(false, &[ExecutingTools, Cancelled, StreamEnd, Idle]));
+    }
+
+    #[test]
+    fn normal_completion_is_not_stopped() {
+        use AgentStatus::*;
+        assert!(!fold(false, &[Processing, Streaming, StreamEnd, Idle]));
+    }
+
+    #[test]
+    fn error_is_not_stopped() {
+        use AgentStatus::*;
+        assert!(!fold(false, &[Processing, Error, Idle]));
+        assert!(!turn_stopped_after(true, Error));
+    }
+
+    #[test]
+    fn next_turn_activity_clears_stopped() {
+        use AgentStatus::*;
+        assert!(!fold(false, &[Cancelled, Idle, Processing]));
+        assert!(!fold(
+            false,
+            &[Cancelled, Idle, Processing, StreamEnd, Idle]
+        ));
+        for st in [
+            Processing,
+            Streaming,
+            ExecutingTools,
+            AwaitingConsent,
+            AwaitingClientTools,
+            Unknown,
+        ] {
+            assert!(!turn_stopped_after(true, st), "{st} should clear");
+        }
+    }
+
+    #[test]
+    fn cancelled_is_terminal_so_the_spinner_clears() {
+        // apply_outcome clears the thinking state on any terminal status.
+        assert!(AgentStatus::Cancelled.is_terminal());
+        // status_label is only used for non-terminal statuses; unchanged.
+        assert_eq!(status_label(AgentStatus::Processing), "Thinking...");
     }
 }

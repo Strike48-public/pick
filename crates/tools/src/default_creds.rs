@@ -206,6 +206,7 @@ impl DefaultCredsTool {
                 &format!("{}@{}", username, host),
                 "exit",
             ])
+            .kill_on_drop(true)
             .output()
             .await;
 

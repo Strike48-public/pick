@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
@@ -28,8 +28,13 @@ use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
 use tokio::time::{MissedTickBehavior, interval};
 
 use crate::auth::{CallbackNote, OttProvider};
-use crate::connector::{BaseConnector, ConnectorConfig, ConnectorHandle};
+use crate::connector::{
+    BaseConnector, ConnectorConfig, ConnectorHandle, DUPLICATE_REJECTION_STOP_THRESHOLD,
+    duplicate_rejection_log_message, effective_slow_retry_interval_ms, is_duplicate_instance_error,
+    should_engage_slow_retry_lane,
+};
 use crate::error::{ConnectorError, Result};
+use crate::jobs::{self, JobRegistry, JobTicket};
 use crate::logger::Logger;
 use crate::multi::MultiTransportOptions;
 use crate::multi::RegistrationKey;
@@ -62,6 +67,9 @@ pub(crate) struct RegistrationRunner {
     /// Mirrors the single-runner `max_concurrent_requests` pattern; protects
     /// the runtime from OOM under burst load.
     pub request_semaphore: Arc<Semaphore>,
+    /// In-flight `ExecuteRequest` jobs, so `matrix.cancel` can recall them.
+    /// Lives on the runner so entries survive stream reconnects.
+    pub jobs: JobRegistry,
     /// Session token granted by the server on a successful `RegisterResponse`.
     /// Sent back on subsequent in-stream re-registrations (e.g. after an
     /// OTT-driven `CredentialsIssued`) so the server can recognise this
@@ -84,6 +92,15 @@ pub(crate) struct RegistrationRunner {
     /// genuine rejections neither triggers a drop nor forgives the earlier
     /// rejection.
     pub consecutive_rejections: Arc<AtomicU32>,
+    /// Consecutive duplicate-instance rejections (#3134) since the last
+    /// successful register. A fence rejection is NOT a credential problem, so
+    /// it never counts toward [`consecutive_rejections`] and never triggers
+    /// the token drop; at
+    /// [`crate::connector::DUPLICATE_REJECTION_STOP_THRESHOLD`] consecutive
+    /// duplicates this runner paces its retries at the reduced frequency and
+    /// self-heals when the owner goes away. Reset to 0 on any success or
+    /// non-duplicate failure. Mirrors the single-runner lane in connector.rs.
+    pub consecutive_duplicate_rejections: Arc<AtomicU64>,
 }
 
 /// Default heartbeat interval — matches Matrix's session-reaper expectation.
@@ -276,29 +293,94 @@ impl RegistrationRunner {
                 Err(e) => {
                     logger.warn(&format!("registration {}: register failed: {e}", self.key));
 
-                    // If the server *rejected* the register (as opposed to a
-                    // transient stream/network blip), the usual cause is a stale
-                    // cached session token that no longer validates — e.g. after
-                    // Matrix redeploys and rotates its session-signing secret.
-                    // After REJECTIONS_BEFORE_TOKEN_DROP consecutive rejections
-                    // we drop it and re-mint auth so the next attempt
-                    // re-registers from scratch (keypair JWT / OTT) instead of
-                    // replaying a credential that will never decode again;
-                    // otherwise the loop retries the dead token forever.
-                    // Transient errors keep the token so a working session
-                    // survives a blip. See `is_registration_rejection` for what
-                    // counts as a rejection.
-                    if is_registration_rejection(&e)
-                        && self
-                            .note_rejection_and_maybe_reset_credentials(&logger)
+                    // Duplicate fence (#3134): the server refused a second
+                    // distinct live connection for an instance_id that already
+                    // has a live, responsive session. A fence rejection is NOT
+                    // a credential problem — the token stays (the
+                    // credential-drop path below is skipped); the streak counts
+                    // toward the reduced-frequency retry lane instead.
+                    let error_text = e.to_string();
+                    if is_duplicate_instance_error(&error_text.to_lowercase()) {
+                        let failures = self
+                            .consecutive_duplicate_rejections
+                            .fetch_add(1, Ordering::SeqCst)
+                            + 1;
+                        let instance_id = self.config.read().await.instance_id.clone();
+                        logger.error(
+                            "Duplicate connector registration rejected",
+                            &duplicate_rejection_log_message(&instance_id, &error_text),
+                        );
+
+                        if should_engage_slow_retry_lane(failures) {
+                            // Reduced-frequency retry lane (#3134, per review:
+                            // never stop retrying on an unattended remote
+                            // deployment). Log the engagement once at the
+                            // threshold, then pace THIS cycle at the slow
+                            // interval — the lane's sleep replaces the fast
+                            // backoff below — and fall through to the reconnect
+                            // attempt. The fence rejects every attempt while
+                            // the owner is alive (a rejected attempt strands
+                            // nothing); when the owner goes away the next
+                            // paced attempt self-heals. The shared channel and
+                            // the other registrations are unaffected.
+                            if failures == DUPLICATE_REJECTION_STOP_THRESHOLD {
+                                logger.error(
+                                    "Reduced-frequency retry engaged (duplicate instance_id)",
+                                    &format!(
+                                        "another live connector owns instance_id '{}': retrying every {} ms until it goes away. Check for a duplicate connector process.",
+                                        instance_id,
+                                        effective_slow_retry_interval_ms(
+                                            self.opts.duplicate_slow_retry_interval_ms,
+                                        )
+                                    ),
+                                );
+                            }
+                            // The lane's sleep replaces the fast backoff below.
+                            if !sleep_with_shutdown(
+                                Duration::from_millis(effective_slow_retry_interval_ms(
+                                    self.opts.duplicate_slow_retry_interval_ms,
+                                )),
+                                &self.shutdown,
+                            )
                             .await
-                    {
-                        logger.warn(&format!(
-                            "registration {}: reset rejected credentials after \
-                             {REJECTIONS_BEFORE_TOKEN_DROP} consecutive rejections; \
-                             re-registering from scratch",
-                            self.key
-                        ));
+                            {
+                                return Ok(());
+                            }
+                            continue;
+                        }
+                        // Below threshold: keep the credentials intact and
+                        // fall through to today's backoff + retry.
+                    } else {
+                        // Any non-duplicate failure breaks the
+                        // consecutive-duplicate streak (only back-to-back
+                        // duplicate rejections stop re-registering).
+                        self.consecutive_duplicate_rejections
+                            .store(0, Ordering::SeqCst);
+
+                        // If the server *rejected* the register (as opposed to a
+                        // transient stream/network blip), the usual cause is a stale
+                        // cached session token that no longer validates — e.g. after
+                        // Matrix redeploys and rotates its session-signing secret.
+                        // After REJECTIONS_BEFORE_TOKEN_DROP consecutive rejections
+                        // we drop it and re-mint auth so the next attempt
+                        // re-registers from scratch (keypair JWT / OTT) instead of
+                        // replaying a credential that will never decode again;
+                        // otherwise the loop retries the dead token forever.
+                        // Transient errors keep the token so a working session
+                        // survives a blip. See `is_registration_rejection` for what
+                        // counts as a rejection.
+                        if is_registration_rejection(&e)
+                            && self
+                                .note_rejection_and_maybe_reset_credentials(&logger)
+                                .await
+                        {
+                            logger.warn(&format!(
+                                "registration {}: reset rejected credentials after \
+                                 {REJECTIONS_BEFORE_TOKEN_DROP} consecutive rejections; \
+                                 re-registering from scratch",
+                                self.key
+                            ));
+                        }
                     }
 
                     if !self.opts.reconnect_enabled {
@@ -502,6 +584,24 @@ impl RegistrationRunner {
         logger: &Logger,
     ) -> Option<StreamOutcome> {
         match msg.message {
+            Some(stream_message::Message::ExecuteRequest(req))
+                if req.capability_id == jobs::CANCEL_CAPABILITY =>
+            {
+                // Platform verb: recall an in-flight job (see `crate::jobs`).
+                let response = self
+                    .jobs
+                    .answer_cancel(req.request_id.clone(), &req.payload);
+                if let Err(e) = tx.send(jobs::execute_response_message(response)).await {
+                    // The job was already aborted; only the reply failed to
+                    // send (stream torn down). Log it so a lost cancel ack is
+                    // visible instead of silent.
+                    logger.warn(&format!(
+                        "registration {}: failed to send matrix.cancel reply: {e}",
+                        self.key
+                    ));
+                }
+                None
+            }
             Some(stream_message::Message::ExecuteRequest(req)) => {
                 let request = SdkExecuteRequest {
                     request_id: req.request_id.clone(),
@@ -521,29 +621,47 @@ impl RegistrationRunner {
                 let key = self.key.clone();
                 let semaphore = self.request_semaphore.clone();
                 let logger = Logger::new("multi/registration/execute");
+                let (ticket, abort_reg) = self.jobs.track(request.request_id.clone());
 
                 tokio::spawn(async move {
-                    // Acquire a permit BEFORE doing user work; released on
-                    // task exit. If the semaphore is closed (only happens
-                    // on runner teardown), drop the request silently.
-                    let permit = match semaphore.acquire_owned().await {
-                        Ok(p) => p,
-                        Err(_) => {
-                            logger.debug(&format!(
-                                "registration {key}: request semaphore closed, dropping execute"
-                            ));
-                            return;
+                    let ticket = ticket;
+                    let work = async {
+                        // Acquire a permit BEFORE doing user work; released on
+                        // task exit. If the semaphore is closed (only happens
+                        // on runner teardown), drop the request silently.
+                        let permit = match semaphore.acquire_owned().await {
+                            Ok(p) => p,
+                            Err(_) => {
+                                logger.debug(&format!(
+                                    "registration {key}: request semaphore closed, dropping execute"
+                                ));
+                                return;
+                            }
+                        };
+                        if let Err(e) = handle_execute(
+                            connector,
+                            request,
+                            tx,
+                            metrics,
+                            &logger,
+                            &key,
+                            Some(&ticket),
+                        )
+                        .await
+                        {
+                            logger.error(
+                                &format!("registration {key}: execute dispatch failed"),
+                                &e.to_string(),
+                            );
                         }
+                        drop(permit);
                     };
-                    if let Err(e) =
-                        handle_execute(connector, request, tx, metrics, &logger, &key).await
+                    if futures::future::Abortable::new(work, abort_reg)
+                        .await
+                        .is_err()
                     {
-                        logger.error(
-                            &format!("registration {key}: execute dispatch failed"),
-                            &e.to_string(),
-                        );
+                        tracing::info!("Job aborted via matrix.cancel");
                     }
-                    drop(permit);
                 });
                 None
             }
@@ -580,26 +698,62 @@ impl RegistrationRunner {
                     let mut m = self.metrics.lock().await;
                     m.last_connected_at_ms = Some(now_ms());
                 } else {
-                    logger.warn(&format!(
-                        "registration {}: in-stream re-register failed: status='{}' error='{}'",
-                        self.key, resp.status, resp.error
-                    ));
-                    // Rejected re-registration: after REJECTIONS_BEFORE_TOKEN_DROP
-                    // consecutive rejections, drop the cached session token and
-                    // re-mint auth so the reconnect after this stream tears down
-                    // re-registers from scratch instead of replaying the
-                    // credential the server just refused. Shares the counter
-                    // with the initial-register path.
-                    if self
-                        .note_rejection_and_maybe_reset_credentials(logger)
-                        .await
-                    {
+                    let error_lower = resp.error.to_lowercase();
+                    if is_duplicate_instance_error(&error_lower) {
+                        // Fence rejection on the in-stream path (post-approval
+                        // JWT upgrade): a duplicate rejection is NOT a
+                        // credential problem, so it must never feed the K=2
+                        // token-drop counter. Count the shared duplicate
+                        // streak instead; when the stream later tears down,
+                        // the outer register loop engages the
+                        // reduced-frequency retry lane and self-heals when the
+                        // owner goes away. Mirrors the WS in-stream arm in
+                        // ws_multiplex.rs.
+                        let failures = self
+                            .consecutive_duplicate_rejections
+                            .fetch_add(1, Ordering::SeqCst)
+                            + 1;
+                        let instance_id = self.config.read().await.instance_id.clone();
+                        logger.error(
+                            "Duplicate connector registration rejected (in-stream re-register)",
+                            &duplicate_rejection_log_message(&instance_id, &resp.error),
+                        );
+                        if should_engage_slow_retry_lane(failures) {
+                            logger.error(
+                                "Reduced-frequency retry engaged (duplicate instance_id)",
+                                &format!(
+                                    "{} consecutive duplicate rejections for instance_id '{}': the outer register loop paces at the reduced frequency and self-heals when the owner goes away.",
+                                    failures, instance_id
+                                ),
+                            );
+                        }
+                    } else {
+                        // Non-duplicate failure: reset the duplicate streak
+                        // (only back-to-back duplicate rejections engage the
+                        // lane), then run the existing credential-drop path:
+                        // after REJECTIONS_BEFORE_TOKEN_DROP consecutive
+                        // rejections, drop the cached session token and
+                        // re-mint auth so the reconnect after this stream
+                        // tears down re-registers from scratch instead of
+                        // replaying the credential the server just refused.
+                        // Shares the counter with the initial-register path.
+                        self.consecutive_duplicate_rejections
+                            .store(0, Ordering::SeqCst);
                         logger.warn(&format!(
-                            "registration {}: reset rejected credentials after \
-                             {REJECTIONS_BEFORE_TOKEN_DROP} consecutive rejections \
-                             (in-stream re-register)",
-                            self.key
+                            "registration {}: in-stream re-register failed: status='{}' error='{}'",
+                            self.key, resp.status, resp.error
                         ));
+                        if self
+                            .note_rejection_and_maybe_reset_credentials(logger)
+                            .await
+                        {
+                            logger.warn(&format!(
+                                "registration {}: reset rejected credentials after \
+                                 {REJECTIONS_BEFORE_TOKEN_DROP} consecutive rejections \
+                                 (in-stream re-register)",
+                                self.key
+                            ));
+                        }
                     }
                 }
                 None
@@ -818,6 +972,8 @@ impl RegistrationRunner {
     /// single later rejection never inherits stale count from an earlier blip.
     fn note_registration_success(&self) {
         self.consecutive_rejections.store(0, Ordering::SeqCst);
+        self.consecutive_duplicate_rejections
+            .store(0, Ordering::SeqCst);
     }
 
     /// Load previously-saved credentials (Keycloak `client_id` + private key,
@@ -1068,6 +1224,7 @@ async fn handle_execute(
     metrics: Arc<Mutex<ConnectorMetrics>>,
     logger: &Logger,
     key: &RegistrationKey,
+    ticket: Option<&JobTicket>,
 ) -> Result<()> {
     let start = Instant::now();
     {
@@ -1081,9 +1238,15 @@ async fn handle_execute(
         &request.payload,
         request.payload_encoding,
     ) {
-        Ok(req_data) => match connector
-            .execute_with_context(req_data, request.capability_id.as_deref(), &request.context)
-            .await
+        Ok(req_data) => match jobs::run_with_deadline(
+            &request.context,
+            connector.execute_with_context(
+                req_data,
+                request.capability_id.as_deref(),
+                &request.context,
+            ),
+        )
+        .await
         {
             Ok(resp_data) => {
                 // Never put a blank failure on the wire (Strike48/matrix#4715,
@@ -1179,6 +1342,14 @@ async fn handle_execute(
             },
         )),
     };
+
+    // A cancel that claimed this job already answered for it.
+    if ticket.is_some_and(|t| !t.complete()) {
+        logger.info(&format!(
+            "registration {key}: job cancelled before its result was sent; result dropped"
+        ));
+        return Ok(());
+    }
 
     tx.send(message).await.map_err(|e| {
         ConnectorError::StreamError(format!("failed to send execute response: {e}"))
@@ -1421,9 +1592,11 @@ mod tests {
             shutdown: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(Mutex::new(ConnectorMetrics::default())),
             opts,
+            jobs: crate::jobs::JobRegistry::new(),
             request_semaphore: Arc::new(Semaphore::new(8)),
             session_token: Arc::new(RwLock::new(None)),
             consecutive_rejections: Arc::new(AtomicU32::new(0)),
+            consecutive_duplicate_rejections: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1697,9 +1870,11 @@ mod tests {
             shutdown: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(Mutex::new(ConnectorMetrics::default())),
             opts: MultiTransportOptions::default(),
+            jobs: crate::jobs::JobRegistry::new(),
             request_semaphore: Arc::new(Semaphore::new(8)),
             session_token: Arc::new(RwLock::new(None)),
             consecutive_rejections: Arc::new(AtomicU32::new(0)),
+            consecutive_duplicate_rejections: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1835,9 +2010,11 @@ mod tests {
             shutdown: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(Mutex::new(ConnectorMetrics::default())),
             opts: opts.clone(),
+            jobs: crate::jobs::JobRegistry::new(),
             request_semaphore: Arc::new(Semaphore::new(8)),
             session_token: Arc::new(RwLock::new(None)),
             consecutive_rejections: Arc::new(AtomicU32::new(0)),
+            consecutive_duplicate_rejections: Arc::new(AtomicU64::new(0)),
         };
         assert_eq!(
             runner.opts.heartbeat_interval,
@@ -1979,7 +2156,7 @@ mod tests {
         };
 
         let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
-        handle_execute(connector, request, tx, metrics, &logger, &key)
+        handle_execute(connector, request, tx, metrics, &logger, &key, None)
             .await
             .expect("handle_execute should succeed");
 
@@ -2032,7 +2209,7 @@ mod tests {
         };
 
         let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
-        handle_execute(connector, request, tx, metrics, &logger, &key)
+        handle_execute(connector, request, tx, metrics, &logger, &key, None)
             .await
             .expect("handle_execute should succeed");
 
@@ -2114,7 +2291,7 @@ mod tests {
         };
 
         let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
-        handle_execute(connector, request, tx, metrics, &logger, &key)
+        handle_execute(connector, request, tx, metrics, &logger, &key, None)
             .await
             .expect("handle_execute should succeed");
 
@@ -2275,6 +2452,106 @@ mod tests {
         );
     }
 
+    /// A duplicate-instance fence rejection on the IN-STREAM re-register path
+    /// (post-approval JWT upgrade) must never feed the K=2 token-drop counter:
+    /// a duplicate rejection is not a credential problem, so there is nothing
+    /// to wipe. It counts the shared duplicate streak instead, and the streak
+    /// resets on the first non-duplicate failure. Regression for the missed
+    /// sibling path of the classify-first treatment (the WS twin is
+    /// `ws_dispatch_in_stream_duplicate_rejection_never_drops_token`).
+    #[tokio::test]
+    async fn dispatch_in_stream_reregister_duplicate_never_drops_token() {
+        let runner = make_runner_for_dispatch_tests();
+        let logger = Logger::new("test");
+        *runner.session_token.write().await = Some("stale-token".into());
+        let (tx, _rx) = mpsc::channel::<StreamMessage>(8);
+        let mut last_hb = Instant::now();
+
+        let duplicate_rejection = |error: &str| StreamMessage {
+            message: Some(stream_message::Message::RegisterResponse(
+                proto::RegisterConnectorResponse {
+                    success: false,
+                    status: 3,
+                    error: error.to_string(),
+                    ..Default::default()
+                },
+            )),
+        };
+
+        // Three consecutive duplicate fence rejections: the token must
+        // survive every one of them (K=2 would have dropped it twice over if
+        // duplicates fed the counter), and the streak must count them.
+        for i in 1..=3 {
+            let outcome = runner
+                .dispatch_inbound(
+                    duplicate_rejection(
+                        "duplicate_instance: another live connector is already registered",
+                    ),
+                    &tx,
+                    &mut last_hb,
+                    &mut HashMap::new(),
+                    &logger,
+                )
+                .await;
+            assert!(
+                outcome.is_none(),
+                "a fence rejection must not tear the stream"
+            );
+            assert!(
+                runner.session_token.read().await.is_some(),
+                "duplicate rejection {i} must NOT drop the session token"
+            );
+            assert_eq!(
+                runner.consecutive_rejections.load(Ordering::SeqCst),
+                0,
+                "duplicate rejection {i} must not feed the token-drop counter"
+            );
+        }
+        assert_eq!(
+            runner
+                .consecutive_duplicate_rejections
+                .load(Ordering::SeqCst),
+            3,
+            "the duplicate streak must count the fence rejections"
+        );
+
+        // A NON-duplicate rejection resets the duplicate streak and resumes
+        // the existing K=2 credential-drop path (drop on the 2nd).
+        runner
+            .dispatch_inbound(
+                duplicate_rejection("Registration failed"),
+                &tx,
+                &mut last_hb,
+                &mut HashMap::new(),
+                &logger,
+            )
+            .await;
+        assert_eq!(
+            runner
+                .consecutive_duplicate_rejections
+                .load(Ordering::SeqCst),
+            0,
+            "a non-duplicate failure must reset the duplicate streak"
+        );
+        assert!(
+            runner.session_token.read().await.is_some(),
+            "first non-duplicate rejection must retain the token (K=2)"
+        );
+        runner
+            .dispatch_inbound(
+                duplicate_rejection("Registration failed"),
+                &tx,
+                &mut last_hb,
+                &mut HashMap::new(),
+                &logger,
+            )
+            .await;
+        assert!(
+            runner.session_token.read().await.is_none(),
+            "second consecutive non-duplicate rejection must drop the token (K=2)"
+        );
+    }
+
     #[test]
     fn auth_mint_budget_is_bounded_and_scales_with_connect_timeout() {
         // The inline JWT mint must never be unbounded: an unreachable Keycloak
@@ -2417,6 +2694,257 @@ mod tests {
             runner.session_token.read().await.as_deref(),
             Some("fresh-token"),
             "successful re-register must persist the freshly issued session token"
+        );
+    }
+
+    fn cancel_msg(reply_id: &str, target: &str) -> StreamMessage {
+        StreamMessage {
+            message: Some(stream_message::Message::ExecuteRequest(
+                proto::ExecuteRequest {
+                    request_id: reply_id.into(),
+                    payload: serde_json::json!({ "cancel_request_id": target })
+                        .to_string()
+                        .into_bytes(),
+                    payload_encoding: PayloadEncoding::Json as i32,
+                    capability_id: crate::jobs::CANCEL_CAPABILITY.into(),
+                    ..Default::default()
+                },
+            )),
+        }
+    }
+
+    fn execute_reply(msg: StreamMessage) -> proto::ExecuteResponse {
+        match msg.message {
+            Some(stream_message::Message::ExecuteResponse(r)) => r,
+            other => panic!("expected ExecuteResponse, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_matrix_cancel_stops_a_tracked_job() {
+        let runner = make_runner_for_dispatch_tests();
+        let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
+        let mut last_hb = Instant::now();
+        let logger = Logger::new("test");
+        let (ticket, _reg) = runner.jobs.track("job-1".into());
+
+        let outcome = runner
+            .dispatch_inbound(
+                cancel_msg("c-1", "job-1"),
+                &tx,
+                &mut last_hb,
+                &mut HashMap::new(),
+                &logger,
+            )
+            .await;
+        assert!(outcome.is_none());
+        let reply = execute_reply(rx.try_recv().expect("cancel must be answered"));
+        assert_eq!(reply.request_id, "c-1");
+        assert!(reply.success);
+        assert!(
+            !ticket.complete(),
+            "the cancelled job must not send its result"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_matrix_cancel_for_unknown_job_is_not_observed() {
+        let runner = make_runner_for_dispatch_tests();
+        let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
+        let mut last_hb = Instant::now();
+        let logger = Logger::new("test");
+
+        runner
+            .dispatch_inbound(
+                cancel_msg("c-2", "job-never"),
+                &tx,
+                &mut last_hb,
+                &mut HashMap::new(),
+                &logger,
+            )
+            .await;
+        let reply = execute_reply(rx.try_recv().expect("cancel must be answered"));
+        assert!(!reply.success);
+        assert!(
+            reply
+                .error
+                .starts_with(crate::jobs::UNKNOWN_REQUEST_ERROR_PREFIX)
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatched_job_is_tracked_until_it_answers() {
+        let runner = make_runner_for_dispatch_tests();
+        let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
+        let mut last_hb = Instant::now();
+        let logger = Logger::new("test");
+        let msg = StreamMessage {
+            message: Some(stream_message::Message::ExecuteRequest(
+                proto::ExecuteRequest {
+                    request_id: "job-2".into(),
+                    payload: b"{}".to_vec(),
+                    payload_encoding: PayloadEncoding::Json as i32,
+                    ..Default::default()
+                },
+            )),
+        };
+
+        runner
+            .dispatch_inbound(msg, &tx, &mut last_hb, &mut HashMap::new(), &logger)
+            .await;
+        let reply = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("job must answer")
+            .expect("channel open");
+        assert_eq!(execute_reply(reply).request_id, "job-2");
+        assert!(
+            runner.jobs.is_empty(),
+            "a finished job leaves no registry entry"
+        );
+    }
+
+    /// A connector whose `execute` never finishes on its own, so only the
+    /// deadline can end the job.
+    struct SleepyConn;
+    impl BaseConnector for SleepyConn {
+        fn connector_type(&self) -> &str {
+            "test_conn"
+        }
+        fn version(&self) -> &str {
+            "0.0.0"
+        }
+        fn execute(
+            &self,
+            _: serde_json::Value,
+            _: Option<&str>,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + '_>>
+        {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok(serde_json::json!({}))
+            })
+        }
+    }
+
+    fn make_runner_with_connector(connector: Arc<dyn BaseConnector>) -> RegistrationRunner {
+        let mut runner = make_runner_for_dispatch_tests();
+        runner.connector = connector;
+        runner
+    }
+
+    /// Finding #2: a dispatched job whose `context["matrix.deadline_ms"]`
+    /// elapses before `execute` finishes is answered on the job's own id with
+    /// `success: false` and the `Timeout: deadline exceeded: …` error text,
+    /// and leaves no registry entry.
+    #[tokio::test]
+    async fn dispatch_execute_honours_deadline() {
+        let runner = make_runner_with_connector(Arc::new(SleepyConn));
+        let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
+        let mut last_hb = Instant::now();
+        let logger = Logger::new("test");
+
+        let mut ctx = HashMap::new();
+        ctx.insert(
+            crate::context::keys::MATRIX_DEADLINE_MS.to_string(),
+            "50".to_string(),
+        );
+        let msg = StreamMessage {
+            message: Some(stream_message::Message::ExecuteRequest(
+                proto::ExecuteRequest {
+                    request_id: "job-deadline".into(),
+                    payload: b"{}".to_vec(),
+                    payload_encoding: PayloadEncoding::Json as i32,
+                    context: ctx,
+                    ..Default::default()
+                },
+            )),
+        };
+
+        runner
+            .dispatch_inbound(msg, &tx, &mut last_hb, &mut HashMap::new(), &logger)
+            .await;
+
+        let reply = execute_reply(
+            tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("deadline must produce a reply")
+                .expect("channel open"),
+        );
+        assert_eq!(reply.request_id, "job-deadline");
+        assert!(!reply.success, "a deadline overrun must fail the job");
+        assert!(
+            reply.error.contains("deadline"),
+            "error should name the deadline, got: {}",
+            reply.error
+        );
+        assert!(
+            runner.jobs.is_empty(),
+            "a timed-out job leaves no registry entry"
+        );
+    }
+
+    /// A cancel that lands while `handle_execute` is parked at the
+    /// post-execute `metrics.lock().await` (the window before `complete()`)
+    /// must claim the job's outcome, so the job's own `ExecuteResponse` is
+    /// never sent. The window is made observable by holding the metrics lock.
+    /// Removing the `complete()` check in this runner's `handle_execute` turns
+    /// this RED (the result is then sent). Mirrors the single runner's
+    /// `single_runner_cancel_before_complete_drops_the_jobs_result`.
+    #[tokio::test]
+    async fn grpc_multi_cancel_before_complete_drops_the_jobs_result() {
+        use crate::jobs::CancelOutcome;
+
+        let registry = JobRegistry::new();
+        let (ticket, _abort_reg) = registry.track("job-race".into());
+        let (tx, mut rx) = mpsc::channel::<StreamMessage>(8);
+        let metrics = Arc::new(Mutex::new(ConnectorMetrics::default()));
+        let key = RegistrationKey {
+            tenant_id: "t".into(),
+            connector_type: "test_conn".into(),
+            instance_id: "i".into(),
+        };
+        let logger = Logger::new("test");
+        let request = SdkExecuteRequest {
+            request_id: "job-race".into(),
+            payload: b"{}".to_vec(),
+            payload_encoding: PayloadEncoding::Json,
+            context: HashMap::new(),
+            capability_id: None,
+        };
+
+        // Park handle_execute at a metrics.lock() await by holding the lock.
+        let guard = metrics.lock().await;
+        let fut = handle_execute(
+            Arc::new(NoopConn),
+            request,
+            tx,
+            metrics.clone(),
+            &logger,
+            &key,
+            Some(&ticket),
+        );
+        tokio::pin!(fut);
+        tokio::select! {
+            _ = &mut fut => panic!("handle_execute must block on the held metrics lock"),
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+
+        // The cancel lands while the job is parked: it claims the entry.
+        assert_eq!(
+            registry.cancel("job-race"),
+            CancelOutcome::Stopped {
+                request_id: "job-race".into()
+            }
+        );
+
+        // Release the lock; handle_execute sees complete()==false and drops
+        // its result instead of sending it.
+        drop(guard);
+        fut.await
+            .expect("handle_execute returns Ok even when it drops the result");
+        assert!(
+            rx.try_recv().is_err(),
+            "a cancelled job must not send its own ExecuteResponse"
         );
     }
 }

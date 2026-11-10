@@ -159,6 +159,7 @@ impl CredentialHarvestTool {
     async fn get_ssh_fingerprint(key_path: &Path) -> Result<String> {
         let output = Command::new("ssh-keygen")
             .args(["-lf", key_path.to_str().unwrap()])
+            .kill_on_drop(true)
             .output()
             .await
             .map_err(|e| Error::ToolExecution(format!("ssh-keygen failed: {}", e)))?;
@@ -263,6 +264,7 @@ impl CredentialHarvestTool {
                         "f",
                         "-readable",
                     ])
+                    .kill_on_drop(true)
                     .output()
                     .await
                 {
