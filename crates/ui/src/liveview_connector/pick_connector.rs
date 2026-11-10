@@ -219,10 +219,21 @@ impl BaseConnector for PickConnector {
         let mut metadata = HashMap::new();
         metadata.insert("app_manifest".to_string(), manifest_json);
         metadata.insert("timeout_ms".to_string(), "300000".to_string());
-        metadata.insert(
-            ENGAGEMENT_ISOLATION_METADATA_KEY.to_string(),
-            ENGAGEMENT_ISOLATION_VERSION.to_string(),
-        );
+        // Test identities come from one operator file per Pick and serve every
+        // engagement on it; per-engagement provisioning waits on pick#312. A
+        // Pick holding them must stay Exclusive, so it does not claim isolation.
+        if self.identities.is_empty() {
+            metadata.insert(
+                ENGAGEMENT_ISOLATION_METADATA_KEY.to_string(),
+                ENGAGEMENT_ISOLATION_VERSION.to_string(),
+            );
+        } else {
+            tracing::info!(
+                identities = self.identities.len(),
+                "test identities are loaded Pick-wide; not advertising engagement isolation, \
+                 so Matrix keeps this Pick Exclusive"
+            );
+        }
         metadata.insert(
             MAX_CONCURRENT_TOOLS_METADATA_KEY.to_string(),
             self.call_slots.limit().to_string(),
@@ -1297,6 +1308,29 @@ mod tests {
                 .get(MAX_CONCURRENT_TOOLS_METADATA_KEY)
                 .map(String::as_str),
             Some("3")
+        );
+    }
+
+    /// Identities are loaded once per Pick and shared by every engagement on it
+    /// until pick#312, so a Pick holding any must not claim isolation, or Matrix
+    /// could share one operator's credentials across engagements. Inserting the
+    /// flag unconditionally in `metadata()` turns this red.
+    #[test]
+    fn metadata_withholds_isolation_while_identities_are_loaded() {
+        let mut connector = test_connector();
+        connector.identities = Arc::new(pentest_core::identity::IdentityStore::from_pairs([(
+            "user_a",
+            pentest_core::specialist_spawner::IdentityRole::User,
+            pentest_core::identity::SessionMaterial::new("token"),
+        )]));
+        let metadata = connector.metadata();
+        assert!(
+            !metadata.contains_key(ENGAGEMENT_ISOLATION_METADATA_KEY),
+            "a Pick with Pick-wide identities must not advertise isolation: {metadata:?}"
+        );
+        assert!(
+            metadata.contains_key(MAX_CONCURRENT_TOOLS_METADATA_KEY),
+            "the call limit is advertised either way"
         );
     }
 
