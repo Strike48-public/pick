@@ -491,6 +491,20 @@ mod tests {
         );
     }
 
+    /// The tool-only connector (the mobile shell path) builds its ToolContext
+    /// from the shared workspace and sets no evidence scope, so it cannot keep
+    /// engagements apart and must never claim it (pick#513). Only the LiveView
+    /// `PickConnector` advertises `engagement_isolation`, behind its own gate.
+    /// Adding the key to `ToolConnector::metadata` turns this red.
+    #[test]
+    fn metadata_never_advertises_engagement_isolation() {
+        let metadata = test_connector().metadata();
+        assert!(
+            !metadata.contains_key("engagement_isolation"),
+            "tool-only connector must stay Exclusive: {metadata:?}"
+        );
+    }
+
     /// The failure line an operator greps for must carry the platform ids on
     /// its own, without joining it to a separate `[execreq-ctx]` line
     /// (pick#476). Drives the real `execute_with_context` hop with an unknown
