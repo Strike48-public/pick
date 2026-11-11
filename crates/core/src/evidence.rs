@@ -62,10 +62,13 @@ impl EvidenceScope {
     /// never read, list or upload another's files. The sandboxes mount only
     /// this directory as `/workspace`.
     ///
-    /// The id becomes a path segment, so it must be 1 to 128 ASCII letters,
-    /// digits, `-` or `_`. Anything else (a `/`, `..`, a NUL) is refused rather
-    /// than rewritten, because two different ids must never map to one
-    /// directory.
+    /// The id becomes a path segment, so it must be 1 to 128 lowercase ASCII
+    /// letters, digits, `-` or `_`. Anything else (a `/`, `..`, a NUL, an
+    /// uppercase letter) is refused rather than rewritten, because two
+    /// different ids must never map to one directory. Uppercase is refused
+    /// because macOS and Windows filesystems ignore case, so `Eng-A` and
+    /// `eng-a` would share a directory there. Matrix engagement ids are
+    /// lowercase UUIDs, so a real id always passes.
     pub fn workspace_dir(
         &self,
         base: &std::path::Path,
@@ -76,7 +79,7 @@ impl EvidenceScope {
                 Ok(base.join(ENGAGEMENTS_DIR).join(id))
             }
             Self::Engagement(_) => Err(crate::error::Error::InvalidParams(
-                "engagement id is not a safe workspace directory name (1-128 of A-Z a-z 0-9 - _)"
+                "engagement id is not a safe workspace directory name (1-128 of a-z 0-9 - _)"
                     .to_string(),
             )),
         }
@@ -91,7 +94,7 @@ fn is_safe_path_segment(id: &str) -> bool {
     (1..=128).contains(&id.len())
         && id
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
 /// Lifecycle state of an evidence node as seen by the Validator Agent.
@@ -400,6 +403,30 @@ mod tests {
         assert!(EvidenceScope::Engagement("a".repeat(128))
             .workspace_dir(base)
             .is_ok());
+    }
+
+    /// On a case-insensitive filesystem (macOS, Windows) `Eng-A` and `eng-a`
+    /// name one directory, so two engagements would share files. Uppercase is
+    /// refused; a lowercase UUID, which is what Matrix sends, is accepted.
+    /// Allowing ASCII uppercase in `is_safe_path_segment` turns this red.
+    #[test]
+    fn workspace_dir_refuses_uppercase_so_ids_cannot_collide_by_case() {
+        let base = std::path::Path::new("/ws");
+        for bad in ["Eng-A", "ENG", "0193a1B2-7c3d"] {
+            assert!(
+                EvidenceScope::Engagement(bad.to_string())
+                    .workspace_dir(base)
+                    .is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+        let uuid = "0193a1b2-7c3d-7e4f-8a9b-0c1d2e3f4a5b";
+        assert_eq!(
+            EvidenceScope::Engagement(uuid.to_string())
+                .workspace_dir(base)
+                .unwrap(),
+            base.join(ENGAGEMENTS_DIR).join(uuid)
+        );
     }
 
     fn fixture() -> EvidenceNode {
