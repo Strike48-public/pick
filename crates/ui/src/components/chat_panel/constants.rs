@@ -424,3 +424,205 @@ Then say one sentence: "No pending evidence to validate." Do not pad.
 - Never refer to yourself in the third person
 - Never wrap the JSON in extra prose inside the fenced block — the block contains JSON only
 "#;
+
+/// Why the assistant persona could not be created (pick#393).
+///
+/// Every Matrix client failure is a flat `Error::Matrix(String)`, so the class
+/// is read from the error text. A non-2xx response carries its HTTP status
+/// (`GraphQL request failed: <status> - <body>`), and the status decides the
+/// class, because the body is free text that can say anything. The text
+/// markers apply only to GraphQL-level errors, which carry no status. There,
+/// session problems are checked first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssistantSetupFailure {
+    /// The session token is missing, expired, or rejected: sign in again.
+    SessionInvalid,
+    /// Signed in, but the user lacks persona/agent-create permission.
+    NotAuthorized,
+    /// Anything else: registration not finished, transport, server error.
+    Other,
+}
+
+const SESSION_INVALID_MARKERS: &[&str] = &[
+    "unauthorized",
+    "unauthenticated",
+    "not authenticated",
+    "auth token required",
+    "jwt",
+    "token expired",
+    "token has expired",
+    "session expired",
+    "session has expired",
+];
+
+const NOT_AUTHORIZED_MARKERS: &[&str] = &["not authorized", "forbidden", "permission denied"];
+
+/// Prefix of the Matrix client's non-2xx error (`crates/core/src/matrix/client.rs`).
+const HTTP_FAILURE_PREFIX: &str = "graphql request failed: ";
+
+/// The HTTP status of a non-2xx Matrix response, if `err` carries one.
+fn http_status(err: &str) -> Option<u16> {
+    let rest = &err[err.find(HTTP_FAILURE_PREFIX)? + HTTP_FAILURE_PREFIX.len()..];
+    let digits = rest.get(..3)?;
+    if digits.bytes().all(|b| b.is_ascii_digit()) {
+        digits.parse().ok()
+    } else {
+        None
+    }
+}
+
+fn classify_assistant_setup_failure(err: &str) -> AssistantSetupFailure {
+    let err = err.to_ascii_lowercase();
+    match http_status(&err) {
+        Some(401) => return AssistantSetupFailure::SessionInvalid,
+        Some(403) => return AssistantSetupFailure::NotAuthorized,
+        Some(_) => return AssistantSetupFailure::Other,
+        None => {}
+    }
+    let has_any = |markers: &[&str]| markers.iter().any(|m| err.contains(m));
+    if has_any(SESSION_INVALID_MARKERS) {
+        AssistantSetupFailure::SessionInvalid
+    } else if has_any(NOT_AUTHORIZED_MARKERS) {
+        AssistantSetupFailure::NotAuthorized
+    } else {
+        AssistantSetupFailure::Other
+    }
+}
+
+/// User-facing message for a failed persona create, keeping the raw error
+/// visible and pointing at the likely fix for its class (pick#393).
+pub fn assistant_setup_failure_message(err: &str) -> String {
+    let hint = match classify_assistant_setup_failure(err) {
+        AssistantSetupFailure::SessionInvalid => {
+            "Your session has expired or was rejected - sign in again."
+        }
+        AssistantSetupFailure::NotAuthorized => {
+            "Your account is not allowed to set up the assistant in this workspace - ask a \
+             workspace admin to grant persona (agent) create permission."
+        }
+        AssistantSetupFailure::Other => {
+            "This usually means the connector didn't finish registering - try again, or check \
+             the server connection."
+        }
+    };
+    format!("Couldn't set up the assistant: {err}. {hint}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persona_authz_denial_is_not_authorized() {
+        // The error observed in pick#393, as `create_agent` surfaces it.
+        let err = "matrix: GraphQL errors: Not authorized to create personas";
+        assert_eq!(
+            classify_assistant_setup_failure(err),
+            AssistantSetupFailure::NotAuthorized
+        );
+        let msg = assistant_setup_failure_message(err);
+        assert!(msg.contains("persona (agent) create permission"), "{msg}");
+        assert!(!msg.contains("didn't finish registering"), "{msg}");
+        assert!(
+            msg.contains("Not authorized to create personas"),
+            "raw error kept: {msg}"
+        );
+    }
+
+    #[test]
+    fn http_forbidden_is_not_authorized() {
+        let err = "GraphQL request failed: 403 Forbidden - {}";
+        assert_eq!(
+            classify_assistant_setup_failure(err),
+            AssistantSetupFailure::NotAuthorized
+        );
+    }
+
+    #[test]
+    fn http_status_decides_over_body_text() {
+        // The body is free text: a 403 that says "unauthorized" is still a
+        // permission denial, not an expired session.
+        let err = "matrix: GraphQL request failed: 403 Forbidden - \
+                   {\"errors\":[{\"message\":\"unauthorized\"}]}";
+        assert_eq!(
+            classify_assistant_setup_failure(err),
+            AssistantSetupFailure::NotAuthorized
+        );
+        let err = "GraphQL request failed: 401 Unauthorized - permission denied";
+        assert_eq!(
+            classify_assistant_setup_failure(err),
+            AssistantSetupFailure::SessionInvalid
+        );
+        // A 5xx is a server fault, whatever its body mentions: neither signing
+        // in again nor asking an admin for permission would fix it.
+        let err = "matrix: GraphQL request failed: 500 Internal Server Error - \
+                   ** (Joken.Error) jwt signer misconfigured";
+        assert_eq!(
+            classify_assistant_setup_failure(err),
+            AssistantSetupFailure::Other
+        );
+    }
+
+    #[test]
+    fn permission_markers_are_not_authorized() {
+        // GraphQL-level inputs, one per marker ("not authorized" is covered
+        // by the pick#393 case above).
+        for err in [
+            "GraphQL errors: Forbidden",
+            "GraphQL errors: Permission denied",
+        ] {
+            assert_eq!(
+                classify_assistant_setup_failure(err),
+                AssistantSetupFailure::NotAuthorized,
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_failures_ask_for_sign_in() {
+        // One GraphQL-level input per session marker, each matching only that
+        // marker, so dropping any marker turns this test red.
+        for err in [
+            "GraphQL request failed: 401 Unauthorized - {}",
+            "GraphQL errors: User is unauthorized",
+            "GraphQL errors: Unauthenticated",
+            "matrix: Auth token required",
+            "GraphQL errors: JWT has expired",
+            "GraphQL errors: not authenticated",
+            "GraphQL errors: Token expired",
+            "GraphQL errors: Token has expired",
+            "GraphQL errors: Session expired",
+            "GraphQL errors: Session has expired",
+        ] {
+            assert_eq!(
+                classify_assistant_setup_failure(err),
+                AssistantSetupFailure::SessionInvalid,
+                "{err}"
+            );
+            assert!(
+                assistant_setup_failure_message(err).contains("sign in again"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_failures_keep_the_registration_hint() {
+        for err in [
+            "error sending request for url (https://example.invalid/api/v1alpha)",
+            "GraphQL errors: A persona with that name already exists",
+            "GraphQL response contained no data",
+        ] {
+            assert_eq!(
+                classify_assistant_setup_failure(err),
+                AssistantSetupFailure::Other,
+                "{err}"
+            );
+            assert!(
+                assistant_setup_failure_message(err).contains("didn't finish registering"),
+                "{err}"
+            );
+        }
+    }
+}
