@@ -55,6 +55,43 @@ impl EvidenceScope {
             _ => Self::Default,
         }
     }
+
+    /// The workspace directory a call in this scope uses under the Pick's
+    /// workspace `base` (pick#513): `base` itself for `Default`, and
+    /// `base/engagements/<id>` for an engagement, so one engagement's tools
+    /// never read, list or upload another's files. The sandboxes mount only
+    /// this directory as `/workspace`.
+    ///
+    /// The id becomes a path segment, so it must be 1 to 128 ASCII letters,
+    /// digits, `-` or `_`. Anything else (a `/`, `..`, a NUL) is refused rather
+    /// than rewritten, because two different ids must never map to one
+    /// directory.
+    pub fn workspace_dir(
+        &self,
+        base: &std::path::Path,
+    ) -> crate::error::Result<std::path::PathBuf> {
+        match self {
+            Self::Default => Ok(base.to_path_buf()),
+            Self::Engagement(id) if is_safe_path_segment(id) => {
+                Ok(base.join(ENGAGEMENTS_DIR).join(id))
+            }
+            Self::Engagement(_) => Err(crate::error::Error::InvalidParams(
+                "engagement id is not a safe workspace directory name (1-128 of A-Z a-z 0-9 - _)"
+                    .to_string(),
+            )),
+        }
+    }
+}
+
+/// Directory under the Pick workspace that holds one subdirectory per
+/// engagement (pick#513).
+pub const ENGAGEMENTS_DIR: &str = "engagements";
+
+fn is_safe_path_segment(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Lifecycle state of an evidence node as seen by the Validator Agent.
@@ -323,6 +360,46 @@ mod tests {
             EvidenceScope::Default,
             "a blank id must not name an engagement"
         );
+    }
+
+    #[test]
+    fn workspace_dir_is_per_engagement_and_default_keeps_the_base() {
+        let base = std::path::Path::new("/ws");
+        let scope = |id: &str| EvidenceScope::Engagement(id.to_string());
+        assert_eq!(EvidenceScope::Default.workspace_dir(base).unwrap(), base);
+        assert_eq!(
+            scope("0b9c-4e2f_a1").workspace_dir(base).unwrap(),
+            base.join("engagements").join("0b9c-4e2f_a1")
+        );
+        assert_ne!(
+            scope("eng-a").workspace_dir(base).unwrap(),
+            scope("eng-b").workspace_dir(base).unwrap()
+        );
+    }
+
+    #[test]
+    fn workspace_dir_refuses_ids_that_are_not_a_safe_segment() {
+        let base = std::path::Path::new("/ws");
+        let long = "a".repeat(129);
+        for bad in [
+            "..",
+            "../eng-b",
+            "eng/b",
+            "eng.b",
+            "a\0b",
+            "eng b",
+            long.as_str(),
+        ] {
+            assert!(
+                EvidenceScope::Engagement(bad.to_string())
+                    .workspace_dir(base)
+                    .is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+        assert!(EvidenceScope::Engagement("a".repeat(128))
+            .workspace_dir(base)
+            .is_ok());
     }
 
     fn fixture() -> EvidenceNode {

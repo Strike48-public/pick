@@ -157,6 +157,7 @@ impl PentestTool for SpawnSpecialistTool {
                 input,
                 aggression,
                 parent_agent_name,
+                ctx.evidence_scope(),
                 matrix_client.as_ref(),
             )
             .await?;
@@ -174,6 +175,7 @@ async fn spawn_specialist_impl(
     input: SpawnSpecialistInput,
     aggression: AggressionLevel,
     parent_agent_name: &str,
+    scope: &pentest_core::evidence::EvidenceScope,
     matrix_client: &MatrixChatClient,
 ) -> Result<SpawnSpecialistResult> {
     let spawner = SpecialistSpawner::new(aggression);
@@ -283,6 +285,7 @@ async fn spawn_specialist_impl(
             input.specialist_type,
             context,
             parent_agent_name,
+            scope,
         )
         .await
     {

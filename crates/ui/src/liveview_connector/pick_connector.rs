@@ -478,6 +478,30 @@ impl BaseConnector for PickConnector {
                     );
                     ctx = ctx.with_evidence_scope(evidence_scope.clone());
 
+                    // An engagement's files live in its own directory under the
+                    // workspace (pick#513), so its tools never read, list or upload
+                    // another engagement's files; the sandboxes mount only this
+                    // directory. An id that is not a safe directory name is refused
+                    // before anything touches the filesystem.
+                    if let Some(base) = &self.workspace_path {
+                        match scoped_workspace(&evidence_scope, base).await {
+                            Ok(dir) => ctx = ctx.with_workspace(dir),
+                            Err(e) => {
+                                let error = e.to_string();
+                                tracing::warn!(
+                                    tool = tool_name.as_str(),
+                                    error = error.as_str(),
+                                    "refusing tool call: no workspace for its engagement"
+                                );
+                                self.send_event(ConnectorEvent::ToolFailed {
+                                    tool_name: tool_name.clone(),
+                                    error: error.clone(),
+                                });
+                                return Ok(serde_json::json!({ "success": false, "error": error }));
+                            }
+                        }
+                    }
+
                     // Create Matrix client if API URL is available
                     let api_url = self.derive_matrix_api_url();
                     if !api_url.is_empty() {
@@ -563,7 +587,9 @@ impl BaseConnector for PickConnector {
                                     context.get("session_token").cloned().unwrap_or_default();
                                 let artifacts =
                                     result.data.get("artifacts").cloned().unwrap_or_default();
-                                let ws_path = self
+                                // The call's own workspace, which is the
+                                // engagement's directory (pick#513).
+                                let ws_path = ctx
                                     .workspace_path
                                     .as_ref()
                                     .map(|p| p.to_string_lossy().to_string())
@@ -869,6 +895,19 @@ impl BaseConnector for PickConnector {
         tracing::info!("Closing WebSocket: {}", req.connection_id);
         self.ws_connections.remove(&req.connection_id);
     }
+}
+
+/// The workspace directory for a call in `scope`, created when it is an
+/// engagement's and does not exist yet (pick#513). `Default` is `base`.
+async fn scoped_workspace(
+    scope: &pentest_core::evidence::EvidenceScope,
+    base: &std::path::Path,
+) -> pentest_core::error::Result<PathBuf> {
+    let dir = scope.workspace_dir(base)?;
+    if dir != base {
+        tokio::fs::create_dir_all(&dir).await?;
+    }
+    Ok(dir)
 }
 
 #[cfg(test)]
@@ -1654,5 +1693,97 @@ mod tests {
 
         assert_eq!(evidence_ids(a), vec!["conn-a-1", "conn-a-2"]);
         assert_eq!(evidence_ids(b), vec!["conn-b-1"]);
+    }
+
+    async fn call(
+        connector: &PickConnector,
+        tool: &str,
+        params: Value,
+        engagement: Option<&str>,
+    ) -> Value {
+        let mut ctx: HashMap<String, String> = HashMap::new();
+        if let Some(id) = engagement {
+            ctx.insert("engagement_id".to_string(), id.to_string());
+        }
+        connector
+            .execute_with_context(json!({"tool": tool, "parameters": params}), None, &ctx)
+            .await
+            .expect("execute_with_context failed")
+    }
+
+    fn listed_names(result: &Value) -> Vec<String> {
+        let mut names: Vec<String> = result["data"]["entries"]
+            .as_array()
+            .expect("list_files returns entries")
+            .iter()
+            .filter_map(|e| e["name"].as_str().map(str::to_string))
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn file_tool_connector(workspace: &std::path::Path) -> PickConnector {
+        let mut registry = ToolRegistry::new();
+        registry.register(pentest_tools::WriteFileTool);
+        registry.register(pentest_tools::ListFilesTool);
+        let mut connector = connector_with_registry(registry);
+        connector.workspace_path = Some(workspace.to_path_buf());
+        connector
+    }
+
+    /// pick#513 slice 2: each engagement's file tools work in its own
+    /// directory, so one engagement never lists (and so never uploads) a file
+    /// another engagement wrote; a call without an engagement keeps the
+    /// workspace root. Reverting the connector to hand every call the shared
+    /// workspace turns this red.
+    #[tokio::test]
+    async fn engagements_on_one_pick_keep_separate_workspace_files() {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let connector = file_tool_connector(workspace.path());
+        let write = |name: &str| json!({"path": name, "content": "x"});
+
+        for (engagement, file) in [("ws-a", "a.txt"), ("ws-b", "b.txt")] {
+            let result = call(&connector, "write_file", write(file), Some(engagement)).await;
+            assert_eq!(result["success"], true, "write failed: {result}");
+        }
+
+        let list_a = call(&connector, "list_files", json!({}), Some("ws-a")).await;
+        assert_eq!(listed_names(&list_a), vec!["a.txt"]);
+        let list_b = call(&connector, "list_files", json!({}), Some("ws-b")).await;
+        assert_eq!(listed_names(&list_b), vec!["b.txt"]);
+
+        assert!(workspace
+            .path()
+            .join("engagements")
+            .join("ws-a")
+            .join("a.txt")
+            .exists());
+        let root = call(&connector, "list_files", json!({}), None).await;
+        assert_eq!(listed_names(&root), vec!["engagements"]);
+    }
+
+    /// An engagement id that is not a safe directory name is refused before
+    /// the tool runs, so it can never write outside its directory.
+    #[tokio::test]
+    async fn unsafe_engagement_id_is_refused_before_the_tool_runs() {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let connector = file_tool_connector(workspace.path());
+
+        let result = call(
+            &connector,
+            "write_file",
+            json!({"path": "escaped.txt", "content": "x"}),
+            Some("../../outside"),
+        )
+        .await;
+
+        assert_eq!(result["success"], false, "{result}");
+        assert!(
+            std::fs::read_dir(workspace.path())
+                .unwrap()
+                .next()
+                .is_none(),
+            "nothing may be written for a refused call"
+        );
     }
 }

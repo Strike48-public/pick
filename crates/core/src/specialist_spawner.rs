@@ -636,6 +636,7 @@ impl SpecialistSpawner {
     /// * `specialist` - Type of specialist to spawn
     /// * `context` - Context to pass to specialist
     /// * `parent_agent_name` - Name of the Red Team agent spawning this specialist
+    /// * `scope` - The engagement the call serves; see [`specialist_agent_name`]
     ///
     /// # Returns
     /// `AgentInfo` for the newly created specialist agent.
@@ -645,6 +646,7 @@ impl SpecialistSpawner {
         specialist: SpecialistType,
         context: SpecialistContext,
         parent_agent_name: &str,
+        scope: &crate::evidence::EvidenceScope,
     ) -> Result<AgentInfo> {
         // Load specialist system prompt from file
         let prompt_path = specialist.prompt_file();
@@ -656,8 +658,7 @@ impl SpecialistSpawner {
             ))
         })?;
 
-        // Build specialist agent name
-        let agent_name = format!("{}-{}", parent_agent_name, specialist.agent_suffix());
+        let agent_name = specialist_agent_name(parent_agent_name, specialist, scope);
 
         // Build agent input
         let input = CreateAgentInput {
@@ -713,9 +714,52 @@ impl SpecialistSpawner {
     }
 }
 
+/// The Matrix agent name for a specialist (pick#513).
+///
+/// `{parent}-{suffix}` for a call with no engagement, as before. An engagement's
+/// specialist also carries the engagement id, `{parent}-{suffix}-{id}`, so two
+/// engagements on one Pick never create or reuse the same specialist agent (and
+/// so never hand one engagement's targets and findings to the other's).
+pub fn specialist_agent_name(
+    parent_agent_name: &str,
+    specialist: SpecialistType,
+    scope: &crate::evidence::EvidenceScope,
+) -> String {
+    match scope {
+        crate::evidence::EvidenceScope::Default => {
+            format!("{}-{}", parent_agent_name, specialist.agent_suffix())
+        }
+        crate::evidence::EvidenceScope::Engagement(id) => {
+            format!("{}-{}-{}", parent_agent_name, specialist.agent_suffix(), id)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn specialist_agent_name_carries_the_engagement() {
+        use crate::evidence::EvidenceScope;
+        let parent = "pentest-connector-red-team";
+        let web = SpecialistType::WEB_APP;
+        let a = EvidenceScope::Engagement("eng-a".to_string());
+        let b = EvidenceScope::Engagement("eng-b".to_string());
+        assert_eq!(
+            specialist_agent_name(parent, web, &EvidenceScope::Default),
+            format!("{parent}-{}", web.agent_suffix()),
+            "a call without an engagement keeps today's name"
+        );
+        assert_eq!(
+            specialist_agent_name(parent, web, &a),
+            format!("{parent}-{}-eng-a", web.agent_suffix())
+        );
+        assert_ne!(
+            specialist_agent_name(parent, web, &a),
+            specialist_agent_name(parent, web, &b)
+        );
+    }
 
     fn make_context(endpoint_count: usize, concerns: Vec<&str>) -> SpecialistContext {
         SpecialistContext {
