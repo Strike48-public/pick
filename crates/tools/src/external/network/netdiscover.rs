@@ -6,7 +6,7 @@ use pentest_core::tools::{
     execute_timed, ExternalDependency, ParamType, PentestTool, Platform, ToolCategory, ToolContext,
     ToolParam, ToolResult, ToolSchema,
 };
-use pentest_platform::{get_platform, CommandExec};
+use pentest_platform::{get_platform, CommandExec, CommandResult};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -26,6 +26,114 @@ const MIN_PER_RANGE_TIMEOUT_SECS: u64 = 10;
 /// starvation boundary is unit-testable.
 fn per_range_timeout_secs(total_secs: u64, n_ranges: usize) -> u64 {
     (total_secs / n_ranges.max(1) as u64).max(MIN_PER_RANGE_TIMEOUT_SECS)
+}
+
+/// Label for a range in the result: the CIDR, or `(auto-scan)` for a run
+/// without `-r`.
+fn range_label(range: Option<&str>) -> &str {
+    range.unwrap_or("(auto-scan)")
+}
+
+/// Arguments for one netdiscover run. Pure so the flags are unit-testable.
+///
+/// `-P` gives parsable output and makes the active scan exit once the range is
+/// swept. Without it netdiscover redraws its screen every second until killed,
+/// so every run hit the timeout, whose result carries no stdout. `-N` drops the
+/// header, leaving host rows and the closing summary.
+fn netdiscover_args(range: Option<&str>, interface: Option<&str>, passive: bool) -> Vec<String> {
+    let mut builder = CommandBuilder::new().flag("-P").flag("-N");
+    if let Some(r) = range {
+        builder = builder.arg("-r", r);
+    }
+    if let Some(i) = interface.filter(|i| !i.is_empty()) {
+        builder = builder.arg("-i", i);
+    }
+    if passive {
+        builder = builder.flag("-p");
+    }
+    builder.build()
+}
+
+/// One range's outcome from its command result. A timed-out run is a failed
+/// range, not "found nothing": the timeout result's stdout is empty whatever
+/// the scan saw.
+fn range_outcome(
+    result: Result<CommandResult>,
+    timeout: Duration,
+) -> std::result::Result<String, String> {
+    match result {
+        Err(e) => Err(e.to_string()),
+        Ok(r) if r.timed_out => Err(format!("timed out after {}s", timeout.as_secs())),
+        Ok(r) => Ok(r.stdout),
+    }
+}
+
+/// Host lines from one netdiscover run's stdout.
+///
+/// netdiscover prints every host row with a leading space
+/// (` 10.0.8.1      aa:bb:cc:...`), in screen mode and in `-P` mode alike, so a
+/// row is recognised by its first field parsing as an IPv4 address. That also
+/// drops the `-- Active scan completed, N Hosts found.` summary `-P` ends with.
+fn parse_hosts(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter(|line| {
+            line.split_whitespace()
+                .next()
+                .is_some_and(|field| field.parse::<std::net::Ipv4Addr>().is_ok())
+        })
+        .map(|line| line.trim().to_string())
+        .collect()
+}
+
+/// Build the tool result from each range's outcome (stdout, or the error text),
+/// in scan order. Pure so per-range attribution is unit-testable.
+///
+/// `hosts_by_range` (pick#352) keeps which subnet surfaced which host: a host
+/// seen on two subnets is listed under both, and a range that ran but found
+/// nothing maps to an empty list. Failed ranges are absent from it and listed
+/// in `failed_ranges`. The flattened `hosts`/`count` are unchanged.
+fn summarize_runs(
+    runs: &[(Option<String>, std::result::Result<String, String>)],
+    out_of_subnet_warning: Option<String>,
+) -> Result<Value> {
+    let mut hosts = Vec::new();
+    let mut hosts_by_range = serde_json::Map::new();
+    let mut failed_ranges: Vec<String> = Vec::new();
+    for (range, outcome) in runs {
+        let label = range_label(range.as_deref());
+        match outcome {
+            Ok(stdout) => {
+                let found = parse_hosts(stdout);
+                hosts.extend(found.iter().cloned());
+                hosts_by_range.insert(label.to_string(), json!(found));
+            }
+            Err(e) => {
+                tracing::warn!("netdiscover failed on range {}: {}", label, e);
+                failed_ranges.push(label.to_string());
+            }
+        }
+    }
+
+    // If every range failed (and at least one was attempted), surface a hard
+    // error - a wholesale failure is not a "0 hosts" success.
+    if !failed_ranges.is_empty() && failed_ranges.len() == runs.len() {
+        return Err(pentest_core::error::Error::Network(format!(
+            "netdiscover failed on all {} range(s): {}",
+            runs.len(),
+            failed_ranges.join(", ")
+        )));
+    }
+
+    let resolved: Vec<&str> = runs.iter().filter_map(|(r, _)| r.as_deref()).collect();
+    Ok(json!({
+        "resolved_ranges": resolved,
+        "failed_ranges": failed_ranges,
+        "out_of_subnet_warning": out_of_subnet_warning,
+        "hosts": hosts,
+        "count": hosts.len(),
+        "hosts_by_range": hosts_by_range,
+    }))
 }
 
 pub struct NetdiscoverTool;
@@ -52,7 +160,8 @@ impl PentestTool for NetdiscoverTool {
                 "IP range (e.g., 192.168.1.0/24), or a sentinel: 'current' (this \
                  host's primary subnet), 'auto'/'all' (every active local subnet, \
                  scanned one per invocation). Empty = netdiscover auto-scan. \
-                 Prefer a sentinel over guessing a range.",
+                 Prefer a sentinel over guessing a range. The result's \
+                 `hosts_by_range` maps each scanned range to the hosts found on it.",
                 json!(""),
             ))
             .param(ToolParam::optional(
@@ -120,67 +229,20 @@ impl PentestTool for NetdiscoverTool {
             let per_range_timeout =
                 Duration::from_secs(per_range_timeout_secs(timeout_secs, ranges.len()));
 
-            let mut hosts = Vec::new();
-            let mut failed_ranges: Vec<String> = Vec::new();
-            for range_opt in &ranges {
-                let mut builder = CommandBuilder::new();
-
-                if let Some(r) = range_opt {
-                    builder = builder.arg("-r", r);
-                }
-
-                if let Some(ref i) = interface {
-                    if !i.is_empty() {
-                        builder = builder.arg("-i", i);
-                    }
-                }
-
-                if passive {
-                    builder = builder.flag("-p");
-                }
-
-                let args = builder.build();
+            let mut runs = Vec::with_capacity(ranges.len());
+            for range_opt in ranges {
+                let args = netdiscover_args(range_opt.as_deref(), interface.as_deref(), passive);
                 let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
                 // Per-subnet failure is non-fatal: one unreachable subnet must
-                // not discard the hosts already found on the others. Log and
-                // continue, recording which range failed for the result.
-                match platform
+                // not discard the hosts already found on the others. Record the
+                // outcome and continue; `summarize_runs` sorts it out.
+                let result = platform
                     .execute_command("netdiscover", &args_refs, per_range_timeout)
-                    .await
-                {
-                    Ok(result) => {
-                        for line in result.stdout.lines() {
-                            if line.contains('.') && !line.starts_with(' ') {
-                                hosts.push(line.trim().to_string());
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let label = range_opt.as_deref().unwrap_or("(auto-scan)");
-                        tracing::warn!("netdiscover failed on range {}: {}", label, e);
-                        failed_ranges.push(label.to_string());
-                    }
-                }
+                    .await;
+                runs.push((range_opt, range_outcome(result, per_range_timeout)));
             }
 
-            // If every range failed (and at least one was attempted), surface a
-            // hard error - a wholesale failure is not a "0 hosts" success.
-            if !failed_ranges.is_empty() && failed_ranges.len() == ranges.len() {
-                return Err(pentest_core::error::Error::Network(format!(
-                    "netdiscover failed on all {} range(s): {}",
-                    ranges.len(),
-                    failed_ranges.join(", ")
-                )));
-            }
-
-            let resolved: Vec<&str> = ranges.iter().filter_map(|r| r.as_deref()).collect();
-            Ok(json!({
-                "resolved_ranges": resolved,
-                "failed_ranges": failed_ranges,
-                "out_of_subnet_warning": out_of_subnet_warning,
-                "hosts": hosts,
-                "count": hosts.len(),
-            }))
+            summarize_runs(&runs, out_of_subnet_warning)
         })
         .await
     }
@@ -209,5 +271,163 @@ mod tests {
         assert_eq!(per_range_timeout_secs(60, 6), 10); // 60/6=10 == floor, exact
                                                        // Never returns the useless sub-floor slice the bug produced.
         assert!(per_range_timeout_secs(60, 100) >= MIN_PER_RANGE_TIMEOUT_SECS);
+    }
+
+    fn ok(range: &str, stdout: &str) -> (Option<String>, std::result::Result<String, String>) {
+        (Some(range.to_string()), Ok(stdout.to_string()))
+    }
+
+    // Real `netdiscover -P -N` shape: every host row starts with a space, and
+    // the run ends with a blank line and a summary line. (No `\n\` line
+    // continuations here: they strip the leading space the real output has.)
+    const WIRED: &str = concat!(
+        " 10.0.8.1      aa:bb:cc:00:00:01      1      60  Gateway\n",
+        " 10.0.8.42     aa:bb:cc:00:00:42      1      60  Unknown vendor\n",
+        "\n",
+        "-- Active scan completed, 2 Hosts found.\n",
+    );
+    const VPN: &str = concat!(
+        " 10.9.0.5      aa:bb:cc:00:09:05      1      60  Unknown vendor\n",
+        " 10.0.8.42     aa:bb:cc:00:00:42      1      60  Unknown vendor\n",
+        "\n",
+        "-- Active scan completed, 2 Hosts found.\n",
+    );
+
+    /// Captured verbatim from netdiscover 0.10 (Debian bookworm) run as
+    /// `netdiscover -r 10.252.7.0/24 -i eth0 -P -N` against a two-host
+    /// container network.
+    const CAPTURED_P_N: &str = concat!(
+        " 10.252.7.1      be:7e:f6:31:a1:1d      1      42  Unknown vendor\n",
+        " 10.252.7.20     3a:5c:46:97:39:58      1      42  Unknown vendor\n",
+        "\n",
+        "-- Active scan completed, 2 Hosts found.\n",
+    );
+
+    #[test]
+    fn every_run_asks_for_parsable_output_without_header() {
+        let args = netdiscover_args(Some("10.0.8.0/24"), Some("eth0"), false);
+        assert_eq!(args, ["-P", "-N", "-r", "10.0.8.0/24", "-i", "eth0"]);
+        // Auto-scan, empty interface, passive: -P -N still lead.
+        let args = netdiscover_args(None, Some(""), true);
+        assert_eq!(args, ["-P", "-N", "-p"]);
+    }
+
+    #[test]
+    fn a_timed_out_run_is_a_failed_range_not_an_empty_one() {
+        let t = Duration::from_secs(15);
+        let timed_out = CommandResult::timeout(String::new(), "Command timed out".into(), 15_000);
+        assert_eq!(
+            range_outcome(Ok(timed_out), t),
+            Err("timed out after 15s".into())
+        );
+        let done = CommandResult::success(CAPTURED_P_N.to_string(), String::new(), 0, 900);
+        assert_eq!(range_outcome(Ok(done), t), Ok(CAPTURED_P_N.to_string()));
+    }
+
+    #[test]
+    fn parse_hosts_reads_real_parsable_output() {
+        let hosts = parse_hosts(CAPTURED_P_N);
+        assert_eq!(hosts.len(), 2, "{hosts:?}");
+        assert!(hosts[0].starts_with("10.252.7.1 "), "{hosts:?}");
+        assert!(hosts[1].starts_with("10.252.7.20 "), "{hosts:?}");
+    }
+
+    #[test]
+    fn parse_hosts_skips_screen_chrome_and_summary() {
+        // Lines the default screen mode and the -P summary print that contain
+        // dots but are not host rows.
+        let chrome = concat!(
+            " Currently scanning: 10.0.8.0/24   |   Screen View: Unique Hosts\n",
+            " 2 Captured ARP Req/Rep packets, from 2 hosts.   Total size: 84\n",
+            "   IP            At MAC Address     Count     Len  MAC Vendor / Hostname\n",
+            "-- Active scan completed, 2 Hosts found.\n",
+        );
+        assert!(parse_hosts(chrome).is_empty(), "{:?}", parse_hosts(chrome));
+    }
+
+    #[test]
+    fn hosts_are_attributed_to_the_range_that_surfaced_them() {
+        let out = summarize_runs(&[ok("10.0.8.0/24", WIRED), ok("10.9.0.0/24", VPN)], None)
+            .expect("both ranges ran");
+        let by_range = out["hosts_by_range"].as_object().expect("map");
+        let wired: Vec<&str> = by_range["10.0.8.0/24"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h.as_str().unwrap())
+            .collect();
+        assert_eq!(wired.len(), 2, "{wired:?}");
+        assert!(wired.iter().all(|h| h.starts_with("10.0.8.")), "{wired:?}");
+        assert!(
+            by_range["10.9.0.0/24"][0]
+                .as_str()
+                .unwrap()
+                .starts_with("10.9.0.5"),
+            "{by_range:?}"
+        );
+        // Flattened fields are unchanged: every host line from every range.
+        assert_eq!(out["count"], 4);
+        assert_eq!(out["hosts"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn a_host_on_two_ranges_is_listed_under_both() {
+        let out = summarize_runs(&[ok("10.0.8.0/24", WIRED), ok("10.9.0.0/24", VPN)], None)
+            .expect("both ranges ran");
+        for range in ["10.0.8.0/24", "10.9.0.0/24"] {
+            assert!(
+                out["hosts_by_range"][range]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|h| h.as_str().unwrap().starts_with("10.0.8.42")),
+                "10.0.8.42 missing under {range}: {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_and_failed_ranges_are_told_apart() {
+        let out = summarize_runs(
+            &[
+                ok("10.0.8.0/24", WIRED),
+                ok("172.17.0.0/16", ""),
+                (
+                    Some("10.9.0.0/24".to_string()),
+                    Err("timed out".to_string()),
+                ),
+            ],
+            None,
+        )
+        .expect("one range failed, not all");
+        assert_eq!(out["hosts_by_range"]["172.17.0.0/16"], json!([]));
+        assert!(out["hosts_by_range"].get("10.9.0.0/24").is_none(), "{out}");
+        assert_eq!(out["failed_ranges"], json!(["10.9.0.0/24"]));
+    }
+
+    #[test]
+    fn auto_scan_is_keyed_by_its_label() {
+        let out = summarize_runs(&[(None, Ok(VPN.to_string()))], None).expect("ran");
+        assert_eq!(
+            out["hosts_by_range"]["(auto-scan)"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(out["resolved_ranges"], json!([]));
+    }
+
+    #[test]
+    fn every_range_failing_is_an_error() {
+        let err = summarize_runs(
+            &[(Some("10.0.8.0/24".to_string()), Err("boom".to_string()))],
+            None,
+        )
+        .expect_err("all ranges failed");
+        assert!(
+            err.to_string().contains("failed on all 1 range(s)"),
+            "{err}"
+        );
     }
 }
