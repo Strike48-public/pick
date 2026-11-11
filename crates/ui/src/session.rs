@@ -673,7 +673,10 @@ mod tests {
         tool_push(&scope, "dflt-1");
         drain_tool_evidence_into_graph(&scope);
 
-        assert_eq!(ids(&EvidenceScope::Default), vec!["dflt-1"]);
+        // Default is shared by every test in this binary that runs a tool with
+        // no engagement (pick_connector's execute_command tests push their own
+        // run nodes there), so check membership, as the Default tests above do.
+        assert!(snapshot_contains("dflt-1"));
         assert!(ids(&a).is_empty());
     }
 
