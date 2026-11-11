@@ -887,7 +887,13 @@ mod tests {
     /// must come back neutralized and the payload flagged. Reverting the
     /// `sanitize_agent_result` call in `execute_with_context` turns this red.
     #[tokio::test]
+    #[allow(
+        clippy::await_holding_lock,
+        reason = "each tokio test has its own runtime thread, so a waiter blocks only itself"
+    )]
     async fn execute_with_context_sanitizes_tool_output() {
+        // execute_command records findings in the shared Default evidence scope.
+        let _evidence = crate::session::evidence_test_lock();
         // Direct host execution — the sandbox rootfs isn't present on CI.
         pentest_platform::set_use_sandbox(false);
 
@@ -934,7 +940,13 @@ mod tests {
     /// must not survive to the agent-facing stdout. Reverting the
     /// `sanitize_agent_result` call in `execute_with_context` turns this red.
     #[tokio::test]
+    #[allow(
+        clippy::await_holding_lock,
+        reason = "each tokio test has its own runtime thread, so a waiter blocks only itself"
+    )]
     async fn execute_with_context_scrubs_reflected_credential_from_stdout() {
+        // execute_command records findings in the shared Default evidence scope.
+        let _evidence = crate::session::evidence_test_lock();
         // Direct host execution — the sandbox rootfs isn't present on CI.
         pentest_platform::set_use_sandbox(false);
 
@@ -971,7 +983,13 @@ mod tests {
     /// Benign tool output must pass through the production path byte-for-byte —
     /// no `_sanitization` marker, real evidence unmangled.
     #[tokio::test]
+    #[allow(
+        clippy::await_holding_lock,
+        reason = "each tokio test has its own runtime thread, so a waiter blocks only itself"
+    )]
     async fn execute_with_context_passes_benign_output_through() {
+        // execute_command records findings in the shared Default evidence scope.
+        let _evidence = crate::session::evidence_test_lock();
         pentest_platform::set_use_sandbox(false);
 
         let connector = test_connector();
@@ -1005,7 +1023,13 @@ mod tests {
     /// payload the agent receives. Removing the budget check in
     /// `execute_with_context` turns this red.
     #[tokio::test]
+    #[allow(
+        clippy::await_holding_lock,
+        reason = "each tokio test has its own runtime thread, so a waiter blocks only itself"
+    )]
     async fn execute_with_context_refuses_once_budget_exhausted() {
+        // execute_command records findings in the shared Default evidence scope.
+        let _evidence = crate::session::evidence_test_lock();
         pentest_platform::set_use_sandbox(false);
 
         let mut connector = test_connector();

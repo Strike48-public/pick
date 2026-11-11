@@ -500,22 +500,29 @@ pub fn apply_validator_verdicts(
     report
 }
 
+/// Serializes tests that touch the evidence buffers.
+///
+/// EVIDENCE_GRAPH and PENDING_EVIDENCE are process-global statics. cargo runs
+/// tests in parallel threads, so a drain in one test can steal another's
+/// freshly-pushed node and `clear_evidence` can wipe the whole graph. Every
+/// test in this crate that pushes or drains evidence takes this lock: the
+/// session tests below, and the connector tests whose tools (such as
+/// `execute_command`) record findings in the Default scope. Poison is
+/// irrelevant: only mutual exclusion matters, so the guard is recovered.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn evidence_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use pentest_core::export::Severity;
-    use std::sync::Mutex;
 
-    // EVIDENCE_GRAPH and PENDING_EVIDENCE are process-global statics. cargo runs
-    // tests in parallel threads, so a drain in one test can steal another's
-    // freshly-pushed node and `clear_evidence` can wipe the whole graph. These
-    // tests exercise exactly those shared buffers, so we serialize them behind a
-    // module-local lock and tag nodes with unique ids. (Poison is irrelevant —
-    // we only need mutual exclusion, so we recover the guard and continue.)
-    static SERIAL: Mutex<()> = Mutex::new(());
-
+    // Tags nodes with unique ids as well, so a test only ever sees its own.
     fn serial() -> std::sync::MutexGuard<'static, ()> {
-        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+        evidence_test_lock()
     }
 
     fn node(id: &str) -> EvidenceNode {
