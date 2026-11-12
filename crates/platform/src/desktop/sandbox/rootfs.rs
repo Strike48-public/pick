@@ -4,7 +4,9 @@
 
 use super::arch;
 use super::config::{SandboxConfig, SandboxError, SandboxResult};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
@@ -729,14 +731,17 @@ done
         }
     }
 
-    /// Download a file from URL to destination.
+    /// Download a file from URL to destination, streaming the body to disk.
     ///
     /// `expected_sha256`: `None` = legacy unchecked download; `Some(pin)` =
-    /// the downloaded bytes must match the pinned lowercase-hex SHA-256.
-    /// Pinned bytes are verified BEFORE anything is written (the proot.rs
-    /// contract — `proot.rs` verifies before it writes), and the write goes
-    /// to a `.part` file that is renamed into place, so an interrupted run
-    /// can never leave an unverified or half-written file at `dest`.
+    /// the body must match the pinned lowercase-hex SHA-256 (an empty pin is
+    /// refused up front — unverifiable artifacts are refused, proot.rs
+    /// contract). The body streams into a sibling `.part` file in bounded
+    /// memory (the ALARM rootfs is ~800 MB) while being hashed
+    /// incrementally; the hash is checked after the stream and only then is
+    /// the file renamed to `dest` (verify-then-publish, the `proot.rs`
+    /// ordering). An interrupted or refused run leaves no unverified and no
+    /// half-written file at `dest`.
     pub(super) async fn download_file(
         &self,
         url: &str,
@@ -744,6 +749,12 @@ done
         expected_sha256: Option<&str>,
     ) -> SandboxResult<()> {
         tracing::debug!("Downloading {} to {}", url, dest.display());
+
+        if matches!(expected_sha256, Some(pin) if pin.is_empty()) {
+            return Err(SandboxError::Download(
+                "no pinned SHA-256; refusing to use an unverified artifact (see #624)".into(),
+            ));
+        }
 
         let response = reqwest::get(url)
             .await
@@ -757,31 +768,54 @@ done
             )));
         }
 
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| SandboxError::Download(e.to_string()))?;
-
-        // Pinned artifacts are verified before the filesystem is touched:
-        // a refused download leaves nothing behind.
-        if let Some(pin) = expected_sha256 {
-            check_sha256(&bytes, pin)?;
-            tracing::debug!("SHA-256 verified for {}", url);
-        }
-
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        // Write to a sibling `.part` file and rename: `dest` only ever
-        // appears fully written (and, when pinned, already verified).
+        // Stream into a sibling `.part` file: bounded memory, and `dest`
+        // only ever appears via the final rename.
         let part = dest.with_file_name(format!(
             "{}.part",
             dest.file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default()
         ));
-        tokio::fs::write(&part, &bytes).await?;
+        let mut file = tokio::fs::File::create(&part).await?;
+        let mut hasher = expected_sha256.map(|_| Sha256::new());
+
+        let mut stream = response;
+        loop {
+            let chunk = match stream
+                .chunk()
+                .await
+                .map_err(|e| SandboxError::Download(e.to_string()))?
+            {
+                Some(chunk) => chunk,
+                None => break,
+            };
+            if let Some(h) = &mut hasher {
+                h.update(&chunk);
+            }
+            file.write_all(&chunk).await?;
+        }
+        // Make the `.part` durable before it can be promoted to `dest`.
+        file.flush().await?;
+        file.sync_all().await?;
+        drop(file);
+
+        // Pinned artifacts are checked before publish: a mismatch removes
+        // the `.part` and never creates `dest` (refuse unverified).
+        if let (Some(pin), Some(h)) = (expected_sha256, hasher) {
+            let actual = format!("{:x}", h.finalize());
+            if !actual.eq_ignore_ascii_case(pin) {
+                let _ = tokio::fs::remove_file(&part).await;
+                return Err(SandboxError::Download(format!(
+                    "SHA-256 mismatch: expected {pin}, got {actual}"
+                )));
+            }
+            tracing::debug!("SHA-256 verified for {}", url);
+        }
+
         tokio::fs::rename(&part, dest).await?;
 
         Ok(())
@@ -790,7 +824,6 @@ done
 
 /// Lowercase hex SHA-256 of `bytes`.
 fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(bytes))
 }
 
@@ -868,11 +901,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn download_file_verifies_before_writing_and_leaves_no_file_on_mismatch() {
-        // Review (625): skipping the verify block, or a verify-after-write
-        // ordering, must be caught. Serve a fixed body from a local listener;
-        // a wrong pin is refused with NOTHING left on disk, the right pin
-        // lands the file.
+    async fn download_file_mismatched_pin_leaves_no_file() {
+        // Review (625): skipping the verify step, or leaving a half-written
+        // or unverified file at `dest`, must be caught. Serve a fixed body
+        // from a local listener; a wrong pin is refused with NOTHING left
+        // on disk (`dest` is only ever created by the post-verify rename),
+        // the right pin lands the file byte-exact.
         use std::sync::Arc;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
