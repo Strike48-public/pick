@@ -31,6 +31,17 @@ fn wsl_rootfs_url() -> &'static str {
     }
 }
 
+/// Pinned SHA-256 for the WSL rootfs download, when one applies: the aarch64
+/// ALARM image is self-hosted + checksummed (#624); the x86_64 ArchWSL-FS
+/// asset is an immutable pinned GitHub release URL.
+fn wsl_rootfs_sha256() -> Option<&'static str> {
+    if super::arch::is_aarch64() {
+        Some(super::arch::ALARM_AARCH64_ROOTFS_SHA256)
+    } else {
+        None
+    }
+}
+
 /// Build the setup script executed inside the freshly-imported WSL distro.
 ///
 /// On WSL1 (used when the host lacks nested virtualisation) WSL auto-generates
@@ -420,7 +431,7 @@ impl WslExecutor {
             tracing::info!("[ensure_distro] Downloading rootfs...");
             let rootfs_manager = super::rootfs::RootfsManager::new(self.config.clone());
             rootfs_manager
-                .download_file(wsl_rootfs_url(), &rootfs_path)
+                .download_file(wsl_rootfs_url(), &rootfs_path, wsl_rootfs_sha256())
                 .await?;
             tracing::info!("[ensure_distro] Download complete");
         } else {

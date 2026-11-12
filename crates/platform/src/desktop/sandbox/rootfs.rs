@@ -215,7 +215,12 @@ impl RootfsManager {
             let tarball_path = self.config.data_dir.join("alarm-rootfs.tar.gz");
             if !tarball_path.exists() {
                 tracing::info!("Downloading ArchLinuxARM aarch64 rootfs...");
-                self.download_file(bootstrap_url(), &tarball_path).await?;
+                self.download_file(
+                    arch::ALARM_AARCH64_ROOTFS,
+                    &tarball_path,
+                    Some(arch::ALARM_AARCH64_ROOTFS_SHA256),
+                )
+                .await?;
             }
             tracing::info!("Extracting ALARM rootfs...");
             // --delay-directory-restore: see the x86_64 branch below — ALARM
@@ -268,13 +273,13 @@ impl RootfsManager {
         if !tarball_path.exists() {
             tracing::info!("Downloading Arch bootstrap...");
             if self
-                .download_file(bootstrap_url(), &tarball_path)
+                .download_file(bootstrap_url(), &tarball_path, None)
                 .await
                 .is_err()
             {
                 tracing::info!("Trying gzip fallback...");
                 let gz_path = self.config.data_dir.join("arch-bootstrap.tar.gz");
-                self.download_file(ARCH_BOOTSTRAP_URL_GZ, &gz_path).await?;
+                self.download_file(ARCH_BOOTSTRAP_URL_GZ, &gz_path, None).await?;
                 tokio::fs::rename(&gz_path, &tarball_path).await?;
             }
         }
@@ -431,7 +436,7 @@ impl RootfsManager {
 
         let strap_path = rootfs.join("tmp/strap.sh");
         tokio::fs::create_dir_all(rootfs.join("tmp")).await?;
-        self.download_file(BLACKARCH_STRAP_URL, &strap_path).await?;
+        self.download_file(BLACKARCH_STRAP_URL, &strap_path, None).await?;
 
         #[cfg(unix)]
         {
@@ -719,8 +724,18 @@ done
         }
     }
 
-    /// Download a file from URL to destination
-    pub(super) async fn download_file(&self, url: &str, dest: &Path) -> SandboxResult<()> {
+    /// Download a file from URL to destination.
+    ///
+    /// `expected_sha256`: `None` = legacy unchecked download; `Some(pin)` =
+    /// verify the downloaded bytes against the pinned lowercase-hex SHA-256
+    /// and remove `dest` on mismatch or empty pin (refuse unverified
+    /// artifacts — same contract as the proot binaries, `proot.rs`).
+    pub(super) async fn download_file(
+        &self,
+        url: &str,
+        dest: &Path,
+        expected_sha256: Option<&str>,
+    ) -> SandboxResult<()> {
         tracing::debug!("Downloading {} to {}", url, dest.display());
 
         let response = reqwest::get(url)
@@ -746,8 +761,39 @@ done
             .map_err(|e| SandboxError::Download(e.to_string()))?;
         file.write_all(&bytes).await?;
 
+        if let Some(pin) = expected_sha256 {
+            if let Err(e) = check_sha256(&bytes, pin) {
+                tokio::fs::remove_file(dest).await.ok();
+                return Err(e);
+            }
+            tracing::debug!("SHA-256 verified for {}", dest.display());
+        }
+
         Ok(())
     }
+}
+
+/// Lowercase hex SHA-256 of `bytes`.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Verify `bytes` against a pinned lowercase-hex SHA-256. An empty pin or a
+/// mismatch is an error: unverified artifacts are refused (proot.rs contract).
+fn check_sha256(bytes: &[u8], expected: &str) -> SandboxResult<()> {
+    if expected.is_empty() {
+        return Err(SandboxError::Download(
+            "no pinned SHA-256; refusing to use an unverified artifact (see #624)".into(),
+        ));
+    }
+    let actual = sha256_hex(bytes);
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err(SandboxError::Download(format!(
+            "SHA-256 mismatch: expected {expected}, got {actual}"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -761,5 +807,51 @@ mod tests {
         // extracts flat (no wrapper), so no move is needed.
         assert_eq!(extracted_subdir_for(false), Some("root.x86_64"));
         assert_eq!(extracted_subdir_for(true), None);
+    }
+
+    #[test]
+    fn rootfs_download_urls_are_https() {
+        // #624: every URL handed to download_file must be HTTPS. The ALARM
+        // rootfs moved from plaintext http://os.archlinuxarm.org to a pinned
+        // release asset; this keeps it (and any future URL) honest.
+        for url in [
+            ARCH_BOOTSTRAP_URL,
+            ARCH_BOOTSTRAP_URL_GZ,
+            BLACKARCH_STRAP_URL,
+            arch::ALARM_AARCH64_ROOTFS,
+            bootstrap_url(),
+        ] {
+            assert!(url.starts_with("https://"), "not HTTPS: {url}");
+        }
+    }
+
+    #[test]
+    fn alarm_rootfs_pin_is_baked() {
+        // Fail in CI rather than ship an unverifiable 829 MB rootfs (proot.rs
+        // contract: empty/unbaked pin = refuse).
+        let pin = arch::ALARM_AARCH64_ROOTFS_SHA256;
+        assert_eq!(pin.len(), 64, "pin must be 64 hex chars: {pin:?}");
+        assert!(
+            pin.bytes().all(|b| b.is_ascii_hexdigit()) && pin == pin.to_lowercase(),
+            "pin must be lowercase hex: {pin:?}"
+        );
+    }
+
+    #[test]
+    fn sha256_hex_known_vector() {
+        // NIST: SHA-256("abc")
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn check_sha256_accepts_match_rejects_mismatch_and_empty_pin() {
+        let data = b"rootfs-bytes";
+        let pin = sha256_hex(data);
+        assert!(check_sha256(data, &pin).is_ok());
+        assert!(check_sha256(data, &"0".repeat(64)).is_err());
+        assert!(check_sha256(data, "").is_err());
     }
 }
