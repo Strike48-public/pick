@@ -199,3 +199,19 @@ fn default_data_dir() -> PathBuf {
         PathBuf::from("/tmp/pentest-sandbox")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Engagement isolation (pick#513) is advertised only on a backend that
+    /// hides the host disk. Counting WSL as confining, or dropping any of the
+    /// workspace-only backends, turns this red.
+    #[test]
+    fn only_workspace_only_backends_confine_commands() {
+        assert!(SandboxBackend::Bwrap.confines_workspace());
+        assert!(SandboxBackend::Proot.confines_workspace());
+        assert!(SandboxBackend::Docker.confines_workspace());
+        assert!(!SandboxBackend::Wsl.confines_workspace());
+    }
+}
