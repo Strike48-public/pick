@@ -39,7 +39,7 @@
 /// bump both constants here. Extraction still fails closed: a corrupt/hostile
 /// rootfs that lacks `bash`/`pacman` is rejected by the post-extract checks.
 pub(super) const ALARM_AARCH64_ROOTFS: &str =
-    "https://github.com/Strike48-public/pick/releases/download/alarm-aarch64-v1/ArchLinuxARM-aarch64-latest.tar.gz";
+    "https://github.com/Strike48-public/pick/releases/download/alarm-aarch64-v1/alarm-aarch64.tar.gz";
 
 /// Lowercase hex SHA-256 of [`ALARM_AARCH64_ROOTFS`], verified after download
 /// and before the tarball is used; empty = refuse (unverifiable).
