@@ -6,6 +6,7 @@ use super::arch;
 use super::config::{SandboxConfig, SandboxError, SandboxResult};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -13,27 +14,26 @@ use tokio::sync::Mutex;
 /// Global lock to prevent concurrent rootfs setup
 static SETUP_LOCK: tokio::sync::OnceCell<Mutex<()>> = tokio::sync::OnceCell::const_new();
 
-/// URL for the Arch Linux bootstrap tarball (used as base)
+/// URL for the Arch Linux bootstrap tarball (used as base).
+///
+/// Dated archive copy, NOT the mirror's rolling `/iso/latest/`: a pin is only
+/// meaningful against an immutable URL. (The 2024.01.01 cut ships `.tar.gz`
+/// only — no `.zst` — so this is the single source for every x86_64 path,
+/// incl. WSL import.) Vetted one-time against the archive's published GPG
+/// `.sig` (Arch Linux Bootstrap Tarball Signer). Bumping the cut is a
+/// deliberate act: vet the new `.sig`, then update URL + pin together.
 const ARCH_BOOTSTRAP_URL: &str =
-    "https://geo.mirror.pkgbuild.com/iso/latest/archlinux-bootstrap-x86_64.tar.zst";
-
-/// Alternative URL for older mirrors without zst (also used by WSL import which doesn't support .tar.zst)
-pub(super) const ARCH_BOOTSTRAP_URL_GZ: &str =
     "https://archive.archlinux.org/iso/2024.01.01/archlinux-bootstrap-2024.01.01-x86_64.tar.gz";
+const ARCH_BOOTSTRAP_SHA256: &str =
+    "7f3a938bd7a5d5a85ae96b0ffcf7f432282b38d51e5dfe988f7daca677c72b65";
 
-/// BlackArch repository strap script
+/// BlackArch repository strap script. Rolling upstream URL, frozen by the
+/// pin below (verified one-time against the blackarch/blackarch git source).
+/// strap.sh is EXECUTED inside the rootfs, so a mismatch is a hard failure —
+/// the caller's manual-repo fallback still applies.
 const BLACKARCH_STRAP_URL: &str = "https://blackarch.org/strap.sh";
-
-/// Base rootfs URL for the current host arch. x86_64 uses the Arch bootstrap
-/// tarball; aarch64 uses the ArchLinuxARM aarch64 rootfs (vanilla Arch has no
-/// ARM port).
-fn bootstrap_url() -> &'static str {
-    if arch::is_aarch64() {
-        arch::ALARM_AARCH64_ROOTFS
-    } else {
-        ARCH_BOOTSTRAP_URL
-    }
-}
+const BLACKARCH_STRAP_SHA256: &str =
+    "dc0737cc75d64d03e9ec2212f989f17cdcf0162c2db5980e256093e293abfb8b";
 
 /// Name of the wrapper directory the base archive extracts into, if any. The
 /// x86_64 Arch bootstrap archive nests everything under `root.x86_64/`; the
@@ -273,21 +273,16 @@ impl RootfsManager {
             return Ok(());
         }
 
-        let tarball_path = self.config.data_dir.join("arch-bootstrap.tar.zst");
+        let tarball_path = self.config.data_dir.join("arch-bootstrap.tar.gz");
 
         if !tarball_path.exists() {
             tracing::info!("Downloading Arch bootstrap...");
-            if self
-                .download_file(bootstrap_url(), &tarball_path, None)
-                .await
-                .is_err()
-            {
-                tracing::info!("Trying gzip fallback...");
-                let gz_path = self.config.data_dir.join("arch-bootstrap.tar.gz");
-                self.download_file(ARCH_BOOTSTRAP_URL_GZ, &gz_path, None)
-                    .await?;
-                tokio::fs::rename(&gz_path, &tarball_path).await?;
-            }
+            self.download_file(
+                ARCH_BOOTSTRAP_URL,
+                &tarball_path,
+                Some(ARCH_BOOTSTRAP_SHA256),
+            )
+            .await?;
         }
 
         tracing::info!("Extracting rootfs...");
@@ -313,36 +308,20 @@ impl RootfsManager {
         // dir read-only, then can't write its own children -> "Cannot create
         // symlink ... Permission denied" and the extract aborts, leaving a
         // broken rootfs. The flag defers directory permission restoration until
-        // after contents are written. (Reproduced on the current .tar.zst
-        // bootstrap; the older .tar.gz didn't pack it this way, which is why the
-        // gz fallback worked and masked this.)
+        // after contents are written (reproduced on the 2024.01.01 bootstrap
+        // cut this path downloads).
         let tarball_str = tarball_path.to_string_lossy();
-        let extract_result = if tarball_str.ends_with(".zst") {
-            Command::new("tar")
-                .args([
-                    "--zstd",
-                    "--delay-directory-restore",
-                    "-xf",
-                    &tarball_str,
-                    "-C",
-                    &self.config.data_dir.to_string_lossy(),
-                    "--no-same-owner",
-                ])
-                .status()
-                .await
-        } else {
-            Command::new("tar")
-                .args([
-                    "--delay-directory-restore",
-                    "-xzf",
-                    &tarball_str,
-                    "-C",
-                    &self.config.data_dir.to_string_lossy(),
-                    "--no-same-owner",
-                ])
-                .status()
-                .await
-        };
+        let extract_result = Command::new("tar")
+            .args([
+                "--delay-directory-restore",
+                "-xzf",
+                &tarball_str,
+                "-C",
+                &self.config.data_dir.to_string_lossy(),
+                "--no-same-owner",
+            ])
+            .status()
+            .await;
 
         match extract_result {
             Ok(status) => {
@@ -442,8 +421,12 @@ impl RootfsManager {
 
         let strap_path = rootfs.join("tmp/strap.sh");
         tokio::fs::create_dir_all(rootfs.join("tmp")).await?;
-        self.download_file(BLACKARCH_STRAP_URL, &strap_path, None)
-            .await?;
+        self.download_file(
+            BLACKARCH_STRAP_URL,
+            &strap_path,
+            Some(BLACKARCH_STRAP_SHA256),
+        )
+        .await?;
 
         #[cfg(unix)]
         {
@@ -756,9 +739,21 @@ done
             ));
         }
 
-        let response = reqwest::get(url)
-            .await
-            .map_err(|e| SandboxError::Download(format!("Failed to download {}: {}", url, e)))?;
+        // reqwest::get has no timeout: a stalled mirror would hang first-run
+        // forever (the proot.rs #294 hang). Bound the CONNECT here and the
+        // IDLE time between chunks below — a fixed whole-request cap is
+        // deliberately NOT used, it would kill a slow-but-healthy 800 MB
+        // download on a weak link.
+        const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+        const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+        let client = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .map_err(|e| SandboxError::Download(e.to_string()))?;
+        let response =
+            client.get(url).send().await.map_err(|e| {
+                SandboxError::Download(format!("Failed to download {}: {}", url, e))
+            })?;
 
         if !response.status().is_success() {
             return Err(SandboxError::Download(format!(
@@ -785,11 +780,18 @@ done
 
         let mut stream = response;
         loop {
-            let chunk = match stream
-                .chunk()
-                .await
-                .map_err(|e| SandboxError::Download(e.to_string()))?
-            {
+            let next = match tokio::time::timeout(CHUNK_IDLE_TIMEOUT, stream.chunk()).await {
+                Ok(Ok(next)) => next,
+                Ok(Err(e)) => return Err(SandboxError::Download(e.to_string())),
+                Err(_) => {
+                    return Err(SandboxError::Download(format!(
+                        "download stalled (no data for {}s): {}",
+                        CHUNK_IDLE_TIMEOUT.as_secs(),
+                        url
+                    )))
+                }
+            };
+            let chunk = match next {
                 Some(chunk) => chunk,
                 None => break,
             };
@@ -890,11 +892,9 @@ mod tests {
         // release asset; this keeps it (and any future URL) honest.
         for url in [
             ARCH_BOOTSTRAP_URL,
-            ARCH_BOOTSTRAP_URL_GZ,
             BLACKARCH_STRAP_URL,
             arch::ALARM_AARCH64_ROOTFS,
             super::super::wsl::ARCHWSL_ROOTFS_URL,
-            bootstrap_url(),
         ] {
             assert!(url.starts_with("https://"), "not HTTPS: {url}");
         }
@@ -1007,6 +1007,41 @@ mod tests {
         assert!(
             pin.bytes().all(|b| b.is_ascii_hexdigit()) && pin == pin.to_lowercase(),
             "pin must be lowercase hex: {pin:?}"
+        );
+    }
+
+    #[test]
+    fn sandbox_pins_are_baked() {
+        // #626: every sandbox download is pinned — fail in CI rather than
+        // ship an unverifiable artifact (proot.rs contract).
+        for (name, pin) in [
+            ("arch bootstrap", ARCH_BOOTSTRAP_SHA256),
+            ("blackarch strap.sh", BLACKARCH_STRAP_SHA256),
+            (
+                "archwsl-fs rootfs",
+                super::super::wsl::ARCHWSL_ROOTFS_SHA256,
+            ),
+            ("alarm aarch64 rootfs", arch::ALARM_AARCH64_ROOTFS_SHA256),
+        ] {
+            assert_eq!(pin.len(), 64, "{name} pin must be 64 hex chars: {pin:?}");
+            assert!(
+                pin.bytes().all(|b| b.is_ascii_hexdigit()) && pin == pin.to_lowercase(),
+                "{name} pin must be lowercase hex: {pin:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bootstrap_url_is_a_dated_archive_copy() {
+        // A pin is only meaningful against an immutable URL — the bootstrap
+        // must stay on a dated archive copy, never a rolling mirror path.
+        assert!(
+            ARCH_BOOTSTRAP_URL.contains("/iso/2024.01.01/"),
+            "bootstrap URL must be a dated archive copy: {ARCH_BOOTSTRAP_URL}"
+        );
+        assert!(
+            !ARCH_BOOTSTRAP_URL.contains("/latest/"),
+            "rolling URL: {ARCH_BOOTSTRAP_URL}"
         );
     }
 
