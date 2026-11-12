@@ -19,8 +19,7 @@
 /// on the CPU instruction set (aarch64), never on board/kernel specifics. Plain
 /// `.tar.gz`, accepted by both `wsl --import` (WSL backend) and `tar -xzf`
 /// (Linux bwrap/proot backend), so the two share this single source and never
-/// drift. `os.archlinuxarm.org` 302-redirects to a geographic mirror; `reqwest`
-/// follows redirects.
+/// drift.
 ///
 /// Pinned aarch64 sandbox rootfs, self-hosted under the `alarm-aarch64-v1`
 /// release tag on Strike48-public/pick (tarball + `.sha256` sidecar).
@@ -34,15 +33,21 @@
 /// live here; see #624.
 ///
 /// Republish (when a newer ALARM cut is wanted): download
-/// `http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz`, vet it,
-/// upload it + its sha256 sidecar under a NEW tag (`alarm-aarch64-v2`), then
-/// bump both constants here. Extraction still fails closed: a corrupt/hostile
-/// rootfs that lacks `bash`/`pacman` is rejected by the post-extract checks.
+/// `http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz` and vet
+/// it — ALARM publishes a `.md5` and a GPG `.sig` next to the tarball; verify
+/// the signature against the Arch Linux ARM Build System key
+/// (`68B3 537F 39A3 13B3 E574 D067 7719 3F15 2BDB E6A6`) — then upload it +
+/// its sha256 sidecar under a NEW tag (`alarm-aarch64-v2`) and bump:
+/// `ALARM_AARCH64_ROOTFS`, `ALARM_AARCH64_ROOTFS_SHA256`, and the
+/// `alarm-aarch64-v1` tag hardcoded in the URL tests (this module and
+/// `wsl.rs`). Extraction still fails closed: a corrupt/hostile rootfs that
+/// lacks `bash`/`pacman` is rejected by the post-extract checks.
 pub(super) const ALARM_AARCH64_ROOTFS: &str =
     "https://github.com/Strike48-public/pick/releases/download/alarm-aarch64-v1/alarm-aarch64.tar.gz";
 
-/// Lowercase hex SHA-256 of [`ALARM_AARCH64_ROOTFS`], verified after download
-/// and before the tarball is used; empty = refuse (unverifiable).
+/// Lowercase hex SHA-256 of [`ALARM_AARCH64_ROOTFS`]. Verified before the
+/// download is written to disk and again before a cached copy is reused;
+/// empty = refuse (unverifiable).
 pub(super) const ALARM_AARCH64_ROOTFS_SHA256: &str =
     "42a4eeaa038994ffd31fa173256ef2f0ef511358eeb41b9ea1f8626391b9b319";
 

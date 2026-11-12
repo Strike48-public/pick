@@ -5,7 +5,6 @@
 use super::arch;
 use super::config::{SandboxConfig, SandboxError, SandboxResult};
 use std::path::{Path, PathBuf};
-use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
@@ -213,7 +212,11 @@ impl RootfsManager {
         // the rootfs dir (no `root.<arch>` wrapper like the x86_64 bootstrap).
         if arch::is_aarch64() {
             let tarball_path = self.config.data_dir.join("alarm-rootfs.tar.gz");
-            if !tarball_path.exists() {
+            // A cached tarball is trusted only if it verifies against the
+            // baked pin: an interrupted download — or a leftover of the old
+            // plaintext-HTTP fetch this PR exists to stop trusting — must not
+            // reach extraction (#624).
+            if !usable_cache(&tarball_path, Some(arch::ALARM_AARCH64_ROOTFS_SHA256)).await {
                 tracing::info!("Downloading ArchLinuxARM aarch64 rootfs...");
                 self.download_file(
                     arch::ALARM_AARCH64_ROOTFS,
@@ -729,9 +732,11 @@ done
     /// Download a file from URL to destination.
     ///
     /// `expected_sha256`: `None` = legacy unchecked download; `Some(pin)` =
-    /// verify the downloaded bytes against the pinned lowercase-hex SHA-256
-    /// and remove `dest` on mismatch or empty pin (refuse unverified
-    /// artifacts — same contract as the proot binaries, `proot.rs`).
+    /// the downloaded bytes must match the pinned lowercase-hex SHA-256.
+    /// Pinned bytes are verified BEFORE anything is written (the proot.rs
+    /// contract — `proot.rs` verifies before it writes), and the write goes
+    /// to a `.part` file that is renamed into place, so an interrupted run
+    /// can never leave an unverified or half-written file at `dest`.
     pub(super) async fn download_file(
         &self,
         url: &str,
@@ -752,24 +757,32 @@ done
             )));
         }
 
-        if let Some(parent) = dest.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-
-        let mut file = tokio::fs::File::create(dest).await?;
         let bytes = response
             .bytes()
             .await
             .map_err(|e| SandboxError::Download(e.to_string()))?;
-        file.write_all(&bytes).await?;
 
+        // Pinned artifacts are verified before the filesystem is touched:
+        // a refused download leaves nothing behind.
         if let Some(pin) = expected_sha256 {
-            if let Err(e) = check_sha256(&bytes, pin) {
-                tokio::fs::remove_file(dest).await.ok();
-                return Err(e);
-            }
-            tracing::debug!("SHA-256 verified for {}", dest.display());
+            check_sha256(&bytes, pin)?;
+            tracing::debug!("SHA-256 verified for {}", url);
         }
+
+        if let Some(parent) = dest.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        // Write to a sibling `.part` file and rename: `dest` only ever
+        // appears fully written (and, when pinned, already verified).
+        let part = dest.with_file_name(format!(
+            "{}.part",
+            dest.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        ));
+        tokio::fs::write(&part, &bytes).await?;
+        tokio::fs::rename(&part, dest).await?;
 
         Ok(())
     }
@@ -798,6 +811,32 @@ fn check_sha256(bytes: &[u8], expected: &str) -> SandboxResult<()> {
     Ok(())
 }
 
+/// Decide whether a cached download at `path` may be reused.
+///
+/// `None` pin = legacy source (x86_64 bootstrap, ArchWSL-FS): any existing
+/// file is trusted — the caller keeps its own heuristics. `Some(pin)`: the
+/// cached file must verify against the pin; a missing, corrupt, or unverified
+/// file (a truncated download, or a leftover of the old plaintext-HTTP fetch)
+/// is removed so the caller re-downloads.
+pub(super) async fn usable_cache(path: &Path, pin: Option<&str>) -> bool {
+    match pin {
+        None => path.exists(),
+        Some(pin) => match tokio::fs::read(path).await {
+            Ok(bytes) if check_sha256(&bytes, pin).is_ok() => true,
+            _ => {
+                if path.exists() {
+                    tracing::warn!(
+                        "Cached rootfs at {} failed the pinned SHA-256 check — re-downloading",
+                        path.display()
+                    );
+                    let _ = tokio::fs::remove_file(path).await;
+                }
+                false
+            }
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,10 +860,108 @@ mod tests {
             ARCH_BOOTSTRAP_URL_GZ,
             BLACKARCH_STRAP_URL,
             arch::ALARM_AARCH64_ROOTFS,
+            super::super::wsl::ARCHWSL_ROOTFS_URL,
             bootstrap_url(),
         ] {
             assert!(url.starts_with("https://"), "not HTTPS: {url}");
         }
+    }
+
+    #[tokio::test]
+    async fn download_file_verifies_before_writing_and_leaves_no_file_on_mismatch() {
+        // Review (625): skipping the verify block, or a verify-after-write
+        // ordering, must be caught. Serve a fixed body from a local listener;
+        // a wrong pin is refused with NOTHING left on disk, the right pin
+        // lands the file.
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let body: Arc<Vec<u8>> = Arc::new(b"definitely-not-the-pinned-rootfs".to_vec());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let served = Arc::clone(&body);
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut req = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = sock.read(&mut buf).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&buf[..n]);
+                    if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    served.len()
+                );
+                sock.write_all(resp.as_bytes()).await.unwrap();
+                sock.write_all(&served).await.unwrap();
+            }
+        });
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("alarm-rootfs.tar.gz");
+        let manager = RootfsManager::new(SandboxConfig {
+            data_dir: tmp.path().to_path_buf(),
+            ..Default::default()
+        });
+
+        // Wrong pin: refused, and nothing is left at dest (nor a .part).
+        let err = manager
+            .download_file(
+                &format!("http://{addr}/rootfs"),
+                &dest,
+                Some(&"0".repeat(64)),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SandboxError::Download(_)), "got: {err:?}");
+        assert!(
+            !dest.exists(),
+            "a mismatched pinned download must leave no file"
+        );
+        assert!(
+            !dest.with_file_name("alarm-rootfs.tar.gz.part").exists(),
+            "no stray .part file either"
+        );
+
+        // Correct pin: the file lands with exactly the served bytes.
+        let good_pin = sha256_hex(&body);
+        manager
+            .download_file(&format!("http://{addr}/rootfs"), &dest, Some(&good_pin))
+            .await
+            .unwrap();
+        assert_eq!(tokio::fs::read(&dest).await.unwrap(), body.as_slice());
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn usable_cache_refuses_unverified_file_and_reuses_verified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("alarm-rootfs.tar.gz");
+        let pin = sha256_hex(b"the-pinned-bytes");
+
+        // Missing file: not usable.
+        assert!(!usable_cache(&path, Some(&pin)).await);
+
+        // Planted (unverified) file: refused AND removed — the attack/tamper
+        // case from the review (a planted tarball must not be extracted).
+        tokio::fs::write(&path, b"planted").await.unwrap();
+        assert!(!usable_cache(&path, Some(&pin)).await);
+        assert!(!path.exists(), "an unverified cached file must be removed");
+
+        // Verified file: reusable.
+        tokio::fs::write(&path, b"the-pinned-bytes").await.unwrap();
+        assert!(usable_cache(&path, Some(&pin)).await);
+
+        // Unpinned (legacy) source: any existing file is trusted.
+        assert!(usable_cache(&path, None).await);
     }
 
     #[test]
