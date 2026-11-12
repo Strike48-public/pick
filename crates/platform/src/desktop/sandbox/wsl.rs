@@ -724,7 +724,8 @@ mod tests {
         // On the x86_64 build host the URL must be the ArchWSL-FS release.
         let url = super::wsl_rootfs_url();
         #[cfg(target_arch = "aarch64")]
-        assert!(url.contains("archlinuxarm.org"));
+        // #624: the aarch64 ALARM rootfs is a self-hosted pinned release asset.
+        assert!(url.contains("releases/download/alarm-aarch64-v1/alarm-aarch64.tar.gz"));
         #[cfg(not(target_arch = "aarch64"))]
         assert!(url.contains("yuk7/ArchWSL-FS"));
     }

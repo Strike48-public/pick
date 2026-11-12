@@ -43,7 +43,8 @@ pub(super) const ALARM_AARCH64_ROOTFS: &str =
 
 /// Lowercase hex SHA-256 of [`ALARM_AARCH64_ROOTFS`], verified after download
 /// and before the tarball is used; empty = refuse (unverifiable).
-pub(super) const ALARM_AARCH64_ROOTFS_SHA256: &str = "42a4eeaa038994ffd31fa173256ef2f0ef511358eeb41b9ea1f8626391b9b319";
+pub(super) const ALARM_AARCH64_ROOTFS_SHA256: &str =
+    "42a4eeaa038994ffd31fa173256ef2f0ef511358eeb41b9ea1f8626391b9b319";
 
 /// True when provisioning an aarch64 guest (host is aarch64).
 pub(super) fn is_aarch64() -> bool {
@@ -149,8 +150,7 @@ mod tests {
         // upstream host is plaintext-HTTP-only). It must stay a plain
         // .tar.gz — extraction uses `tar -xzf`.
         assert!(ALARM_AARCH64_ROOTFS.ends_with(".tar.gz"));
-        assert!(ALARM_AARCH64_ROOTFS.contains(
-            "github.com/Strike48-public/pick/releases/download/alarm-aarch64-v1/"
-        ));
+        assert!(ALARM_AARCH64_ROOTFS
+            .contains("github.com/Strike48-public/pick/releases/download/alarm-aarch64-v1/"));
     }
 }

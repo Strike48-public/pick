@@ -279,7 +279,8 @@ impl RootfsManager {
             {
                 tracing::info!("Trying gzip fallback...");
                 let gz_path = self.config.data_dir.join("arch-bootstrap.tar.gz");
-                self.download_file(ARCH_BOOTSTRAP_URL_GZ, &gz_path, None).await?;
+                self.download_file(ARCH_BOOTSTRAP_URL_GZ, &gz_path, None)
+                    .await?;
                 tokio::fs::rename(&gz_path, &tarball_path).await?;
             }
         }
@@ -436,7 +437,8 @@ impl RootfsManager {
 
         let strap_path = rootfs.join("tmp/strap.sh");
         tokio::fs::create_dir_all(rootfs.join("tmp")).await?;
-        self.download_file(BLACKARCH_STRAP_URL, &strap_path, None).await?;
+        self.download_file(BLACKARCH_STRAP_URL, &strap_path, None)
+            .await?;
 
         #[cfg(unix)]
         {
