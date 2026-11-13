@@ -1,13 +1,16 @@
 # Advanced CodeQL workflow for Pick (pick#154).
 #
-# Replaces GitHub's default (automatic) setup. The default setup never loads
-# .github/codeql/codeql-config.yml, so the paths-ignore exclusions for
-# vendored code (vendor/strike48-connector/, crates/ui/src/assets/) are
-# silently ignored unless this workflow references the config file.
+# Alternative to GitHub's default (automatic) setup. Either this workflow
+# (advanced setup) OR the default setup with the repository property
+# github-codeql-config-file pointed at .github/codeql/codeql-config.yml
+# applies the config — not both at once (double scan, duplicate alerts).
 #
-# OPERATOR STEP (one-time, not possible via API): Settings → Code security →
-# Code scanning → switch to "advanced setup" (this disables default setup so
-# the two don't double-scan and duplicate alerts).
+# OPERATOR STEP (one-time, UI only — not exposed via API), pick ONE:
+# - Settings → Code security → Code scanning → switch to "advanced setup"
+#   (disables default setup; this workflow takes over), or
+# - keep the default setup and set the repository property
+#   github-codeql-config-file = .github/codeql/codeql-config.yml
+#   (in that case this workflow should be deleted before merge).
 name: CodeQL
 
 on:
@@ -37,26 +40,31 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Same languages the default setup was analyzing (rust + javascript).
+        # The full language set the default setup scans today — no language
+        # coverage is lost by switching to this workflow.
         include:
-          - language: rust
+          - language: actions
+          - language: c-cpp
           - language: javascript-typescript
+          - language: python
+          - language: rust
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           config-file: .github/codeql/codeql-config.yml
-          # Both extractors are source-only: the Rust extractor supports
-          # build-mode none exclusively (it parses .rs directly and never
-          # instruments a build), and the JS bundles are plain files.
+          # All extractors run source-only here: build-mode none skips any
+          # instrumentation build (the Rust extractor parses .rs directly,
+          # the JS files are plain bundles/worklets, and the actions/python/
+          # c-cpp legs get source-level extraction).
           build-mode: none
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"
