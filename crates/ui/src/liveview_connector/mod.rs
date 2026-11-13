@@ -1058,6 +1058,8 @@ impl LiveViewConnector {
             matrix_api_url: self.derive_matrix_api_url(),
             identities: Arc::new(identities),
             budget: pentest_core::budget::SessionBudget::default_for(self.config.aggression_level),
+            call_slots: pick_connector::CallSlots::from_env(),
+            sandbox_probe: pentest_platform::workspace_confining_sandbox,
         });
 
         // Create the ConnectorRunner — it manages connection lifecycle, auth,
