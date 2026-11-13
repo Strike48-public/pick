@@ -30,6 +30,8 @@ pentest-platform = { workspace = true, default-features = false, features = ["an
 pentest-tools = { workspace = true, default-features = false, features = ["android"] }
 android_logger = "0.14"
 log = "0.4"
+# Feeds warnings and errors to the in-app Logs page (pentest_core::ui_log).
+tracing-subscriber = { workspace = true }
 jni = "0.21"
 ndk-context = "0.1"
 openssl = { workspace = true }  # Vendored for cross-compilation

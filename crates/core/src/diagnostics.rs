@@ -290,6 +290,17 @@ pub fn known_secrets(
         .collect()
 }
 
+/// [`known_secrets`] for this machine with no caller-only secrets: the token
+/// saved in `settings.json` (or, when it does not parse, the token values
+/// salvaged from its text), the secret environment variables and the OTT file.
+pub fn local_known_secrets() -> Vec<String> {
+    let env = |name: &str| std::env::var(name).ok();
+    match read_settings_readonly() {
+        Ok(settings) => known_secrets(settings.as_ref(), &[], env),
+        Err(e) => known_secrets(None, &e.salvaged_secrets, env),
+    }
+}
+
 /// Environment variable naming a file that holds the registration OTT.
 const OTT_FILE_ENV_VAR: &str = "STRIKE48_REGISTRATION_TOKEN_FILE";
 
@@ -329,7 +340,7 @@ pub fn read_redacted_tail(path: &Path, max_lines: usize, secrets: &[String]) -> 
     }
 }
 
-fn read_tail_lines(path: &Path, max_lines: usize) -> std::io::Result<Vec<String>> {
+pub(crate) fn read_tail_lines(path: &Path, max_lines: usize) -> std::io::Result<Vec<String>> {
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     let start = len.saturating_sub(TAIL_READ_BYTES);
@@ -354,14 +365,21 @@ fn read_tail_lines(path: &Path, max_lines: usize) -> std::io::Result<Vec<String>
 }
 
 fn redact_line(line: &str, secrets: &[String]) -> String {
+    cap_bytes(redact_with_secrets(line, secrets), MAX_LINE_BYTES)
+}
+
+/// Replace each known secret in `text` by value, then pattern-redact it. The
+/// by-value pass catches a secret of any shape that `redact` would miss, such
+/// as a saved token mentioned in free text.
+pub(crate) fn redact_with_secrets(text: &str, secrets: &[String]) -> String {
     let by_value = secrets
         .iter()
-        .fold(line.to_string(), |acc, s| redact_known_secret(&acc, s));
-    cap_bytes(redact(&by_value), MAX_LINE_BYTES)
+        .fold(text.to_string(), |acc, s| redact_known_secret(&acc, s));
+    redact(&by_value)
 }
 
 /// Cut `s` to at most `max` bytes on a char boundary, marking the cut.
-fn cap_bytes(s: String, max: usize) -> String {
+pub(crate) fn cap_bytes(s: String, max: usize) -> String {
     if s.len() <= max {
         return s;
     }
