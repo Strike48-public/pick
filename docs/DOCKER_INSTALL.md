@@ -754,6 +754,125 @@ Pinned by the compose file and not configurable from `.env`:
 | `DISABLE_SANDBOX` | `true` | The image does not ship the in-container tool sandbox; the container is the isolation boundary. |
 | `MATRIX_TLS_INSECURE` | `false` | Certificate verification stays on. Use `MATRIX_TLS_CA_CERT` for a private CA. |
 
+### Running the image directly (without the compose bundle)
+
+The compose bundle is the recommended path. If you run the image yourself
+(`docker run ghcr.io/strike48-public/pick:<tag>`), the entrypoint is the
+`pentest-agent` binary and its configuration is plain environment variables.
+These are the same variables the bundle's compose file passes, plus the
+aliases the binary accepts — **if more than one carrier is set, the
+precedence order below decides which value wins**.
+
+Host (which Strike48 to reach):
+
+| Variable | Notes |
+| --- | --- |
+| `STRIKE48_HOST` | First carrier checked. |
+| `STRIKE48_URL` | Alias (used by StrikeHub). |
+| `STRIKE48_API_URL` | Alias. The compose bundle also sets this as the registration HTTPS origin. |
+
+Tenant (which tenant to register as), checked **in this order**:
+
+| Order | Variable | Notes |
+| --- | --- | --- |
+| 1 | `MATRIX_TENANT_ID` | Checked first. Operators typically use it to carry an explicit UUID. |
+| 2 | `STRIKE48_TENANT` | The canonical name (this guide uses it). |
+| 3 | `TENANT_ID` | Legacy alias (used by StrikeHub). |
+
+Tenant value resolution is not "first variable set": a **UUID-shaped value
+wins over a slug wherever it is** — the resolver scans the three carriers in
+the order above, takes the first value that parses as a canonical UUID, and
+only falls back to the first non-empty slug if none is a UUID. Consequences:
+
+- **Use the tenant UUID, not the slug.** A slug is a valid registration
+  identity, but Studio addresses the App-behavior connector by UUID, so a
+  slug-registered connector **shows up in the tenant but is not addressable
+  from Studio** (it connects and registers, yet the app view cannot reach
+  it). If you see that symptom, you registered with a slug: put the UUID in
+  `STRIKE48_TENANT` (or `MATRIX_TENANT_ID`) and re-enroll.
+- **A stale `MATRIX_TENANT_ID` silently wins.** Because it is checked first,
+  an old UUID left in the environment (a copied `.env`, a host-level Docker
+  env, a compose override from another project) beats a correct slug in
+  `STRIKE48_TENANT` — and even beats a slug in a *lower* variable when the
+  stale value is a UUID. "I set `STRIKE48_TENANT` correctly but it registered
+  somewhere else" is almost always this. Audit **all three** carriers before
+  debugging registration.
+
+Instance identity:
+
+| Variable | Notes |
+| --- | --- |
+| `STRIKE48_INSTANCE_ID` | Stable identity of this install. Approval is keyed to the connector name plus this value — **keep it stable** or the connector re-enrolls on every restart. |
+| `INSTANCE_ID` | Legacy alias. |
+
+Authentication:
+
+| Variable | Notes |
+| --- | --- |
+| `STRIKE48_TOKEN` | Optional. When a JWT is available (an approved connector's token), pass it and the connector skips the approval round-trip. When it is absent the connector uses the **OTT approval flow**: it registers, you approve it in Studio (Gateways → Pending approvals), and it proceeds. |
+
+TLS:
+
+| Variable | Notes |
+| --- | --- |
+| `STRIKE48_TLS` | `true` by default. Only the exact strings `false` or `0` turn certificate-verified TLS **off**; any other value (including a typo like `flase`) keeps TLS on. **Setting it off is for isolated lab environments only** — an unauthenticated transport carrying tool traffic and a token is a wide-open pipe on anything but an air-gapped bench. |
+
+The host value is normalized before use, so you do not have to remember the
+full form. A bare host or an explicit `:443` both normalize to
+`wss://host:443` (the fronted case — what the compose bundle passes):
+
+| You type | Connector uses |
+| --- | --- |
+| `wss://studio.example.com` | `wss://studio.example.com:443` |
+| `studio.example.com:443` | `wss://studio.example.com:443` |
+| `studio.example.com` | `wss://studio.example.com:443` |
+| `grpc://studio.example.com` | `grpc://studio.example.com:50051` |
+| `connectors-studio-grpc.example.com:50061` | unchanged — the **direct-gRPC** case (talking to the gateway service itself, not through the frontend), which is what the `:50061` examples in the source comments mean |
+
+A minimal direct run, mirroring the bundle's configuration (synthetic values
+— yours come from your Strike48 account and this guide's Configuration
+reference):
+
+```bash
+docker run -d --name pick-connector \
+  --env-file .env \
+  -v pick-connector-data:/data/connector \
+  ghcr.io/strike48-public/pick:0.1.13
+```
+
+where `.env` holds at least:
+
+```bash
+STRIKE48_HOST=wss://studio.example.com
+STRIKE48_API_URL=https://studio.example.com/
+STRIKE48_TENANT=0192a7c4-3f5e-7b21-9d4a-6e8f0c1b2a3d   # tenant UUID, not a slug
+STRIKE48_INSTANCE_ID=0b9d62b9-6f2b-4e1a-9c3d-8a5e2f7d1c40  # generate once, keep forever
+```
+
+If you have an approved connector's JWT, add `STRIKE48_TOKEN=...` to the same
+file. **Pass the token by environment or by a mounted file — never bake it
+into an image layer and never pass it as a command-line argument** (a
+`docker run` argument is visible in the process list and in
+`docker inspect`; a layer is visible to anyone who can pull the image).
+
+Persistence: the connector's identity, saved credentials and approval state
+live under `HOME`, which the image sets to `/data/connector`
+(`Dockerfile:70`); credentials specifically land in
+`$HOME/.strike48/credentials/`. Mount a named volume (or bind mount) at
+`/data/connector` exactly as the example above does; without it, a recreated
+container forgets its approval and re-enrolls from scratch on every restart.
+
+A successful registration is visible in `docker logs` as the connector
+posting its registration to `STRIKE48_API_URL` and completing the approval
+round-trip (or accepting `STRIKE48_TOKEN` directly); the tenant then shows
+the connector under Gateways. Two failures have distinct shapes: a
+**tenant mismatch** (you registered against the wrong tenant — see the
+stale-`MATRIX_TENANT_ID` trap above) registers *successfully* yet the
+connector is absent from the tenant you expected; a **TLS failure** fails
+loudly at connect time with a certificate error naming the host, and is
+usually a missing private CA (the bundle handles it via
+`MATRIX_TLS_CA_CERT`) rather than a reason to touch `STRIKE48_TLS`.
+
 ## Day-to-day operations
 
 Logs, following, with timestamps:
@@ -1109,6 +1228,9 @@ VPN, or, for names, DNS. For DNS, set your internal DNS servers with the
 | Connection fails with a port in `STRIKE48_HOST` | Hosted Studios are reached on 443 only; a port copied from a development setup will not answer | Remove the port from `STRIKE48_HOST` |
 | TLS or certificate errors in the log | A TLS-inspecting appliance re-signs traffic | Follow [Corporate proxy and private CA](#corporate-proxy-and-private-ca). Do not set `MATRIX_TLS_INSECURE` |
 | Logs say `Registered successfully` but nothing appears in Gateways | Wrong `STRIKE48_TENANT`, so it registered against another tenant | Confirm the UUID with Strike48, fix `.env`, `docker compose down -v`, `docker compose up -d` |
+| `docker pull` fails with `manifest unknown` (or the image tag looks like `v0.1.13`) | The image tag has a `v` prefix. Git tags are `v0.1.13`; **container tags are not** — they are `0.1.13` | Drop the `v`: `docker pull ghcr.io/strike48-public/pick:0.1.13`. The release page's Docker image section names the exact tag and digest |
+| `Registered successfully` but the connector is in a tenant you did not intend, or you "set `STRIKE48_TENANT` correctly" and it still went elsewhere | A stale `MATRIX_TENANT_ID` (or `TENANT_ID`) in another layer of the environment. The carriers are checked `MATRIX_TENANT_ID` → `STRIKE48_TENANT` → `TENANT_ID`, and a UUID-shaped value wins wherever it is, so an old UUID beats a correct slug | Unset `MATRIX_TENANT_ID` and `TENANT_ID` (check the container env with `docker inspect`, the host environment, and any compose override file), keep only `STRIKE48_TENANT` set to the UUID, `docker compose down -v`, start, approve |
+| The connector registers and is visible in the tenant, but Studio's app view cannot reach it (`App not found or connector is offline`) and Gateways shows it online | It registered with a tenant **slug** instead of the tenant **UUID**; Studio addresses the App-behavior connector by UUID | Put the tenant UUID in `STRIKE48_TENANT`, `docker compose down -v`, start, and approve the re-enrollment. See [Running the image directly](#running-the-image-directly-without-the-compose-bundle) |
 | Registration fails right after start with a token in `.env` | The token expired, was already used, or the line is set but empty | Get a fresh token or comment the line out and approve by hand |
 | `PENTEST_ALLOW_PRIVATE_IPS is set to an unrecognized value` warning | The variable is set to something other than `true` or `1` | Set it to `true` or comment it out |
 | mDNS, SSDP, ARP, or Wi-Fi scans return nothing | The container is on the Compose bridge network, which multicast and layer 2 traffic do not cross | [Enable host networking](#enable-host-networking) on a Linux host |

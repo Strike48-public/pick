@@ -7,6 +7,7 @@ Complete documentation for Pick, the multiplatform penetration testing connector
 - **[Main README](../README.md)** - Project overview, features, and quick start
 - **[Quick Start](../RUNNING.md)** - Running Pick in 5 minutes
 - **[Installation Guide](INSTALLATION.md)** - Complete installation instructions
+- **[Docker Install](DOCKER_INSTALL.md)** - Container deployment: setup choice, preflight, compose bundle, and the raw `docker run` path
 - **[Contributing Guide](../CONTRIBUTING.md)** - How to contribute to Pick
 - **[Build Troubleshooting](BUILD_TROUBLESHOOTING.md)** - Fix common build errors
 - **[Runtime Troubleshooting](RUNTIME_TROUBLESHOOTING.md)** - Fix runtime errors
