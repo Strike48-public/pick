@@ -304,6 +304,16 @@
     background: color-mix(in srgb, var(--destructive) 6%, var(--muted));
 }
 
+.chat-notice--success {
+    border-color: color-mix(in srgb, #16a34a 40%, var(--border));
+    background: color-mix(in srgb, #16a34a 8%, var(--muted));
+}
+
+.chat-notice--info {
+    border-color: var(--border);
+    background: var(--muted);
+}
+
 .chat-notice__icon {
     flex-shrink: 0;
     font-size: 0.875rem;
@@ -618,6 +628,33 @@
 }
 
 .chat-send-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+/* Stop control — shown in place of the (disabled) Send affordance while a
+   turn is in flight. Deliberately red: it halts live work against the target,
+   so it must read as an abort, not a neutral button. */
+.chat-stop-btn {
+    background: color-mix(in srgb, var(--destructive) 88%, transparent);
+    color: var(--primary-foreground);
+    border: none;
+    border-radius: var(--radius);
+    padding: 0.625rem 1.25rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity 0.15s;
+    flex-shrink: 0;
+    white-space: nowrap;
+    line-height: 1.5;
+}
+
+.chat-stop-btn:hover:not(:disabled) {
+    opacity: 0.9;
+}
+
+.chat-stop-btn:disabled {
     opacity: 0.4;
     cursor: default;
 }

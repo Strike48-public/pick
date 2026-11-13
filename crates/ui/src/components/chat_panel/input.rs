@@ -37,8 +37,11 @@ pub struct ChatInputProps {
     pub on_send: EventHandler<String>,
     /// True while a message is being sent to the API.
     pub is_sending: Signal<bool>,
-    /// True while the agent is processing a response.
+    /// True while the agent is processing a response. While true the Send
+    /// affordance is disabled and the Stop control is shown in its place.
     pub agent_thinking: Signal<bool>,
+    /// Called when the operator presses Stop during an in-flight turn.
+    pub on_stop: EventHandler<()>,
 }
 
 /// Auto-resizing textarea + Send button — JS-bridge variant (macOS / Linux).
@@ -56,6 +59,7 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
     let agent_thinking = props.agent_thinking;
     let disabled = is_sending() || agent_thinking();
     let on_send = props.on_send;
+    let on_stop = props.on_stop;
 
     // Re-focus the textarea when the agent finishes (disabled → enabled).
     use_effect(move || {
@@ -106,6 +110,20 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
                 placeholder: if disabled { "Waiting for response..." } else { "Type a message..." },
                 disabled: disabled,
             }
+            // While a turn is in flight the Send button is disabled; the Stop
+            // control sits in the same row so the operator's hand is where it
+            // expects an in-flight control. Clicks on it never reach the JS
+            // send bridge (which only reacts to `.chat-send-btn`).
+            if agent_thinking() {
+                button {
+                    class: "chat-stop-btn",
+                    r#type: "button",
+                    title: "Stop the agent turn",
+                    aria_label: "Stop the agent turn",
+                    onclick: move |_| on_stop.call(()),
+                    "Stop"
+                }
+            }
             button {
                 class: "chat-send-btn",
                 // type=button so the browser doesn't fire an implicit form
@@ -136,6 +154,7 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
     let agent_thinking = props.agent_thinking;
     let disabled = is_sending() || agent_thinking();
     let on_send = props.on_send;
+    let on_stop = props.on_stop;
 
     // Re-focus the textarea when agent finishes (disabled → enabled).
     use_effect(move || {
@@ -221,6 +240,18 @@ pub fn ChatInput(props: ChatInputProps) -> Element {
                 placeholder: if disabled { "Waiting for response..." } else { "Type a message..." },
                 disabled: disabled,
                 onkeydown: on_keydown,
+            }
+            // Stop control while a turn is in flight (same rationale as the
+            // JS-bridge variant above).
+            if agent_thinking() {
+                button {
+                    class: "chat-stop-btn",
+                    r#type: "button",
+                    title: "Stop the agent turn",
+                    aria_label: "Stop the agent turn",
+                    onclick: move |_| on_stop.call(()),
+                    "Stop"
+                }
             }
             button {
                 class: "chat-send-btn",
