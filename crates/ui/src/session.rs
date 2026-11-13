@@ -500,7 +500,6 @@ pub fn apply_validator_verdicts(
     report
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
 /// Process-global lock serializing every test in this binary that touches the
 /// evidence statics (`EVIDENCE_GRAPH` in this module and
 /// `PENDING_EVIDENCE` in `pentest_tools::evidence_producer`). cargo runs
@@ -518,6 +517,7 @@ pub(crate) fn evidence_test_lock() -> std::sync::MutexGuard<'static, ()> {
     EVIDENCE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use pentest_core::export::Severity;
