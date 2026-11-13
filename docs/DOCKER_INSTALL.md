@@ -811,6 +811,15 @@ whose tag was created by the release workflow (GITHUB_TOKEN) fires no push
 event, so the float keeps pointing at the last git-pushed stable release
 until that tag is re-pushed over git.
 
+Every push build also publishes an immutable `sha-<short>` tag (e.g.
+`sha-bb3b2a2`), naming the exact commit the image was built from. The tag is
+never re-pointed to a different commit, and the image's
+`org.opencontainers.image.revision` label always equals that commit's full
+sha, so `sha-<short>` pins a build reproducibly (incident triage, manifest
+pinning). The floating `latest` and `main` tags keep moving with every
+main-branch build as before (see
+https://github.com/Strike48-public/pick/issues/630).
+
 Once that run completes, the `docker compose pull` above succeeds. Until it
 does, you can pin `PICK_IMAGE_TAG` in `.env` to the most recent release whose
 image is published (e.g. `0.1.11` for releases 0.1.12/0.1.13).
