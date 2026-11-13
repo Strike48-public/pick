@@ -887,7 +887,13 @@ mod tests {
     /// must come back neutralized and the payload flagged. Reverting the
     /// `sanitize_agent_result` call in `execute_with_context` turns this red.
     #[tokio::test]
+    #[allow(
+        clippy::await_holding_lock,
+        reason = "each tokio test has its own runtime thread, so a waiter blocks only itself"
+    )]
     async fn execute_with_context_sanitizes_tool_output() {
+        // execute_command records findings in the shared Default evidence scope.
+        let _evidence = crate::session::evidence_test_lock();
         // Direct host execution — the sandbox rootfs isn't present on CI.
         pentest_platform::set_use_sandbox(false);
 
@@ -934,7 +940,13 @@ mod tests {
     /// must not survive to the agent-facing stdout. Reverting the
     /// `sanitize_agent_result` call in `execute_with_context` turns this red.
     #[tokio::test]
+    #[allow(
+        clippy::await_holding_lock,
+        reason = "each tokio test has its own runtime thread, so a waiter blocks only itself"
+    )]
     async fn execute_with_context_scrubs_reflected_credential_from_stdout() {
+        // execute_command records findings in the shared Default evidence scope.
+        let _evidence = crate::session::evidence_test_lock();
         // Direct host execution — the sandbox rootfs isn't present on CI.
         pentest_platform::set_use_sandbox(false);
 
@@ -971,7 +983,13 @@ mod tests {
     /// Benign tool output must pass through the production path byte-for-byte —
     /// no `_sanitization` marker, real evidence unmangled.
     #[tokio::test]
+    #[allow(
+        clippy::await_holding_lock,
+        reason = "each tokio test has its own runtime thread, so a waiter blocks only itself"
+    )]
     async fn execute_with_context_passes_benign_output_through() {
+        // execute_command records findings in the shared Default evidence scope.
+        let _evidence = crate::session::evidence_test_lock();
         pentest_platform::set_use_sandbox(false);
 
         let connector = test_connector();
@@ -1005,7 +1023,13 @@ mod tests {
     /// payload the agent receives. Removing the budget check in
     /// `execute_with_context` turns this red.
     #[tokio::test]
+    #[allow(
+        clippy::await_holding_lock,
+        reason = "each tokio test has its own runtime thread, so a waiter blocks only itself"
+    )]
     async fn execute_with_context_refuses_once_budget_exhausted() {
+        // execute_command records findings in the shared Default evidence scope.
+        let _evidence = crate::session::evidence_test_lock();
         pentest_platform::set_use_sandbox(false);
 
         let mut connector = test_connector();
@@ -1059,11 +1083,18 @@ mod tests {
     /// tool so the registry fails fast and no binary is needed. Removing
     /// `.instrument(span)` from the hop turns this red.
     #[tokio::test]
+    #[allow(
+        clippy::await_holding_lock,
+        reason = "each tokio test has its own runtime thread, so a waiter blocks only itself"
+    )]
     async fn liveview_hop_lines_carry_correlation_ids() {
         use std::io::Write;
         use std::sync::Mutex;
         use tracing_subscriber::fmt::MakeWriter;
         use tracing_subscriber::prelude::*;
+
+        // The failing run still drains the shared Default evidence bucket.
+        let _evidence = crate::session::evidence_test_lock();
 
         /// In-memory writer so the test can read back the formatted lines.
         #[derive(Clone, Default)]
@@ -1255,7 +1286,13 @@ mod tests {
     /// must carry the whole cause chain, not only the outermost message
     /// (pick#476). Reverting the `e.chain()` call turns this red.
     #[tokio::test]
+    #[allow(
+        clippy::await_holding_lock,
+        reason = "each tokio test has its own runtime thread, so a waiter blocks only itself"
+    )]
     async fn failure_result_carries_the_full_cause_chain() {
+        // The failing run still drains the shared Default evidence bucket.
+        let _evidence = crate::session::evidence_test_lock();
         let connector = failing_connector();
         let ctx: HashMap<String, String> = HashMap::new();
 
@@ -1338,7 +1375,14 @@ mod tests {
     /// graph (clear everything on begin_scan, drain everything after a run)
     /// turns this red.
     #[tokio::test]
+    #[allow(
+        clippy::await_holding_lock,
+        reason = "each tokio test has its own runtime thread, so a waiter blocks only itself"
+    )]
     async fn engagements_on_one_pick_keep_separate_evidence() {
+        // begin_scan flips the shared active scope, and every run pushes and
+        // drains the global evidence buffers.
+        let _evidence = crate::session::evidence_test_lock();
         let mut registry = ToolRegistry::new();
         registry.register(EvidenceProbeTool);
         registry.register(pentest_tools::BeginScanTool);
@@ -1416,7 +1460,13 @@ mod tests {
     /// workspace root. Reverting the connector to hand every call the shared
     /// workspace turns this red.
     #[tokio::test]
+    #[allow(
+        clippy::await_holding_lock,
+        reason = "each tokio test has its own runtime thread, so a waiter blocks only itself"
+    )]
     async fn engagements_on_one_pick_keep_separate_workspace_files() {
+        // The final call without an engagement drains the shared Default bucket.
+        let _evidence = crate::session::evidence_test_lock();
         let workspace = tempfile::tempdir().expect("tempdir");
         let connector = file_tool_connector(workspace.path());
         let write = |name: &str| json!({"path": name, "content": "x"});
