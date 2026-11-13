@@ -894,7 +894,7 @@ mod tests {
         // race the session::tests drains, and clear any residue first so the
         // Default scope starts deterministic.
         let _evidence_guard = crate::session::evidence_test_lock();
-        let _default_scope = pentest_core::EvidenceScope::from_engagement_id(None);
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
         crate::session::drain_tool_evidence_into_graph(&_default_scope);
         crate::session::start_scan_evidence(&_default_scope);
 
@@ -951,7 +951,7 @@ mod tests {
         // race the session::tests drains, and clear any residue first so the
         // Default scope starts deterministic.
         let _evidence_guard = crate::session::evidence_test_lock();
-        let _default_scope = pentest_core::EvidenceScope::from_engagement_id(None);
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
         crate::session::drain_tool_evidence_into_graph(&_default_scope);
         crate::session::start_scan_evidence(&_default_scope);
 
@@ -998,7 +998,7 @@ mod tests {
         // race the session::tests drains, and clear any residue first so the
         // Default scope starts deterministic.
         let _evidence_guard = crate::session::evidence_test_lock();
-        let _default_scope = pentest_core::EvidenceScope::from_engagement_id(None);
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
         crate::session::drain_tool_evidence_into_graph(&_default_scope);
         crate::session::start_scan_evidence(&_default_scope);
 
@@ -1042,7 +1042,7 @@ mod tests {
         // race the session::tests drains, and clear any residue first so the
         // Default scope starts deterministic.
         let _evidence_guard = crate::session::evidence_test_lock();
-        let _default_scope = pentest_core::EvidenceScope::from_engagement_id(None);
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
         crate::session::drain_tool_evidence_into_graph(&_default_scope);
         crate::session::start_scan_evidence(&_default_scope);
 
@@ -1106,7 +1106,7 @@ mod tests {
         // race the session::tests drains, and clear any residue first so the
         // Default scope starts deterministic.
         let _evidence_guard = crate::session::evidence_test_lock();
-        let _default_scope = pentest_core::EvidenceScope::from_engagement_id(None);
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
         crate::session::drain_tool_evidence_into_graph(&_default_scope);
         crate::session::start_scan_evidence(&_default_scope);
 
@@ -1312,7 +1312,7 @@ mod tests {
         // race the session::tests drains, and clear any residue first so the
         // Default scope starts deterministic.
         let _evidence_guard = crate::session::evidence_test_lock();
-        let _default_scope = pentest_core::EvidenceScope::from_engagement_id(None);
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
         crate::session::drain_tool_evidence_into_graph(&_default_scope);
         crate::session::start_scan_evidence(&_default_scope);
 
