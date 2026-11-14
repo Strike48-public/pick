@@ -14,6 +14,23 @@ use tokio::sync::Mutex;
 /// Global lock to prevent concurrent rootfs setup
 static SETUP_LOCK: tokio::sync::OnceCell<Mutex<()>> = tokio::sync::OnceCell::const_new();
 
+    /// Which host paths the proot guest sees. gpg's key generation hangs
+    /// when /proc or /dev are bound (reproduced on the 2025.12.01 cut: init
+    /// completes in seconds unbound, hangs forever bound), while pacman's
+    /// commit needs /proc (its /etc/mtab points there) and every mirror
+    /// fetch needs DNS (the bootstrap ships a comment-only resolv.conf) —
+    /// so the callers choose.
+    enum Binds {
+        /// Nothing bound. gpg/keygen steps.
+        None,
+        /// Host resolv.conf only. Steps that need DNS but touch no gpg
+        /// agent sockets (strap.sh).
+        Resolv,
+        /// /proc + /dev + resolv.conf. pacman steps (sync/upgrade/commit).
+        Full,
+    }
+
+
 /// URL for the Arch Linux bootstrap tarball (used as base).
 ///
 /// Dated archive copy, NOT the mirror's rolling `/iso/latest/`: a pin is only
@@ -418,7 +435,7 @@ impl RootfsManager {
             arch::pacman_keyring()
         );
 
-        match self.run_in_rootfs(rootfs, &init_script).await {
+        match self.run_in_rootfs(rootfs, &init_script, Binds::None).await {
             Ok(output) => {
                 tracing::info!("Pacman keyring initialized successfully: {}", output.trim());
             }
@@ -464,7 +481,7 @@ set -e
 /tmp/strap.sh
 "#;
 
-        match self.run_in_rootfs(rootfs, strap_script).await {
+        match self.run_in_rootfs(rootfs, strap_script, Binds::Resolv).await {
             Ok(output) => {
                 tracing::info!("BlackArch strap.sh completed: {}", output.trim());
             }
@@ -558,7 +575,7 @@ set -e
         tracing::info!("Refreshing archlinux-keyring before the initial upgrade...");
 
         let script = "pacman -Sy archlinux-keyring --noconfirm";
-        let result = self.run_in_rootfs(rootfs, script).await;
+        let result = self.run_in_rootfs(rootfs, script, Binds::Full).await;
 
         match result {
             Ok(output) => {
@@ -584,7 +601,7 @@ set -e
 
         tracing::info!("Running system update inside rootfs (this may take several minutes)...");
 
-        let result = self.run_in_rootfs(rootfs, update_script).await;
+        let result = self.run_in_rootfs(rootfs, update_script, Binds::Full).await;
 
         match result {
             Ok(output) => {
@@ -609,7 +626,7 @@ set -e
 
         tracing::info!("Syncing package databases...");
 
-        let result = self.run_in_rootfs(rootfs, sync_script).await;
+        let result = self.run_in_rootfs(rootfs, sync_script, Binds::Full).await;
 
         match result {
             Ok(output) => {
@@ -640,7 +657,7 @@ for tool in $TOOLS; do
 done
         "#;
 
-        match self.run_in_rootfs(rootfs, script).await {
+        match self.run_in_rootfs(rootfs, script, Binds::None).await {
             Ok(output) => {
                 tracing::info!("Capability setup output: {}", output.trim());
             }
@@ -654,7 +671,7 @@ done
     }
 
     /// Run a command inside the rootfs (using arch-chroot, chroot, proot, or bwrap)
-    async fn run_in_rootfs(&self, rootfs: &Path, script: &str) -> SandboxResult<String> {
+    async fn run_in_rootfs(&self, rootfs: &Path, script: &str, binds: Binds) -> SandboxResult<String> {
         // Try arch-chroot first (requires root or arch-install-scripts)
         let output = Command::new("arch-chroot")
             .args([rootfs.to_string_lossy().as_ref(), "/bin/bash", "-c", script])
@@ -687,32 +704,46 @@ done
                     "-0", // Fake root privileges
                     "-r",
                     rootfs.to_string_lossy().as_ref(),
-                    // Bind the pieces pacman provisioning needs from the host:
-                    // without these the guest has no /proc (pacman's mtab
-                    // check fails at commit), no /dev, and — because the
-                    // bootstrap ships a comment-only /etc/resolv.conf — no
-                    // DNS at all, so every mirror fetch fails. The bwrap
-                    // runtime path below binds the same set.
-                    "-b",
-                    "/proc",
-                    "-b",
-                    "/dev",
-                    "-b",
-                    "/etc/resolv.conf",
-                    "-w",
-                    "/root",
-                    // Fixed guest PATH: without this the guest inherits the
-                    // host's PATH, which on hosts like NixOS points at
-                    // store paths that do not exist inside the rootfs —
-                    // every pacman invocation then fails "command not
-                    // found" and the (tolerated-failure) first-boot steps
-                    // silently skip.
-                    "/usr/bin/env",
-                    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                    "/bin/bash",
-                    "-c",
-                    script,
-                ])
+                ]
+                .into_iter()
+                // Bind the pieces the step needs from the host: pacman's
+                // commit reads /etc/mtab -> /proc, and every mirror fetch
+                // needs DNS (the bootstrap ships a comment-only
+                // resolv.conf). See Binds for why gpg/keygen steps get
+                // nothing.
+                .chain(match binds {
+                    Binds::None => vec![].into_iter(),
+                    Binds::Resolv => vec!["-b", "/etc/resolv.conf"].into_iter(),
+                    Binds::Full => {
+                        vec!["-b", "/proc", "-b", "/dev", "-b", "/etc/resolv.conf"].into_iter()
+                    }
+                })
+                .chain(
+                    [
+                        "-w",
+                        "/root",
+                        // Fixed guest PATH: without this the guest inherits
+                        // the host's PATH, which on hosts like NixOS points
+                        // at store paths that do not exist inside the
+                        // rootfs — every pacman invocation then fails
+                        // "command not found" and the (tolerated-failure)
+                        // first-boot steps silently skip.
+                        "/usr/bin/env",
+                        "-i",
+                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                        "HOME=/root",
+                        // -i: a clean environment. Inheriting host vars like
+                        // LD_LIBRARY_PATH into a foreign rootfs makes the
+                        // guest's own binaries load the host's libraries
+                        // (gpg-agent hung forever on a NixOS host until
+                        // this was cleared).
+                        "/bin/bash",
+                        "-c",
+                        script,
+                    ]
+                    .into_iter(),
+                )
+                .collect::<Vec<_>>())
                 .output()
                 .await;
 
