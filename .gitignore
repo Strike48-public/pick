@@ -100,3 +100,4 @@ __pycache__/
 # Build output of `cargo test --manifest-path vendor/strike48-connector/Cargo.toml`
 # (the CI step that runs the vendored fork's suite).
 /vendor/strike48-connector/target/
+result*
