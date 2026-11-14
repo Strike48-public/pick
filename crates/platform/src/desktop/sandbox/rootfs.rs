@@ -4,7 +4,9 @@
 
 use super::arch;
 use super::config::{SandboxConfig, SandboxError, SandboxResult};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -12,27 +14,47 @@ use tokio::sync::Mutex;
 /// Global lock to prevent concurrent rootfs setup
 static SETUP_LOCK: tokio::sync::OnceCell<Mutex<()>> = tokio::sync::OnceCell::const_new();
 
-/// URL for the Arch Linux bootstrap tarball (used as base)
-const ARCH_BOOTSTRAP_URL: &str =
-    "https://geo.mirror.pkgbuild.com/iso/latest/archlinux-bootstrap-x86_64.tar.zst";
-
-/// Alternative URL for older mirrors without zst (also used by WSL import which doesn't support .tar.zst)
-pub(super) const ARCH_BOOTSTRAP_URL_GZ: &str =
-    "https://archive.archlinux.org/iso/2024.01.01/archlinux-bootstrap-2024.01.01-x86_64.tar.gz";
-
-/// BlackArch repository strap script
-const BLACKARCH_STRAP_URL: &str = "https://blackarch.org/strap.sh";
-
-/// Base rootfs URL for the current host arch. x86_64 uses the Arch bootstrap
-/// tarball; aarch64 uses the ArchLinuxARM aarch64 rootfs (vanilla Arch has no
-/// ARM port).
-fn bootstrap_url() -> &'static str {
-    if arch::is_aarch64() {
-        arch::ALARM_AARCH64_ROOTFS
-    } else {
-        ARCH_BOOTSTRAP_URL
-    }
+/// Which host paths the proot guest sees. gpg's key generation hangs
+/// when /proc or /dev are bound (reproduced on the 2025.12.01 cut: init
+/// completes in seconds unbound, hangs forever bound), while pacman's
+/// commit needs /proc (its /etc/mtab points there) and every mirror
+/// fetch needs DNS (the bootstrap ships a comment-only resolv.conf) —
+/// so the callers choose.
+enum Binds {
+    /// Nothing bound. gpg/keygen steps.
+    None,
+    /// Host resolv.conf only. Steps that need DNS but touch no gpg
+    /// agent sockets (strap.sh).
+    Resolv,
+    /// /proc + /dev + resolv.conf. pacman steps (sync/upgrade/commit).
+    Full,
 }
+
+/// URL for the Arch Linux bootstrap tarball (used as base).
+///
+/// Dated archive copy, NOT the mirror's rolling `/iso/latest/`: a pin is only
+/// meaningful against an immutable URL. (Recent cuts ship `.tar.zst`; GNU tar
+/// `-a` auto-selects the decompressor from the filename, and `zstd` is
+/// ubiquitous on the Linux hosts this backend runs on — pacman itself links
+/// against it.) Vetted one-time against the archive's published GPG `.sig`
+/// (Pierre Schmitz, `3E80CA1A 8B89F69C BA57D98A 76A5EF90 54449A5C`). Bumping
+/// the cut is a deliberate act: vet the new `.sig`, then update URL + pin
+/// together — and note the cut must be RECENT enough that its shipped
+/// `archlinux-keyring` can verify today's repo signatures for the first
+/// `pacman -Syu` (a too-old cut fails with "unknown trust" before it can
+/// upgrade the keyring itself; the 2024.01.01 cut did exactly that).
+const ARCH_BOOTSTRAP_URL: &str =
+    "https://archive.archlinux.org/iso/2025.12.01/archlinux-bootstrap-2025.12.01-x86_64.tar.zst";
+const ARCH_BOOTSTRAP_SHA256: &str =
+    "48277d938a439976564f9e5b795e8668b7f1920c9bbbc30eb28a4a65f8832bdf";
+
+/// BlackArch repository strap script. Rolling upstream URL, frozen by the
+/// pin below (verified one-time against the blackarch/blackarch git source).
+/// strap.sh is EXECUTED inside the rootfs, so a mismatch is a hard failure —
+/// the caller's manual-repo fallback still applies.
+const BLACKARCH_STRAP_URL: &str = "https://blackarch.org/strap.sh";
+const BLACKARCH_STRAP_SHA256: &str =
+    "dc0737cc75d64d03e9ec2212f989f17cdcf0162c2db5980e256093e293abfb8b";
 
 /// Name of the wrapper directory the base archive extracts into, if any. The
 /// x86_64 Arch bootstrap archive nests everything under `root.x86_64/`; the
@@ -119,6 +141,19 @@ impl RootfsManager {
 
         // Perform initial system update to resolve package conflicts
         // (e.g., gcc-libs split into libgcc + libstdc++)
+        //
+        // But refresh the keyring package FIRST: a bootstrap cut is only as
+        // new as its shipped `archlinux-keyring`, and packager keys expire.
+        // A stale keyring makes the first full `-Syu` abort on an
+        // expired-key signature BEFORE the transaction could upgrade the
+        // keyring itself (the classic Arch deadlock; hit with the 2025.12.01
+        // cut whose 20251116 keyring predated a packager-key expiry). A
+        // dedicated keyring-only sync breaks it: the keyring package is
+        // signed by the current release keys, and every later package
+        // verifies against the fresh keyring. Failure here is tolerated —
+        // the -Syu below warns-and-continues like always.
+        self.refresh_pacman_keyring(&rootfs).await?;
+
         self.initial_system_update(&rootfs).await?;
 
         // Initialize pacman database (sync repos)
@@ -213,9 +248,18 @@ impl RootfsManager {
         // the rootfs dir (no `root.<arch>` wrapper like the x86_64 bootstrap).
         if arch::is_aarch64() {
             let tarball_path = self.config.data_dir.join("alarm-rootfs.tar.gz");
-            if !tarball_path.exists() {
+            // A cached tarball is trusted only if it verifies against the
+            // baked pin: an interrupted download — or a leftover of the old
+            // plaintext-HTTP fetch this PR exists to stop trusting — must not
+            // reach extraction (#624).
+            if !usable_cache(&tarball_path, arch::ALARM_AARCH64_ROOTFS_SHA256).await {
                 tracing::info!("Downloading ArchLinuxARM aarch64 rootfs...");
-                self.download_file(bootstrap_url(), &tarball_path).await?;
+                self.download_file(
+                    arch::ALARM_AARCH64_ROOTFS,
+                    &tarball_path,
+                    arch::ALARM_AARCH64_ROOTFS_SHA256,
+                )
+                .await?;
             }
             tracing::info!("Extracting ALARM rootfs...");
             // --delay-directory-restore: see the x86_64 branch below — ALARM
@@ -265,18 +309,14 @@ impl RootfsManager {
 
         let tarball_path = self.config.data_dir.join("arch-bootstrap.tar.zst");
 
-        if !tarball_path.exists() {
+        // Same refuse-unverified contract as the ALARM branch: a cached
+        // tarball is extracted only if it verifies against the baked pin —
+        // a truncated or tampered leftover must be re-downloaded, not
+        // extracted (#624, jtomek's review on #625).
+        if !usable_cache(&tarball_path, ARCH_BOOTSTRAP_SHA256).await {
             tracing::info!("Downloading Arch bootstrap...");
-            if self
-                .download_file(bootstrap_url(), &tarball_path)
-                .await
-                .is_err()
-            {
-                tracing::info!("Trying gzip fallback...");
-                let gz_path = self.config.data_dir.join("arch-bootstrap.tar.gz");
-                self.download_file(ARCH_BOOTSTRAP_URL_GZ, &gz_path).await?;
-                tokio::fs::rename(&gz_path, &tarball_path).await?;
-            }
+            self.download_file(ARCH_BOOTSTRAP_URL, &tarball_path, ARCH_BOOTSTRAP_SHA256)
+                .await?;
         }
 
         tracing::info!("Extracting rootfs...");
@@ -302,36 +342,20 @@ impl RootfsManager {
         // dir read-only, then can't write its own children -> "Cannot create
         // symlink ... Permission denied" and the extract aborts, leaving a
         // broken rootfs. The flag defers directory permission restoration until
-        // after contents are written. (Reproduced on the current .tar.zst
-        // bootstrap; the older .tar.gz didn't pack it this way, which is why the
-        // gz fallback worked and masked this.)
+        // after contents are written (reproduced on the 2024.01.01 bootstrap
+        // cut this path downloads).
         let tarball_str = tarball_path.to_string_lossy();
-        let extract_result = if tarball_str.ends_with(".zst") {
-            Command::new("tar")
-                .args([
-                    "--zstd",
-                    "--delay-directory-restore",
-                    "-xf",
-                    &tarball_str,
-                    "-C",
-                    &self.config.data_dir.to_string_lossy(),
-                    "--no-same-owner",
-                ])
-                .status()
-                .await
-        } else {
-            Command::new("tar")
-                .args([
-                    "--delay-directory-restore",
-                    "-xzf",
-                    &tarball_str,
-                    "-C",
-                    &self.config.data_dir.to_string_lossy(),
-                    "--no-same-owner",
-                ])
-                .status()
-                .await
-        };
+        let extract_result = Command::new("tar")
+            .args([
+                "--delay-directory-restore",
+                "-xaf",
+                &tarball_str,
+                "-C",
+                &self.config.data_dir.to_string_lossy(),
+                "--no-same-owner",
+            ])
+            .status()
+            .await;
 
         match extract_result {
             Ok(status) => {
@@ -406,7 +430,7 @@ impl RootfsManager {
             arch::pacman_keyring()
         );
 
-        match self.run_in_rootfs(rootfs, &init_script).await {
+        match self.run_in_rootfs(rootfs, &init_script, Binds::None).await {
             Ok(output) => {
                 tracing::info!("Pacman keyring initialized successfully: {}", output.trim());
             }
@@ -431,7 +455,8 @@ impl RootfsManager {
 
         let strap_path = rootfs.join("tmp/strap.sh");
         tokio::fs::create_dir_all(rootfs.join("tmp")).await?;
-        self.download_file(BLACKARCH_STRAP_URL, &strap_path).await?;
+        self.download_file(BLACKARCH_STRAP_URL, &strap_path, BLACKARCH_STRAP_SHA256)
+            .await?;
 
         #[cfg(unix)]
         {
@@ -447,7 +472,10 @@ set -e
 /tmp/strap.sh
 "#;
 
-        match self.run_in_rootfs(rootfs, strap_script).await {
+        match self
+            .run_in_rootfs(rootfs, strap_script, Binds::Resolv)
+            .await
+        {
             Ok(output) => {
                 tracing::info!("BlackArch strap.sh completed: {}", output.trim());
             }
@@ -533,6 +561,28 @@ set -e
     }
 
     /// Perform initial system update to resolve package conflicts
+    /// Refresh the `archlinux-keyring` package before the first full upgrade.
+    ///
+    /// See the call site for why: a bootstrap cut's baked-in keyring ages,
+    /// and an expired packager key deadlocks the first `pacman -Syu`.
+    async fn refresh_pacman_keyring(&self, rootfs: &Path) -> SandboxResult<()> {
+        tracing::info!("Refreshing archlinux-keyring before the initial upgrade...");
+
+        let script = "pacman -Sy archlinux-keyring --noconfirm";
+        let result = self.run_in_rootfs(rootfs, script, Binds::Full).await;
+
+        match result {
+            Ok(output) => {
+                tracing::info!("Keyring refresh completed: {}", output.trim());
+            }
+            Err(e) => {
+                tracing::warn!("Keyring refresh failed (continuing): {e}");
+            }
+        }
+
+        Ok(())
+    }
+
     async fn initial_system_update(&self, rootfs: &Path) -> SandboxResult<()> {
         tracing::info!("Performing initial system update to resolve package conflicts...");
 
@@ -545,7 +595,7 @@ set -e
 
         tracing::info!("Running system update inside rootfs (this may take several minutes)...");
 
-        let result = self.run_in_rootfs(rootfs, update_script).await;
+        let result = self.run_in_rootfs(rootfs, update_script, Binds::Full).await;
 
         match result {
             Ok(output) => {
@@ -570,7 +620,7 @@ set -e
 
         tracing::info!("Syncing package databases...");
 
-        let result = self.run_in_rootfs(rootfs, sync_script).await;
+        let result = self.run_in_rootfs(rootfs, sync_script, Binds::Full).await;
 
         match result {
             Ok(output) => {
@@ -601,7 +651,7 @@ for tool in $TOOLS; do
 done
         "#;
 
-        match self.run_in_rootfs(rootfs, script).await {
+        match self.run_in_rootfs(rootfs, script, Binds::None).await {
             Ok(output) => {
                 tracing::info!("Capability setup output: {}", output.trim());
             }
@@ -615,7 +665,12 @@ done
     }
 
     /// Run a command inside the rootfs (using arch-chroot, chroot, proot, or bwrap)
-    async fn run_in_rootfs(&self, rootfs: &Path, script: &str) -> SandboxResult<String> {
+    async fn run_in_rootfs(
+        &self,
+        rootfs: &Path,
+        script: &str,
+        binds: Binds,
+    ) -> SandboxResult<String> {
         // Try arch-chroot first (requires root or arch-install-scripts)
         let output = Command::new("arch-chroot")
             .args([rootfs.to_string_lossy().as_ref(), "/bin/bash", "-c", script])
@@ -644,16 +699,47 @@ done
         if let Ok(proot_path) = super::proot::ProotExecutor::ensure_proot(&self.config).await {
             tracing::info!("Using proot for rootfs command execution");
             let output = Command::new(&proot_path)
-                .args([
-                    "-0", // Fake root privileges
-                    "-r",
-                    rootfs.to_string_lossy().as_ref(),
-                    "-w",
-                    "/root",
-                    "/bin/bash",
-                    "-c",
-                    script,
-                ])
+                .args(
+                    [
+                        "-0", // Fake root privileges
+                        "-r",
+                        rootfs.to_string_lossy().as_ref(),
+                    ]
+                    .into_iter()
+                    // Bind the pieces the step needs from the host: pacman's
+                    // commit reads /etc/mtab -> /proc, and every mirror fetch
+                    // needs DNS (the bootstrap ships a comment-only
+                    // resolv.conf). See Binds for why gpg/keygen steps get
+                    // nothing.
+                    .chain(match binds {
+                        Binds::None => vec![],
+                        Binds::Resolv => vec!["-b", "/etc/resolv.conf"],
+                        Binds::Full => vec!["-b", "/proc", "-b", "/dev", "-b", "/etc/resolv.conf"],
+                    })
+                    .chain([
+                        "-w",
+                        "/root",
+                        // Fixed guest PATH: without this the guest inherits the
+                        // host's PATH, which on hosts like NixOS points at
+                        // store paths that do not exist inside the rootfs —
+                        // every pacman invocation then fails "command not
+                        // found" and the (tolerated-failure) first-boot steps
+                        // silently skip.
+                        "/usr/bin/env",
+                        "-i",
+                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                        "HOME=/root",
+                        // -i: a clean environment. Inheriting host vars like
+                        // LD_LIBRARY_PATH into a foreign rootfs makes the
+                        // guest's own binaries load the host's libraries
+                        // (gpg-agent hung forever on a NixOS host until
+                        // this was cleared).
+                        "/bin/bash",
+                        "-c",
+                        script,
+                    ])
+                    .collect::<Vec<_>>(),
+                )
                 .output()
                 .await;
 
@@ -719,13 +805,49 @@ done
         }
     }
 
-    /// Download a file from URL to destination
-    pub(super) async fn download_file(&self, url: &str, dest: &Path) -> SandboxResult<()> {
+    /// Download a file from URL to destination, streaming the body to disk.
+    ///
+    /// `expected_sha256` is REQUIRED: the body must match the pinned
+    /// lowercase-hex SHA-256 (an empty pin is refused up front — unverifiable
+    /// artifacts are refused, proot.rs contract). Making the pin a required
+    /// argument means a caller cannot accidentally drop verification by
+    /// passing `None` — the compile fails instead (jtomek's review on #625:
+    /// every call-site pin could be set to `None` with all tests still
+    /// green). The body streams into a sibling `.part` file in bounded
+    /// memory (the ALARM rootfs is ~800 MB) while being hashed
+    /// incrementally; the hash is checked after the stream and only then is
+    /// the file renamed to `dest` (verify-then-publish, the `proot.rs`
+    /// ordering). An interrupted or refused run leaves no unverified and no
+    /// half-written file at `dest`.
+    pub(super) async fn download_file(
+        &self,
+        url: &str,
+        dest: &Path,
+        expected_sha256: &str,
+    ) -> SandboxResult<()> {
         tracing::debug!("Downloading {} to {}", url, dest.display());
 
-        let response = reqwest::get(url)
-            .await
-            .map_err(|e| SandboxError::Download(format!("Failed to download {}: {}", url, e)))?;
+        if expected_sha256.is_empty() {
+            return Err(SandboxError::Download(
+                "no pinned SHA-256; refusing to use an unverified artifact (see #624)".into(),
+            ));
+        }
+
+        // reqwest::get has no timeout: a stalled mirror would hang first-run
+        // forever (the proot.rs #294 hang). Bound the CONNECT here and the
+        // IDLE time between chunks below — a fixed whole-request cap is
+        // deliberately NOT used, it would kill a slow-but-healthy 800 MB
+        // download on a weak link.
+        const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+        const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+        let client = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .map_err(|e| SandboxError::Download(e.to_string()))?;
+        let response =
+            client.get(url).send().await.map_err(|e| {
+                SandboxError::Download(format!("Failed to download {}: {}", url, e))
+            })?;
 
         if !response.status().is_success() {
             return Err(SandboxError::Download(format!(
@@ -739,14 +861,129 @@ done
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let mut file = tokio::fs::File::create(dest).await?;
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| SandboxError::Download(e.to_string()))?;
-        file.write_all(&bytes).await?;
+        // Stream into a sibling `.part` file: bounded memory, and `dest`
+        // only ever appears via the final rename.
+        let part = dest.with_file_name(format!(
+            "{}.part",
+            dest.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        ));
+        let mut file = tokio::fs::File::create(&part).await?;
+        let mut hasher = Sha256::new();
+
+        let mut stream = response;
+        loop {
+            let next = match tokio::time::timeout(CHUNK_IDLE_TIMEOUT, stream.chunk()).await {
+                Ok(Ok(next)) => next,
+                Ok(Err(e)) => return Err(SandboxError::Download(e.to_string())),
+                Err(_) => {
+                    return Err(SandboxError::Download(format!(
+                        "download stalled (no data for {}s): {}",
+                        CHUNK_IDLE_TIMEOUT.as_secs(),
+                        url
+                    )))
+                }
+            };
+            let chunk = match next {
+                Some(chunk) => chunk,
+                None => break,
+            };
+            hasher.update(&chunk);
+            file.write_all(&chunk).await?;
+        }
+        // Make the `.part` durable before it can be promoted to `dest`.
+        file.flush().await?;
+        file.sync_all().await?;
+        drop(file);
+
+        // Pinned artifacts are checked before publish: a mismatch removes
+        // the `.part` and never creates `dest` (refuse unverified).
+        {
+            let actual = format!("{:x}", hasher.finalize());
+            if !actual.eq_ignore_ascii_case(expected_sha256) {
+                let _ = tokio::fs::remove_file(&part).await;
+                return Err(SandboxError::Download(format!(
+                    "SHA-256 mismatch: expected {expected_sha256}, got {actual}"
+                )));
+            }
+            tracing::debug!("SHA-256 verified for {}", url);
+        }
+
+        tokio::fs::rename(&part, dest).await?;
 
         Ok(())
+    }
+}
+
+/// Lowercase hex SHA-256 of `bytes`.
+#[cfg(test)]
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Verify `bytes` against a pinned lowercase-hex SHA-256. An empty pin or a
+/// mismatch is an error: unverified artifacts are refused (proot.rs contract).
+#[cfg(test)]
+fn check_sha256(bytes: &[u8], expected: &str) -> SandboxResult<()> {
+    if expected.is_empty() {
+        return Err(SandboxError::Download(
+            "no pinned SHA-256; refusing to use an unverified artifact (see #624)".into(),
+        ));
+    }
+    let actual = sha256_hex(bytes);
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err(SandboxError::Download(format!(
+            "SHA-256 mismatch: expected {expected}, got {actual}"
+        )));
+    }
+    Ok(())
+}
+
+/// Decide whether a cached download at `path` may be reused.
+///
+/// The cached file must verify against the (required) pin; a missing,
+/// corrupt, or unverified file (a truncated download, or a leftover of the
+/// old plaintext-HTTP fetch) is removed so the caller re-downloads. The pin
+/// is a required argument so dropping verification fails to compile rather
+/// than silently trusting a file (jtomek's review on #625).
+///
+/// The file is streamed through the hasher in bounded memory — the ALARM
+/// rootfs is ~800 MB and `tokio::fs::read` would buffer all of it.
+pub(super) async fn usable_cache(path: &Path, pin: &str) -> bool {
+    use tokio::io::AsyncReadExt;
+
+    let mut file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1024 * 1024];
+    loop {
+        match file.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(_) => {
+                tracing::warn!(
+                    "Cached rootfs at {} could not be read for the pin check — re-downloading",
+                    path.display()
+                );
+                let _ = tokio::fs::remove_file(path).await;
+                return false;
+            }
+        }
+    }
+
+    if format!("{:x}", hasher.finalize()).eq_ignore_ascii_case(pin) {
+        true
+    } else {
+        tracing::warn!(
+            "Cached rootfs at {} failed the pinned SHA-256 check — re-downloading",
+            path.display()
+        );
+        let _ = tokio::fs::remove_file(path).await;
+        false
     }
 }
 
@@ -761,5 +998,178 @@ mod tests {
         // extracts flat (no wrapper), so no move is needed.
         assert_eq!(extracted_subdir_for(false), Some("root.x86_64"));
         assert_eq!(extracted_subdir_for(true), None);
+    }
+
+    #[test]
+    fn rootfs_download_urls_are_https() {
+        // #624: every URL handed to download_file must be HTTPS. The ALARM
+        // rootfs moved from plaintext http://os.archlinuxarm.org to a pinned
+        // release asset; this keeps it (and any future URL) honest.
+        for url in [
+            ARCH_BOOTSTRAP_URL,
+            BLACKARCH_STRAP_URL,
+            arch::ALARM_AARCH64_ROOTFS,
+            super::super::wsl::ARCHWSL_ROOTFS_URL,
+        ] {
+            assert!(url.starts_with("https://"), "not HTTPS: {url}");
+        }
+    }
+
+    #[tokio::test]
+    async fn download_file_mismatched_pin_leaves_no_file() {
+        // Review (625): skipping the verify step, or leaving a half-written
+        // or unverified file at `dest`, must be caught. Serve a fixed body
+        // from a local listener; a wrong pin is refused with NOTHING left
+        // on disk (`dest` is only ever created by the post-verify rename),
+        // the right pin lands the file byte-exact.
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let body: Arc<Vec<u8>> = Arc::new(b"definitely-not-the-pinned-rootfs".to_vec());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let served = Arc::clone(&body);
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut req = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = sock.read(&mut buf).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&buf[..n]);
+                    if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    served.len()
+                );
+                sock.write_all(resp.as_bytes()).await.unwrap();
+                sock.write_all(&served).await.unwrap();
+            }
+        });
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("alarm-rootfs.tar.gz");
+        let manager = RootfsManager::new(SandboxConfig {
+            data_dir: tmp.path().to_path_buf(),
+            ..Default::default()
+        });
+
+        // Wrong pin: refused, and nothing is left at dest (nor a .part).
+        let err = manager
+            .download_file(&format!("http://{addr}/rootfs"), &dest, &"0".repeat(64))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SandboxError::Download(_)), "got: {err:?}");
+        assert!(
+            !dest.exists(),
+            "a mismatched pinned download must leave no file"
+        );
+        assert!(
+            !dest.with_file_name("alarm-rootfs.tar.gz.part").exists(),
+            "no stray .part file either"
+        );
+
+        // Correct pin: the file lands with exactly the served bytes.
+        let good_pin = sha256_hex(&body);
+        manager
+            .download_file(&format!("http://{addr}/rootfs"), &dest, &good_pin)
+            .await
+            .unwrap();
+        assert_eq!(tokio::fs::read(&dest).await.unwrap(), body.as_slice());
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn usable_cache_refuses_unverified_file_and_reuses_verified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("alarm-rootfs.tar.gz");
+        let pin = sha256_hex(b"the-pinned-bytes");
+
+        // Missing file: not usable.
+        assert!(!usable_cache(&path, &pin).await);
+
+        // Planted (unverified) file: refused AND removed — the attack/tamper
+        // case from the review (a planted tarball must not be extracted).
+        tokio::fs::write(&path, b"planted").await.unwrap();
+        assert!(!usable_cache(&path, &pin).await);
+        assert!(!path.exists(), "an unverified cached file must be removed");
+
+        // Verified file: reusable.
+        tokio::fs::write(&path, b"the-pinned-bytes").await.unwrap();
+        assert!(usable_cache(&path, &pin).await);
+    }
+
+    #[test]
+    fn alarm_rootfs_pin_is_baked() {
+        // Fail in CI rather than ship an unverifiable 829 MB rootfs (proot.rs
+        // contract: empty/unbaked pin = refuse).
+        let pin = arch::ALARM_AARCH64_ROOTFS_SHA256;
+        assert_eq!(pin.len(), 64, "pin must be 64 hex chars: {pin:?}");
+        assert!(
+            pin.bytes().all(|b| b.is_ascii_hexdigit()) && pin == pin.to_lowercase(),
+            "pin must be lowercase hex: {pin:?}"
+        );
+    }
+
+    #[test]
+    fn sandbox_pins_are_baked() {
+        // #626: every sandbox download is pinned — fail in CI rather than
+        // ship an unverifiable artifact (proot.rs contract).
+        for (name, pin) in [
+            ("arch bootstrap", ARCH_BOOTSTRAP_SHA256),
+            ("blackarch strap.sh", BLACKARCH_STRAP_SHA256),
+            (
+                "archwsl-fs rootfs",
+                super::super::wsl::ARCHWSL_ROOTFS_SHA256,
+            ),
+            ("alarm aarch64 rootfs", arch::ALARM_AARCH64_ROOTFS_SHA256),
+        ] {
+            assert_eq!(pin.len(), 64, "{name} pin must be 64 hex chars: {pin:?}");
+            assert!(
+                pin.bytes().all(|b| b.is_ascii_hexdigit()) && pin == pin.to_lowercase(),
+                "{name} pin must be lowercase hex: {pin:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bootstrap_url_is_a_dated_archive_copy() {
+        // A pin is only meaningful against an immutable URL — the bootstrap
+        // must stay on a dated archive copy, never a rolling mirror path.
+        assert!(
+            ARCH_BOOTSTRAP_URL.contains("/iso/")
+                && !ARCH_BOOTSTRAP_URL.contains("/latest/")
+                && ARCH_BOOTSTRAP_URL.contains("archlinux.org/iso/2"),
+            "bootstrap URL must be a dated archive copy: {ARCH_BOOTSTRAP_URL}"
+        );
+        assert!(
+            !ARCH_BOOTSTRAP_URL.contains("/latest/"),
+            "rolling URL: {ARCH_BOOTSTRAP_URL}"
+        );
+    }
+
+    #[test]
+    fn sha256_hex_known_vector() {
+        // NIST: SHA-256("abc")
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn check_sha256_accepts_match_rejects_mismatch_and_empty_pin() {
+        let data = b"rootfs-bytes";
+        let pin = sha256_hex(data);
+        assert!(check_sha256(data, &pin).is_ok());
+        assert!(check_sha256(data, &"0".repeat(64)).is_err());
+        assert!(check_sha256(data, "").is_err());
     }
 }
