@@ -125,6 +125,19 @@ impl RootfsManager {
 
         // Perform initial system update to resolve package conflicts
         // (e.g., gcc-libs split into libgcc + libstdc++)
+        //
+        // But refresh the keyring package FIRST: a bootstrap cut is only as
+        // new as its shipped `archlinux-keyring`, and packager keys expire.
+        // A stale keyring makes the first full `-Syu` abort on an
+        // expired-key signature BEFORE the transaction could upgrade the
+        // keyring itself (the classic Arch deadlock; hit with the 2025.12.01
+        // cut whose 20251116 keyring predated a packager-key expiry). A
+        // dedicated keyring-only sync breaks it: the keyring package is
+        // signed by the current release keys, and every later package
+        // verifies against the fresh keyring. Failure here is tolerated —
+        // the -Syu below warns-and-continues like always.
+        self.refresh_pacman_keyring(&rootfs).await?;
+
         self.initial_system_update(&rootfs).await?;
 
         // Initialize pacman database (sync repos)
@@ -537,6 +550,28 @@ set -e
     }
 
     /// Perform initial system update to resolve package conflicts
+    /// Refresh the `archlinux-keyring` package before the first full upgrade.
+    ///
+    /// See the call site for why: a bootstrap cut's baked-in keyring ages,
+    /// and an expired packager key deadlocks the first `pacman -Syu`.
+    async fn refresh_pacman_keyring(&self, rootfs: &Path) -> SandboxResult<()> {
+        tracing::info!("Refreshing archlinux-keyring before the initial upgrade...");
+
+        let script = "pacman -Sy archlinux-keyring --noconfirm";
+        let result = self.run_in_rootfs(rootfs, script).await;
+
+        match result {
+            Ok(output) => {
+                tracing::info!("Keyring refresh completed: {}", output.trim());
+            }
+            Err(e) => {
+                tracing::warn!("Keyring refresh failed (continuing): {e}");
+            }
+        }
+
+        Ok(())
+    }
+
     async fn initial_system_update(&self, rootfs: &Path) -> SandboxResult<()> {
         tracing::info!("Performing initial system update to resolve package conflicts...");
 
@@ -652,8 +687,28 @@ done
                     "-0", // Fake root privileges
                     "-r",
                     rootfs.to_string_lossy().as_ref(),
+                    // Bind the pieces pacman provisioning needs from the host:
+                    // without these the guest has no /proc (pacman's mtab
+                    // check fails at commit), no /dev, and — because the
+                    // bootstrap ships a comment-only /etc/resolv.conf — no
+                    // DNS at all, so every mirror fetch fails. The bwrap
+                    // runtime path below binds the same set.
+                    "-b",
+                    "/proc",
+                    "-b",
+                    "/dev",
+                    "-b",
+                    "/etc/resolv.conf",
                     "-w",
                     "/root",
+                    // Fixed guest PATH: without this the guest inherits the
+                    // host's PATH, which on hosts like NixOS points at
+                    // store paths that do not exist inside the rootfs —
+                    // every pacman invocation then fails "command not
+                    // found" and the (tolerated-failure) first-boot steps
+                    // silently skip.
+                    "/usr/bin/env",
+                    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                     "/bin/bash",
                     "-c",
                     script,
