@@ -26,9 +26,9 @@ pub(super) const ARCHWSL_ROOTFS_SHA256: &str =
 
 /// Rootfs source for the WSL import, by guest architecture, as (url, pin).
 ///
-/// x86_64 uses the pre-built ArchWSL-FS release (flat, WSL-ready) with NO
-/// pin — it is an unpinned legacy source, guarded only by the small-file
-/// heuristic and the WSL import itself. aarch64 uses the self-hosted
+/// x86_64 uses the pre-built ArchWSL-FS release (flat, WSL-ready), pinned
+/// (`ARCHWSL_ROOTFS_SHA256` — the same refuse-unverified contract as every
+/// other source here). aarch64 uses the self-hosted
 /// ArchLinuxARM image with its baked SHA-256 (#624) — the x86_64 ArchWSL
 /// image imports on arm64 WSL but every command then fails
 /// `execvpe(/bin/sh): Exec format error`.

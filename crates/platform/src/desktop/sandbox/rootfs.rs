@@ -17,15 +17,20 @@ static SETUP_LOCK: tokio::sync::OnceCell<Mutex<()>> = tokio::sync::OnceCell::con
 /// URL for the Arch Linux bootstrap tarball (used as base).
 ///
 /// Dated archive copy, NOT the mirror's rolling `/iso/latest/`: a pin is only
-/// meaningful against an immutable URL. (The 2024.01.01 cut ships `.tar.gz`
-/// only — no `.zst` — so this is the single source for every x86_64 path,
-/// incl. WSL import.) Vetted one-time against the archive's published GPG
-/// `.sig` (Arch Linux Bootstrap Tarball Signer). Bumping the cut is a
-/// deliberate act: vet the new `.sig`, then update URL + pin together.
+/// meaningful against an immutable URL. (Recent cuts ship `.tar.zst`; GNU tar
+/// `-a` auto-selects the decompressor from the filename, and `zstd` is
+/// ubiquitous on the Linux hosts this backend runs on — pacman itself links
+/// against it.) Vetted one-time against the archive's published GPG `.sig`
+/// (Pierre Schmitz, `3E80CA1A 8B89F69C BA57D98A 76A5EF90 54449A5C`). Bumping
+/// the cut is a deliberate act: vet the new `.sig`, then update URL + pin
+/// together — and note the cut must be RECENT enough that its shipped
+/// `archlinux-keyring` can verify today's repo signatures for the first
+/// `pacman -Syu` (a too-old cut fails with "unknown trust" before it can
+/// upgrade the keyring itself; the 2024.01.01 cut did exactly that).
 const ARCH_BOOTSTRAP_URL: &str =
-    "https://archive.archlinux.org/iso/2024.01.01/archlinux-bootstrap-2024.01.01-x86_64.tar.gz";
+    "https://archive.archlinux.org/iso/2025.12.01/archlinux-bootstrap-2025.12.01-x86_64.tar.zst";
 const ARCH_BOOTSTRAP_SHA256: &str =
-    "7f3a938bd7a5d5a85ae96b0ffcf7f432282b38d51e5dfe988f7daca677c72b65";
+    "48277d938a439976564f9e5b795e8668b7f1920c9bbbc30eb28a4a65f8832bdf";
 
 /// BlackArch repository strap script. Rolling upstream URL, frozen by the
 /// pin below (verified one-time against the blackarch/blackarch git source).
@@ -273,9 +278,13 @@ impl RootfsManager {
             return Ok(());
         }
 
-        let tarball_path = self.config.data_dir.join("arch-bootstrap.tar.gz");
+        let tarball_path = self.config.data_dir.join("arch-bootstrap.tar.zst");
 
-        if !tarball_path.exists() {
+        // Same refuse-unverified contract as the ALARM branch: a cached
+        // tarball is extracted only if it verifies against the baked pin —
+        // a truncated or tampered leftover must be re-downloaded, not
+        // extracted (#624, jtomek's review on #625).
+        if !usable_cache(&tarball_path, Some(ARCH_BOOTSTRAP_SHA256)).await {
             tracing::info!("Downloading Arch bootstrap...");
             self.download_file(
                 ARCH_BOOTSTRAP_URL,
@@ -314,7 +323,7 @@ impl RootfsManager {
         let extract_result = Command::new("tar")
             .args([
                 "--delay-directory-restore",
-                "-xzf",
+                "-xaf",
                 &tarball_str,
                 "-C",
                 &self.config.data_dir.to_string_lossy(),
@@ -1036,7 +1045,9 @@ mod tests {
         // A pin is only meaningful against an immutable URL — the bootstrap
         // must stay on a dated archive copy, never a rolling mirror path.
         assert!(
-            ARCH_BOOTSTRAP_URL.contains("/iso/2024.01.01/"),
+            ARCH_BOOTSTRAP_URL.contains("/iso/")
+                && !ARCH_BOOTSTRAP_URL.contains("/latest/")
+                && ARCH_BOOTSTRAP_URL.contains("archlinux.org/iso/2"),
             "bootstrap URL must be a dated archive copy: {ARCH_BOOTSTRAP_URL}"
         );
         assert!(
