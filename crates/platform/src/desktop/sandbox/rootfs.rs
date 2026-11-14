@@ -14,22 +14,21 @@ use tokio::sync::Mutex;
 /// Global lock to prevent concurrent rootfs setup
 static SETUP_LOCK: tokio::sync::OnceCell<Mutex<()>> = tokio::sync::OnceCell::const_new();
 
-    /// Which host paths the proot guest sees. gpg's key generation hangs
-    /// when /proc or /dev are bound (reproduced on the 2025.12.01 cut: init
-    /// completes in seconds unbound, hangs forever bound), while pacman's
-    /// commit needs /proc (its /etc/mtab points there) and every mirror
-    /// fetch needs DNS (the bootstrap ships a comment-only resolv.conf) —
-    /// so the callers choose.
-    enum Binds {
-        /// Nothing bound. gpg/keygen steps.
-        None,
-        /// Host resolv.conf only. Steps that need DNS but touch no gpg
-        /// agent sockets (strap.sh).
-        Resolv,
-        /// /proc + /dev + resolv.conf. pacman steps (sync/upgrade/commit).
-        Full,
-    }
-
+/// Which host paths the proot guest sees. gpg's key generation hangs
+/// when /proc or /dev are bound (reproduced on the 2025.12.01 cut: init
+/// completes in seconds unbound, hangs forever bound), while pacman's
+/// commit needs /proc (its /etc/mtab points there) and every mirror
+/// fetch needs DNS (the bootstrap ships a comment-only resolv.conf) —
+/// so the callers choose.
+enum Binds {
+    /// Nothing bound. gpg/keygen steps.
+    None,
+    /// Host resolv.conf only. Steps that need DNS but touch no gpg
+    /// agent sockets (strap.sh).
+    Resolv,
+    /// /proc + /dev + resolv.conf. pacman steps (sync/upgrade/commit).
+    Full,
+}
 
 /// URL for the Arch Linux bootstrap tarball (used as base).
 ///
@@ -316,12 +315,8 @@ impl RootfsManager {
         // extracted (#624, jtomek's review on #625).
         if !usable_cache(&tarball_path, ARCH_BOOTSTRAP_SHA256).await {
             tracing::info!("Downloading Arch bootstrap...");
-            self.download_file(
-                ARCH_BOOTSTRAP_URL,
-                &tarball_path,
-                ARCH_BOOTSTRAP_SHA256,
-            )
-            .await?;
+            self.download_file(ARCH_BOOTSTRAP_URL, &tarball_path, ARCH_BOOTSTRAP_SHA256)
+                .await?;
         }
 
         tracing::info!("Extracting rootfs...");
@@ -460,12 +455,8 @@ impl RootfsManager {
 
         let strap_path = rootfs.join("tmp/strap.sh");
         tokio::fs::create_dir_all(rootfs.join("tmp")).await?;
-        self.download_file(
-            BLACKARCH_STRAP_URL,
-            &strap_path,
-            BLACKARCH_STRAP_SHA256,
-        )
-        .await?;
+        self.download_file(BLACKARCH_STRAP_URL, &strap_path, BLACKARCH_STRAP_SHA256)
+            .await?;
 
         #[cfg(unix)]
         {
@@ -481,7 +472,10 @@ set -e
 /tmp/strap.sh
 "#;
 
-        match self.run_in_rootfs(rootfs, strap_script, Binds::Resolv).await {
+        match self
+            .run_in_rootfs(rootfs, strap_script, Binds::Resolv)
+            .await
+        {
             Ok(output) => {
                 tracing::info!("BlackArch strap.sh completed: {}", output.trim());
             }
@@ -671,7 +665,12 @@ done
     }
 
     /// Run a command inside the rootfs (using arch-chroot, chroot, proot, or bwrap)
-    async fn run_in_rootfs(&self, rootfs: &Path, script: &str, binds: Binds) -> SandboxResult<String> {
+    async fn run_in_rootfs(
+        &self,
+        rootfs: &Path,
+        script: &str,
+        binds: Binds,
+    ) -> SandboxResult<String> {
         // Try arch-chroot first (requires root or arch-install-scripts)
         let output = Command::new("arch-chroot")
             .args([rootfs.to_string_lossy().as_ref(), "/bin/bash", "-c", script])
@@ -700,34 +699,32 @@ done
         if let Ok(proot_path) = super::proot::ProotExecutor::ensure_proot(&self.config).await {
             tracing::info!("Using proot for rootfs command execution");
             let output = Command::new(&proot_path)
-                .args([
-                    "-0", // Fake root privileges
-                    "-r",
-                    rootfs.to_string_lossy().as_ref(),
-                ]
-                .into_iter()
-                // Bind the pieces the step needs from the host: pacman's
-                // commit reads /etc/mtab -> /proc, and every mirror fetch
-                // needs DNS (the bootstrap ships a comment-only
-                // resolv.conf). See Binds for why gpg/keygen steps get
-                // nothing.
-                .chain(match binds {
-                    Binds::None => vec![].into_iter(),
-                    Binds::Resolv => vec!["-b", "/etc/resolv.conf"].into_iter(),
-                    Binds::Full => {
-                        vec!["-b", "/proc", "-b", "/dev", "-b", "/etc/resolv.conf"].into_iter()
-                    }
-                })
-                .chain(
+                .args(
                     [
+                        "-0", // Fake root privileges
+                        "-r",
+                        rootfs.to_string_lossy().as_ref(),
+                    ]
+                    .into_iter()
+                    // Bind the pieces the step needs from the host: pacman's
+                    // commit reads /etc/mtab -> /proc, and every mirror fetch
+                    // needs DNS (the bootstrap ships a comment-only
+                    // resolv.conf). See Binds for why gpg/keygen steps get
+                    // nothing.
+                    .chain(match binds {
+                        Binds::None => vec![],
+                        Binds::Resolv => vec!["-b", "/etc/resolv.conf"],
+                        Binds::Full => vec!["-b", "/proc", "-b", "/dev", "-b", "/etc/resolv.conf"],
+                    })
+                    .chain([
                         "-w",
                         "/root",
-                        // Fixed guest PATH: without this the guest inherits
-                        // the host's PATH, which on hosts like NixOS points
-                        // at store paths that do not exist inside the
-                        // rootfs — every pacman invocation then fails
-                        // "command not found" and the (tolerated-failure)
-                        // first-boot steps silently skip.
+                        // Fixed guest PATH: without this the guest inherits the
+                        // host's PATH, which on hosts like NixOS points at
+                        // store paths that do not exist inside the rootfs —
+                        // every pacman invocation then fails "command not
+                        // found" and the (tolerated-failure) first-boot steps
+                        // silently skip.
                         "/usr/bin/env",
                         "-i",
                         "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -740,10 +737,9 @@ done
                         "/bin/bash",
                         "-c",
                         script,
-                    ]
-                    .into_iter(),
+                    ])
+                    .collect::<Vec<_>>(),
                 )
-                .collect::<Vec<_>>())
                 .output()
                 .await;
 
@@ -921,12 +917,14 @@ done
 }
 
 /// Lowercase hex SHA-256 of `bytes`.
+#[cfg(test)]
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
 /// Verify `bytes` against a pinned lowercase-hex SHA-256. An empty pin or a
 /// mismatch is an error: unverified artifacts are refused (proot.rs contract).
+#[cfg(test)]
 fn check_sha256(bytes: &[u8], expected: &str) -> SandboxResult<()> {
     if expected.is_empty() {
         return Err(SandboxError::Download(
@@ -1065,11 +1063,7 @@ mod tests {
 
         // Wrong pin: refused, and nothing is left at dest (nor a .part).
         let err = manager
-            .download_file(
-                &format!("http://{addr}/rootfs"),
-                &dest,
-                &"0".repeat(64),
-            )
+            .download_file(&format!("http://{addr}/rootfs"), &dest, &"0".repeat(64))
             .await
             .unwrap_err();
         assert!(matches!(err, SandboxError::Download(_)), "got: {err:?}");
