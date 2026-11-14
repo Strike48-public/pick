@@ -1,0 +1,70 @@
+# Advanced CodeQL workflow for Pick (pick#154).
+#
+# Alternative to GitHub's default (automatic) setup. Either this workflow
+# (advanced setup) OR the default setup with the repository property
+# github-codeql-config-file pointed at .github/codeql/codeql-config.yml
+# applies the config — not both at once (double scan, duplicate alerts).
+#
+# OPERATOR STEP (one-time, UI only — not exposed via API), pick ONE:
+# - Settings → Code security → Code scanning → switch to "advanced setup"
+#   (disables default setup; this workflow takes over), or
+# - keep the default setup and set the repository property
+#   github-codeql-config-file = .github/codeql/codeql-config.yml
+#   (in that case this workflow should be deleted before merge).
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly scan of the default branch.
+    - cron: '30 2 * * 0'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # The full language set the default setup scans today — no language
+        # coverage is lost by switching to this workflow.
+        include:
+          - language: actions
+          - language: c-cpp
+          - language: javascript-typescript
+          - language: python
+          - language: rust
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          config-file: .github/codeql/codeql-config.yml
+          # All extractors run source-only here: build-mode none skips any
+          # instrumentation build (the Rust extractor parses .rs directly,
+          # the JS files are plain bundles/worklets, and the actions/python/
+          # c-cpp legs get source-level extraction).
+          build-mode: none
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
