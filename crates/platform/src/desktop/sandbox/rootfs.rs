@@ -236,12 +236,12 @@ impl RootfsManager {
             // baked pin: an interrupted download — or a leftover of the old
             // plaintext-HTTP fetch this PR exists to stop trusting — must not
             // reach extraction (#624).
-            if !usable_cache(&tarball_path, Some(arch::ALARM_AARCH64_ROOTFS_SHA256)).await {
+            if !usable_cache(&tarball_path, arch::ALARM_AARCH64_ROOTFS_SHA256).await {
                 tracing::info!("Downloading ArchLinuxARM aarch64 rootfs...");
                 self.download_file(
                     arch::ALARM_AARCH64_ROOTFS,
                     &tarball_path,
-                    Some(arch::ALARM_AARCH64_ROOTFS_SHA256),
+                    arch::ALARM_AARCH64_ROOTFS_SHA256,
                 )
                 .await?;
             }
@@ -297,12 +297,12 @@ impl RootfsManager {
         // tarball is extracted only if it verifies against the baked pin —
         // a truncated or tampered leftover must be re-downloaded, not
         // extracted (#624, jtomek's review on #625).
-        if !usable_cache(&tarball_path, Some(ARCH_BOOTSTRAP_SHA256)).await {
+        if !usable_cache(&tarball_path, ARCH_BOOTSTRAP_SHA256).await {
             tracing::info!("Downloading Arch bootstrap...");
             self.download_file(
                 ARCH_BOOTSTRAP_URL,
                 &tarball_path,
-                Some(ARCH_BOOTSTRAP_SHA256),
+                ARCH_BOOTSTRAP_SHA256,
             )
             .await?;
         }
@@ -446,7 +446,7 @@ impl RootfsManager {
         self.download_file(
             BLACKARCH_STRAP_URL,
             &strap_path,
-            Some(BLACKARCH_STRAP_SHA256),
+            BLACKARCH_STRAP_SHA256,
         )
         .await?;
 
@@ -780,10 +780,13 @@ done
 
     /// Download a file from URL to destination, streaming the body to disk.
     ///
-    /// `expected_sha256`: `None` = legacy unchecked download; `Some(pin)` =
-    /// the body must match the pinned lowercase-hex SHA-256 (an empty pin is
-    /// refused up front — unverifiable artifacts are refused, proot.rs
-    /// contract). The body streams into a sibling `.part` file in bounded
+    /// `expected_sha256` is REQUIRED: the body must match the pinned
+    /// lowercase-hex SHA-256 (an empty pin is refused up front — unverifiable
+    /// artifacts are refused, proot.rs contract). Making the pin a required
+    /// argument means a caller cannot accidentally drop verification by
+    /// passing `None` — the compile fails instead (jtomek's review on #625:
+    /// every call-site pin could be set to `None` with all tests still
+    /// green). The body streams into a sibling `.part` file in bounded
     /// memory (the ALARM rootfs is ~800 MB) while being hashed
     /// incrementally; the hash is checked after the stream and only then is
     /// the file renamed to `dest` (verify-then-publish, the `proot.rs`
@@ -793,11 +796,11 @@ done
         &self,
         url: &str,
         dest: &Path,
-        expected_sha256: Option<&str>,
+        expected_sha256: &str,
     ) -> SandboxResult<()> {
         tracing::debug!("Downloading {} to {}", url, dest.display());
 
-        if matches!(expected_sha256, Some(pin) if pin.is_empty()) {
+        if expected_sha256.is_empty() {
             return Err(SandboxError::Download(
                 "no pinned SHA-256; refusing to use an unverified artifact (see #624)".into(),
             ));
@@ -840,7 +843,7 @@ done
                 .unwrap_or_default()
         ));
         let mut file = tokio::fs::File::create(&part).await?;
-        let mut hasher = expected_sha256.map(|_| Sha256::new());
+        let mut hasher = Sha256::new();
 
         let mut stream = response;
         loop {
@@ -859,9 +862,7 @@ done
                 Some(chunk) => chunk,
                 None => break,
             };
-            if let Some(h) = &mut hasher {
-                h.update(&chunk);
-            }
+            hasher.update(&chunk);
             file.write_all(&chunk).await?;
         }
         // Make the `.part` durable before it can be promoted to `dest`.
@@ -871,12 +872,12 @@ done
 
         // Pinned artifacts are checked before publish: a mismatch removes
         // the `.part` and never creates `dest` (refuse unverified).
-        if let (Some(pin), Some(h)) = (expected_sha256, hasher) {
-            let actual = format!("{:x}", h.finalize());
-            if !actual.eq_ignore_ascii_case(pin) {
+        {
+            let actual = format!("{:x}", hasher.finalize());
+            if !actual.eq_ignore_ascii_case(expected_sha256) {
                 let _ = tokio::fs::remove_file(&part).await;
                 return Err(SandboxError::Download(format!(
-                    "SHA-256 mismatch: expected {pin}, got {actual}"
+                    "SHA-256 mismatch: expected {expected_sha256}, got {actual}"
                 )));
             }
             tracing::debug!("SHA-256 verified for {}", url);
@@ -912,27 +913,48 @@ fn check_sha256(bytes: &[u8], expected: &str) -> SandboxResult<()> {
 
 /// Decide whether a cached download at `path` may be reused.
 ///
-/// `None` pin = legacy source (x86_64 bootstrap, ArchWSL-FS): any existing
-/// file is trusted — the caller keeps its own heuristics. `Some(pin)`: the
-/// cached file must verify against the pin; a missing, corrupt, or unverified
-/// file (a truncated download, or a leftover of the old plaintext-HTTP fetch)
-/// is removed so the caller re-downloads.
-pub(super) async fn usable_cache(path: &Path, pin: Option<&str>) -> bool {
-    match pin {
-        None => path.exists(),
-        Some(pin) => match tokio::fs::read(path).await {
-            Ok(bytes) if check_sha256(&bytes, pin).is_ok() => true,
-            _ => {
-                if path.exists() {
-                    tracing::warn!(
-                        "Cached rootfs at {} failed the pinned SHA-256 check — re-downloading",
-                        path.display()
-                    );
-                    let _ = tokio::fs::remove_file(path).await;
-                }
-                false
+/// The cached file must verify against the (required) pin; a missing,
+/// corrupt, or unverified file (a truncated download, or a leftover of the
+/// old plaintext-HTTP fetch) is removed so the caller re-downloads. The pin
+/// is a required argument so dropping verification fails to compile rather
+/// than silently trusting a file (jtomek's review on #625).
+///
+/// The file is streamed through the hasher in bounded memory — the ALARM
+/// rootfs is ~800 MB and `tokio::fs::read` would buffer all of it.
+pub(super) async fn usable_cache(path: &Path, pin: &str) -> bool {
+    use tokio::io::AsyncReadExt;
+
+    let mut file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1024 * 1024];
+    loop {
+        match file.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(_) => {
+                tracing::warn!(
+                    "Cached rootfs at {} could not be read for the pin check — re-downloading",
+                    path.display()
+                );
+                let _ = tokio::fs::remove_file(path).await;
+                return false;
             }
-        },
+        }
+    }
+
+    if format!("{:x}", hasher.finalize()).eq_ignore_ascii_case(pin) {
+        true
+    } else {
+        tracing::warn!(
+            "Cached rootfs at {} failed the pinned SHA-256 check — re-downloading",
+            path.display()
+        );
+        let _ = tokio::fs::remove_file(path).await;
+        false
     }
 }
 
@@ -1015,7 +1037,7 @@ mod tests {
             .download_file(
                 &format!("http://{addr}/rootfs"),
                 &dest,
-                Some(&"0".repeat(64)),
+                &"0".repeat(64),
             )
             .await
             .unwrap_err();
@@ -1032,7 +1054,7 @@ mod tests {
         // Correct pin: the file lands with exactly the served bytes.
         let good_pin = sha256_hex(&body);
         manager
-            .download_file(&format!("http://{addr}/rootfs"), &dest, Some(&good_pin))
+            .download_file(&format!("http://{addr}/rootfs"), &dest, &good_pin)
             .await
             .unwrap();
         assert_eq!(tokio::fs::read(&dest).await.unwrap(), body.as_slice());
@@ -1046,20 +1068,17 @@ mod tests {
         let pin = sha256_hex(b"the-pinned-bytes");
 
         // Missing file: not usable.
-        assert!(!usable_cache(&path, Some(&pin)).await);
+        assert!(!usable_cache(&path, &pin).await);
 
         // Planted (unverified) file: refused AND removed — the attack/tamper
         // case from the review (a planted tarball must not be extracted).
         tokio::fs::write(&path, b"planted").await.unwrap();
-        assert!(!usable_cache(&path, Some(&pin)).await);
+        assert!(!usable_cache(&path, &pin).await);
         assert!(!path.exists(), "an unverified cached file must be removed");
 
         // Verified file: reusable.
         tokio::fs::write(&path, b"the-pinned-bytes").await.unwrap();
-        assert!(usable_cache(&path, Some(&pin)).await);
-
-        // Unpinned (legacy) source: any existing file is trusted.
-        assert!(usable_cache(&path, None).await);
+        assert!(usable_cache(&path, &pin).await);
     }
 
     #[test]

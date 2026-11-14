@@ -423,13 +423,13 @@ impl WslExecutor {
 
         // Both arches are pinned: a cached file is trusted only if it
         // verifies against the baked pin (otherwise it is re-downloaded).
-        let re_download = !super::rootfs::usable_cache(&rootfs_path, Some(rootfs_pin)).await;
+        let re_download = !super::rootfs::usable_cache(&rootfs_path, rootfs_pin).await;
 
         if re_download {
             tracing::info!("[ensure_distro] Downloading rootfs...");
             let rootfs_manager = super::rootfs::RootfsManager::new(self.config.clone());
             rootfs_manager
-                .download_file(rootfs_url, &rootfs_path, Some(rootfs_pin))
+                .download_file(rootfs_url, &rootfs_path, rootfs_pin)
                 .await?;
             tracing::info!("[ensure_distro] Download complete");
         } else {
