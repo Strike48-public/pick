@@ -32,6 +32,7 @@ pub mod postexploit_panel;
 // router module requires dioxus-router dependency — kept as scaffolding reference
 // #[cfg(feature = "liveview")]
 // pub mod router;
+pub mod scan_progress;
 pub mod scroll_area;
 pub mod selectable_list;
 mod session_uptime;

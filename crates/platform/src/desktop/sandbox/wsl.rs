@@ -15,19 +15,34 @@ use tokio::process::Command;
 const WSL_SETUP_MARKER: &str = "/root/.pentest-setup-complete";
 
 /// ArchWSL-FS rootfs — pre-built for WSL (v1 & v2), flat, no repacking needed.
+/// Tag-pinned release URL + baked SHA-256 of that exact asset: the tag is
+/// immutable on GitHub, and the pin closes what a tag alone can't (repo
+/// compromise / asset replacement) — #626.
 /// https://github.com/yuk7/ArchWSL-FS
-const ARCHWSL_ROOTFS_URL: &str =
+pub(super) const ARCHWSL_ROOTFS_URL: &str =
     "https://github.com/yuk7/ArchWSL-FS/releases/download/25030400/rootfs.tar.gz";
+pub(super) const ARCHWSL_ROOTFS_SHA256: &str =
+    "61b1ce4827c27db79cb85c35ed10ddf0a0c3e89e46785b389e0141af7ca43f60";
 
-/// Rootfs download URL for the current host architecture. x86_64 uses the
-/// pre-built ArchWSL-FS release (flat, WSL-ready). aarch64 uses the ArchLinuxARM
-/// aarch64 rootfs — the x86_64 ArchWSL image imports on arm64 WSL but every
-/// command then fails `execvpe(/bin/sh): Exec format error`.
-fn wsl_rootfs_url() -> &'static str {
-    if super::arch::is_aarch64() {
-        super::arch::ALARM_AARCH64_ROOTFS
+/// Rootfs source for the WSL import, by guest architecture, as (url, pin).
+///
+/// x86_64 uses the pre-built ArchWSL-FS release (flat, WSL-ready), pinned
+/// (`ARCHWSL_ROOTFS_SHA256` — the same refuse-unverified contract as every
+/// other source here). aarch64 uses the self-hosted
+/// ArchLinuxARM image with its baked SHA-256 (#624) — the x86_64 ArchWSL
+/// image imports on arm64 WSL but every command then fails
+/// `execvpe(/bin/sh): Exec format error`.
+///
+/// URL and pin travel as one value so the two arch branches cannot drift
+/// apart (each previously lived in its own `is_aarch64()` function).
+fn wsl_rootfs_for(aarch64: bool) -> (&'static str, &'static str) {
+    if aarch64 {
+        (
+            super::arch::ALARM_AARCH64_ROOTFS,
+            super::arch::ALARM_AARCH64_ROOTFS_SHA256,
+        )
     } else {
-        ARCHWSL_ROOTFS_URL
+        (ARCHWSL_ROOTFS_URL, ARCHWSL_ROOTFS_SHA256)
     }
 }
 
@@ -401,26 +416,20 @@ impl WslExecutor {
         tracing::info!("[ensure_distro] WSL distro not found, downloading and importing...");
 
         // Use arch-appropriate rootfs — x86_64: ArchWSL-FS (pre-built, flat);
-        // aarch64: ArchLinuxARM (WSL import accepts plain .tar.gz).
+        // aarch64: ArchLinuxARM (WSL import accepts plain .tar.gz). URL and
+        // pin travel together so they cannot drift apart.
         let rootfs_path = self.config.data_dir.join("archwsl-rootfs.tar.gz");
+        let (rootfs_url, rootfs_pin) = wsl_rootfs_for(super::arch::is_aarch64());
 
-        // Delete suspiciously small files (likely truncated/corrupted downloads)
-        if rootfs_path.exists() {
-            if let Ok(meta) = tokio::fs::metadata(&rootfs_path).await {
-                if meta.len() < 1_000_000 {
-                    tracing::warn!(
-                        "[ensure_distro] Cached rootfs is only {} bytes — likely corrupted, re-downloading",
-                        meta.len()
-                    );
-                    tokio::fs::remove_file(&rootfs_path).await.ok();
-                }
-            }
-        }
-        if !rootfs_path.exists() {
+        // Both arches are pinned: a cached file is trusted only if it
+        // verifies against the baked pin (otherwise it is re-downloaded).
+        let re_download = !super::rootfs::usable_cache(&rootfs_path, rootfs_pin).await;
+
+        if re_download {
             tracing::info!("[ensure_distro] Downloading rootfs...");
             let rootfs_manager = super::rootfs::RootfsManager::new(self.config.clone());
             rootfs_manager
-                .download_file(wsl_rootfs_url(), &rootfs_path)
+                .download_file(rootfs_url, &rootfs_path, rootfs_pin)
                 .await?;
             tracing::info!("[ensure_distro] Download complete");
         } else {
@@ -709,13 +718,25 @@ mod tests {
     }
 
     #[test]
-    fn wsl_rootfs_url_selects_alarm_only_on_aarch64() {
-        // On the x86_64 build host the URL must be the ArchWSL-FS release.
-        let url = super::wsl_rootfs_url();
-        #[cfg(target_arch = "aarch64")]
-        assert!(url.contains("archlinuxarm.org"));
-        #[cfg(not(target_arch = "aarch64"))]
-        assert!(url.contains("yuk7/ArchWSL-FS"));
+    fn wsl_rootfs_for_selects_pinned_rootfs_per_arch() {
+        // URL and pin travel together: aarch64 gets the pinned ALARM asset,
+        // x86_64 the pinned ArchWSL-FS release. Both branches are pure —
+        // testable on any host arch.
+        let (aarch64_url, aarch64_pin) = super::wsl_rootfs_for(true);
+        assert!(aarch64_url.contains("releases/download/alarm-aarch64-v1/alarm-aarch64.tar.gz"));
+        assert_eq!(
+            aarch64_pin,
+            super::super::arch::ALARM_AARCH64_ROOTFS_SHA256,
+            "the aarch64 ALARM image must carry its baked pin (#624)"
+        );
+
+        let (x86_url, x86_pin) = super::wsl_rootfs_for(false);
+        assert!(x86_url.contains("yuk7/ArchWSL-FS"));
+        assert_eq!(
+            x86_pin,
+            super::ARCHWSL_ROOTFS_SHA256,
+            "the x86_64 ArchWSL-FS image must carry its baked pin (#626)"
+        );
     }
 
     #[test]

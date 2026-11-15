@@ -6,6 +6,7 @@
 use dioxus::prelude::*;
 use pentest_core::matrix::{AgentInfo, ChatMessage, ConversationInfo};
 
+use super::super::scan_progress::{derive_scan_progress, is_scan_conversation, ScanProgressStrip};
 use super::agent_selector::SuggestedActions;
 use super::next_steps::NextStepsActions;
 use super::render::render_message;
@@ -30,8 +31,12 @@ pub struct MessageListProps {
     pub selected_agent: Signal<Option<AgentInfo>>,
     /// Callback to send a message (used by suggested actions).
     pub on_send: EventHandler<String>,
+    /// ID of the conversation the messages belong to (None before one is
+    /// selected) — keys the scan strip's wall-clock anchors.
+    pub conversation_id: Signal<Option<String>>,
     /// Recent conversations shown in the empty-chat state.
     pub conversation_list: Signal<Vec<ConversationInfo>>,
+
     /// Called when the user clicks a recent conversation in the empty state.
     pub on_select_conversation: EventHandler<String>,
     /// Easy Mode: show lay-friendly empty-state prompts instead of the expert
@@ -101,6 +106,22 @@ pub fn MessageList(props: MessageListProps) -> Element {
 
     rsx! {
         div { class: "chat-messages-wrapper",
+            // Scan-in-progress strip: identifiable phases + expected duration +
+            // live elapsed timer above the running log. Shown only while a scan
+            // conversation is actively running (agent working or a scan tool in
+            // flight); the running log below is untouched and keeps streaming.
+            if is_scan_conversation(&messages.read())
+                && matches!(
+                    derive_scan_progress(&messages.read(), agent_thinking()),
+                    Some(ref p) if p.is_in_progress(agent_thinking())
+                )
+            {
+                ScanProgressStrip {
+                    messages: messages,
+                    agent_thinking: agent_thinking,
+                    conversation_id: props.conversation_id,
+                }
+            }
             div {
                 class: "chat-messages",
                 onscroll: move |_| {

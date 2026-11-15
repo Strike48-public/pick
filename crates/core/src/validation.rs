@@ -405,8 +405,35 @@ pub fn validate_target(target: &str) -> Result<String> {
         return validate_ipv4_range(target);
     }
 
+    // `inet_aton`-style IPv4 spellings (`184156162`, `10.5`, `0x0afa0002`,
+    // `010.250.0.2`) are not dotted quads, so they would otherwise pass as
+    // hostnames. nmap and the system resolver still read them as addresses
+    // (leading zeros even differently: nmap as decimal, getaddrinfo as octal),
+    // so a caller that checked one address could scan another. Reject them.
+    if is_numeric_ipv4_spelling(target) {
+        return Err(Error::InvalidParams(format!(
+            "Target '{target}' is a non-canonical IPv4 spelling; write it as a dotted quad (e.g. 10.0.0.5)"
+        )));
+    }
+
     // Finally try hostname
     validate_hostname(target)
+}
+
+/// True for a host made only of decimal or `0x`-hex labels separated by dots
+/// (an optional trailing dot allowed): the forms `inet_aton` accepts as an
+/// IPv4 address. A canonical dotted quad never reaches this check (it parses
+/// as an IP first). Real hostnames always have a non-numeric label.
+fn is_numeric_ipv4_spelling(target: &str) -> bool {
+    let host = target.strip_suffix('.').unwrap_or(target);
+    !host.is_empty()
+        && host.split('.').all(|label| {
+            let lower = label.to_ascii_lowercase();
+            match lower.strip_prefix("0x") {
+                Some(hex) => hex.chars().all(|c| c.is_ascii_hexdigit()),
+                None => !lower.is_empty() && lower.chars().all(|c| c.is_ascii_digit()),
+            }
+        })
 }
 
 #[cfg(test)]
@@ -521,6 +548,41 @@ mod tests {
 
         assert!(validate_target("").is_err());
         assert!(validate_target("-invalid.com").is_err());
+    }
+
+    #[test]
+    fn validate_target_rejects_non_canonical_ipv4_spellings() {
+        // All of these reach 10.250.0.2 (or, for leading zeros, 8.250.0.2 via
+        // getaddrinfo) when handed to nmap / inet_aton.
+        for spelling in [
+            "184156162",
+            "0x0afa0002",
+            "0X0AFA0002",
+            "10.250.2",
+            "10.16384002",
+            "0xa.0xfa.0x0.0x2",
+            "010.250.0.2",
+            "10.250.0.02",
+            "184156162.",
+            "0x",
+        ] {
+            let err = validate_target(spelling).expect_err(spelling);
+            assert!(
+                err.to_string().contains("non-canonical IPv4"),
+                "{spelling}: {err}"
+            );
+        }
+
+        // Canonical addresses and real hostnames with numeric labels still pass.
+        for ok in [
+            "10.250.0.2",
+            "123.example.com",
+            "1password.com",
+            "0xdeadbeef.example.com",
+            "host-10.internal",
+        ] {
+            assert!(validate_target(ok).is_ok(), "{ok}");
+        }
     }
 
     #[test]

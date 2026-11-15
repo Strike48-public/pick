@@ -124,6 +124,57 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
     let on_easy_mode_change = props.on_easy_mode_change;
     let on_telemetry_change = props.on_telemetry_change;
 
+    // Observed scan-duration tracking (issue #430: the expected-duration copy
+    // is grounded in the user's own run times, not a hardcoded guess). Pressing
+    // "Scan My Network" arms the measurement; the moment a conversation begins
+    // it attaches (a fresh scan always creates a new conversation); when that
+    // conversation's report document shows up in the docs poll below, the wall
+    // clock is recorded via `pentest_core::scan_stats`.
+    let mut scan_armed = use_signal(|| None::<std::time::Instant>);
+    // The in-flight scan measurement. `latest_doc` tracks the NEWEST document
+    // in the scan's conversation (doc id + when we first saw it): the report
+    // is the LAST document the scan writes (the prompt sends the findings
+    // save after the scan), so the measurement anchors on the newest doc and
+    // only records once that doc has stayed newest across the stability
+    // window. The recorded duration is measured to when THAT doc first
+    // appeared — an intermediate `document_write` re-anchors the observation
+    // instead of truncating the measurement (review nit on pick#610).
+    #[derive(Clone)]
+    struct ScanMeas {
+        sid: String,
+        latest_doc: Option<(String, std::time::Instant)>,
+    }
+    let mut scan_started = use_signal(|| None::<ScanMeas>);
+    // Bumped after a duration is recorded so the hero's estimate text
+    // refreshes without re-reading the stats file on every render.
+    let mut est_tick = use_signal(|| 0u32);
+
+    // Attach / discard the in-flight scan measurement as the conversation
+    // changes. A scan that never produced a report (user walked away) is simply
+    // dropped — only completed scans count toward the estimate.
+    use_effect(move || {
+        let cid = conversation_id();
+        // Clone the values out before mutating: `peek()` would return a borrow
+        // guard that keeps the signal immutably borrowed.
+        if let Some(meas) = scan_started.cloned() {
+            if cid.as_deref() != Some(meas.sid.as_str()) {
+                scan_started.set(None);
+            }
+        } else if let Some(armed_at) = scan_armed.cloned() {
+            if let Some(c) = &cid {
+                if std::time::Instant::now().duration_since(armed_at)
+                    <= std::time::Duration::from_secs(60)
+                {
+                    scan_started.set(Some(ScanMeas {
+                        sid: c.clone(),
+                        latest_doc: None,
+                    }));
+                }
+            }
+            scan_armed.set(None);
+        }
+    });
+
     // When embedded in StrikeHub (it spawns us with STRIKEHUB_SOCKET set and
     // injects the session), the user's identity is owned by the wrapper. A
     // Pick-side "Log out" would clear only our copy of the token and desync from
@@ -189,6 +240,59 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                     if let Ok(mut list) = client.list_documents(aid.as_deref()).await {
                         // Newest first (timestamp is ISO-8601, lexical sort works).
                         list.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+                        // A completed scan = its report document appearing in
+                        // the scan's conversation. The report is the LAST
+                        // document the scan writes, so the measurement tracks
+                        // the NEWEST document of the conversation and records
+                        // only once that doc has stayed newest for the
+                        // stability window below; the duration is measured to
+                        // when THAT doc first appeared, so an intermediate
+                        // `document_write` cannot truncate the measurement
+                        // (issue #430; review nit on pick#610).
+                        const SCAN_DOC_STABLE_SECS: u64 = 30;
+                        if let Some(mut meas) = scan_started.cloned() {
+                            let now = std::time::Instant::now();
+                            let newest = list.iter().find(|d| d.conversation_id == meas.sid);
+                            // Read the currently-tracked doc id up front (owned
+                            // copy) so the match below never holds a borrow
+                            // across a mutation of `meas.latest_doc`.
+                            let tracked_id = meas.latest_doc.as_ref().map(|(id, _)| id.clone());
+                            let mut record_secs: Option<u64> = None;
+                            if let Some(d) = newest {
+                                match tracked_id.as_deref() {
+                                    // Same newest doc as the last poll: the
+                                    // scan's writes have settled.
+                                    Some(tid) if tid == d.id.as_str() => {
+                                        if let Some((_, appeared)) = meas.latest_doc.as_ref() {
+                                            if now.duration_since(*appeared)
+                                                >= std::time::Duration::from_secs(
+                                                    SCAN_DOC_STABLE_SECS,
+                                                )
+                                            {
+                                                record_secs = Some(appeared.elapsed().as_secs());
+                                            }
+                                        }
+                                    }
+                                    // First doc, or a NEWER doc than the one
+                                    // tracked (the report landing after an
+                                    // intermediate write): re-anchor the
+                                    // observation.
+                                    _ => {
+                                        meas.latest_doc = Some((d.id.clone(), now));
+                                    }
+                                }
+                            }
+                            match record_secs {
+                                Some(secs) => {
+                                    pentest_core::scan_stats::record_scan_duration(secs);
+                                    scan_started.set(None);
+                                    est_tick.with_mut(|t| *t = t.wrapping_add(1));
+                                }
+                                None => {
+                                    scan_started.set(Some(meas));
+                                }
+                            }
+                        }
                         docs.set(list);
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -644,10 +748,22 @@ pub fn EasyModeShell(props: EasyModeShellProps) -> Element {
                                     pentest_core::telemetry::Activity::ScanStart,
                                     &[("channel", "easy"), ("source", "easy_mode_button")],
                                 );
+                                scan_armed.set(Some(std::time::Instant::now()));
                                 chat_mailbox.set(Some(easy_mode_scan_prompt()));
                             },
                             span { class: "easy-hero-scan-icon", Network { size: 21 } }
                             "Scan My Network"
+                        }
+                        // Expected duration, stated BEFORE the run starts (issue
+                        // #430): grounded in this device's own observed scan
+                        // times once it has any ("about 3 minutes"), vague but
+                        // never optimistic ("a few minutes") on a fresh install.
+                        {
+                            let _ = est_tick();
+                            let eta = pentest_core::scan_stats::typical_scan_duration_label();
+                            rsx! {
+                                p { class: "easy-hero-eta", "This usually takes {eta} — you can keep using Pick while it runs." }
+                            }
                         }
                     }
                     // Resume card — only when a recent conversation exists.

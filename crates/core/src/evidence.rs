@@ -30,6 +30,73 @@ pub mod metadata_keys {
     pub const TECHNIQUE: &str = "technique";
 }
 
+/// Which engagement an evidence node belongs to (pick#513).
+///
+/// One Pick can serve several StrikeKit engagements at once, so the pending
+/// buffer and the evidence graph are kept per scope: a scan start or a drain
+/// for one engagement never touches another's nodes. A call that carries no
+/// engagement id (standalone Pick use outside StrikeKit) uses `Default`, which
+/// is separate from every engagement.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub enum EvidenceScope {
+    /// No engagement id on the call.
+    #[default]
+    Default,
+    /// The StrikeKit engagement id from the call context.
+    Engagement(String),
+}
+
+impl EvidenceScope {
+    /// The scope for an optional engagement id. A missing or blank id is
+    /// `Default`, so a call cannot address an engagement named "".
+    pub fn from_engagement_id(engagement_id: Option<&str>) -> Self {
+        match engagement_id {
+            Some(id) if !id.trim().is_empty() => Self::Engagement(id.to_string()),
+            _ => Self::Default,
+        }
+    }
+
+    /// The workspace directory a call in this scope uses under the Pick's
+    /// workspace `base` (pick#513): `base` itself for `Default`, and
+    /// `base/engagements/<id>` for an engagement, so one engagement's tools
+    /// never read, list or upload another's files. The sandboxes mount only
+    /// this directory as `/workspace`.
+    ///
+    /// The id becomes a path segment, so it must be 1 to 128 lowercase ASCII
+    /// letters, digits, `-` or `_`. Anything else (a `/`, `..`, a NUL, an
+    /// uppercase letter) is refused rather than rewritten, because two
+    /// different ids must never map to one directory. Uppercase is refused
+    /// because macOS and Windows filesystems ignore case, so `Eng-A` and
+    /// `eng-a` would share a directory there. Matrix engagement ids are
+    /// lowercase UUIDs, so a real id always passes.
+    pub fn workspace_dir(
+        &self,
+        base: &std::path::Path,
+    ) -> crate::error::Result<std::path::PathBuf> {
+        match self {
+            Self::Default => Ok(base.to_path_buf()),
+            Self::Engagement(id) if is_safe_path_segment(id) => {
+                Ok(base.join(ENGAGEMENTS_DIR).join(id))
+            }
+            Self::Engagement(_) => Err(crate::error::Error::InvalidParams(
+                "engagement id is not a safe workspace directory name (1-128 of a-z 0-9 - _)"
+                    .to_string(),
+            )),
+        }
+    }
+}
+
+/// Directory under the Pick workspace that holds one subdirectory per
+/// engagement (pick#513).
+pub const ENGAGEMENTS_DIR: &str = "engagements";
+
+fn is_safe_path_segment(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
 /// Lifecycle state of an evidence node as seen by the Validator Agent.
 ///
 /// The order below matches the happy-path transition the orchestrator
@@ -280,6 +347,87 @@ impl EvidenceNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evidence_scope_from_engagement_id() {
+        assert_eq!(
+            EvidenceScope::from_engagement_id(Some("eng-1")),
+            EvidenceScope::Engagement("eng-1".to_string())
+        );
+        assert_eq!(
+            EvidenceScope::from_engagement_id(None),
+            EvidenceScope::Default
+        );
+        assert_eq!(
+            EvidenceScope::from_engagement_id(Some("  ")),
+            EvidenceScope::Default,
+            "a blank id must not name an engagement"
+        );
+    }
+
+    #[test]
+    fn workspace_dir_is_per_engagement_and_default_keeps_the_base() {
+        let base = std::path::Path::new("/ws");
+        let scope = |id: &str| EvidenceScope::Engagement(id.to_string());
+        assert_eq!(EvidenceScope::Default.workspace_dir(base).unwrap(), base);
+        assert_eq!(
+            scope("0b9c-4e2f_a1").workspace_dir(base).unwrap(),
+            base.join("engagements").join("0b9c-4e2f_a1")
+        );
+        assert_ne!(
+            scope("eng-a").workspace_dir(base).unwrap(),
+            scope("eng-b").workspace_dir(base).unwrap()
+        );
+    }
+
+    #[test]
+    fn workspace_dir_refuses_ids_that_are_not_a_safe_segment() {
+        let base = std::path::Path::new("/ws");
+        let long = "a".repeat(129);
+        for bad in [
+            "..",
+            "../eng-b",
+            "eng/b",
+            "eng.b",
+            "a\0b",
+            "eng b",
+            long.as_str(),
+        ] {
+            assert!(
+                EvidenceScope::Engagement(bad.to_string())
+                    .workspace_dir(base)
+                    .is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+        assert!(EvidenceScope::Engagement("a".repeat(128))
+            .workspace_dir(base)
+            .is_ok());
+    }
+
+    /// On a case-insensitive filesystem (macOS, Windows) `Eng-A` and `eng-a`
+    /// name one directory, so two engagements would share files. Uppercase is
+    /// refused; a lowercase UUID, which is what Matrix sends, is accepted.
+    /// Allowing ASCII uppercase in `is_safe_path_segment` turns this red.
+    #[test]
+    fn workspace_dir_refuses_uppercase_so_ids_cannot_collide_by_case() {
+        let base = std::path::Path::new("/ws");
+        for bad in ["Eng-A", "ENG", "0193a1B2-7c3d"] {
+            assert!(
+                EvidenceScope::Engagement(bad.to_string())
+                    .workspace_dir(base)
+                    .is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+        let uuid = "0193a1b2-7c3d-7e4f-8a9b-0c1d2e3f4a5b";
+        assert_eq!(
+            EvidenceScope::Engagement(uuid.to_string())
+                .workspace_dir(base)
+                .unwrap(),
+            base.join(ENGAGEMENTS_DIR).join(uuid)
+        );
+    }
 
     fn fixture() -> EvidenceNode {
         EvidenceNode::new(

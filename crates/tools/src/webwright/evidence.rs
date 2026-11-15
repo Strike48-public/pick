@@ -1,6 +1,6 @@
 //! Map Webwright artifacts to EvidenceNodes.
 
-use pentest_core::evidence::{EvidenceNode, SeverityHistoryEntry};
+use pentest_core::evidence::{EvidenceNode, EvidenceScope, SeverityHistoryEntry};
 use pentest_core::export::Severity;
 use pentest_core::provenance::Provenance;
 use serde_json::Value;
@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::evidence_producer::push_evidence;
 
-/// Ingest all artifacts from a Webwright run into the evidence buffer.
+/// Ingest all artifacts from a Webwright run into `scope`'s evidence buffer.
 ///
 /// Generated artifacts are evidence *context*, not confirmed findings, so
 /// severity hygiene keeps them out of the top of the report (agent hardening
@@ -16,6 +16,7 @@ use crate::evidence_producer::push_evidence;
 /// are Low rather than Medium — a script's existence demonstrates an
 /// exploration path, not a confirmed vulnerability.
 pub fn ingest_webwright_evidence(
+    scope: &EvidenceScope,
     artifacts: &Value,
     target: &str,
     task_id: &str,
@@ -48,7 +49,7 @@ pub fn ingest_webwright_evidence(
                 node.metadata.insert("file_path".to_string(), path.into());
                 node.metadata.insert("task_id".to_string(), task_id.into());
 
-                let _ = push_evidence(node);
+                let _ = push_evidence(scope, node);
             }
         }
     }
@@ -77,7 +78,7 @@ pub fn ingest_webwright_evidence(
                 node.metadata.insert("file_path".to_string(), path.into());
                 node.metadata.insert("task_id".to_string(), task_id.into());
 
-                let _ = push_evidence(node);
+                let _ = push_evidence(scope, node);
             }
         }
     }
@@ -103,7 +104,7 @@ pub fn ingest_webwright_evidence(
                 node.metadata.insert("file_path".to_string(), path.into());
                 node.metadata.insert("task_id".to_string(), task_id.into());
 
-                let _ = push_evidence(node);
+                let _ = push_evidence(scope, node);
             }
         }
     }
@@ -139,13 +140,13 @@ pub fn ingest_webwright_evidence(
                 node.metadata.insert("file_path".to_string(), path.into());
                 node.metadata.insert("task_id".to_string(), task_id.into());
 
-                let _ = push_evidence(node);
+                let _ = push_evidence(scope, node);
             }
         }
     }
 }
 
-/// Parse a Webwright findings.json and push structured findings.
+/// Parse a Webwright findings.json and push structured findings into `scope`.
 ///
 /// Severity hygiene (agent hardening C2): explicit agent labels — `critical`,
 /// `high`, `medium`, `low` — are honored verbatim, and an explicit `info` label
@@ -156,6 +157,7 @@ pub fn ingest_webwright_evidence(
 /// accumulate) so a noisy target cannot flood the evidence graph with
 /// look-alike nodes, and a distinct same-headline variant is not erased.
 pub fn ingest_webwright_findings(
+    scope: &EvidenceScope,
     findings_json: &Value,
     target: &str,
     task_id: &str,
@@ -271,7 +273,7 @@ pub fn ingest_webwright_findings(
             merged.push(node);
         }
         for node in merged {
-            let _ = push_evidence(node);
+            let _ = push_evidence(scope, node);
         }
     }
 }
@@ -302,6 +304,7 @@ mod tests {
         });
         // Just verify it doesn't panic
         ingest_webwright_evidence(
+            &EvidenceScope::Default,
             &artifacts,
             "https://target.com",
             "task-123",
@@ -322,6 +325,7 @@ mod tests {
             }
         ]);
         ingest_webwright_findings(
+            &EvidenceScope::Default,
             &findings,
             "https://target.com",
             "task-456",
@@ -342,7 +346,7 @@ mod tests {
         use crate::evidence_producer::drain_pending_evidence;
         use pentest_core::evidence::ValidationStatus;
 
-        let _ = drain_pending_evidence(); // isolate this run's nodes
+        let _ = drain_pending_evidence(&EvidenceScope::Default); // isolate this run's nodes
         let findings = json!([
             {
                 "title": "Reflected XSS in search",
@@ -366,12 +370,13 @@ mod tests {
             }
         ]);
         ingest_webwright_findings(
+            &EvidenceScope::Default,
             &findings,
             "https://target.com",
             "task-456",
             &test_provenance(),
         );
-        let nodes = drain_pending_evidence();
+        let nodes = drain_pending_evidence(&EvidenceScope::Default);
         let ours: Vec<_> = nodes
             .iter()
             .filter(|n| n.node_type == "browser_finding")
@@ -412,7 +417,7 @@ mod tests {
         let _buffer = crate::evidence_producer::lock_evidence_buffer_for_test();
         use crate::evidence_producer::drain_pending_evidence;
 
-        let _ = drain_pending_evidence();
+        let _ = drain_pending_evidence(&EvidenceScope::Default);
         let findings = json!([
             {
                 "title": "Cookie without SameSite",
@@ -422,12 +427,13 @@ mod tests {
             }
         ]);
         ingest_webwright_findings(
+            &EvidenceScope::Default,
             &findings,
             "https://target.com",
             "task-457",
             &test_provenance(),
         );
-        let nodes = drain_pending_evidence();
+        let nodes = drain_pending_evidence(&EvidenceScope::Default);
         let info = nodes
             .iter()
             .find(|n| n.title.contains("Cookie without SameSite"))
@@ -439,7 +445,7 @@ mod tests {
     fn generated_scripts_are_low_not_medium() {
         let _buffer = crate::evidence_producer::lock_evidence_buffer_for_test();
         use crate::evidence_producer::drain_pending_evidence;
-        let _ = drain_pending_evidence();
+        let _ = drain_pending_evidence(&EvidenceScope::Default);
         let artifacts = json!({
             "scripts": ["/tmp/webwright/test/exploit_xss.py"],
             "screenshots": [],
@@ -447,12 +453,13 @@ mod tests {
             "dom_snapshots": [],
         });
         ingest_webwright_evidence(
+            &EvidenceScope::Default,
             &artifacts,
             "https://target.com",
             "task-123",
             &test_provenance(),
         );
-        let nodes = drain_pending_evidence();
+        let nodes = drain_pending_evidence(&EvidenceScope::Default);
         let scripts: Vec<_> = nodes
             .iter()
             .filter(|n| n.node_type == "browser_exploit_script")

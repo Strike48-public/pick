@@ -1,0 +1,116 @@
+/* Scan-in-progress strip: phase checklist + expected duration + live timer.
+   Rendered at the top of the chat message list while a network scan is
+   running, so the running log below keeps scrolling while the phases above
+   advance. */
+
+.scan-progress {
+    flex-shrink: 0;
+    margin: 0.5rem 0.75rem 0;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--secondary) 40%, transparent);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.scan-progress-stalled {
+    border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+
+.scan-progress-header {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.scan-progress-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--foreground);
+}
+
+.scan-progress-sub {
+    font-size: 12px;
+    color: var(--muted-foreground);
+}
+
+.scan-progress-title-warn {
+    color: var(--warning);
+}
+
+.scan-progress-sub-warn {
+    color: var(--warning);
+    opacity: 0.9;
+}
+
+.scan-progress-phases {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.scan-phase {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--muted-foreground);
+    opacity: 0.75;
+}
+
+.scan-phase-marker {
+    display: inline-flex;
+    width: 14px;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 11px;
+}
+
+/* Upcoming: dim, hollow marker. */
+.scan-phase {
+    color: var(--muted-foreground);
+    opacity: 0.55;
+}
+
+/* Active: full-strength, primary marker, gentle pulse. */
+.scan-phase-active {
+    color: var(--foreground);
+    opacity: 1;
+}
+.scan-phase-active .scan-phase-marker {
+    color: var(--primary);
+    animation: scan-phase-pulse 1.6s ease-in-out infinite;
+}
+
+/* Complete: checkmark, slightly muted. */
+.scan-phase-done {
+    opacity: 0.85;
+}
+.scan-phase-done .scan-phase-marker {
+    color: var(--primary);
+}
+
+/* Failed: red cross. */
+.scan-phase-failed {
+    opacity: 1;
+}
+.scan-phase-failed .scan-phase-marker {
+    color: var(--destructive, #ef4444);
+}
+
+@keyframes scan-phase-pulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.45;
+    }
+}
+
+/* Under Easy Mode the shared tokens (--primary, --warning, ...) are remapped
+   to the Sage palette in the `.easy-mode` scope, so the strip inherits the
+   right colors automatically. */

@@ -39,7 +39,7 @@ fn dockerfile_contents_for(aarch64: bool) -> String {
     let blackarch_block = if aarch64 {
         "RUN printf '\\n[blackarch]\\nServer = https://blackarch.org/blackarch/$repo/os/$arch\\nSigLevel = Never\\n' >> /etc/pacman.conf".to_string()
     } else {
-        "RUN curl -sL https://blackarch.org/strap.sh -o /tmp/strap.sh && \\\n    chmod +x /tmp/strap.sh && \\\n    /tmp/strap.sh && \\\n    rm /tmp/strap.sh".to_string()
+        "RUN curl -sL https://blackarch.org/strap.sh -o /tmp/strap.sh && \\\n    echo \"dc0737cc75d64d03e9ec2212f989f17cdcf0162c2db5980e256093e293abfb8b  /tmp/strap.sh\" | sha256sum -c - && \\\n    chmod +x /tmp/strap.sh && \\\n    /tmp/strap.sh && \\\n    rm /tmp/strap.sh".to_string()
     };
     // Final DB sync. On aarch64 tolerate failure (`|| true`): BlackArch's arm64
     // repo coverage is partial, and a 404 on its db must not abort the whole
@@ -516,6 +516,7 @@ RUN pacman-key --init && \
 
 # Add BlackArch repository and import its key
 RUN curl -sL https://blackarch.org/strap.sh -o /tmp/strap.sh && \
+    echo "dc0737cc75d64d03e9ec2212f989f17cdcf0162c2db5980e256093e293abfb8b  /tmp/strap.sh" | sha256sum -c - && \
     chmod +x /tmp/strap.sh && \
     /tmp/strap.sh && \
     rm /tmp/strap.sh

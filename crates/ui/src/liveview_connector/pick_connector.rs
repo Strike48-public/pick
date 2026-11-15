@@ -357,6 +357,38 @@ impl BaseConnector for PickConnector {
                     // (pick#162). Loaded once at construction; cloned per call.
                     ctx = ctx.with_identities((*self.identities).clone());
 
+                    // Evidence from this call belongs to its engagement (pick#513):
+                    // one Pick can serve several engagements, so the scan-start
+                    // clear and the post-run drain below act on this scope only.
+                    let evidence_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(
+                        tools::extract_engagement_id_pub(context).as_deref(),
+                    );
+                    ctx = ctx.with_evidence_scope(evidence_scope.clone());
+
+                    // An engagement's files live in its own directory under the
+                    // workspace (pick#513), so its tools never read, list or upload
+                    // another engagement's files; the sandboxes mount only this
+                    // directory. An id that is not a safe directory name is refused
+                    // before anything touches the filesystem.
+                    if let Some(base) = &self.workspace_path {
+                        match scoped_workspace(&evidence_scope, base).await {
+                            Ok(dir) => ctx = ctx.with_workspace(dir),
+                            Err(e) => {
+                                let error = e.to_string();
+                                tracing::warn!(
+                                    tool = tool_name.as_str(),
+                                    error = error.as_str(),
+                                    "refusing tool call: no workspace for its engagement"
+                                );
+                                self.send_event(ConnectorEvent::ToolFailed {
+                                    tool_name: tool_name.clone(),
+                                    error: error.clone(),
+                                });
+                                return Ok(serde_json::json!({ "success": false, "error": error }));
+                            }
+                        }
+                    }
+
                     // Create Matrix client if API URL is available
                     let api_url = self.derive_matrix_api_url();
                     if !api_url.is_empty() {
@@ -407,23 +439,24 @@ impl BaseConnector for PickConnector {
                         self.budget.record(result.made_progress()).await;
                     }
 
-                    // A successful `begin_scan` marks the start of a fresh
-                    // engagement. Clear any evidence left over from a previous scan
-                    // so it cannot bleed into this report (pick#172). `begin_scan`
-                    // itself produces no findings, so nothing is lost by clearing
-                    // here rather than draining first.
+                    // A successful `begin_scan` marks the start of a fresh scan for
+                    // this call's engagement. Clear that engagement's evidence left
+                    // over from its previous scan so it cannot bleed into this
+                    // report (pick#172); other engagements' evidence is untouched
+                    // (pick#513). `begin_scan` itself produces no findings, so
+                    // nothing is lost by clearing here rather than draining first.
                     if tool_name == "begin_scan" && result.success {
-                        crate::session::clear_evidence();
-                        tracing::debug!("begin_scan: cleared evidence graph for new engagement");
+                        crate::session::start_scan_evidence(&evidence_scope);
+                        tracing::debug!("begin_scan: cleared evidence graph for this engagement");
                     }
 
                     // Bridge tool-produced evidence into the report graph (pick#172).
-                    // Tools push findings into the process-global PENDING_EVIDENCE
-                    // buffer as a side effect of execution; if we don't drain them
+                    // Tools push findings into PENDING_EVIDENCE under this call's
+                    // scope as a side effect of execution; if we don't drain them
                     // here they never reach `gate_for_report` and the report comes
                     // out empty. This is the single production drain point shared by
                     // both the headless and desktop connectors.
-                    let forwarded = crate::session::drain_tool_evidence_into_graph();
+                    let forwarded = crate::session::drain_tool_evidence_into_graph(&evidence_scope);
                     if forwarded > 0 {
                         tracing::debug!(
                             tool = tool_name.as_str(),
@@ -441,7 +474,9 @@ impl BaseConnector for PickConnector {
                                     context.get("session_token").cloned().unwrap_or_default();
                                 let artifacts =
                                     result.data.get("artifacts").cloned().unwrap_or_default();
-                                let ws_path = self
+                                // The call's own workspace, which is the
+                                // engagement's directory (pick#513).
+                                let ws_path = ctx
                                     .workspace_path
                                     .as_ref()
                                     .map(|p| p.to_string_lossy().to_string())
@@ -749,6 +784,19 @@ impl BaseConnector for PickConnector {
     }
 }
 
+/// The workspace directory for a call in `scope`, created when it is an
+/// engagement's and does not exist yet (pick#513). `Default` is `base`.
+async fn scoped_workspace(
+    scope: &pentest_core::evidence::EvidenceScope,
+    base: &std::path::Path,
+) -> pentest_core::error::Result<PathBuf> {
+    let dir = scope.workspace_dir(base)?;
+    if dir != base {
+        tokio::fs::create_dir_all(&dir).await?;
+    }
+    Ok(dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,6 +943,16 @@ mod tests {
     /// `sanitize_agent_result` call in `execute_with_context` turns this red.
     #[tokio::test]
     async fn execute_with_context_sanitizes_tool_output() {
+        // A real tool run pushes evidence into the process-global
+        // PENDING_EVIDENCE/EVIDENCE_GRAPH as a side effect — take the shared
+        // evidence test lock (session::EVIDENCE_TEST_LOCK) so this test cannot
+        // race the session::tests drains, and clear any residue first so the
+        // Default scope starts deterministic.
+        let _evidence_guard = crate::session::evidence_test_lock();
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
+        crate::session::drain_tool_evidence_into_graph(&_default_scope);
+        crate::session::start_scan_evidence(&_default_scope);
+
         // Direct host execution — the sandbox rootfs isn't present on CI.
         pentest_platform::set_use_sandbox(false);
 
@@ -942,6 +1000,16 @@ mod tests {
     /// `sanitize_agent_result` call in `execute_with_context` turns this red.
     #[tokio::test]
     async fn execute_with_context_scrubs_reflected_credential_from_stdout() {
+        // A real tool run pushes evidence into the process-global
+        // PENDING_EVIDENCE/EVIDENCE_GRAPH as a side effect — take the shared
+        // evidence test lock (session::EVIDENCE_TEST_LOCK) so this test cannot
+        // race the session::tests drains, and clear any residue first so the
+        // Default scope starts deterministic.
+        let _evidence_guard = crate::session::evidence_test_lock();
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
+        crate::session::drain_tool_evidence_into_graph(&_default_scope);
+        crate::session::start_scan_evidence(&_default_scope);
+
         // Direct host execution — the sandbox rootfs isn't present on CI.
         pentest_platform::set_use_sandbox(false);
 
@@ -979,6 +1047,16 @@ mod tests {
     /// no `_sanitization` marker, real evidence unmangled.
     #[tokio::test]
     async fn execute_with_context_passes_benign_output_through() {
+        // A real tool run pushes evidence into the process-global
+        // PENDING_EVIDENCE/EVIDENCE_GRAPH as a side effect — take the shared
+        // evidence test lock (session::EVIDENCE_TEST_LOCK) so this test cannot
+        // race the session::tests drains, and clear any residue first so the
+        // Default scope starts deterministic.
+        let _evidence_guard = crate::session::evidence_test_lock();
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
+        crate::session::drain_tool_evidence_into_graph(&_default_scope);
+        crate::session::start_scan_evidence(&_default_scope);
+
         pentest_platform::set_use_sandbox(false);
 
         let connector = test_connector();
@@ -1013,6 +1091,16 @@ mod tests {
     /// `execute_with_context` turns this red.
     #[tokio::test]
     async fn execute_with_context_refuses_once_budget_exhausted() {
+        // A real tool run pushes evidence into the process-global
+        // PENDING_EVIDENCE/EVIDENCE_GRAPH as a side effect — take the shared
+        // evidence test lock (session::EVIDENCE_TEST_LOCK) so this test cannot
+        // race the session::tests drains, and clear any residue first so the
+        // Default scope starts deterministic.
+        let _evidence_guard = crate::session::evidence_test_lock();
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
+        crate::session::drain_tool_evidence_into_graph(&_default_scope);
+        crate::session::start_scan_evidence(&_default_scope);
+
         pentest_platform::set_use_sandbox(false);
 
         let mut connector = test_connector();
@@ -1067,6 +1155,16 @@ mod tests {
     /// `.instrument(span)` from the hop turns this red.
     #[tokio::test]
     async fn liveview_hop_lines_carry_correlation_ids() {
+        // A real tool run pushes evidence into the process-global
+        // PENDING_EVIDENCE/EVIDENCE_GRAPH as a side effect — take the shared
+        // evidence test lock (session::EVIDENCE_TEST_LOCK) so this test cannot
+        // race the session::tests drains, and clear any residue first so the
+        // Default scope starts deterministic.
+        let _evidence_guard = crate::session::evidence_test_lock();
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
+        crate::session::drain_tool_evidence_into_graph(&_default_scope);
+        crate::session::start_scan_evidence(&_default_scope);
+
         use std::io::Write;
         use std::sync::Mutex;
         use tracing_subscriber::fmt::MakeWriter;
@@ -1232,6 +1330,10 @@ mod tests {
     fn failing_connector() -> PickConnector {
         let mut registry = ToolRegistry::new();
         registry.register(FailingTool);
+        connector_with_registry(registry)
+    }
+
+    fn connector_with_registry(registry: ToolRegistry) -> PickConnector {
         let (event_tx, _event_rx) = broadcast::channel(16);
         PickConnector {
             tools: Arc::new(RwLock::new(registry)),
@@ -1259,6 +1361,16 @@ mod tests {
     /// (pick#476). Reverting the `e.chain()` call turns this red.
     #[tokio::test]
     async fn failure_result_carries_the_full_cause_chain() {
+        // A real tool run pushes evidence into the process-global
+        // PENDING_EVIDENCE/EVIDENCE_GRAPH as a side effect — take the shared
+        // evidence test lock (session::EVIDENCE_TEST_LOCK) so this test cannot
+        // race the session::tests drains, and clear any residue first so the
+        // Default scope starts deterministic.
+        let _evidence_guard = crate::session::evidence_test_lock();
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
+        crate::session::drain_tool_evidence_into_graph(&_default_scope);
+        crate::session::start_scan_evidence(&_default_scope);
+
         let connector = failing_connector();
         let ctx: HashMap<String, String> = HashMap::new();
 
@@ -1276,6 +1388,208 @@ mod tests {
         assert_eq!(
             error,
             "Tool execution error: nmap failed: nmap: command not found"
+        );
+    }
+
+    /// Pushes one evidence node, id taken from `params.id`, under the call's
+    /// evidence scope: the same write every real tool makes.
+    struct EvidenceProbeTool;
+
+    #[async_trait::async_trait]
+    impl pentest_core::tools::PentestTool for EvidenceProbeTool {
+        fn name(&self) -> &str {
+            "evidence_probe"
+        }
+        fn description(&self) -> &str {
+            "Pushes one evidence node"
+        }
+        fn schema(&self) -> pentest_core::tools::ToolSchema {
+            pentest_core::tools::ToolSchema::new("evidence_probe", "Pushes one evidence node")
+        }
+        async fn execute(
+            &self,
+            params: Value,
+            ctx: &pentest_core::tools::ToolContext,
+        ) -> pentest_core::error::Result<pentest_core::tools::ToolResult> {
+            let id = params["id"].as_str().unwrap_or("probe").to_string();
+            let node = pentest_core::evidence::EvidenceNode::new(
+                id,
+                "finding",
+                "Open port 22/tcp",
+                "SSH service detected",
+                "10.0.0.1",
+                pentest_core::export::Severity::Medium,
+                "probe",
+            );
+            pentest_tools::evidence_producer::push_evidence(ctx.evidence_scope(), node)
+                .expect("buffer accepts one node");
+            Ok(pentest_core::tools::ToolResult::success(json!({})))
+        }
+    }
+
+    async fn run(connector: &PickConnector, tool: &str, params: Value, engagement: Option<&str>) {
+        let mut ctx: HashMap<String, String> = HashMap::new();
+        if let Some(id) = engagement {
+            ctx.insert("engagement_id".to_string(), id.to_string());
+        }
+        let result = connector
+            .execute_with_context(json!({"tool": tool, "parameters": params}), None, &ctx)
+            .await
+            .expect("execute_with_context failed");
+        assert_eq!(result["success"], true, "{tool} failed: {result}");
+    }
+
+    fn evidence_ids(engagement: &str) -> Vec<String> {
+        let scope = pentest_core::evidence::EvidenceScope::Engagement(engagement.to_string());
+        crate::session::evidence_snapshot_for(&scope)
+            .into_iter()
+            .map(|n| n.id)
+            .collect()
+    }
+
+    /// pick#513: two engagements on one Pick, through the production path.
+    /// Each engagement's evidence holds only its own nodes, and B's begin_scan
+    /// leaves A's evidence intact. Reverting the connector to one shared
+    /// graph (clear everything on begin_scan, drain everything after a run)
+    /// turns this red.
+    #[tokio::test]
+    async fn engagements_on_one_pick_keep_separate_evidence() {
+        // A real tool run pushes evidence into the process-global evidence
+        // statics as a side effect — take the shared evidence test lock
+        // (session::EVIDENCE_TEST_LOCK) so this test cannot race the
+        // session::tests drains.
+        let _evidence_guard = crate::session::evidence_test_lock();
+
+        let mut registry = ToolRegistry::new();
+        registry.register(EvidenceProbeTool);
+        registry.register(pentest_tools::BeginScanTool);
+        let connector = connector_with_registry(registry);
+        let begin = json!({"conversation_id": "c", "agent_id": "a"});
+        let (a, b) = ("conn-iso-a", "conn-iso-b");
+
+        run(&connector, "begin_scan", begin.clone(), Some(a)).await;
+        run(
+            &connector,
+            "evidence_probe",
+            json!({"id": "conn-a-1"}),
+            Some(a),
+        )
+        .await;
+        run(&connector, "begin_scan", begin, Some(b)).await;
+        run(
+            &connector,
+            "evidence_probe",
+            json!({"id": "conn-b-1"}),
+            Some(b),
+        )
+        .await;
+        run(
+            &connector,
+            "evidence_probe",
+            json!({"id": "conn-a-2"}),
+            Some(a),
+        )
+        .await;
+
+        assert_eq!(evidence_ids(a), vec!["conn-a-1", "conn-a-2"]);
+        assert_eq!(evidence_ids(b), vec!["conn-b-1"]);
+    }
+
+    async fn call(
+        connector: &PickConnector,
+        tool: &str,
+        params: Value,
+        engagement: Option<&str>,
+    ) -> Value {
+        let mut ctx: HashMap<String, String> = HashMap::new();
+        if let Some(id) = engagement {
+            ctx.insert("engagement_id".to_string(), id.to_string());
+        }
+        connector
+            .execute_with_context(json!({"tool": tool, "parameters": params}), None, &ctx)
+            .await
+            .expect("execute_with_context failed")
+    }
+
+    fn listed_names(result: &Value) -> Vec<String> {
+        let mut names: Vec<String> = result["data"]["entries"]
+            .as_array()
+            .expect("list_files returns entries")
+            .iter()
+            .filter_map(|e| e["name"].as_str().map(str::to_string))
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn file_tool_connector(workspace: &std::path::Path) -> PickConnector {
+        let mut registry = ToolRegistry::new();
+        registry.register(pentest_tools::WriteFileTool);
+        registry.register(pentest_tools::ListFilesTool);
+        let mut connector = connector_with_registry(registry);
+        connector.workspace_path = Some(workspace.to_path_buf());
+        connector
+    }
+
+    /// pick#513 slice 2: each engagement's file tools work in its own
+    /// directory, so one engagement never lists (and so never uploads) a file
+    /// another engagement wrote; a call without an engagement keeps the
+    /// workspace root. Reverting the connector to hand every call the shared
+    /// workspace turns this red.
+    #[tokio::test]
+    async fn engagements_on_one_pick_keep_separate_workspace_files() {
+        // A real tool run pushes evidence into the process-global evidence
+        // statics as a side effect — take the shared evidence test lock
+        // (session::EVIDENCE_TEST_LOCK) so this test cannot race the
+        // session::tests drains.
+        let _evidence_guard = crate::session::evidence_test_lock();
+
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let connector = file_tool_connector(workspace.path());
+        let write = |name: &str| json!({"path": name, "content": "x"});
+
+        for (engagement, file) in [("ws-a", "a.txt"), ("ws-b", "b.txt")] {
+            let result = call(&connector, "write_file", write(file), Some(engagement)).await;
+            assert_eq!(result["success"], true, "write failed: {result}");
+        }
+
+        let list_a = call(&connector, "list_files", json!({}), Some("ws-a")).await;
+        assert_eq!(listed_names(&list_a), vec!["a.txt"]);
+        let list_b = call(&connector, "list_files", json!({}), Some("ws-b")).await;
+        assert_eq!(listed_names(&list_b), vec!["b.txt"]);
+
+        assert!(workspace
+            .path()
+            .join("engagements")
+            .join("ws-a")
+            .join("a.txt")
+            .exists());
+        let root = call(&connector, "list_files", json!({}), None).await;
+        assert_eq!(listed_names(&root), vec!["engagements"]);
+    }
+
+    /// An engagement id that is not a safe directory name is refused before
+    /// the tool runs, so it can never write outside its directory.
+    #[tokio::test]
+    async fn unsafe_engagement_id_is_refused_before_the_tool_runs() {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let connector = file_tool_connector(workspace.path());
+
+        let result = call(
+            &connector,
+            "write_file",
+            json!({"path": "escaped.txt", "content": "x"}),
+            Some("../../outside"),
+        )
+        .await;
+
+        assert_eq!(result["success"], false, "{result}");
+        assert!(
+            std::fs::read_dir(workspace.path())
+                .unwrap()
+                .next()
+                .is_none(),
+            "nothing may be written for a refused call"
         );
     }
 }
