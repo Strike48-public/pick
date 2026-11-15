@@ -23,7 +23,7 @@
 //! buffer keeps flowing (the old page compared line counts, which stop
 //! changing at the cap).
 
-use crate::diagnostics::{cap_bytes, redact_with_secrets};
+use crate::diagnostics::{cap_bytes, redact_with_secrets, MAX_LINE_BYTES};
 use crate::provenance::redact;
 use crate::terminal::{LogLevel, TerminalLine};
 use std::collections::VecDeque;
@@ -265,8 +265,11 @@ impl Visit for EventFields {
 /// Restore the previous session from the JSON log file at `path` into `log`:
 /// the last [`SEED_MAX_LINES`] records that were UI lines (`fields.ui`) or
 /// `WARN`/`ERROR` events, with their original timestamps, after one marker
-/// line. Each line's message and source are redacted against `secrets` (see
-/// [`crate::diagnostics::local_known_secrets`]) and by pattern. Pushed
+/// line. Only the last 256 KiB of the file are read, so fewer lines can be
+/// restored when other records crowd that window. Each line's message and
+/// source are redacted against `secrets` (see
+/// [`crate::diagnostics::local_known_secrets`]) and by pattern, and the
+/// message is capped at 4096 bytes like a support-bundle line. Pushed
 /// straight to the buffer, not through tracing, so they are not
 /// written to the log file a second time. Returns how many records were
 /// restored; nothing (not even the marker) is pushed when there are none.
@@ -340,7 +343,7 @@ fn seed_line(record: &str, secrets: &[String]) -> Option<TerminalLine> {
     Some(TerminalLine {
         timestamp,
         level,
-        message: redact_with_secrets(&text, secrets),
+        message: cap_bytes(redact_with_secrets(&text, secrets), MAX_LINE_BYTES),
         source: fields
             .get(SOURCE_FIELD)
             .filter(|_| is_ui)
@@ -644,6 +647,19 @@ mod tests {
         let source = lines[2].source.as_deref().expect("source restored");
         assert!(!source.contains(&secret), "{source}");
         assert!(source.starts_with("connector"), "{source}");
+    }
+
+    #[test]
+    fn seed_caps_a_restored_message_like_a_bundle_line() {
+        let (_dir, path) = write_log(&[serde_json::json!({
+            "timestamp": "2026-10-19T08:00:00Z", "level": "WARN",
+            "fields": {"message": "disk full ".repeat(MAX_LINE_BYTES)}})]);
+        let log = UiLog::new(10);
+        assert_eq!(seed_from_log_file(&log, &path, &[]), 1);
+        let (lines, _) = log.since(0);
+        let message = &lines[1].message;
+        assert!(message.len() <= MAX_LINE_BYTES + 20, "{}", message.len());
+        assert!(message.ends_with("...<truncated>"), "{message:.40}");
     }
 
     #[test]

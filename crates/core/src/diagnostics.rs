@@ -29,8 +29,8 @@ pub const DEFAULT_TAIL_LINES: usize = 200;
 const TAIL_READ_BYTES: u64 = 256 * 1024;
 
 /// Longest log line kept, in bytes. A tool that logs a huge payload must not
-/// turn the bundle into megabytes.
-const MAX_LINE_BYTES: usize = 4096;
+/// turn the bundle into megabytes. The Logs seed caps restored lines the same.
+pub(crate) const MAX_LINE_BYTES: usize = 4096;
 
 /// Known secrets shorter than this are not replaced by value, so a token of
 /// `1` cannot blank every digit in the tail. Pattern redaction still runs.
