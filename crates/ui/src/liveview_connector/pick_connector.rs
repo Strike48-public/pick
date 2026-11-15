@@ -1018,6 +1018,16 @@ mod tests {
     /// `sanitize_agent_result` call in `execute_with_context` turns this red.
     #[tokio::test]
     async fn execute_with_context_sanitizes_tool_output() {
+        // A real tool run pushes evidence into the process-global
+        // PENDING_EVIDENCE/EVIDENCE_GRAPH as a side effect — take the shared
+        // evidence test lock (session::EVIDENCE_TEST_LOCK) so this test cannot
+        // race the session::tests drains, and clear any residue first so the
+        // Default scope starts deterministic.
+        let _evidence_guard = crate::session::evidence_test_lock();
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
+        crate::session::drain_tool_evidence_into_graph(&_default_scope);
+        crate::session::start_scan_evidence(&_default_scope);
+
         // Direct host execution — the sandbox rootfs isn't present on CI.
         pentest_platform::set_use_sandbox(false);
 
@@ -1065,6 +1075,16 @@ mod tests {
     /// `sanitize_agent_result` call in `execute_with_context` turns this red.
     #[tokio::test]
     async fn execute_with_context_scrubs_reflected_credential_from_stdout() {
+        // A real tool run pushes evidence into the process-global
+        // PENDING_EVIDENCE/EVIDENCE_GRAPH as a side effect — take the shared
+        // evidence test lock (session::EVIDENCE_TEST_LOCK) so this test cannot
+        // race the session::tests drains, and clear any residue first so the
+        // Default scope starts deterministic.
+        let _evidence_guard = crate::session::evidence_test_lock();
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
+        crate::session::drain_tool_evidence_into_graph(&_default_scope);
+        crate::session::start_scan_evidence(&_default_scope);
+
         // Direct host execution — the sandbox rootfs isn't present on CI.
         pentest_platform::set_use_sandbox(false);
 
@@ -1102,6 +1122,16 @@ mod tests {
     /// no `_sanitization` marker, real evidence unmangled.
     #[tokio::test]
     async fn execute_with_context_passes_benign_output_through() {
+        // A real tool run pushes evidence into the process-global
+        // PENDING_EVIDENCE/EVIDENCE_GRAPH as a side effect — take the shared
+        // evidence test lock (session::EVIDENCE_TEST_LOCK) so this test cannot
+        // race the session::tests drains, and clear any residue first so the
+        // Default scope starts deterministic.
+        let _evidence_guard = crate::session::evidence_test_lock();
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
+        crate::session::drain_tool_evidence_into_graph(&_default_scope);
+        crate::session::start_scan_evidence(&_default_scope);
+
         pentest_platform::set_use_sandbox(false);
 
         let connector = test_connector();
@@ -1136,6 +1166,16 @@ mod tests {
     /// `execute_with_context` turns this red.
     #[tokio::test]
     async fn execute_with_context_refuses_once_budget_exhausted() {
+        // A real tool run pushes evidence into the process-global
+        // PENDING_EVIDENCE/EVIDENCE_GRAPH as a side effect — take the shared
+        // evidence test lock (session::EVIDENCE_TEST_LOCK) so this test cannot
+        // race the session::tests drains, and clear any residue first so the
+        // Default scope starts deterministic.
+        let _evidence_guard = crate::session::evidence_test_lock();
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
+        crate::session::drain_tool_evidence_into_graph(&_default_scope);
+        crate::session::start_scan_evidence(&_default_scope);
+
         pentest_platform::set_use_sandbox(false);
 
         let mut connector = test_connector();
@@ -1190,6 +1230,16 @@ mod tests {
     /// `.instrument(span)` from the hop turns this red.
     #[tokio::test]
     async fn liveview_hop_lines_carry_correlation_ids() {
+        // A real tool run pushes evidence into the process-global
+        // PENDING_EVIDENCE/EVIDENCE_GRAPH as a side effect — take the shared
+        // evidence test lock (session::EVIDENCE_TEST_LOCK) so this test cannot
+        // race the session::tests drains, and clear any residue first so the
+        // Default scope starts deterministic.
+        let _evidence_guard = crate::session::evidence_test_lock();
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
+        crate::session::drain_tool_evidence_into_graph(&_default_scope);
+        crate::session::start_scan_evidence(&_default_scope);
+
         use std::io::Write;
         use std::sync::Mutex;
         use tracing_subscriber::fmt::MakeWriter;
@@ -1577,6 +1627,16 @@ mod tests {
     /// (pick#476). Reverting the `e.chain()` call turns this red.
     #[tokio::test]
     async fn failure_result_carries_the_full_cause_chain() {
+        // A real tool run pushes evidence into the process-global
+        // PENDING_EVIDENCE/EVIDENCE_GRAPH as a side effect — take the shared
+        // evidence test lock (session::EVIDENCE_TEST_LOCK) so this test cannot
+        // race the session::tests drains, and clear any residue first so the
+        // Default scope starts deterministic.
+        let _evidence_guard = crate::session::evidence_test_lock();
+        let _default_scope = pentest_core::evidence::EvidenceScope::from_engagement_id(None);
+        crate::session::drain_tool_evidence_into_graph(&_default_scope);
+        crate::session::start_scan_evidence(&_default_scope);
+
         let connector = failing_connector();
         let ctx: HashMap<String, String> = HashMap::new();
 
@@ -1660,6 +1720,12 @@ mod tests {
     /// turns this red.
     #[tokio::test]
     async fn engagements_on_one_pick_keep_separate_evidence() {
+        // A real tool run pushes evidence into the process-global evidence
+        // statics as a side effect — take the shared evidence test lock
+        // (session::EVIDENCE_TEST_LOCK) so this test cannot race the
+        // session::tests drains.
+        let _evidence_guard = crate::session::evidence_test_lock();
+
         let mut registry = ToolRegistry::new();
         registry.register(EvidenceProbeTool);
         registry.register(pentest_tools::BeginScanTool);
@@ -1738,6 +1804,12 @@ mod tests {
     /// workspace turns this red.
     #[tokio::test]
     async fn engagements_on_one_pick_keep_separate_workspace_files() {
+        // A real tool run pushes evidence into the process-global evidence
+        // statics as a side effect — take the shared evidence test lock
+        // (session::EVIDENCE_TEST_LOCK) so this test cannot race the
+        // session::tests drains.
+        let _evidence_guard = crate::session::evidence_test_lock();
+
         let workspace = tempfile::tempdir().expect("tempdir");
         let connector = file_tool_connector(workspace.path());
         let write = |name: &str| json!({"path": name, "content": "x"});

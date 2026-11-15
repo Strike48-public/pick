@@ -207,6 +207,17 @@ jobs:
             # On dispatch GITHUB_SHA is main's head, not the tag's commit;
             # the backfill's sha tag is the raw line above instead.
             type=sha,prefix=,enable=${{ github.event_name != 'workflow_dispatch' }}
+            # sha-<short> (pick#630): an additional immutable per-build handle
+            # for real pushes (branch + tag). The image's
+            # org.opencontainers.image.revision label is stamped from
+            # REVISION=github.sha at build time (Dockerfile.scratch), so label
+            # == tag sha by construction. Never re-pointed by a later build:
+            # each main commit yields its own tag; a workflow re-run of the
+            # SAME commit rebuilds the same tag (GHCR has no server-side
+            # immutability — the convention is the same one the bare-sha line
+            # above has always had). Dispatch backfills keep their own commit
+            # raw line; PR runs keep pr-N only.
+            type=sha,prefix=sha-,enable=${{ github.event_name == 'push' }}
             # latest only on push to main. is_default_branch is NOT safe:
             # it is also true for a workflow_dispatch at main, which would
             # move :latest to whatever release is being backfilled.
@@ -329,6 +340,9 @@ jobs:
             # line in build-image (#563, #562).
             type=semver,pattern={{major}}.{{minor}},enable=${{ github.event_name == 'push' && !contains(github.ref_name, '-') }}
             type=sha,prefix=,enable=${{ github.event_name != 'workflow_dispatch' }}
+            # sha-<short> (pick#630): see the matching line in build-image —
+            # immutable per-build handle for real pushes, label == tag sha.
+            type=sha,prefix=sha-,enable=${{ github.event_name == 'push' }}
             # latest only on push to main (is_default_branch is also true
             # for a workflow_dispatch at main - see build-image).
             type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}

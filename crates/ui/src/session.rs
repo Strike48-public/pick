@@ -500,23 +500,27 @@ pub fn apply_validator_verdicts(
     report
 }
 
+/// Process-global lock serializing every test in this binary that touches the
+/// evidence statics (`EVIDENCE_GRAPH` in this module and
+/// `PENDING_EVIDENCE` in `pentest_tools::evidence_producer`). cargo runs
+/// tests on parallel threads, so a drain in one test can steal another's
+/// pending node, and `start_scan_evidence` in one test can wipe a scope
+/// another is asserting on. Tests that execute a real tool (which pushes
+/// evidence as a side effect — e.g. `liveview_connector::pick_connector`)
+/// must take it too, not just the session tests below. Poison is irrelevant —
+/// we only need mutual exclusion, so recover the guard and continue.
+#[cfg(test)]
+static EVIDENCE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn evidence_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    EVIDENCE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use pentest_core::export::Severity;
-    use std::sync::Mutex;
-
-    // EVIDENCE_GRAPH and PENDING_EVIDENCE are process-global statics. cargo runs
-    // tests in parallel threads, so a drain in one test can steal another's
-    // freshly-pushed node and `clear_evidence` can wipe the whole graph. These
-    // tests exercise exactly those shared buffers, so we serialize them behind a
-    // module-local lock and tag nodes with unique ids. (Poison is irrelevant —
-    // we only need mutual exclusion, so we recover the guard and continue.)
-    static SERIAL: Mutex<()> = Mutex::new(());
-
-    fn serial() -> std::sync::MutexGuard<'static, ()> {
-        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
-    }
 
     fn node(id: &str) -> EvidenceNode {
         EvidenceNode::new(
@@ -538,7 +542,7 @@ mod tests {
 
     #[test]
     fn drain_forwards_tool_buffer_into_report_graph() {
-        let _guard = serial();
+        let _guard = super::evidence_test_lock();
         let id = "session-bridge-forward-1";
         // A tool pushed a finding into the tool-side buffer...
         pentest_tools::evidence_producer::push_evidence(&EvidenceScope::Default, node(id))
@@ -560,7 +564,7 @@ mod tests {
 
     #[test]
     fn drain_with_empty_buffer_forwards_nothing_new() {
-        let _guard = serial();
+        let _guard = super::evidence_test_lock();
         // Ensure the tool buffer is empty for our purposes, then draining must
         // not invent our node.
         let id = "session-bridge-empty-1";
@@ -573,7 +577,7 @@ mod tests {
 
     #[test]
     fn start_scan_drops_its_scopes_forwarded_nodes() {
-        let _guard = serial();
+        let _guard = super::evidence_test_lock();
         let id = "session-bridge-clear-1";
         pentest_tools::evidence_producer::push_evidence(&EvidenceScope::Default, node(id))
             .expect("buffer should accept one node");
@@ -611,7 +615,7 @@ mod tests {
 
     #[test]
     fn interleaved_engagements_keep_their_own_evidence() {
-        let _guard = serial();
+        let _guard = super::evidence_test_lock();
         let (a, b) = (engagement("iso-a"), engagement("iso-b"));
         start_scan_evidence(&a);
         start_scan_evidence(&b);
@@ -631,7 +635,7 @@ mod tests {
 
     #[test]
     fn drain_for_one_engagement_leaves_anothers_pending_nodes() {
-        let _guard = serial();
+        let _guard = super::evidence_test_lock();
         let (a, b) = (engagement("pend-a"), engagement("pend-b"));
         start_scan_evidence(&a);
         start_scan_evidence(&b);
@@ -646,7 +650,7 @@ mod tests {
 
     #[test]
     fn second_engagements_scan_start_leaves_the_first_intact() {
-        let _guard = serial();
+        let _guard = super::evidence_test_lock();
         let (a, b) = (engagement("start-a"), engagement("start-b"));
         start_scan_evidence(&a);
         tool_push(&a, "start-a-1");
@@ -664,11 +668,15 @@ mod tests {
 
     #[test]
     fn call_without_engagement_lands_in_default_only() {
-        let _guard = serial();
+        let _guard = super::evidence_test_lock();
+        let scope = EvidenceScope::from_engagement_id(None);
+        // The connector tests execute real tools, which push evidence into the
+        // shared PENDING_EVIDENCE under this same Default scope — discard any
+        // residue so this drain sees only this test's node.
+        drain_tool_evidence_into_graph(&scope);
         let a = engagement("dflt-a");
         start_scan_evidence(&a);
         start_scan_evidence(&EvidenceScope::Default);
-        let scope = EvidenceScope::from_engagement_id(None);
 
         tool_push(&scope, "dflt-1");
         drain_tool_evidence_into_graph(&scope);
@@ -679,7 +687,7 @@ mod tests {
 
     #[test]
     fn verdicts_apply_only_to_their_engagement() {
-        let _guard = serial();
+        let _guard = super::evidence_test_lock();
         let (a, b) = (engagement("vd-a"), engagement("vd-b"));
         start_scan_evidence(&a);
         start_scan_evidence(&b);
@@ -725,7 +733,7 @@ mod tests {
 
     #[test]
     fn writeback_applies_each_decision_type() {
-        let _guard = serial();
+        let _guard = super::evidence_test_lock();
         start_scan_evidence(&EvidenceScope::Default);
         push_evidence(&EvidenceScope::Default, node("wb-confirmed"));
         push_evidence(&EvidenceScope::Default, node("wb-revised"));
@@ -759,7 +767,7 @@ mod tests {
 
     #[test]
     fn writeback_reports_unmatched_verdict_ids() {
-        let _guard = serial();
+        let _guard = super::evidence_test_lock();
         start_scan_evidence(&EvidenceScope::Default);
         push_evidence(&EvidenceScope::Default, node("wb-real"));
 
@@ -788,7 +796,7 @@ mod tests {
 
     #[test]
     fn writeback_reports_nodes_left_pending() {
-        let _guard = serial();
+        let _guard = super::evidence_test_lock();
         start_scan_evidence(&EvidenceScope::Default);
         push_evidence(&EvidenceScope::Default, node("wb-adjudicated"));
         push_evidence(&EvidenceScope::Default, node("wb-forgotten"));
@@ -813,7 +821,7 @@ mod tests {
 
     #[test]
     fn writeback_confirmed_without_severity_uses_current() {
-        let _guard = serial();
+        let _guard = super::evidence_test_lock();
         start_scan_evidence(&EvidenceScope::Default);
         // node() starts at Medium.
         push_evidence(&EvidenceScope::Default, node("wb-nosev"));

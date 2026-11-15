@@ -207,7 +207,13 @@ Include:
 
 ### Gitleaks
 
-We use Gitleaks to scan for secrets. If you accidentally commit a secret:
+We use Gitleaks to scan for secrets. CI scans every pull request and push to
+`main`. To catch a secret before it is committed, run `scripts/install-hooks.sh`
+once and install gitleaks: the pre-commit hook then scans staged changes and
+blocks the commit on a finding. Without gitleaks on your PATH the hook warns
+and skips the scan.
+
+If you accidentally commit a secret:
 
 1. Use interactive rebase to remove it from ALL commits
 2. Rotate the exposed secret immediately
