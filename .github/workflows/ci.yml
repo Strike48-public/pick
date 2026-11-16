@@ -221,11 +221,17 @@ jobs:
       # release jobs only run on tag pushes, so without this, PRs could land
       # with the arm64 Windows half never compiled or tested (review on
       # pick#611).
-      - name: cargo check (aarch64-pc-windows-msvc)
+      # A build, not a check: only a linked exe shows which C runtime it
+      # imports. A check-only job let the arm64 release exes ship needing
+      # VCRUNTIME140.dll, which the release job's CRT check then refused.
+      - name: cargo build (aarch64-pc-windows-msvc)
         env:
           PICK_EASY_MODE: "true"
           STRIKE48_HOST: "https://studio.strike48.com"
-        run: cargo check --locked --package pentest-desktop --package pentest-headless --target aarch64-pc-windows-msvc
+        run: cargo build --locked --package pentest-desktop --package pentest-headless --target aarch64-pc-windows-msvc
+      - name: Exes do not need the VC++ Redistributable (arm64)
+        shell: pwsh
+        run: ./scripts/check-windows-crt.ps1 target/aarch64-pc-windows-msvc/debug/pentest-agent.exe target/aarch64-pc-windows-msvc/debug/pentest-connector.exe
       # The x64 check runs these tests on windows-latest; the ARM runner is a
       # native aarch64 host, so the same tests close the native-arm64 test gap
       # without any cross-compile toolchain.
