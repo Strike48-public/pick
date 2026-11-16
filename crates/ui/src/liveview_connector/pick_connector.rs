@@ -1492,6 +1492,11 @@ mod tests {
     /// Removing the `try_take` guard in `execute_with_context` turns this red.
     #[tokio::test]
     async fn execute_with_context_refuses_as_busy_past_the_call_limit() {
+        // Each successful call drains the Default scope's pending evidence
+        // into the process-global graph, so take the shared evidence test lock
+        // (session::EVIDENCE_TEST_LOCK) or this test can steal a node another
+        // test is asserting on.
+        let _evidence_guard = crate::session::evidence_test_lock();
         let starts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
