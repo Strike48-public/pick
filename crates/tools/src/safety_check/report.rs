@@ -381,6 +381,9 @@ pub(crate) struct Impact {
     pub signal: Signal,
     /// Short phrase for the malicious-verdict sentence.
     pub evidence: String,
+    /// A check that could not finish (vs. observed context such as a busy
+    /// network), so the "nothing malicious" answer is not fully confirmed.
+    pub unverified: bool,
 }
 
 fn impact(scenario: &str, risk: Risk, why: &str, signal: Signal, evidence: &str) -> Impact {
@@ -390,7 +393,14 @@ fn impact(scenario: &str, risk: Risk, why: &str, signal: Signal, evidence: &str)
         why: why.to_string(),
         signal,
         evidence: evidence.to_string(),
+        unverified: true,
     }
+}
+
+/// Observed context rather than an unfinished check.
+fn context(mut i: Impact) -> Impact {
+    i.unverified = false;
+    i
 }
 
 /// Derive the impact rows from the check results, most direct risk first.
@@ -401,13 +411,15 @@ pub(crate) fn impacts(result: &super::types::SafetyCheckResult) -> Vec<Impact> {
 
     if let Some(check) = result.checks.iter().find(|c| c.name == "DNS Integrity") {
         match check.status {
-            CheckStatus::Failed if check.details.contains("Captive portal") => out.push(impact(
-                "A captive portal is intercepting your web traffic until you sign in",
-                Risk::Low,
-                "normal on hotel and airport Wi-Fi; only sign in on the portal you expect to see",
-                Signal::Weakness,
-                "a captive portal is intercepting lookups",
-            )),
+            CheckStatus::Failed if check.details.contains("Captive portal") => {
+                out.push(context(impact(
+                    "A captive portal is intercepting your web traffic until you sign in",
+                    Risk::Low,
+                    "normal on hotel and airport Wi-Fi; only sign in on the portal you expect to see",
+                    Signal::Weakness,
+                    "a captive portal is intercepting lookups",
+                )))
+            }
             CheckStatus::Failed => out.push(impact(
                 "Someone answers your DNS lookups with addresses of their choosing",
                 Risk::High,
@@ -500,7 +512,7 @@ pub(crate) fn impacts(result: &super::types::SafetyCheckResult) -> Vec<Impact> {
             }
         }
         if map.other_devices.len() > 20 {
-            out.push(impact(
+            out.push(context(impact(
                 &format!(
                     "{} other devices share this network with you",
                     map.other_devices.len()
@@ -509,7 +521,7 @@ pub(crate) fn impacts(result: &super::types::SafetyCheckResult) -> Vec<Impact> {
                 "any of them can try to reach your device directly, as on any public Wi-Fi",
                 Signal::Weakness,
                 "it is a busy shared network",
-            ));
+            )));
         }
         if map.sweep_truncated.is_some() {
             out.push(impact(
@@ -539,7 +551,6 @@ fn malicious_verdict(result: &super::types::SafetyCheckResult, impacts: &[Impact
     };
     let malicious = join(Signal::Malicious);
     let suspicious = join(Signal::Suspicious);
-    let weaknesses = join(Signal::Weakness);
 
     if !malicious.is_empty() {
         return format!(
@@ -578,13 +589,30 @@ fn malicious_verdict(result: &super::types::SafetyCheckResult, impacts: &[Impact
             sentence_list(&seen)
         )
     };
-    if !weaknesses.is_empty() {
+    // Split the remaining rows: checks that could not finish leave the answer
+    // unconfirmed; observed context (a busy network) is just worth knowing.
+    let (unverified, context): (Vec<&Impact>, Vec<&Impact>) = impacts
+        .iter()
+        .filter(|i| i.signal == Signal::Weakness)
+        .partition(|i| i.unverified);
+    if !unverified.is_empty() {
         sentence.push_str(&format!(
             " Not fully confirmed: {}.",
-            sentence_list(&weaknesses)
+            sentence_list(&evidence_of(&unverified))
+        ));
+    }
+    if !context.is_empty() {
+        sentence.push_str(&format!(
+            " Worth knowing: {}.",
+            sentence_list(&evidence_of(&context))
         ));
     }
     sentence
+}
+
+/// The malicious-verdict phrases of these rows.
+fn evidence_of<'a>(rows: &[&'a Impact]) -> Vec<&'a str> {
+    rows.iter().map(|i| i.evidence.as_str()).collect()
 }
 
 /// The single recommendation: the top-priority action, or its description
@@ -1138,6 +1166,29 @@ mod tests {
         ));
         assert!(report.contains("&lt;pwn&gt;/box at 192.168.1.70"));
         assert!(!report.contains("<pwn>"));
+    }
+
+    #[test]
+    fn busy_network_is_context_not_an_unconfirmed_check() {
+        let others = (0..25)
+            .map(|i| sample_device(&format!("192.168.1.{}", 10 + i), ThreatLevel::Safe))
+            .collect();
+        let report = format_report(&result_with(
+            SafetyStatus::MostlySafe,
+            vec![
+                check("DNS Integrity", CheckStatus::Passed, "OK", Severity::Info),
+                check(
+                    "Router Threat Intelligence",
+                    CheckStatus::Passed,
+                    "Clean",
+                    Severity::Info,
+                ),
+            ],
+            Some(map_with(others)),
+        ));
+        let verdict = section(&report, "### The verdict: is anything malicious?");
+        assert!(verdict.contains("Worth knowing: it is a busy shared network."));
+        assert!(!verdict.contains("Not fully confirmed"));
     }
 
     /// The text between `heading` and the next `###` heading.
