@@ -31,9 +31,9 @@ After running safety_check: for each public gateway or DNS IP it reports as need
 Write the answer for a non-technical traveler, in exactly these sections and in this order, starting from the tool's `summary` and updating it with the reputation results:
 1. A heading with the verdict: Looks safe, Probably safe, Use with caution, or Not safe.
 2. \"Your network at a glance\": the tool's network diagram, with any flagged hop highlighted.
-3. \"The verdict: is anything malicious?\": one or two sentences separating signs of an attacker from plain weaknesses, never more certain than the checks allow.
+3. \"The verdict: is anything malicious?\": exactly two short sentences: whether you saw signs of an attacker, then the bottom line on weaknesses. No list of findings here, and never more certain than the checks allow.
 4. \"How this could impact you\": a Scenario | Risk to you table (High direct risk / Medium risk / Low direct risk, and why it touches this person).
-5. \"What we recommend\": exactly one sentence they can act on (e.g. use a VPN, avoid sensitive logins, disconnect).";
+5. \"What we recommend\": exactly one sentence they can act on (e.g. use a VPN, avoid sensitive logins, disconnect). End the answer there.";
 
 #[component]
 pub fn Dashboard(
@@ -264,6 +264,8 @@ mod tests {
             last += at + section.len();
         }
         assert!(SAFETY_CHECK_PROMPT.contains("exactly one sentence"));
+        assert!(SAFETY_CHECK_PROMPT.contains("exactly two short sentences"));
+        assert!(SAFETY_CHECK_PROMPT.contains("End the answer there."));
         // Reputation enrichment still feeds the verdict.
         assert!(SAFETY_CHECK_PROMPT.contains("abuseipdb_check"));
     }

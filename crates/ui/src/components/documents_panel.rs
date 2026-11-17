@@ -16,7 +16,7 @@ use crate::clipboard::copy_to_clipboard;
 use dioxus::document;
 use dioxus::prelude::*;
 use pentest_core::matrix::{BadgeKind, DocumentSummary, MatrixChatClient, ReportMeta};
-use pentest_core::rendering::render_markdown_raw;
+use pentest_core::rendering::render_report_markdown;
 use pentest_core::social_share::{share_intent_url, SocialNetwork};
 
 /// Shared client-side helpers + chart/mermaid post-processor (the same assets
@@ -464,7 +464,7 @@ pub fn DocumentViewer(props: DocumentViewerProps) -> Element {
                 match client.get_document_content(&conv, &doc_id).await {
                     Ok(md) => {
                         let (_fm, body) = pentest_core::rendering::split_frontmatter(&md);
-                        html.set(render_markdown_raw(body));
+                        html.set(render_report_markdown(body));
                         // Load the shared chart/mermaid libs (idempotent) then
                         // render any ```mermaid```/```echarts``` fences inside the
                         // viewer's own container. The chat panel does the same for

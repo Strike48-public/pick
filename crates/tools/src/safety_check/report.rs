@@ -595,17 +595,23 @@ fn malicious_verdict(result: &super::types::SafetyCheckResult, impacts: &[Impact
         .iter()
         .filter(|i| i.signal == Signal::Weakness)
         .partition(|i| i.unverified);
-    if !unverified.is_empty() {
-        sentence.push_str(&format!(
+    // At most two sentences (the answer, then one bottom line) so the section
+    // stays short; the impact table carries the specifics.
+    match (unverified.is_empty(), context.is_empty()) {
+        (true, true) => {}
+        (false, true) => sentence.push_str(&format!(
             " Not fully confirmed: {}.",
             sentence_list(&evidence_of(&unverified))
-        ));
-    }
-    if !context.is_empty() {
-        sentence.push_str(&format!(
+        )),
+        (true, false) => sentence.push_str(&format!(
             " Worth knowing: {}.",
             sentence_list(&evidence_of(&context))
-        ));
+        )),
+        (false, false) => sentence.push_str(&format!(
+            " Not fully confirmed: {}; also worth knowing: {}.",
+            sentence_list(&evidence_of(&unverified)),
+            sentence_list(&evidence_of(&context))
+        )),
     }
     sentence
 }
@@ -1189,6 +1195,34 @@ mod tests {
         let verdict = section(&report, "### The verdict: is anything malicious?");
         assert!(verdict.contains("Worth knowing: it is a busy shared network."));
         assert!(!verdict.contains("Not fully confirmed"));
+    }
+
+    #[test]
+    fn malicious_verdict_is_at_most_two_sentences() {
+        // Unverified checks AND observed context fold into ONE second sentence.
+        let mut map = map_with(
+            (0..25)
+                .map(|i| sample_device(&format!("192.168.1.{}", 10 + i), ThreatLevel::Safe))
+                .collect(),
+        );
+        map.sweep_truncated = Some("budget".into());
+        let report = format_report(&result_with(
+            SafetyStatus::Caution,
+            vec![
+                check("DNS Integrity", CheckStatus::Passed, "OK", Severity::Info),
+                check(
+                    "Router Threat Intelligence",
+                    CheckStatus::NeedsEnrichment,
+                    "pending",
+                    Severity::Low,
+                ),
+            ],
+            Some(map),
+        ));
+        let verdict = section(&report, "### The verdict: is anything malicious?");
+        assert_eq!(verdict.trim().matches(". ").count() + 1, 2, "{verdict}");
+        assert!(verdict.contains("Not fully confirmed:"));
+        assert!(verdict.contains("also worth knowing: it is a busy shared network."));
     }
 
     /// The text between `heading` and the next `###` heading.

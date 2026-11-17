@@ -766,11 +766,11 @@ The saved report is read by a non-expert deciding whether to use this network. A
    - Color by severity with `classDef` + `class`: `classDef critical fill:#d93025,color:#fff`, `classDef high fill:#e8710a,color:#fff`, `classDef medium fill:#f9ab00,color:#000`, `classDef low fill:#fde293,color:#000`. Leave clean nodes unstyled.
    - Only draw what a tool returned. Keep it to ~20 nodes. Use plain text labels in quotes; do not put `<`, `>` or backticks inside labels (use `<br/>` only for line breaks).
    - For ⚪ Could not check, draw only this device and what discovery did establish (or skip the diagram and say in one sentence why there is nothing to draw).
-3. **`### The verdict: is anything malicious?`** — ONE or TWO sentences that separate *signs of an attacker* (an unknown device impersonating the gateway or DNS, DNS answers being hijacked, a known-malicious IP/reputation hit, a backdoor/implant-style service) from *weaknesses that make an attack easy* (misconfiguration, missing authentication, outdated software, exposed admin panels). Say plainly which one you saw, e.g. "Probably not malicious in the sense of an attacker implant — but you have a severely misconfigured Aruba Mobility Controller on your network." Never claim certainty you don't have: say what you did not see, not that nothing exists.
+3. **`### The verdict: is anything malicious?`** — exactly TWO short sentences, nothing else. Sentence one answers the question: whether you saw *signs of an attacker* (an unknown device impersonating the gateway or DNS, DNS answers being hijacked, a known-malicious IP/reputation hit, a backdoor/implant-style service), e.g. "Probably not malicious in the sense of an attacker implant — DNS answers were not hijacked and no device was impersonating the gateway." Sentence two is the bottom line on *weaknesses that make an attack easy*, e.g. "There were no signs of an active intruder, but several hosts are configured in ways that make an attack easy." Do NOT list or describe individual findings here; the impact table below covers them. Never claim certainty you don't have: say what you did not see, not that nothing exists.
 4. **`### How this could impact you`** — a Markdown table with the columns `| Scenario | Risk to you |`, one row per notable finding (most severe first, at most 6 rows). **Scenario** is what someone could do with the finding in plain words ("Someone uses the open FTP server to plant files"). **Risk to you** starts with a bold level — `**High direct risk**`, `**Medium risk**` or `**Low direct risk**` — followed by an em dash and why it touches the person on this network, not the server owner (e.g. "**High direct risk** — your traffic, DNS, and routing are all affected"). After the table, when there is at least one finding, add the sentence: "**The network's vulnerabilities are the attack surface. You are one of the targets on that surface.** A weakness in a device your traffic passes through is a weakness in your connection." For 🟢 Looks safe, replace the table with one sentence saying nothing found gives someone a way in. For ⚪ Could not check, say what could not be assessed.
-5. **`### What we recommend`** — exactly ONE sentence a non-expert can act on (e.g. "We don't detect any immediate threats, but this network should be scanned before you use it for anything sensitive.").
+5. **`### What we recommend`** — exactly ONE sentence a non-expert can act on (e.g. "We don't detect any immediate threats, but this network should be scanned before you use it for anything sensitive."). This is the END of the summary: nothing follows it except the Details appendix.
 
-Technical detail (host/service tables, evidence, per-finding remediation) is welcome AFTER these five sections under `### Details`; never before them. The table escaping rule above (`&lt;` / `&gt;`) applies to every table in the report.
+Put ALL technical detail (host/service tables, scope and method, evidence, per-finding remediation, caveats) after the recommendation under ONE `### Details` heading, which is the last heading-level section of the report: the report viewer shows it collapsed, so the reader sees only the five sections unless they expand it. Use `####` or lower for any sub-headings inside Details, and never put technical detail before it. The table escaping rule above (`&lt;` / `&gt;`) applies to every table in the report.
 
 Emit the verdict line and the five report sections even when the scan is clean or could not be completed.
 
@@ -1116,8 +1116,13 @@ mod tests {
             "You are one of the targets on that surface.",
             // One recommendation, not a list.
             "exactly ONE sentence",
-            // Technical detail never displaces the five sections.
-            "### Details",
+            // The malicious verdict is two sentences, not a findings list.
+            "exactly TWO short sentences",
+            "Do NOT list or describe individual findings here",
+            // The recommendation ends the summary; the appendix is collapsed.
+            "This is the END of the summary",
+            "under ONE `### Details` heading",
+            "the report viewer shows it collapsed",
         ] {
             assert!(sys.contains(rule), "layout should carry the rule '{rule}'");
         }
