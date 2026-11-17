@@ -762,7 +762,7 @@ fn device_name(dev: &super::types::Device) -> String {
 /// Prefers the most human-friendly identifier available: hostname if known,
 /// otherwise the vendor name, always with the IP on a second line. A bare IP
 /// is the fallback when nothing was enriched. The `<br/>` keeps the IP on its
-/// own line inside the node. Any double-quotes are stripped to avoid breaking
+/// own line inside the node. Quotes and angle brackets are stripped to avoid breaking
 /// the Mermaid label syntax.
 fn device_label(dev: &super::types::Device) -> String {
     // Prefer the most human-friendly identifier: hostname, then vendor, then
@@ -774,12 +774,12 @@ fn device_label(dev: &super::types::Device) -> String {
         .or_else(|| dev.vendor.clone())
         .or_else(|| dev.mac.clone());
 
-    let label = match primary {
-        Some(name) => format!("{}<br/>{}", name, dev.ip),
+    // Hostnames come off the network (mDNS/NetBIOS), so strip what would
+    // break the label or inject markup before adding our own `<br/>`.
+    match primary {
+        Some(name) => format!("{}<br/>{}", name.replace(['"', '<', '>'], ""), dev.ip),
         None => dev.ip.to_string(),
-    };
-
-    label.replace('"', "")
+    }
 }
 
 #[cfg(test)]
