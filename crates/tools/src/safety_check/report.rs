@@ -750,9 +750,16 @@ fn render_network_mermaid(map: &super::types::NetworkMap, checks: &[CheckResult]
 }
 
 /// Short human name for a device in prose: hostname, vendor, else IP.
+///
+/// Hostnames come off the network, so angle brackets are escaped here - the
+/// name lands in Markdown prose as well as table cells.
 fn device_name(dev: &super::types::Device) -> String {
     match dev.hostname.as_deref().or(dev.vendor.as_deref()) {
-        Some(name) => format!("{} at {}", name, dev.ip),
+        Some(name) => format!(
+            "{} at {}",
+            name.replace('<', "&lt;").replace('>', "&gt;"),
+            dev.ip
+        ),
         None => dev.ip.to_string(),
     }
 }
