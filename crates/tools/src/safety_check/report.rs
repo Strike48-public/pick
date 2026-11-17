@@ -167,28 +167,80 @@ pub fn generate_recommendations(
 
 /// Format a safety check result as a Markdown report for the chat panel.
 ///
-/// Output is GitHub-flavored Markdown: a headline verdict with a plain-language
-/// gloss, a status table of every check, an embedded Mermaid network diagram,
-/// and prioritized recommendations. The verdict is always backed by its
-/// reasons - the status word is the headline, never the whole story.
+/// The layout follows the refined summary report (project-management#490): a
+/// non-expert reads five sections top to bottom -
+///
+/// 1. the verdict heading,
+/// 2. a network diagram that highlights the issues,
+/// 3. "is anything malicious?" - attacker signs vs. plain weaknesses,
+/// 4. "how this could impact you" - a scenario -> risk-to-you table,
+/// 5. one recommendation.
+///
+/// The full per-check table, device inventory and every recommendation follow
+/// under "Details", so nothing the old report carried is lost. Every sentence
+/// in the first five sections is derived from a check result; nothing here is
+/// a claim the tool did not measure.
 pub fn format_report(result: &super::types::SafetyCheckResult) -> String {
     let mut output = String::new();
+    let impacts = impacts(result);
 
-    // Headline verdict with a one-line, non-technical gloss. The verdict is
-    // explicitly scoped to the *network environment* - never the user's own
-    // device - so an "UNSAFE" headline is not misread as "you have been
-    // compromised". Pick assesses the network it operates from, not the host.
-    output.push_str("## Network Safety Check\n\n");
+    // 1. Verdict heading. Scoped to the *network environment* - never the
+    // user's own device - so a "Not safe" headline is not misread as "you have
+    // been compromised". Pick assesses the network it operates from.
     output.push_str(&format!(
-        "### Network environment: {} {}\n\n",
+        "## {} {}\n\n",
         status_indicator(result.status),
-        result.status
+        verdict_label(result.status)
     ));
     output.push_str(status_gloss(result.status));
     output.push_str("\n\n");
 
-    // Check results as a scannable table.
-    output.push_str("### What we checked\n\n");
+    // 2. Network at a glance.
+    if let Some(map) = &result.network_map {
+        output.push_str("### Your network at a glance\n\n");
+        output.push_str(&render_network_mermaid(map, &result.checks));
+        output.push('\n');
+    }
+
+    // 3. Is anything malicious?
+    output.push_str("### The verdict: is anything malicious?\n\n");
+    output.push_str(&malicious_verdict(result, &impacts));
+    output.push_str("\n\n");
+
+    // 4. How this could impact you.
+    output.push_str("### How this could impact you\n\n");
+    if impacts.is_empty() {
+        output.push_str(
+            "Nothing we checked gives someone an obvious way to reach you or your traffic on this network.\n\n",
+        );
+    } else {
+        output.push_str("| Scenario | Risk to you |\n");
+        output.push_str("|----------|-------------|\n");
+        for impact in impacts.iter().take(MAX_IMPACT_ROWS) {
+            output.push_str(&format!(
+                "| {} | **{}** — {} |\n",
+                table_cell(&impact.scenario),
+                impact.risk.label(),
+                table_cell(&impact.why)
+            ));
+        }
+        output.push('\n');
+        if impacts.iter().any(|i| i.risk != Risk::Low) {
+            output.push_str(
+                "**The network's weaknesses are the attack surface. You are one of the targets on that surface.** \
+                 A problem in a device your traffic passes through is a problem in your connection.\n\n",
+            );
+        }
+    }
+
+    // 5. One recommendation: the highest-priority one, already sorted by the
+    // generator. The rest stay in Details.
+    output.push_str("### What we recommend\n\n");
+    output.push_str(&one_recommendation(result));
+    output.push_str("\n\n");
+
+    // Details: everything the report carried before, below the summary.
+    output.push_str("### Details\n\n");
     output.push_str("| Check | Result | Details |\n");
     output.push_str("|-------|--------|--------|\n");
     for check in &result.checks {
@@ -197,16 +249,12 @@ pub fn format_report(result: &super::types::SafetyCheckResult) -> String {
             check.name,
             check.status,
             // Keep details single-line so the table cell stays intact.
-            check.details.replace('\n', " ")
+            table_cell(&check.details)
         ));
     }
     output.push('\n');
 
-    // Network map: a Mermaid diagram plus a quick textual summary.
     if let Some(map) = &result.network_map {
-        output.push_str("### Network map\n\n");
-        output.push_str(&render_network_mermaid(map));
-        output.push('\n');
         output.push_str(&format!(
             "*Your device `{}` connects through gateway `{}`. {} other device(s) seen on this network.*\n\n",
             map.your_device.ip,
@@ -230,9 +278,15 @@ pub fn format_report(result: &super::types::SafetyCheckResult) -> String {
             for dev in map.other_devices.iter().take(MAX_TABLE_ROWS) {
                 output.push_str(&format!(
                     "| {} | `{}` | {} | {} |\n",
-                    dev.hostname.as_deref().unwrap_or("-"),
+                    dev.hostname
+                        .as_deref()
+                        .map(table_cell)
+                        .unwrap_or_else(|| "-".into()),
                     dev.ip,
-                    dev.vendor.as_deref().unwrap_or("-"),
+                    dev.vendor
+                        .as_deref()
+                        .map(table_cell)
+                        .unwrap_or_else(|| "-".into()),
                     dev.mac.as_deref().unwrap_or("-"),
                 ));
             }
@@ -247,9 +301,8 @@ pub fn format_report(result: &super::types::SafetyCheckResult) -> String {
         }
     }
 
-    // Recommendations, already priority-sorted by the generator.
     if !result.recommendations.is_empty() {
-        output.push_str("### Recommendations\n\n");
+        output.push_str("**All recommendations**\n\n");
         for rec in &result.recommendations {
             output.push_str(&format!(
                 "- **{} ({:?})** - {}",
@@ -269,6 +322,307 @@ pub fn format_report(result: &super::types::SafetyCheckResult) -> String {
     ));
 
     output
+}
+
+/// The five summary sections as structured data, for the agent to repeat
+/// verbatim in its write-up instead of paraphrasing them.
+pub fn summary_json(result: &super::types::SafetyCheckResult) -> serde_json::Value {
+    let impacts = impacts(result);
+    serde_json::json!({
+        "verdict": verdict_label(result.status),
+        "is_anything_malicious": malicious_verdict(result, &impacts),
+        "impact": impacts.iter().take(MAX_IMPACT_ROWS).map(|i| serde_json::json!({
+            "scenario": i.scenario,
+            "risk_to_you": format!("{} — {}", i.risk.label(), i.why),
+        })).collect::<Vec<_>>(),
+        "recommendation": one_recommendation(result),
+    })
+}
+
+/// Most rows the impact table shows; the rest are covered by Details.
+const MAX_IMPACT_ROWS: usize = 6;
+
+/// How directly a finding touches the person on this network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Risk {
+    High,
+    Medium,
+    Low,
+}
+
+impl Risk {
+    fn label(self) -> &'static str {
+        match self {
+            Risk::High => "High direct risk",
+            Risk::Medium => "Medium risk",
+            Risk::Low => "Low direct risk",
+        }
+    }
+}
+
+/// Whether a finding is a sign of an attacker, a suspicion, or a weakness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Signal {
+    /// Evidence of hostile activity (hijacked DNS, a gateway or device on a
+    /// threat list).
+    Malicious,
+    /// Reputation hits that may be an attacker or may be a shared/abused IP.
+    Suspicious,
+    /// A weakness or an unverified area - not evidence of an attacker.
+    Weakness,
+}
+
+/// One row of "How this could impact you", plus what it says about malice.
+#[derive(Debug, Clone)]
+pub(crate) struct Impact {
+    pub scenario: String,
+    pub risk: Risk,
+    pub why: String,
+    pub signal: Signal,
+    /// Short phrase for the malicious-verdict sentence.
+    pub evidence: String,
+}
+
+fn impact(scenario: &str, risk: Risk, why: &str, signal: Signal, evidence: &str) -> Impact {
+    Impact {
+        scenario: scenario.to_string(),
+        risk,
+        why: why.to_string(),
+        signal,
+        evidence: evidence.to_string(),
+    }
+}
+
+/// Derive the impact rows from the check results, most direct risk first.
+pub(crate) fn impacts(result: &super::types::SafetyCheckResult) -> Vec<Impact> {
+    use super::types::ThreatLevel;
+
+    let mut out = Vec::new();
+
+    if let Some(check) = result.checks.iter().find(|c| c.name == "DNS Integrity") {
+        match check.status {
+            CheckStatus::Failed if check.details.contains("Captive portal") => out.push(impact(
+                "A captive portal is intercepting your web traffic until you sign in",
+                Risk::Low,
+                "normal on hotel and airport Wi-Fi; only sign in on the portal you expect to see",
+                Signal::Weakness,
+                "a captive portal is intercepting lookups",
+            )),
+            CheckStatus::Failed => out.push(impact(
+                "Someone answers your DNS lookups with addresses of their choosing",
+                Risk::High,
+                "websites you type can be swapped for look-alikes that collect your passwords",
+                Signal::Malicious,
+                "DNS answers on this network are being changed",
+            )),
+            CheckStatus::Warning => out.push(impact(
+                "Some DNS answers could not be verified",
+                Risk::Medium,
+                "a redirected lookup would not be noticed",
+                Signal::Weakness,
+                "some DNS answers could not be verified",
+            )),
+            CheckStatus::Unknown => out.push(impact(
+                "DNS integrity could not be checked",
+                Risk::Low,
+                "we cannot rule out redirected lookups on this network",
+                Signal::Weakness,
+                "DNS could not be checked",
+            )),
+            CheckStatus::Passed | CheckStatus::NeedsEnrichment => {}
+        }
+    }
+
+    if let Some(check) = result
+        .checks
+        .iter()
+        .find(|c| c.name == "Router Threat Intelligence")
+    {
+        match check.status {
+            CheckStatus::Failed if check.severity == Severity::Critical => out.push(impact(
+                "Your traffic passes through a gateway flagged as malicious",
+                Risk::High,
+                "anything you send that is not encrypted can be read or changed on the way",
+                Signal::Malicious,
+                "the gateway is flagged as malicious in threat intelligence",
+            )),
+            CheckStatus::Failed => out.push(impact(
+                "The gateway has abuse reports in threat databases",
+                Risk::High,
+                "every connection you make goes through it; it may be compromised or shared with abusers",
+                Signal::Suspicious,
+                "the gateway has abuse reports",
+            )),
+            CheckStatus::Warning => out.push(impact(
+                "The gateway has an elevated threat score",
+                Risk::Medium,
+                "often a public hotspot with past abuse; your traffic still passes through it",
+                Signal::Suspicious,
+                "the gateway has an elevated threat score",
+            )),
+            CheckStatus::NeedsEnrichment => out.push(impact(
+                "The gateway's reputation has not been checked yet",
+                Risk::Low,
+                "nothing bad was found locally, but the gateway is not confirmed clean",
+                Signal::Weakness,
+                "the gateway's reputation is still unchecked",
+            )),
+            CheckStatus::Unknown => out.push(impact(
+                "The gateway's reputation could not be checked",
+                Risk::Low,
+                "we cannot rule out a known-bad gateway",
+                Signal::Weakness,
+                "the gateway's reputation could not be checked",
+            )),
+            CheckStatus::Passed => {}
+        }
+    }
+
+    if let Some(map) = &result.network_map {
+        for dev in &map.other_devices {
+            let name = device_name(dev);
+            match dev.threat_level {
+                ThreatLevel::Malicious => out.push(impact(
+                    &format!("A device on this network ({name}) is flagged as malicious"),
+                    Risk::High,
+                    "it shares the network with you and can try to reach your device directly",
+                    Signal::Malicious,
+                    &format!("{name} is flagged as malicious"),
+                )),
+                ThreatLevel::Suspicious => out.push(impact(
+                    &format!("A device on this network ({name}) looks suspicious"),
+                    Risk::Medium,
+                    "it can reach your device directly; keep file sharing and remote access off",
+                    Signal::Suspicious,
+                    &format!("{name} looks suspicious"),
+                )),
+                ThreatLevel::Safe => {}
+            }
+        }
+        if map.other_devices.len() > 20 {
+            out.push(impact(
+                &format!(
+                    "{} other devices share this network with you",
+                    map.other_devices.len()
+                ),
+                Risk::Medium,
+                "any of them can try to reach your device directly, as on any public Wi-Fi",
+                Signal::Weakness,
+                "it is a busy shared network",
+            ));
+        }
+        if map.sweep_truncated.is_some() {
+            out.push(impact(
+                "Not every device on this network was checked",
+                Risk::Low,
+                "something risky could be among the devices we did not reach",
+                Signal::Weakness,
+                "not every device was checked",
+            ));
+        }
+    }
+
+    // Stable sort: most direct risk first, check order within a level.
+    out.sort_by_key(|i| i.risk);
+    out
+}
+
+/// The "is anything malicious?" answer: attacker signs vs. weaknesses, and
+/// never more certain than the checks allow.
+fn malicious_verdict(result: &super::types::SafetyCheckResult, impacts: &[Impact]) -> String {
+    let join = |signal: Signal| {
+        impacts
+            .iter()
+            .filter(|i| i.signal == signal)
+            .map(|i| i.evidence.as_str())
+            .collect::<Vec<_>>()
+    };
+    let malicious = join(Signal::Malicious);
+    let suspicious = join(Signal::Suspicious);
+    let weaknesses = join(Signal::Weakness);
+
+    if !malicious.is_empty() {
+        return format!(
+            "**Possibly - treat this network as hostile:** {}.",
+            sentence_list(&malicious)
+        );
+    }
+    if !suspicious.is_empty() {
+        return format!(
+            "**Nothing confirmed malicious, but** {} - that can be a shared or previously abused address rather than an attacker on this network.",
+            sentence_list(&suspicious)
+        );
+    }
+
+    // No attacker signs. Say what was actually seen, and what was not checked.
+    let dns_ok = result
+        .checks
+        .iter()
+        .any(|c| c.name == "DNS Integrity" && c.status == CheckStatus::Passed);
+    let gw_ok = result
+        .checks
+        .iter()
+        .any(|c| c.name == "Router Threat Intelligence" && c.status == CheckStatus::Passed);
+    let mut seen = Vec::new();
+    if dns_ok {
+        seen.push("DNS answers matched what we expected");
+    }
+    if gw_ok {
+        seen.push("the gateway is not on a threat list");
+    }
+    let mut sentence = if seen.is_empty() {
+        "**We saw no signs of an attacker**, but we could not confirm it either.".to_string()
+    } else {
+        format!(
+            "**We saw no signs of an attacker:** {}.",
+            sentence_list(&seen)
+        )
+    };
+    if !weaknesses.is_empty() {
+        sentence.push_str(&format!(
+            " Not fully confirmed: {}.",
+            sentence_list(&weaknesses)
+        ));
+    }
+    sentence
+}
+
+/// The single recommendation: the top-priority action, or its description
+/// when it has no action.
+fn one_recommendation(result: &super::types::SafetyCheckResult) -> String {
+    match result.recommendations.first() {
+        Some(rec) => rec.action.clone().unwrap_or_else(|| rec.description.clone()),
+        None => "Keep using HTTPS-only browsing and avoid entering sensitive credentials on shared networks.".to_string(),
+    }
+}
+
+/// Plain-language verdict label for the heading.
+fn verdict_label(status: super::types::SafetyStatus) -> &'static str {
+    use super::types::SafetyStatus::*;
+    match status {
+        Safe => "Looks safe",
+        MostlySafe => "Probably safe",
+        Caution => "Use with caution",
+        Unsafe => "Not safe",
+    }
+}
+
+/// "a", "a and b", "a, b and c".
+fn sentence_list(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.to_string(),
+        [rest @ .., last] => format!("{} and {}", rest.join(", "), last),
+    }
+}
+
+/// Keep a value safe inside a Markdown table cell: one line, no pipe, and the
+/// angle brackets escaped (the MDX renderer breaks on raw `<`/`>` in cells).
+fn table_cell(s: &str) -> String {
+    s.replace('\n', " ")
+        .replace('|', "/")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Short textual status indicator (no emoji per project output rules).
@@ -299,41 +653,73 @@ fn status_gloss(status: super::types::SafetyStatus) -> &'static str {
     }
 }
 
-/// Render the discovered network as a Mermaid diagram.
+/// Render the discovered network as a Mermaid diagram that highlights issues.
 ///
-/// Devices are colored by threat level so a malicious or suspicious host is
-/// visually obvious in the chat panel. Emitted inside a ```mermaid fence so it
-/// renders rather than showing as raw text.
-fn render_network_mermaid(map: &super::types::NetworkMap) -> String {
+/// Devices are colored by threat level, and the gateway by its reputation
+/// check, so a malicious or suspicious hop is visually obvious. Hijacked DNS
+/// gets its own red node off the gateway. Emitted inside a ```mermaid fence so
+/// it renders rather than showing as raw text.
+fn render_network_mermaid(map: &super::types::NetworkMap, checks: &[CheckResult]) -> String {
     use super::types::ThreatLevel;
 
     let mut m = String::from("```mermaid\ngraph TD\n");
 
-    // (helper `device_label` defined below)
+    // Gateway issue, from the reputation check.
+    let gw_class = match checks
+        .iter()
+        .find(|c| c.name == "Router Threat Intelligence")
+    {
+        Some(c) if c.status == CheckStatus::Failed && c.severity == Severity::Critical => {
+            Some(("malicious", "FLAGGED MALICIOUS"))
+        }
+        Some(c) if c.status == CheckStatus::Failed => Some(("suspicious", "ABUSE REPORTS")),
+        Some(c) if c.status == CheckStatus::Warning => {
+            Some(("suspicious", "ELEVATED THREAT SCORE"))
+        }
+        _ => None,
+    };
+    let dns_hijacked = checks.iter().any(|c| {
+        c.name == "DNS Integrity"
+            && c.status == CheckStatus::Failed
+            && !c.details.contains("Captive portal")
+    });
 
     // Core nodes.
     m.push_str(&format!(
         "    YOU[\"Your device<br/>{}\"]\n",
         map.your_device.ip
     ));
+    let gw_issue = gw_class
+        .map(|(_, issue)| format!("<br/>{issue}"))
+        .unwrap_or_default();
     m.push_str(&format!(
-        "    GW[\"Gateway / Router<br/>{}\"]\n",
-        map.gateway.ip
+        "    GW[\"Gateway / Router<br/>{}{}\"]\n",
+        map.gateway.ip, gw_issue
     ));
     m.push_str("    YOU --> GW\n");
+    if dns_hijacked {
+        m.push_str("    DNS[\"DNS answers<br/>CHANGED IN TRANSIT\"]\n    GW --> DNS\n");
+    }
 
     // Cap rendered devices so a busy coffee-shop network does not produce an
-    // unreadable diagram; summarize the remainder in a single node.
+    // unreadable diagram; summarize the remainder in a single node. Flagged
+    // devices are drawn first so the cap never hides them.
     const MAX_RENDERED: usize = 12;
-    let total = map.other_devices.len();
-    for (i, dev) in map.other_devices.iter().take(MAX_RENDERED).enumerate() {
-        m.push_str(&format!("    D{i}[\"{}\"]\n", device_label(dev)));
-        m.push_str(&format!("    GW --- D{i}\n"));
-        let cls = match dev.threat_level {
-            ThreatLevel::Malicious => Some("malicious"),
-            ThreatLevel::Suspicious => Some("suspicious"),
-            ThreatLevel::Safe => None,
+    let mut ordered: Vec<&super::types::Device> = map.other_devices.iter().collect();
+    ordered.sort_by_key(|d| match d.threat_level {
+        ThreatLevel::Malicious => 0,
+        ThreatLevel::Suspicious => 1,
+        ThreatLevel::Safe => 2,
+    });
+    let total = ordered.len();
+    for (i, dev) in ordered.iter().take(MAX_RENDERED).enumerate() {
+        let (cls, issue) = match dev.threat_level {
+            ThreatLevel::Malicious => (Some("malicious"), "<br/>FLAGGED MALICIOUS"),
+            ThreatLevel::Suspicious => (Some("suspicious"), "<br/>SUSPICIOUS"),
+            ThreatLevel::Safe => (None, ""),
         };
+        m.push_str(&format!("    D{i}[\"{}{issue}\"]\n", device_label(dev)));
+        m.push_str(&format!("    GW --- D{i}\n"));
         if let Some(cls) = cls {
             m.push_str(&format!("    class D{i} {cls}\n"));
         }
@@ -345,15 +731,30 @@ fn render_network_mermaid(map: &super::types::NetworkMap) -> String {
         ));
     }
 
-    // Style: highlight your device and the gateway; threat classes for hosts.
+    // Style: highlight your device; threat classes for the gateway and hosts.
     m.push_str("    classDef you fill:#1e40af,stroke:#1e3a8a,color:#fff\n");
-    m.push_str("    classDef gw fill:#92400e,stroke:#78350f,color:#fff\n");
-    m.push_str("    classDef suspicious fill:#a16207,stroke:#854d0e,color:#fff\n");
-    m.push_str("    classDef malicious fill:#991b1b,stroke:#7f1d1d,color:#fff\n");
-    m.push_str("    class YOU you\n    class GW gw\n");
+    m.push_str("    classDef gw fill:#374151,stroke:#1f2937,color:#fff\n");
+    m.push_str("    classDef suspicious fill:#e8710a,stroke:#b45309,color:#fff\n");
+    m.push_str("    classDef malicious fill:#d93025,stroke:#7f1d1d,color:#fff\n");
+    m.push_str("    class YOU you\n");
+    m.push_str(&format!(
+        "    class GW {}\n",
+        gw_class.map(|(c, _)| c).unwrap_or("gw")
+    ));
+    if dns_hijacked {
+        m.push_str("    class DNS malicious\n");
+    }
     m.push_str("```\n");
 
     m
+}
+
+/// Short human name for a device in prose: hostname, vendor, else IP.
+fn device_name(dev: &super::types::Device) -> String {
+    match dev.hostname.as_deref().or(dev.vendor.as_deref()) {
+        Some(name) => format!("{} at {}", name, dev.ip),
+        None => dev.ip.to_string(),
+    }
 }
 
 /// Build a Mermaid node label for a discovered device.
@@ -515,15 +916,229 @@ mod tests {
     #[test]
     fn test_format_report_is_markdown_with_verdict() {
         let report = format_report(&sample_result(SafetyStatus::MostlySafe, None));
-        assert!(report.contains("## Network Safety Check"));
-        // Verdict is scoped to the network environment (not the user's device),
-        // so an UNSAFE headline is not misread as "you have been compromised".
-        assert!(report.contains("### Network environment:"));
-        assert!(report.contains("MOSTLY SAFE"));
-        // Status table headers present.
+        // The verdict heading leads, with the network-scoped gloss under it so
+        // a bad verdict is not misread as "you have been compromised".
+        assert!(report.starts_with("## [OK~] Probably safe\n"));
+        assert!(report.contains("could not be fully verified"));
+        // The per-check table moved under Details, not dropped.
+        assert!(report.contains("### Details"));
         assert!(report.contains("| Check | Result | Details |"));
         // No legacy ASCII separator bars.
         assert!(!report.contains("===================="));
+    }
+
+    fn map_with(others: Vec<Device>) -> NetworkMap {
+        NetworkMap {
+            gateway: sample_device("192.168.1.1", ThreatLevel::Safe),
+            your_device: sample_device("192.168.1.100", ThreatLevel::Safe),
+            other_devices: others,
+            sweep_truncated: None,
+        }
+    }
+
+    fn result_with(
+        status: SafetyStatus,
+        checks: Vec<CheckResult>,
+        map: Option<NetworkMap>,
+    ) -> SafetyCheckResult {
+        let recommendations = generate_recommendations(&checks, &map);
+        SafetyCheckResult {
+            status,
+            checks,
+            network_map: map,
+            active_subnets: Vec::new(),
+            recommendations,
+            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+        }
+    }
+
+    fn check(name: &str, status: CheckStatus, details: &str, severity: Severity) -> CheckResult {
+        CheckResult {
+            name: name.to_string(),
+            status,
+            details: details.to_string(),
+            severity,
+        }
+    }
+
+    #[test]
+    fn report_has_the_five_summary_sections_in_order() {
+        // project-management#490: verdict -> diagram -> malicious? -> impact ->
+        // one recommendation, then Details.
+        let report = format_report(&result_with(
+            SafetyStatus::Caution,
+            vec![check(
+                "DNS Integrity",
+                CheckStatus::Warning,
+                "2 of 5 domains unverified",
+                Severity::Medium,
+            )],
+            Some(map_with(vec![sample_device(
+                "192.168.1.50",
+                ThreatLevel::Safe,
+            )])),
+        ));
+        let mut last = 0;
+        for section in [
+            "## [!] Use with caution",
+            "### Your network at a glance",
+            "```mermaid",
+            "### The verdict: is anything malicious?",
+            "### How this could impact you",
+            "### What we recommend",
+            "### Details",
+        ] {
+            let at = report[last..]
+                .find(section)
+                .unwrap_or_else(|| panic!("'{section}' missing or out of order in:\n{report}"));
+            last += at + section.len();
+        }
+    }
+
+    #[test]
+    fn dns_hijack_reads_as_possibly_malicious_with_high_direct_risk() {
+        let report = format_report(&result_with(
+            SafetyStatus::Unsafe,
+            vec![check(
+                "DNS Integrity",
+                CheckStatus::Failed,
+                "DNS hijacking detected",
+                Severity::Critical,
+            )],
+            Some(map_with(vec![])),
+        ));
+        assert!(report.starts_with("## [X] Not safe\n"));
+        assert!(report.contains("**Possibly - treat this network as hostile:** DNS answers on this network are being changed."));
+        assert!(report.contains("| Scenario | Risk to you |"));
+        assert!(report.contains(
+            "| Someone answers your DNS lookups with addresses of their choosing | **High direct risk** —"
+        ));
+        assert!(report.contains("You are one of the targets on that surface."));
+        // The diagram calls the hijack out on its own red node.
+        assert!(report.contains("DNS[\"DNS answers<br/>CHANGED IN TRANSIT\"]"));
+        assert!(report.contains("class DNS malicious"));
+        // One recommendation: the critical action, not the whole list.
+        let rec = section(&report, "### What we recommend");
+        assert_eq!(
+            rec.trim(),
+            "Disconnect immediately and use a trusted network or mobile hotspot."
+        );
+        // The heading copy never says the user's machine is compromised.
+        assert!(!report.contains("compromised"));
+    }
+
+    #[test]
+    fn captive_portal_is_a_weakness_not_an_attacker() {
+        let report = format_report(&result_with(
+            SafetyStatus::Caution,
+            vec![check(
+                "DNS Integrity",
+                CheckStatus::Failed,
+                "Captive portal detected: all domains resolve to 10.0.0.1",
+                Severity::High,
+            )],
+            Some(map_with(vec![])),
+        ));
+        assert!(!report.contains("Possibly"));
+        assert!(!report.contains("class DNS malicious"));
+        assert!(report.contains("**Low direct risk** — normal on hotel and airport Wi-Fi"));
+        // Only low risks: no attack-surface line.
+        assert!(!report.contains("You are one of the targets"));
+    }
+
+    #[test]
+    fn clean_network_says_what_was_seen_and_skips_the_table() {
+        let report = format_report(&result_with(
+            SafetyStatus::Safe,
+            vec![
+                check("DNS Integrity", CheckStatus::Passed, "OK", Severity::Info),
+                check(
+                    "Router Threat Intelligence",
+                    CheckStatus::Passed,
+                    "Clean",
+                    Severity::Info,
+                ),
+            ],
+            Some(map_with(vec![sample_device(
+                "192.168.1.50",
+                ThreatLevel::Safe,
+            )])),
+        ));
+        assert!(report.starts_with("## [OK] Looks safe\n"));
+        assert!(report.contains(
+            "**We saw no signs of an attacker:** DNS answers matched what we expected and the gateway is not on a threat list."
+        ));
+        assert!(!report.contains("| Scenario | Risk to you |"));
+        assert!(report.contains("Nothing we checked gives someone an obvious way"));
+    }
+
+    #[test]
+    fn pending_reputation_is_not_claimed_clean() {
+        let report = format_report(&result_with(
+            SafetyStatus::MostlySafe,
+            vec![
+                check("DNS Integrity", CheckStatus::Passed, "OK", Severity::Info),
+                check(
+                    "Router Threat Intelligence",
+                    CheckStatus::NeedsEnrichment,
+                    "public gateway 203.0.113.9 pending reputation",
+                    Severity::Low,
+                ),
+            ],
+            Some(map_with(vec![])),
+        ));
+        let verdict = section(&report, "### The verdict: is anything malicious?");
+        assert!(verdict.contains("DNS answers matched what we expected."));
+        assert!(!verdict.contains("not on a threat list"));
+        assert!(
+            verdict.contains("Not fully confirmed: the gateway's reputation is still unchecked.")
+        );
+    }
+
+    #[test]
+    fn flagged_gateway_and_device_are_highlighted_in_the_diagram() {
+        let mut bad = sample_device("192.168.1.66", ThreatLevel::Malicious);
+        bad.vendor = Some("Acme".into());
+        let report = format_report(&result_with(
+            SafetyStatus::Unsafe,
+            vec![check(
+                "Router Threat Intelligence",
+                CheckStatus::Failed,
+                "flagged",
+                Severity::Critical,
+            )],
+            Some(map_with(vec![
+                sample_device("192.168.1.50", ThreatLevel::Safe),
+                bad,
+            ])),
+        ));
+        assert!(report.contains("GW[\"Gateway / Router<br/>192.168.1.1<br/>FLAGGED MALICIOUS\"]"));
+        assert!(report.contains("class GW malicious"));
+        // Flagged devices are drawn first so the node cap never hides them.
+        assert!(report.contains("D0[\"Acme<br/>192.168.1.66<br/>FLAGGED MALICIOUS\"]"));
+        assert!(report.contains("class D0 malicious"));
+        assert!(report.contains("Acme at 192.168.1.66 is flagged as malicious"));
+    }
+
+    #[test]
+    fn impact_table_escapes_cells() {
+        let mut odd = sample_device("192.168.1.70", ThreatLevel::Suspicious);
+        odd.hostname = Some("<pwn>|box".into());
+        let report = format_report(&result_with(
+            SafetyStatus::Caution,
+            vec![],
+            Some(map_with(vec![odd])),
+        ));
+        assert!(report.contains("&lt;pwn&gt;/box at 192.168.1.70"));
+        assert!(!report.contains("<pwn>"));
+    }
+
+    /// The text between `heading` and the next `###` heading.
+    fn section<'a>(report: &'a str, heading: &str) -> &'a str {
+        let start = report.find(heading).expect("heading present") + heading.len();
+        let rest = &report[start..];
+        let end = rest.find("\n###").unwrap_or(rest.len());
+        &rest[..end]
     }
 
     #[test]
@@ -543,8 +1158,9 @@ mod tests {
         // Your device and gateway nodes labeled with their IPs.
         assert!(report.contains("192.168.1.100"));
         assert!(report.contains("192.168.1.1"));
-        // The malicious host gets the malicious class.
-        assert!(report.contains("class D1 malicious"));
+        // The malicious host is drawn first and gets the malicious class.
+        assert!(report.contains("class D0 malicious"));
+        assert!(report.contains("class GW gw"));
     }
 
     #[test]

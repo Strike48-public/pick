@@ -48,6 +48,8 @@ impl PentestTool for SafetyCheckTool {
         // Create structured output for AI consumption
         let structured_data = json!({
             "status": format!("{}", result.status),
+            // The refined summary (project-management#490), ready to repeat.
+            "summary": crate::safety_check::summary_json(&result),
             "timestamp": result.timestamp.to_rfc3339(),
             "checks": result.checks.iter().map(|c| json!({
                 "name": c.name,

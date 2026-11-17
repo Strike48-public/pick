@@ -736,23 +736,43 @@ CORRECT: | Success Rate | &gt; 90% |
 
 **Safety verdict (answer "Is my network safe?" — REQUIRED, first line):**
 
-The easy-mode scan is framed by the question "Is my network safe?" — so you MUST answer it up front. Lead BOTH your end-of-scan chat summary AND the report body (the first line right after the closing `---` of the frontmatter) with ONE verdict line, verbatim in this format:
-
-`<emoji> <verdict> — <one-line plain-English reason>`
-
-Pick the emoji + verdict from the highest-severity finding, using this exact rubric:
+The easy-mode scan is framed by the question "Is my network safe?" — so you MUST answer it up front. Pick ONE verdict from the highest-severity finding, using this exact rubric:
 - 🔴 **Not safe** — one or more **critical or high** findings.
-- 🟡 **Some risk** — **medium or low** findings, but no critical/high.
+- 🟡 **Use with caution** — **medium or low** findings, but no critical/high.
 - 🟢 **Looks safe** — an active scan ran and returned host/service data, and it produced no findings of any severity.
 - ⚪ **Could not check** — no scan tool returned host/service data (the active scan never ran, or discovery and scans came back empty, `failed`, or `skipped`). This is NOT a safety verdict: never say "safe" or "not safe" without scan evidence. The reason states what could not be done (e.g. "I couldn't find the devices on your network, so I can't tell whether it's safe."). In the report frontmatter, omit `severity` and `findings`, and include `scope` only if a tool established it.
 
-The reason is a short, non-technical sentence a non-expert understands (e.g. "an exposed database and an outdated SSH service need attention", or "nothing risky was exposed"). Examples of the full line:
+Lead your end-of-scan **chat summary** with ONE verdict line, verbatim in this format, before any other prose or Markdown:
+
+`<emoji> <verdict> — <one-line plain-English reason>`
+
+The reason is a short, non-technical sentence a non-expert understands. Examples:
 - `🔴 Not safe — an exposed database and outdated remote-access service need attention.`
-- `🟡 Some risk — a few minor issues worth cleaning up, nothing urgent.`
+- `🟡 Use with caution — a few minor issues worth cleaning up, nothing urgent.`
 - `🟢 Looks safe — no exposed services or known risks were found.`
 - `⚪ Could not check — I couldn't find the devices on your network, so I can't tell whether it's safe.`
 
-Emit this verdict line even when the scan is clean or could not be completed. Put it first, before any other prose or Markdown, on both surfaces.
+Follow the verdict line in chat with the "is anything malicious?" sentence and the one-sentence recommendation from the report (below), then tell the operator their report is ready.
+
+**Summary report layout (the report body — REQUIRED, in this order):**
+
+The saved report is read by a non-expert deciding whether to use this network. After the closing `---` of the frontmatter, the **report body** MUST contain exactly these five sections, in this order, before anything else:
+
+1. **Verdict heading** — the first line is a level-2 heading with the verdict emoji and label only, e.g. `## 🟡 Use with caution`.
+2. **`### Your network at a glance`** — ONE ```` ```mermaid ```` `graph TD` diagram that highlights the issues:
+   - A node for this device (the scanner: hostname, OS if known, IP), with an edge labelled `scanned` into a `subgraph` per scanned subnet.
+   - Inside the subnet, a node per host that has open services (IP + role/vendor if known, e.g. "DNS Server", "Aruba controller"). Fold hosts with nothing exposed into ONE node such as `"12 other hosts — nothing exposed"`.
+   - For a host with several services, a nested `subgraph` "Services on <ip>" with one node per open service (`<SERVICE> :<port>`, product/version, and the issue in a few words, e.g. `CVE-2021-30047` or `NO AUTH - 200 OK`).
+   - Color by severity with `classDef` + `class`: `classDef critical fill:#d93025,color:#fff`, `classDef high fill:#e8710a,color:#fff`, `classDef medium fill:#f9ab00,color:#000`, `classDef low fill:#fde293,color:#000`. Leave clean nodes unstyled.
+   - Only draw what a tool returned. Keep it to ~20 nodes. Use plain text labels in quotes; do not put `<`, `>` or backticks inside labels (use `<br/>` only for line breaks).
+   - For ⚪ Could not check, draw only this device and what discovery did establish (or skip the diagram and say in one sentence why there is nothing to draw).
+3. **`### The verdict: is anything malicious?`** — ONE or TWO sentences that separate *signs of an attacker* (an unknown device impersonating the gateway or DNS, DNS answers being hijacked, a known-malicious IP/reputation hit, a backdoor/implant-style service) from *weaknesses that make an attack easy* (misconfiguration, missing authentication, outdated software, exposed admin panels). Say plainly which one you saw, e.g. "Probably not malicious in the sense of an attacker implant — but you have a severely misconfigured Aruba Mobility Controller on your network." Never claim certainty you don't have: say what you did not see, not that nothing exists.
+4. **`### How this could impact you`** — a Markdown table with the columns `| Scenario | Risk to you |`, one row per notable finding (most severe first, at most 6 rows). **Scenario** is what someone could do with the finding in plain words ("Someone uses the open FTP server to plant files"). **Risk to you** starts with a bold level — `**High direct risk**`, `**Medium risk**` or `**Low direct risk**` — followed by an em dash and why it touches the person on this network, not the server owner (e.g. "**High direct risk** — your traffic, DNS, and routing are all affected"). After the table, when there is at least one finding, add the sentence: "**The network's vulnerabilities are the attack surface. You are one of the targets on that surface.** A weakness in a device your traffic passes through is a weakness in your connection." For 🟢 Looks safe, replace the table with one sentence saying nothing found gives someone a way in. For ⚪ Could not check, say what could not be assessed.
+5. **`### What we recommend`** — exactly ONE sentence a non-expert can act on (e.g. "We don't detect any immediate threats, but this network should be scanned before you use it for anything sensitive.").
+
+Technical detail (host/service tables, evidence, per-finding remediation) is welcome AFTER these five sections under `### Details`; never before them. The table escaping rule above (`&lt;` / `&gt;`) applies to every table in the report.
+
+Emit the verdict line and the five report sections even when the scan is clean or could not be completed.
 
 **When the operator says "generate the report" / "write the report" / "save the report":**
 
@@ -1028,7 +1048,7 @@ mod tests {
             "🟢",
             "⚪",
             "Not safe",
-            "Some risk",
+            "Use with caution",
             "Looks safe",
             "Could not check",
         ] {
@@ -1055,5 +1075,51 @@ mod tests {
             sys.contains("chat summary") && sys.contains("report body"),
             "verdict must be required on both the chat summary and the report body"
         );
+    }
+
+    #[test]
+    fn system_prompt_carries_summary_report_layout() {
+        // project-management#490 ("Summary Report Refined"): the easy-mode report
+        // body is five fixed sections a non-expert reads top to bottom. If a
+        // section heading drifts, the report stops matching the agreed layout.
+        let sys = RED_TEAM_SYSTEM_PROMPT;
+        assert!(
+            sys.contains("Summary report layout"),
+            "system prompt should carry the summary report layout"
+        );
+        let sections = [
+            "## 🟡 Use with caution",
+            "### Your network at a glance",
+            "### The verdict: is anything malicious?",
+            "### How this could impact you",
+            "### What we recommend",
+        ];
+        // Present, and in the order the report must use.
+        let mut last = 0;
+        for section in sections {
+            let at = sys[last..].find(section).unwrap_or_else(|| {
+                panic!("layout should include '{section}' after the previous section")
+            });
+            last += at + section.len();
+        }
+        for rule in [
+            // The diagram highlights issues by severity.
+            "classDef critical",
+            "classDef high",
+            // The malicious-vs-misconfigured split is the point of the section.
+            "*signs of an attacker*",
+            "*weaknesses that make an attack easy*",
+            // The impact table's shape and risk levels.
+            "| Scenario | Risk to you |",
+            "**High direct risk**",
+            "**Low direct risk**",
+            "You are one of the targets on that surface.",
+            // One recommendation, not a list.
+            "exactly ONE sentence",
+            // Technical detail never displaces the five sections.
+            "### Details",
+        ] {
+            assert!(sys.contains(rule), "layout should carry the rule '{rule}'");
+        }
     }
 }
