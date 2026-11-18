@@ -195,12 +195,16 @@ pub fn format_report(result: &super::types::SafetyCheckResult) -> String {
     output.push_str(status_gloss(result.status));
     output.push_str("\n\n");
 
-    // 2. Network at a glance.
-    if let Some(map) = &result.network_map {
-        output.push_str("### Your network at a glance\n\n");
-        output.push_str(&render_network_mermaid(map, &result.checks));
-        output.push('\n');
+    // 2. Network at a glance. Always rendered, however simplistic: when the
+    // sweep produced no topology we still draw the one thing we always know -
+    // this device on its network - so the report's shape never depends on what
+    // the scan happened to find (project-management#490).
+    output.push_str("### Your network at a glance\n\n");
+    match &result.network_map {
+        Some(map) => output.push_str(&render_network_mermaid(map, &result.checks)),
+        None => output.push_str(&render_unmapped_mermaid(&result.active_subnets)),
     }
+    output.push('\n');
 
     // 3. Is anything malicious?
     output.push_str("### The verdict: is anything malicious?\n\n");
@@ -783,6 +787,38 @@ fn render_network_mermaid(map: &super::types::NetworkMap, checks: &[CheckResult]
     m
 }
 
+/// "Network at a glance" for a scan that produced no topology map.
+///
+/// The report contract (project-management#490) wants the diagram present
+/// "regardless of how simplistic it is", so a scan that mapped nothing still
+/// gets a diagram rather than a missing section: this device, and the subnets
+/// it sits on from scan-free interface enumeration when those are known.
+/// Styling matches `render_network_mermaid` so the two read as one family.
+fn render_unmapped_mermaid(active_subnets: &[String]) -> String {
+    let mut m = String::from("```mermaid\ngraph TD\n");
+    m.push_str("    YOU[\"Your device\"]\n");
+
+    // Subnets are derived locally from interface netmasks, but they land in a
+    // node label as strings, so strip what would break the label or inject
+    // markup - the same treatment `device_label` gives a hostname.
+    let known = match active_subnets {
+        [] => String::new(),
+        subnets => format!("<br/>{}", subnets.join(", ").replace(['"', '<', '>'], "")),
+    };
+    m.push_str(&format!(
+        "    NET[\"This network{known}<br/>NOT MAPPED\"]\n"
+    ));
+    m.push_str("    YOU --> NET\n");
+
+    m.push_str("    classDef you fill:#1e40af,stroke:#1e3a8a,color:#fff\n");
+    m.push_str("    classDef gw fill:#374151,stroke:#1f2937,color:#fff\n");
+    m.push_str("    class YOU you\n");
+    m.push_str("    class NET gw\n");
+    m.push_str("```\n");
+
+    m
+}
+
 /// Short human name for a device in prose: hostname, vendor, else IP.
 ///
 /// Hostnames come off the network, so angle brackets are escaped here - the
@@ -1231,6 +1267,291 @@ mod tests {
         let rest = &report[start..];
         let end = rest.find("\n###").unwrap_or(rest.len());
         &rest[..end]
+    }
+
+    /// Rough sentence count: a terminal `.`, `!` or `?` - allowing a closing
+    /// bracket or quote to ride along, as in `your own device.)` - followed by
+    /// whitespace or the end of the text, plus one for a trailing fragment
+    /// that never got punctuated. Deliberately crude: it only has to catch a
+    /// summary that grew a third sentence.
+    fn sentences(text: &str) -> usize {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return 0;
+        }
+        let chars: Vec<char> = trimmed.chars().collect();
+        let mut count = 0;
+        let mut i = 0;
+        let mut after_last_end = 0;
+        while i < chars.len() {
+            if matches!(chars[i], '.' | '!' | '?') {
+                let mut j = i + 1;
+                while j < chars.len() && matches!(chars[j], ')' | '"' | '\'' | ']') {
+                    j += 1;
+                }
+                if j >= chars.len() || chars[j].is_whitespace() {
+                    count += 1;
+                    i = j;
+                    after_last_end = j;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        if chars[after_last_end..].iter().any(|c| c.is_alphanumeric()) {
+            count += 1;
+        }
+        count
+    }
+
+    fn result_on_subnets(
+        status: SafetyStatus,
+        checks: Vec<CheckResult>,
+        map: Option<NetworkMap>,
+        subnets: &[&str],
+    ) -> SafetyCheckResult {
+        let mut result = result_with(status, checks, map);
+        result.active_subnets = subnets.iter().map(|s| s.to_string()).collect();
+        result
+    }
+
+    /// The report contract (project-management#490): every report, whatever the
+    /// scan found, carries the same parts in the same order - RYG answer,
+    /// diagram, verdict, impact, recommendation, expandable details - and the
+    /// three prose summaries stay at two sentences or fewer.
+    ///
+    /// This test *is* the "do we follow it reliably" guarantee, so it runs over
+    /// the shapes a scan can really return - no topology at all, nothing found,
+    /// a truncated sweep, an active compromise - rather than one happy-path
+    /// fixture. Note it asserts the impact *section*, not a table: the table is
+    /// still dropped when nothing is flagged, which is an open question for Jon
+    /// rather than something this test should quietly bless either way.
+    #[test]
+    fn every_report_follows_the_contract_whatever_the_scan_found() {
+        let dns_ok = check("DNS Integrity", CheckStatus::Passed, "OK", Severity::Info);
+        let gw_ok = check(
+            "Router Threat Intelligence",
+            CheckStatus::Passed,
+            "Clean",
+            Severity::Info,
+        );
+        let pending = check(
+            "Router Threat Intelligence",
+            CheckStatus::NeedsEnrichment,
+            "pending",
+            Severity::Low,
+        );
+
+        let mut busy = map_with(
+            (0..25)
+                .map(|i| sample_device(&format!("192.168.1.{}", 10 + i), ThreatLevel::Safe))
+                .collect(),
+        );
+        busy.sweep_truncated = Some("budget".into());
+
+        let cases: Vec<(&str, SafetyCheckResult)> = vec![
+            (
+                "nothing mapped, nothing checked",
+                result_with(SafetyStatus::Safe, vec![], None),
+            ),
+            (
+                "nothing mapped, but interface subnets are known",
+                result_on_subnets(
+                    SafetyStatus::Caution,
+                    vec![dns_ok.clone()],
+                    None,
+                    &["10.0.8.0/22", "10.0.40.0/24"],
+                ),
+            ),
+            (
+                "mapped network with nothing else on it",
+                result_with(
+                    SafetyStatus::Safe,
+                    vec![dns_ok.clone()],
+                    Some(map_with(vec![])),
+                ),
+            ),
+            (
+                "clean network",
+                result_with(
+                    SafetyStatus::Safe,
+                    vec![dns_ok.clone(), gw_ok],
+                    Some(map_with(vec![sample_device(
+                        "192.168.1.50",
+                        ThreatLevel::Safe,
+                    )])),
+                ),
+            ),
+            (
+                "busy shared network, sweep truncated, reputation pending",
+                result_with(SafetyStatus::MostlySafe, vec![dns_ok, pending], Some(busy)),
+            ),
+            (
+                "active compromise: hijacked DNS and a flagged gateway",
+                result_with(
+                    SafetyStatus::Unsafe,
+                    vec![
+                        check(
+                            "DNS Integrity",
+                            CheckStatus::Failed,
+                            "answers rewritten in transit",
+                            Severity::Critical,
+                        ),
+                        check(
+                            "Router Threat Intelligence",
+                            CheckStatus::Failed,
+                            "listed on 3 feeds",
+                            Severity::Critical,
+                        ),
+                    ],
+                    Some(map_with(vec![
+                        sample_device("192.168.1.66", ThreatLevel::Malicious),
+                        sample_device("192.168.1.77", ThreatLevel::Suspicious),
+                    ])),
+                ),
+            ),
+        ];
+
+        for (name, result) in &cases {
+            let report = format_report(result);
+
+            // The RYG answer is the leading `## <indicator> <label>` heading,
+            // so it is matched by shape rather than by one status's wording.
+            assert!(
+                report.starts_with("## "),
+                "{name}: report does not open with the RYG answer:\n{report}"
+            );
+
+            let mut last = 0;
+            for part in [
+                "### Your network at a glance",
+                "```mermaid",
+                "### The verdict: is anything malicious?",
+                "### How this could impact you",
+                "### What we recommend",
+                "### Details",
+            ] {
+                let at = report[last..].find(part).unwrap_or_else(|| {
+                    panic!("{name}: '{part}' missing or out of order in:\n{report}")
+                });
+                last += at + part.len();
+            }
+
+            let answer = report[..report.find("\n###").expect("a section follows the answer")]
+                .split_once('\n')
+                .map(|(_, gloss)| gloss)
+                .unwrap_or_default();
+            for (part, text) in [
+                ("RYG answer", answer),
+                (
+                    "verdict",
+                    section(&report, "### The verdict: is anything malicious?"),
+                ),
+                ("recommendation", section(&report, "### What we recommend")),
+            ] {
+                let found = sentences(text);
+                assert!(
+                    found <= 2,
+                    "{name}: {part} ran to {found} sentences, the contract caps it at 2:\n{text}"
+                );
+            }
+        }
+    }
+
+    /// The recommendation strings are authored right here in Rust, not written
+    /// by a model, so the contract's two-sentence cap is enforced by failing
+    /// this test when someone writes a third one - never by truncating at the
+    /// renderer, which would hand the reader half an instruction.
+    #[test]
+    fn every_authored_recommendation_is_at_most_two_sentences() {
+        let names = ["DNS Integrity", "Router Threat Intelligence"];
+        let statuses = [
+            CheckStatus::Passed,
+            CheckStatus::Warning,
+            CheckStatus::Failed,
+            CheckStatus::Unknown,
+            CheckStatus::NeedsEnrichment,
+        ];
+        let details = [
+            ("Captive portal detected", Severity::High),
+            ("answers rewritten in transit", Severity::Critical),
+            ("listed on 3 feeds", Severity::Critical),
+            ("elevated threat score", Severity::Medium),
+            ("pending", Severity::Low),
+        ];
+        let busy = map_with(
+            (0..25)
+                .map(|i| sample_device(&format!("192.168.1.{}", 10 + i), ThreatLevel::Safe))
+                .collect(),
+        );
+
+        let mut checked = 0;
+        for name in names {
+            for status in statuses {
+                for (detail, severity) in details {
+                    let checks = vec![check(name, status, detail, severity)];
+                    for map in [None, Some(busy.clone())] {
+                        for rec in generate_recommendations(&checks, &map) {
+                            let fields = [
+                                ("description", Some(rec.description.clone())),
+                                ("action", rec.action.clone()),
+                            ];
+                            for (field, text) in fields {
+                                let Some(text) = text else { continue };
+                                checked += 1;
+                                let found = sentences(&text);
+                                assert!(
+                                    found <= 2,
+                                    "recommendation '{}' {field} ran to {found} sentences, \
+                                     the contract caps it at 2:\n{text}",
+                                    rec.title
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            checked > 0,
+            "the sweep produced no recommendations to check"
+        );
+    }
+
+    /// A scan with no topology still gets a diagram, however simplistic - the
+    /// contract asks for it "regardless of how simplistic it is".
+    #[test]
+    fn unmapped_network_still_renders_a_diagram() {
+        let report = format_report(&result_on_subnets(
+            SafetyStatus::Caution,
+            vec![check(
+                "DNS Integrity",
+                CheckStatus::Passed,
+                "OK",
+                Severity::Info,
+            )],
+            None,
+            &["10.0.8.0/22"],
+        ));
+        let glance = section(&report, "### Your network at a glance");
+        assert!(glance.contains("```mermaid"), "{glance}");
+        assert!(glance.contains("YOU[\"Your device\"]"), "{glance}");
+        // The subnet is the one real fact available without a sweep.
+        assert!(glance.contains("10.0.8.0/22"), "{glance}");
+        assert!(glance.contains("NOT MAPPED"), "{glance}");
+    }
+
+    /// With no sweep and no interface subnets there is nothing to name, but the
+    /// section and the diagram still stand.
+    #[test]
+    fn diagram_survives_knowing_nothing_about_the_network() {
+        let report = format_report(&result_with(SafetyStatus::Safe, vec![], None));
+        let glance = section(&report, "### Your network at a glance");
+        assert!(glance.contains("```mermaid"), "{glance}");
+        assert!(
+            glance.contains("NET[\"This network<br/>NOT MAPPED\"]"),
+            "{glance}"
+        );
     }
 
     #[test]
