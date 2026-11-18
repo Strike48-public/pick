@@ -70,7 +70,10 @@ pub fn subnet_cidr_v4(addr: Ipv4Addr, prefix_len: u8) -> String {
 /// Returns `None` for a non-IPv4 address, a missing prefix (unknown netmask), or
 /// a malformed address - never a guessed default. A known prefix is required
 /// because the whole point is to stop inventing subnet sizes.
-fn subnet_for_ipv4(ip: &str, prefix_len: Option<u8>) -> Option<String> {
+///
+/// `pub(crate)` so container-network classification (pick#510) reuses the exact
+/// same derivation the scan-target path sees.
+pub(crate) fn subnet_for_ipv4(ip: &str, prefix_len: Option<u8>) -> Option<String> {
     let bare = ip.split('/').next().unwrap_or(ip);
     let prefix = prefix_len?;
     match bare.parse::<IpAddr>() {
@@ -137,10 +140,23 @@ pub fn subnets_from_interfaces(
 /// whether an empty/failed context is fatal (e.g. resolving `auto` with no
 /// known subnets) or merely degraded.
 pub async fn network_context() -> pentest_core::error::Result<Vec<Subnet>> {
-    let platform = get_platform();
-    let interfaces = platform.get_network_interfaces().await?;
-    let primary = default_net::get_default_interface().ok().map(|i| i.name);
+    let (interfaces, primary) = interface_snapshot().await?;
     Ok(subnets_from_interfaces(&interfaces, primary.as_deref()))
+}
+
+/// One interface enumeration plus default-route detection, shared by every
+/// network-aware feature (subnet context, container-network classification).
+/// A single helper keeps the two callers from drifting apart.
+///
+/// # Errors
+///
+/// Propagates a platform interface-enumeration failure; callers decide
+/// whether that is fatal or merely degraded.
+pub(crate) async fn interface_snapshot(
+) -> pentest_core::error::Result<(Vec<NetworkInterface>, Option<String>)> {
+    let interfaces = get_platform().get_network_interfaces().await?;
+    let primary = default_net::get_default_interface().ok().map(|i| i.name);
+    Ok((interfaces, primary))
 }
 
 #[cfg(test)]

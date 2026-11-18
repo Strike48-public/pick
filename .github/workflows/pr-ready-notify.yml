@@ -1,0 +1,32 @@
+name: PR ready for review
+on:
+  pull_request:
+    types: [ready_for_review]
+
+# Notification-only workflow: never checks out PR code, never executes anything
+# from the PR, and only formats event metadata for a Slack message. Uses
+# pull_request (not pull_request_target) on purpose: fork PRs carry no secrets
+# and therefore do not notify, which is the desired scope (internal PRs).
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Slack
+        env:
+          WEBHOOK: ${{ secrets.SLACK_READY_WEBHOOK_URL }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "::notice::SLACK_READY_WEBHOOK_URL not set; skipping notification"
+            exit 0
+          fi
+          jq -n \
+            --arg text "PR ready for review: ${PR_REPO}#${PR_NUMBER} ${PR_TITLE} (${PR_AUTHOR}) ${PR_URL}" \
+            '{text: $text, unfurl_links: false}' \
+          | curl -fsS -X POST -H 'Content-Type: application/json' -d @- "$WEBHOOK" >/dev/null

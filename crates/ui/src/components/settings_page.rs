@@ -102,6 +102,9 @@ pub fn SettingsPage(
     let mut export_loading = use_signal(|| false);
     let mut export_result = use_signal(|| None::<Result<String, String>>);
 
+    // Copy-diagnostics feedback (pick#476)
+    let mut diagnostics_copied = use_signal(|| None::<DiagnosticsCopy>);
+
     // Tools catalog state
     let mut catalog_items = use_signal(|| None::<Vec<pentest_tools::catalog::CatalogItem>>);
     let mut catalog_loading = use_signal(|| false);
@@ -1927,6 +1930,35 @@ pub fn SettingsPage(
                             "Pick writes one JSON log file per day and keeps up to {log_files_kept}. When reporting a problem, attach the file for the day it happened."
                         }
                         code { class: "text-dim-xs", "{log_dir}" }
+                        div { class: "export-format-group",
+                            button {
+                                class: "export-btn",
+                                onclick: move |_| {
+                                    spawn(async move {
+                                        let outcome = copy_diagnostics().await;
+                                        diagnostics_copied.set(Some(outcome));
+                                    });
+                                },
+                                "Copy diagnostics"
+                            }
+                        }
+                        match diagnostics_copied() {
+                            Some(DiagnosticsCopy::Copied { lines }) => rsx! {
+                                div { class: "seed-result-success",
+                                    "✓ Diagnostics copied ({lines} log lines). Paste them into your support ticket."
+                                }
+                            },
+                            Some(DiagnosticsCopy::NotCopied { text }) => rsx! {
+                                div { class: "seed-result-error",
+                                    "Could not copy to the clipboard here. Select the text below and copy it, or run `pentest-agent diagnose` on this machine."
+                                }
+                                textarea { class: "text-dim-xs", readonly: true, rows: "8", "{text}" }
+                            },
+                            None => rsx! {},
+                        }
+                        div { class: "export-info text-dim-xs",
+                            "Diagnostics include version, OS, sandbox state, settings and recent log lines. Tokens, keys and passwords are removed on a best-effort basis; log lines still show targets and tool output, so review before sharing."
+                        }
                         if log_sink_failed {
                             div { class: "seed-result-error",
                                 "Writing to the log file failed this session (disk full or no permission), so it may be missing recent events."
@@ -1939,6 +1971,47 @@ pub fn SettingsPage(
             }
         }
     }
+}
+
+/// Result of the Settings "Copy diagnostics" action.
+#[derive(Clone, PartialEq)]
+enum DiagnosticsCopy {
+    /// The bundle is on the clipboard.
+    Copied { lines: usize },
+    /// The copy could not be confirmed; the text is shown for manual copy.
+    NotCopied { text: String },
+}
+
+/// Build the bundle off the UI thread and copy it.
+async fn copy_diagnostics() -> DiagnosticsCopy {
+    // The live session token is not in settings.json; pass it so an opaque
+    // (non-JWT) token is still replaced by value in the log tail.
+    let session_token = crate::session::get_auth_token();
+    let built = tokio::task::spawn_blocking(move || diagnostics_text(session_token)).await;
+    let (text, lines) = match built {
+        Ok(built) => built,
+        Err(e) => (format!("<could not build diagnostics: {e}>"), 0),
+    };
+    if crate::clipboard::copy_to_clipboard(&text).await {
+        DiagnosticsCopy::Copied { lines }
+    } else {
+        DiagnosticsCopy::NotCopied { text }
+    }
+}
+
+/// The diagnostics bundle as text, built from the same sources as
+/// `pentest-agent diagnose`, plus the number of log lines it carries.
+fn diagnostics_text(session_token: String) -> (String, usize) {
+    use pentest_core::diagnostics::{collect, read_settings_readonly, CollectInput};
+    let bundle = collect(CollectInput {
+        platform: pentest_platform::diagnostic_facts(),
+        settings: read_settings_readonly(),
+        log_dir: pentest_core::logging::log_dir(),
+        tail_lines: pentest_core::diagnostics::DEFAULT_TAIL_LINES,
+        extra_secrets: vec![session_token],
+    });
+    let lines = bundle.logs.tail.len();
+    (bundle.to_text(), lines)
 }
 
 /// Turn elapsed and estimated install seconds into a progress fraction

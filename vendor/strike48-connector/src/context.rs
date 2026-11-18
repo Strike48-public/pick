@@ -79,6 +79,19 @@ pub mod keys {
     /// decoded form at `params["metadata"]["agent_context"]`, which Matrix
     /// populates as the same data with values pre-decoded as JSON.
     pub const AGENT_CONTEXT: &str = "agent_context";
+
+    /// Server-imposed deadline for the dispatched job, in milliseconds.
+    ///
+    /// Value is a decimal string (e.g. `"540000"`). The SDK enforces it by
+    /// wrapping the connector's execution future in a timeout: when the
+    /// deadline passes, the execution future is dropped and the reply is
+    /// `success: false` with a deadline-exceeded error. Absent (or
+    /// unparsable) → no deadline is applied, matching pre-deadline behavior.
+    ///
+    /// This is an additive convention carried in the existing `context` map —
+    /// deliberately NOT a proto field change. Old SDKs simply ignore the key;
+    /// the Matrix-side dispatch timeout remains the backstop.
+    pub const MATRIX_DEADLINE_MS: &str = "matrix.deadline_ms";
 }
 
 #[cfg(test)]
@@ -96,6 +109,7 @@ mod tests {
         assert_eq!(keys::SUBJECT, "user_id");
         assert_eq!(keys::AGENT_EXECUTION, "agent_execution");
         assert_eq!(keys::AGENT_CONTEXT, "agent_context");
+        assert_eq!(keys::MATRIX_DEADLINE_MS, "matrix.deadline_ms");
     }
 
     #[test]
@@ -106,6 +120,7 @@ mod tests {
             keys::SUBJECT,
             keys::AGENT_EXECUTION,
             keys::AGENT_CONTEXT,
+            keys::MATRIX_DEADLINE_MS,
         ];
         for (i, a) in all.iter().enumerate() {
             for b in &all[i + 1..] {

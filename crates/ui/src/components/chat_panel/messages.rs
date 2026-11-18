@@ -6,6 +6,7 @@
 use dioxus::prelude::*;
 use pentest_core::matrix::{AgentInfo, ChatMessage, ConversationInfo};
 
+use super::super::scan_progress::{derive_scan_progress, is_scan_conversation, ScanProgressStrip};
 use super::agent_selector::SuggestedActions;
 use super::next_steps::NextStepsActions;
 use super::render::render_message;
@@ -23,12 +24,19 @@ pub struct MessageListProps {
     pub agent_thinking: Signal<bool>,
     /// Status text shown in the thinking indicator.
     pub agent_status_text: Signal<String>,
+    /// True when the last turn was stopped by the user (agent status
+    /// `CANCELLED`); renders a "Stopped" marker once the turn is over.
+    pub turn_stopped: Signal<bool>,
     /// Currently selected agent (used for the thinking bubble label and empty state).
     pub selected_agent: Signal<Option<AgentInfo>>,
     /// Callback to send a message (used by suggested actions).
     pub on_send: EventHandler<String>,
+    /// ID of the conversation the messages belong to (None before one is
+    /// selected) — keys the scan strip's wall-clock anchors.
+    pub conversation_id: Signal<Option<String>>,
     /// Recent conversations shown in the empty-chat state.
     pub conversation_list: Signal<Vec<ConversationInfo>>,
+
     /// Called when the user clicks a recent conversation in the empty state.
     pub on_select_conversation: EventHandler<String>,
     /// Easy Mode: show lay-friendly empty-state prompts instead of the expert
@@ -60,6 +68,7 @@ pub fn MessageList(props: MessageListProps) -> Element {
     let mut user_scrolled_up = props.user_scrolled_up;
     let agent_thinking = props.agent_thinking;
     let agent_status_text = props.agent_status_text;
+    let turn_stopped = props.turn_stopped;
     let selected_agent = props.selected_agent;
 
     // Auto-scroll and chart post-process when new messages arrive or agent is thinking.
@@ -97,6 +106,22 @@ pub fn MessageList(props: MessageListProps) -> Element {
 
     rsx! {
         div { class: "chat-messages-wrapper",
+            // Scan-in-progress strip: identifiable phases + expected duration +
+            // live elapsed timer above the running log. Shown only while a scan
+            // conversation is actively running (agent working or a scan tool in
+            // flight); the running log below is untouched and keeps streaming.
+            if is_scan_conversation(&messages.read())
+                && matches!(
+                    derive_scan_progress(&messages.read(), agent_thinking()),
+                    Some(ref p) if p.is_in_progress(agent_thinking())
+                )
+            {
+                ScanProgressStrip {
+                    messages: messages,
+                    agent_thinking: agent_thinking,
+                    conversation_id: props.conversation_id,
+                }
+            }
             div {
                 class: "chat-messages",
                 onscroll: move |_| {
@@ -171,6 +196,15 @@ pub fn MessageList(props: MessageListProps) -> Element {
                     NextStepsActions {
                         messages: messages,
                         on_send: props.on_send,
+                    }
+                }
+
+                // "Stopped" marker: the turn ended because the user stopped it.
+                // Distinct from a normal completion (no marker) and from an
+                // error (the chat-notice banner).
+                if turn_stopped() && !agent_thinking() && !messages.read().is_empty() {
+                    div { class: "chat-bubble chat-bubble-agent chat-stopped",
+                        span { class: "chat-status-label", "Stopped" }
                     }
                 }
 

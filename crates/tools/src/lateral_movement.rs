@@ -60,6 +60,7 @@ impl LateralMovementTool {
                 &format!("{}@{}", username, target),
                 "whoami",
             ])
+            .kill_on_drop(true)
             .output()
             .await
             .map_err(|e| Error::ToolExecution(format!("SSH command failed: {}", e)))?;
@@ -107,6 +108,7 @@ impl LateralMovementTool {
                 &format!("{}@{}", username, target),
                 "whoami",
             ])
+            .kill_on_drop(true)
             .output()
             .await
             .map_err(|e| Error::ToolExecution(format!("sshpass command failed: {}", e)))?;
@@ -165,6 +167,7 @@ impl LateralMovementTool {
 
         let output = Command::new("ssh")
             .args(&args)
+            .kill_on_drop(true)
             .output()
             .await
             .map_err(|e| Error::ToolExecution(format!("SSH tunnel failed: {}", e)))?;
@@ -206,6 +209,7 @@ impl LateralMovementTool {
                 "/c",
                 "whoami",
             ])
+            .kill_on_drop(true)
             .output()
             .await;
 

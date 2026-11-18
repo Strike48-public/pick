@@ -17,12 +17,18 @@ pub enum AgentStatus {
     AwaitingClientTools,
     StreamEnd,
     Error,
+    /// The user stopped the turn. Matrix publishes `CANCELLED` and then `IDLE`
+    /// right after it, so this is terminal (the turn is over).
+    Cancelled,
     Unknown,
 }
 
 impl AgentStatus {
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Idle | Self::StreamEnd | Self::Error)
+        matches!(
+            self,
+            Self::Idle | Self::StreamEnd | Self::Error | Self::Cancelled
+        )
     }
 }
 
@@ -39,6 +45,7 @@ impl std::str::FromStr for AgentStatus {
             "AWAITING_CLIENT_TOOLS" => Ok(Self::AwaitingClientTools),
             "STREAM_END" => Ok(Self::StreamEnd),
             "ERROR" => Ok(Self::Error),
+            "CANCELLED" => Ok(Self::Cancelled),
             _ => Ok(Self::Unknown),
         }
     }
@@ -55,6 +62,7 @@ impl std::fmt::Display for AgentStatus {
             Self::AwaitingClientTools => write!(f, "AWAITING_CLIENT_TOOLS"),
             Self::StreamEnd => write!(f, "STREAM_END"),
             Self::Error => write!(f, "ERROR"),
+            Self::Cancelled => write!(f, "CANCELLED"),
             Self::Unknown => write!(f, "UNKNOWN"),
         }
     }
@@ -358,4 +366,42 @@ pub trait ChatClient: Send + Sync {
     /// (e.g. older Matrix versions, or when feature-flagged off). The caller
     /// should treat a missing stat as "no information" rather than an error.
     async fn get_token_usage_stats(&self) -> crate::error::Result<Option<TokenUsageStats>>;
+}
+
+#[cfg(test)]
+mod agent_status_tests {
+    use super::AgentStatus;
+
+    #[test]
+    fn parses_cancelled_case_insensitively() {
+        for raw in ["CANCELLED", "cancelled", "Cancelled"] {
+            assert_eq!(raw.parse::<AgentStatus>(), Ok(AgentStatus::Cancelled));
+        }
+    }
+
+    #[test]
+    fn cancelled_round_trips_through_display() {
+        assert_eq!(AgentStatus::Cancelled.to_string(), "CANCELLED");
+        assert_eq!(
+            AgentStatus::Cancelled.to_string().parse::<AgentStatus>(),
+            Ok(AgentStatus::Cancelled)
+        );
+    }
+
+    #[test]
+    fn cancelled_is_terminal() {
+        assert!(AgentStatus::Cancelled.is_terminal());
+        // Existing terminal/non-terminal classification is unchanged.
+        assert!(AgentStatus::Idle.is_terminal());
+        assert!(AgentStatus::StreamEnd.is_terminal());
+        assert!(AgentStatus::Error.is_terminal());
+        assert!(!AgentStatus::Processing.is_terminal());
+        assert!(!AgentStatus::Streaming.is_terminal());
+        assert!(!AgentStatus::Unknown.is_terminal());
+    }
+
+    #[test]
+    fn unrecognised_status_still_falls_back_to_unknown() {
+        assert_eq!("CANCELING".parse::<AgentStatus>(), Ok(AgentStatus::Unknown));
+    }
 }

@@ -1969,6 +1969,7 @@ dependencies = [
  "http",
  "hyper-util",
  "jsonwebtoken",
+ "libc",
  "metrics",
  "native-tls",
  "open",

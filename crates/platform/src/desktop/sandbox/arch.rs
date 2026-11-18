@@ -19,22 +19,37 @@
 /// on the CPU instruction set (aarch64), never on board/kernel specifics. Plain
 /// `.tar.gz`, accepted by both `wsl --import` (WSL backend) and `tar -xzf`
 /// (Linux bwrap/proot backend), so the two share this single source and never
-/// drift. `os.archlinuxarm.org` 302-redirects to a geographic mirror; `reqwest`
-/// follows redirects.
+/// drift.
 ///
-/// KNOWN LIMITATION (integrity): this is fetched over plaintext HTTP with no
-/// checksum. ALARM has no working HTTPS (its cert doesn't match the host) and
-/// publishes ONLY `-latest` — no versioned/dated tarball to pin — plus its
-/// `.md5`/`.sig` sidecars ride the same HTTP channel, so a MITM could serve a
-/// matching bad checksum. A baked SHA256 would defend against MITM, but there is
-/// no stable upstream artifact to pin it to (only `-latest`, which rolls
-/// forward). This matches the existing no-verify posture of the x86_64 desktop
-/// bootstrap and the Android proot rootfs. Closing it would require self-hosting
-/// a frozen copy (e.g. a repo release asset) + baking its hash — deferred until
-/// arm64 warrants that infra. Extraction still fails closed: a corrupt/hostile
-/// rootfs that lacks `bash`/`pacman` is rejected by the post-extract checks.
+/// Pinned aarch64 sandbox rootfs, self-hosted under the `alarm-aarch64-v1`
+/// release tag on Strike48-public/pick (tarball + `.sha256` sidecar).
+///
+/// Upstream (os.archlinuxarm.org) serves this image over plaintext HTTP only
+/// (its HTTPS cert doesn't match the host) and publishes ONLY a rolling
+/// `-latest` — nothing versioned to pin — so we freeze a copy as a release
+/// asset and verify every download against [`ALARM_AARCH64_ROOTFS_SHA256`]
+/// before extraction (same refuse-unverified contract as the proot binaries in
+/// `proot.rs`). This closes the "KNOWN LIMITATION (integrity)" that used to
+/// live here; see #624.
+///
+/// Republish (when a newer ALARM cut is wanted): download
+/// `http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz` and vet
+/// it — ALARM publishes a `.md5` and a GPG `.sig` next to the tarball; verify
+/// the signature against the Arch Linux ARM Build System key
+/// (`68B3 537F 39A3 13B3 E574 D067 7719 3F15 2BDB E6A6`) — then upload it +
+/// its sha256 sidecar under a NEW tag (`alarm-aarch64-v2`) and bump:
+/// `ALARM_AARCH64_ROOTFS`, `ALARM_AARCH64_ROOTFS_SHA256`, and the
+/// `alarm-aarch64-v1` tag hardcoded in the URL tests (this module and
+/// `wsl.rs`). Extraction still fails closed: a corrupt/hostile rootfs that
+/// lacks `bash`/`pacman` is rejected by the post-extract checks.
 pub(super) const ALARM_AARCH64_ROOTFS: &str =
-    "http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz";
+    "https://github.com/Strike48-public/pick/releases/download/alarm-aarch64-v1/alarm-aarch64.tar.gz";
+
+/// Lowercase hex SHA-256 of [`ALARM_AARCH64_ROOTFS`]. Verified before the
+/// download is written to disk and again before a cached copy is reused;
+/// empty = refuse (unverifiable).
+pub(super) const ALARM_AARCH64_ROOTFS_SHA256: &str =
+    "42a4eeaa038994ffd31fa173256ef2f0ef511358eeb41b9ea1f8626391b9b319";
 
 /// True when provisioning an aarch64 guest (host is aarch64).
 pub(super) fn is_aarch64() -> bool {
@@ -135,8 +150,12 @@ mod tests {
     }
 
     #[test]
-    fn alarm_rootfs_is_a_plain_targz() {
+    fn alarm_rootfs_is_a_pinned_plain_targz() {
+        // #624: the ALARM rootfs is a self-hosted, pinned release asset (the
+        // upstream host is plaintext-HTTP-only). It must stay a plain
+        // .tar.gz — extraction uses `tar -xzf`.
         assert!(ALARM_AARCH64_ROOTFS.ends_with(".tar.gz"));
-        assert!(ALARM_AARCH64_ROOTFS.contains("archlinuxarm.org"));
+        assert!(ALARM_AARCH64_ROOTFS
+            .contains("github.com/Strike48-public/pick/releases/download/alarm-aarch64-v1/"));
     }
 }

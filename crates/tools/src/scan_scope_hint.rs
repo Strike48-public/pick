@@ -22,7 +22,7 @@ pub fn zero_host_scope_hint(
     raw_socket_available: bool,
 ) -> String {
     let mut parts = vec![format!(
-        "The scan of `{target}` returned zero hosts. Before concluding the network is empty, \
+        "The scan of `{target}` found no host that responded. Before concluding the network is empty, \
          verify you scanned the right network."
     )];
 

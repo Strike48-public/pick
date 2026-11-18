@@ -254,18 +254,23 @@ chmod 755 /path/from/env
 
 ### Generate Diagnostic Report
 
+Pick builds a redacted support bundle for you. It contains the version, OS, sandbox state, the saved connector config without secrets, the relevant environment variables (shown only as set or unset), and the last 200 lines of the newest log file.
+
+- **Desktop:** Settings → Logs → **Copy diagnostics**, then paste into your ticket.
+- **Headless / Docker / server:**
+  ```bash
+  pentest-agent diagnose                 # text, for pasting into a ticket
+  pentest-agent diagnose --json          # JSON, for tooling
+  pentest-agent diagnose --lines 500     # a longer log tail
+  ```
+  In Docker, run it inside the container, for example `docker exec <container> pentest-agent diagnose`.
+
+The saved token, credential files and environment variable values are never included. Secrets in log lines are removed on a best-effort basis: known tokens are removed by exact value, and common secret shapes by pattern. Log lines still show targets and tool output, so review the bundle before sharing it outside your organization.
+
+To capture a fresh debug-level session to reproduce a problem:
+
 ```bash
-# Capture full logs
 RUST_LOG=debug ./run-pentest.sh headless dev 2>&1 | tee pick-debug.log
-
-# Check first 100 lines of errors
-grep ERROR pick-debug.log | head -100
-
-# Check what resources are missing
-ls -la ~/.pick/resources/
-
-# Check workspace
-ls -la ~/.local/share/pentest-workspace/
 ```
 
 ### Getting Help
@@ -273,15 +278,7 @@ ls -la ~/.local/share/pentest-workspace/
 **Include this information when asking for help:**
 
 1. Full error message (not just first line)
-2. Output of:
-   ```bash
-   cat .env  # (remove sensitive tokens first!)
-   ls -la ~/.pick/resources/
-   ls -la ~/.local/share/pentest-workspace/
-   uname -a
-   cargo --version
-   rustc --version
-   ```
+2. The diagnostics bundle (see above). Do not paste `.env` files or tokens.
 3. Steps to reproduce
 4. What you've tried already
 

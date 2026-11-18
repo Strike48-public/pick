@@ -489,6 +489,22 @@ impl ConnectorClient {
         }
     }
 
+    /// Install an in-memory outbound channel and return its receiving half.
+    ///
+    /// Test-only: lets unit tests observe the `StreamMessage`s a runner would
+    /// send (via [`Self::clone_message_tx`] / `send_execute_response`) without
+    /// a live transport. Must be called on a freshly built, not-yet-connected
+    /// client so `request_tx` is uncontended.
+    #[cfg(test)]
+    pub(crate) fn install_test_outbound(&self) -> mpsc::UnboundedReceiver<ProtoStreamMessage> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.request_tx
+            .try_write()
+            .expect("install_test_outbound: request_tx must be uncontended")
+            .replace(tx);
+        rx
+    }
+
     /// Clone the stream sender for use outside a parent lock scope.
     ///
     /// Returns the cloned `UnboundedSender` so callers can send messages

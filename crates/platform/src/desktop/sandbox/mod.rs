@@ -83,6 +83,14 @@ fn preferred_backend_for(is_root: bool) -> Option<SandboxBackend> {
     None
 }
 
+/// The active backend if the sandbox manager has already initialized, without
+/// initializing it. [`get_sandbox_manager`] can download proot or start
+/// Docker/WSL on first call, which a read-only caller such as diagnostics must
+/// not trigger.
+pub fn current_backend() -> Option<config::SandboxBackend> {
+    SANDBOX_MANAGER.get().map(|manager| manager.backend())
+}
+
 /// Get or initialize the global sandbox manager
 pub async fn get_sandbox_manager() -> SandboxResult<Arc<SandboxManager>> {
     tracing::debug!("[get_sandbox_manager] Attempting to get or initialize sandbox manager");

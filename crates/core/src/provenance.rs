@@ -182,7 +182,65 @@ struct RedactRegexes {
     set_cookie: Regex,
     long_hex: Regex,
     long_b64: Regex,
-    env_secret: Regex,
+    /// `key: value` / `key=value` / JSON `"key":"value"` secrets, one regex
+    /// per value form. See [`secret_value_regexes`].
+    secret_values: [(Regex, &'static str); 5],
+    jwt: Regex,
+}
+
+/// Key names whose value is a secret, in any of the value forms below.
+/// `authorization` and `cookie` are here for their JSON form only; the plain
+/// headers have their own regexes above.
+const SECRET_KEYS_QUOTED: &str = "api[_-]?key|secret[_-]?key|private[_-]?key|access[_-]?key|\
+     secret|token|password|passwd|pwd|passphrase|authorization|cookie";
+
+/// The same keys for the bare (unquoted) form, minus the header names that
+/// already have dedicated regexes.
+const SECRET_KEYS_BARE: &str = "api[_-]?key|secret[_-]?key|private[_-]?key|access[_-]?key|\
+     secret|token";
+
+/// Password-type keys, whose bare value runs to the end of the line because
+/// passphrases contain spaces.
+const PASSWORD_KEYS: &str = "password|passwd|pwd|passphrase";
+
+/// `key` followed by an optional closing quote (JSON `"key":`, or `\"key\":`
+/// inside a JSON log line) and `=` or `:`.
+fn secret_key_prefix(keys: &str) -> String {
+    format!(r#"(?i)((?:{keys})(?:\\?['"])?\s*[=:]\s*)"#)
+}
+
+/// One regex per value form, each with its replacement. The quoted forms run
+/// to the closing quote so a value with spaces is removed whole; the bare
+/// password form runs to the end of the line or of the enclosing JSON string.
+fn secret_value_regexes() -> [(Regex, &'static str); 5] {
+    let quoted = secret_key_prefix(SECRET_KEYS_QUOTED);
+    let compile = |pattern: String| Regex::new(&pattern).expect("valid secret value regex");
+    [
+        // \"value\" inside a JSON log line (must run before the plain form).
+        (
+            compile(format!(r#"{quoted}\\"(?:[^"\\]|\\[^"])*\\""#)),
+            r#"${1}\"<REDACTED>\""#,
+        ),
+        (
+            compile(format!(r#"{quoted}"(?:[^"\\]|\\.)*""#)),
+            r#"${1}"<REDACTED>""#,
+        ),
+        (compile(format!(r"{quoted}'[^']*'")), r"${1}'<REDACTED>'"),
+        (
+            compile(format!(
+                r#"{}[^\r\n"'\\]+"#,
+                secret_key_prefix(PASSWORD_KEYS)
+            )),
+            "${1}<REDACTED>",
+        ),
+        (
+            compile(format!(
+                r#"{}[^\s'"\\,;&}}]+"#,
+                secret_key_prefix(SECRET_KEYS_BARE)
+            )),
+            "${1}<REDACTED>",
+        ),
+    ]
 }
 
 static REDACT_RE: OnceLock<RedactRegexes> = OnceLock::new();
@@ -192,13 +250,15 @@ fn redact_regexes() -> &'static RedactRegexes {
         auth_header: Regex::new(r"(?i)(authorization:\s*)(bearer|basic|token)\s+[^\s'\x22]+")
             .expect("valid auth header regex"),
         bearer: Regex::new(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+").expect("valid bearer regex"),
-        basic_auth_flag: Regex::new(r"(-u\s+)[^\s]+:[^\s]+")
-            .expect("valid basic auth flag regex"),
+        basic_auth_flag: Regex::new(r"(-u\s+)[^\s]+:[^\s]+").expect("valid basic auth flag regex"),
         // Userinfo ends at the LAST `@` before the host, so the password class
         // must allow `@`; the old `[^/\s:@]+` anchored on the first `@` and
         // left the tail of an `@`-bearing password in every redact() sink
         // (published commands, response excerpts, evidence node fields).
-        url_userinfo: Regex::new(r"(https?://)[^/\s]*:[^/\s]*@")
+        // Any scheme: Pick's own connector hosts are wss:// and grpc:// URLs.
+        // Quotes and backslashes end the match so it cannot run across fields
+        // of a compact JSON line and swallow the host.
+        url_userinfo: Regex::new(r#"(?i)([a-z][a-z0-9+.-]*://)[^/\s"'\\]*:[^/\s"'\\]*@"#)
             .expect("valid url userinfo regex"),
         password_flag: Regex::new(
             r"(?i)(--password[=\s]+|--token[=\s]+|--api[_-]?key[=\s]+)[^\s]+",
@@ -208,10 +268,12 @@ fn redact_regexes() -> &'static RedactRegexes {
         set_cookie: Regex::new(r"(?i)(set-cookie:\s*)[^\r\n]+").expect("valid set-cookie regex"),
         long_hex: Regex::new(r"\b[0-9a-fA-F]{32,}\b").expect("valid long hex regex"),
         long_b64: Regex::new(r"\b[A-Za-z0-9+/]{40,}={0,2}\b").expect("valid long base64 regex"),
-        env_secret: Regex::new(
-            r"(?i)((?:api[_-]?key|secret|token|password|passwd|pwd)\s*[=:]\s*)['\x22]?[^\s'\x22]+['\x22]?",
-        )
-        .expect("valid env secret regex"),
+        secret_values: secret_value_regexes(),
+        // header.payload.signature, base64url. Runs before the long-hex and
+        // long-base64 passes, which only catch fragments of it. No leading
+        // `\b`: in a JSON log line the token may follow an escaped `\n`.
+        jwt: Regex::new(r"eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*")
+            .expect("valid jwt regex"),
     })
 }
 
@@ -301,8 +363,12 @@ pub fn redact(input: &str) -> String {
         .set_cookie
         .replace_all(&s, format!("${{1}}{REDACTION}").as_str());
     let s = re
-        .env_secret
-        .replace_all(&s, format!("${{1}}{REDACTION}").as_str());
+        .secret_values
+        .iter()
+        .fold(s.into_owned(), |acc, (regex, replacement)| {
+            regex.replace_all(&acc, *replacement).into_owned()
+        });
+    let s = re.jwt.replace_all(&s, REDACTION);
     let s = re.long_hex.replace_all(&s, REDACTION);
     let s = re.long_b64.replace_all(&s, REDACTION);
     s.into_owned()
@@ -376,6 +442,136 @@ mod tests {
         let cmd = "API_KEY=sk-live-xyz-1234567890 curl https://api.example.com";
         let out = redact(cmd);
         assert!(!out.contains("sk-live-xyz-1234567890"));
+    }
+
+    /// JSON puts a closing quote between the key and the colon, and a JSON
+    /// log line escapes it again (`\"auth_token\":\"...\"`). Both forms must
+    /// redact, or a config dumped into a log line leaks its token (pick#476).
+    #[test]
+    fn redact_strips_json_key_secrets_plain_and_escaped() {
+        let plain = r#"{"host":"wss://studio.example.com","auth_token":"fake-token-value-1"}"#;
+        let out = redact(plain);
+        assert!(
+            !out.contains("fake-token-value-1"),
+            "plain JSON leaked: {out}"
+        );
+        assert!(out.contains("studio.example.com"), "host lost: {out}");
+
+        let escaped = r#"{"fields":{"message":"cfg {\"auth_token\":\"fake-token-value-2\"}"}}"#;
+        let out = redact(escaped);
+        assert!(
+            !out.contains("fake-token-value-2"),
+            "escaped JSON leaked: {out}"
+        );
+
+        let spaced = r#"{"api_key" : "fake-key-value-3", "password":"fake-pass-4"}"#;
+        let out = redact(spaced);
+        assert!(!out.contains("fake-key-value-3"), "{out}");
+        assert!(!out.contains("fake-pass-4"), "{out}");
+    }
+
+    /// A bare JWT's header segment is under the 40-char base64 floor and its
+    /// segments are base64url (`-`, `_`), so the generic patterns leave parts
+    /// of it behind. Built from parts so no JWT literal sits in the source.
+    #[test]
+    fn redact_strips_bare_jwt() {
+        let jwt = [
+            "eyJhbGciOiJIUzI1NiJ9",
+            "eyJzdWIiOiJmYWtlLXVzZXIifQ",
+            "ZmFrZS1zaWduYXR1cmUtdmFsdWU_-x",
+        ]
+        .join(".");
+        let out = redact(&format!("connecting with {jwt} to studio"));
+        for part in jwt.split('.') {
+            assert!(!out.contains(part), "JWT segment {part} leaked: {out}");
+        }
+        assert!(out.contains("connecting with"), "{out}");
+        assert!(out.contains("to studio"), "{out}");
+    }
+
+    /// Pick's connector hosts are wss:// and grpc:// URLs, not only http(s).
+    #[test]
+    fn redact_strips_userinfo_for_any_url_scheme() {
+        for url in [
+            "wss://alice:fake-pass-5@studio.example.com/ws",
+            "grpc://bob:fake-pass-6@studio.example.com:443",
+        ] {
+            let out = redact(url);
+            assert!(!out.contains("fake-pass"), "userinfo leaked: {out}");
+            assert!(out.contains("studio.example.com"), "host lost: {out}");
+        }
+    }
+
+    /// A quoted value runs to its closing quote, and a bare password runs to
+    /// the end of the line: stopping at the first space leaked the rest of a
+    /// passphrase (`Password: correct horse battery`, as autopwn logs a
+    /// cracked one).
+    #[test]
+    fn redact_strips_secrets_containing_spaces() {
+        for (input, leaked) in [
+            ("  Password: correct horse battery", "horse"),
+            (r#"{"password":"my secret pass"}"#, "secret pass"),
+            (
+                r#"{"m":"cfg {\"passphrase\":\"two words here\"}"}"#,
+                "words here",
+            ),
+            ("api_key='spaced key value'", "key value"),
+            (
+                r#"{"message":"  Password: correct horse battery","level":"INFO"}"#,
+                "battery",
+            ),
+        ] {
+            let out = redact(input);
+            assert!(
+                !out.contains(leaked),
+                "{leaked:?} leaked from {input:?}: {out}"
+            );
+        }
+        // The bare form stops at the end of the JSON string, so the rest of a
+        // log record survives.
+        let out = redact(r#"{"message":"Password: hunter2 x","level":"INFO"}"#);
+        assert!(out.contains(r#""level":"INFO""#), "{out}");
+    }
+
+    #[test]
+    fn redact_strips_more_secret_key_names_and_json_auth_headers() {
+        for input in [
+            r#"{"authorization":"Basic ZmFrZTpwYXNz"}"#,
+            r#"{"cookie":"sid=fake-sid-value"}"#,
+            r#"{"set-cookie":"sid=fake-sid-value"}"#,
+            r#"{"secret_key":"fake-secret-key-1"}"#,
+            r#"{"secretAccessKey":"fake-secret-key-1"}"#,
+            r#"{"private_key":"fake-secret-key-1"}"#,
+            "PASSPHRASE=fake-secret-key-1",
+        ] {
+            let out = redact(input);
+            for leaked in ["ZmFrZTpwYXNz", "fake-sid-value", "fake-secret-key-1"] {
+                assert!(!out.contains(leaked), "{leaked} leaked from {input}: {out}");
+            }
+        }
+    }
+
+    /// Compact JSON has no whitespace between fields; userinfo matching must
+    /// not run across quotes from one field into another and eat the host.
+    #[test]
+    fn redact_keeps_hosts_in_compact_json() {
+        let line = r#"{"url":"wss://studio.example.com:443","owner":"a@b.example"}"#;
+        assert_eq!(redact(line), line);
+    }
+
+    /// In a JSON log line a message's newline is the two characters `\n`, so
+    /// a JWT right after it has a word character in front.
+    #[test]
+    fn redact_strips_jwt_after_an_escaped_newline() {
+        let jwt = ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiJ4In0", "c2lnbmF0dXJl"].join(".");
+        let out = redact(&format!(r#"{{"message":"issued\n{jwt}"}}"#));
+        assert!(!out.contains("eyJzdWIiOiJ4In0"), "{out}");
+    }
+
+    #[test]
+    fn redact_leaves_token_lookalike_keys_alone() {
+        let line = r#"{"tokens_used":42,"token_type":"bearer","max_tokens":1000}"#;
+        assert_eq!(redact(line), line);
     }
 
     #[test]

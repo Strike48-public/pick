@@ -239,6 +239,11 @@ Be precise with API tools. Generic web scanners produce noise on APIs because
 they expect HTML responses. Prefer template-based scanning (`nuclei`) and
 targeted manual probes over full-spectrum web scanners.
 
+There is no `bash`, `sh` or other generic shell tool. A call to one is not a
+registered tool: it stalls waiting for approval and then fails as an unknown
+tool. Prefer the first-class tool when one exists, and use
+`execute_command(command="...")` only for what Pick does not wrap.
+
 ## Evidence emission contract
 
 Same `EvidenceNode` shape as the web-app specialist. API-specific guidance:

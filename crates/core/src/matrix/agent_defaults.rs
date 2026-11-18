@@ -51,23 +51,36 @@ fn available_tools_section(tool_names: &[String]) -> String {
 ///
 /// Lists the connector's active subnets so the agent targets them directly
 /// instead of guessing a home range (the `192.168.1.0/24`-on-a-`10.0.x`
-/// failure). Empty input yields an empty string, so no section is emitted when
-/// the caller could not enumerate any subnet.
-fn host_network_facts_section(active_subnets: &[String]) -> String {
-    if active_subnets.is_empty() {
+/// failure). `network_advisory` (pick#510) carries an optional caveat paragraph
+/// rendered after the subnet list - the container-bridge warning that the
+/// listed subnets are the container's private network, not the host LAN. The
+/// section is emitted when either input is present. In practice the advisory
+/// always rides with at least the bridge subnet it names (the classifier needs
+/// that subnet to decide `Bridged`, and the same enumeration feeds both
+/// inputs), so an advisory-only section is a defensive leftover rather than a
+/// reachable state; both empty yields an empty string so no section is emitted.
+fn host_network_facts_section(active_subnets: &[String], network_advisory: Option<&str>) -> String {
+    if active_subnets.is_empty() && network_advisory.is_none() {
         return String::new();
     }
-    let list = active_subnets
-        .iter()
-        .map(|s| format!("- {s}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "# Host network facts (live, this connector)\n\n\
-         This connector is attached to the following active subnet(s). Use these \
-         as scan targets (or pass `target=\"auto\"` / `target=\"current\"`); do NOT \
-         invent other ranges:\n\n{list}"
-    )
+    let mut sections: Vec<String> = Vec::new();
+    if !active_subnets.is_empty() {
+        let list = active_subnets
+            .iter()
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        sections.push(format!(
+            "# Host network facts (live, this connector)\n\n\
+             This connector is attached to the following active subnet(s). Use these \
+             as scan targets (or pass `target=\"auto\"` / `target=\"current\"`); do NOT \
+             invent other ranges:\n\n{list}"
+        ));
+    }
+    if let Some(advisory) = network_advisory {
+        sections.push(advisory.to_string());
+    }
+    sections.join("\n\n")
 }
 
 /// Assemble the agent system message: optional live host-network facts (#347)
@@ -79,9 +92,13 @@ fn host_network_facts_section(active_subnets: &[String]) -> String {
 /// "knows" but that aren't advertised, and those calls just fail. Either
 /// preamble is omitted when its input is empty; with neither, the bare persona
 /// is returned so pre-registration paths don't break.
-fn system_message_with_available_tools(tool_names: &[String], active_subnets: &[String]) -> String {
+fn system_message_with_available_tools(
+    tool_names: &[String],
+    active_subnets: &[String],
+    network_advisory: Option<&str>,
+) -> String {
     let mut sections: Vec<String> = Vec::new();
-    let facts = host_network_facts_section(active_subnets);
+    let facts = host_network_facts_section(active_subnets, network_advisory);
     if !facts.is_empty() {
         sections.push(facts);
     }
@@ -113,13 +130,21 @@ fn system_message_with_available_tools(tool_names: &[String], active_subnets: &[
 ///
 /// `tool_names` are the registered tool names to auto-approve, and
 /// `active_subnets` are the connector's live subnet CIDRs injected into the
-/// persona (#347). Callers pass both explicitly (the Dioxus app sources them
-/// from its session / `network_context`) so this builder stays pure.
+/// persona (#347). Callers pass both explicitly - in practice sourced from
+/// `pentest_tools::container_network::persona_network_facts` (subnets plus
+/// the container-bridge advisory from one enumeration) - so this builder
+/// stays pure.
+///
+/// `network_advisory` (pick#510) is an optional caveat paragraph appended to the
+/// host-network-facts section - the container-bridge warning from
+/// `pentest_tools::container_network` that the subnets are the container's
+/// private network, not the host LAN. `None` keeps the persona unchanged.
 pub fn default_pentest_agent_input(
     tenant_id: &str,
     connector_name: &str,
     tool_names: &[String],
     active_subnets: &[String],
+    network_advisory: Option<&str>,
 ) -> CreateAgentInput {
     // The connector key must be the SDK wire type (#386), not the persona
     // `connector_name`: the platform matches it against the
@@ -152,6 +177,7 @@ pub fn default_pentest_agent_input(
         system_message: Some(system_message_with_available_tools(
             tool_names,
             active_subnets,
+            network_advisory,
         )),
         agent_greeting: Some("Ready for red team operations. What's the target?".to_string()),
         context: Some(serde_json::json!({
@@ -345,6 +371,16 @@ For every finding:
 
 **Grounding rule (non-negotiable):** Every tool result carries an `outcome` field. Only `outcome: "ran"` results are grounded data you may act on. A result with `outcome: "failed"` (the tool crashed, timed out, or errored) or `outcome: "skipped"` (a dependency or platform precondition was not met) means **the probe did not run** — treat it as *no data*, exactly as if the tool had never been called. Never create an EvidenceNode, assert a finding, or narrate a result from a `failed` or `skipped` tool call. If a probe you needed came back `failed`/`skipped`, either retry it, try a different tool, or state plainly that the check could not be completed — do not fill the gap with an assumed result. A finding must always trace to a real `ran` tool result.
 
+### Anti-Fabrication (CRITICAL)
+
+These rules apply to every chat reply, finding, and report, in every mode:
+- NEVER report a subnet, host, open port, service, version, CVE, credential weakness, or vulnerability that does not appear in a `ran` tool result from this session.
+- NEVER infer services or vulnerabilities from an IP address, hostname, device type, or vendor alone. "It's a router, so it probably has default passwords and an HTTP admin page" is a guess, not a finding - test it with a tool or leave it out.
+- NEVER substitute a typical network (e.g. `10.0.0.0/24` with gateway `10.0.0.1`) for one you did not observe. The scope, host list, and host/service counts must come from tool output.
+- SCAN FIRST, THEN REPORT. Open ports and services require a `port_scan` or `service_banner` result; a credential or configuration weakness requires a tool result (e.g. `safety_check`) that showed it. Passive discovery (ARP, mDNS, SSDP) finds devices, not their open ports or weaknesses.
+- Empty is an answer. If discovery returned nothing, the active scan never ran, or every scan came back `failed`/`skipped`, say plainly that you could not enumerate the network and why. Do not compose a plausible-looking report to fill the gap.
+- Before you send a summary or save a report, check every host, port, and finding in it against a tool result from this session, and remove anything you cannot point to.
+
 The Validator Agent will review your findings. The Report Agent will compile validated evidence into the final penetration test report.
 
 ## Operational Framework
@@ -422,6 +458,8 @@ Rank findings by real-world attacker incentive:
 You have access to connector tools for running operations on the connected target. Always explain what you're doing before executing tools. Report findings clearly with severity ratings and remediation recommendations.
 
 Each tool takes named, structured parameters — call it with its own schema, not a generic command line. Do NOT invent an `args` array or a raw `command` string for tools other than `execute_command`.
+
+There is no `bash`, `sh` or other generic shell tool - never call one: it is not a registered tool, so the call stalls waiting for approval and then fails as an unknown tool. Prefer a first-class tool whenever one fits (`nmap`, `nikto`, `ffuf`, ...); for anything Pick does not wrap, use `execute_command(command="...")`.
 
 ### Scanning Tools
 
@@ -705,14 +743,16 @@ The easy-mode scan is framed by the question "Is my network safe?" — so you MU
 Pick the emoji + verdict from the highest-severity finding, using this exact rubric:
 - 🔴 **Not safe** — one or more **critical or high** findings.
 - 🟡 **Some risk** — **medium or low** findings, but no critical/high.
-- 🟢 **Looks safe** — no findings of any severity.
+- 🟢 **Looks safe** — an active scan ran and returned host/service data, and it produced no findings of any severity.
+- ⚪ **Could not check** — no scan tool returned host/service data (the active scan never ran, or discovery and scans came back empty, `failed`, or `skipped`). This is NOT a safety verdict: never say "safe" or "not safe" without scan evidence. The reason states what could not be done (e.g. "I couldn't find the devices on your network, so I can't tell whether it's safe."). In the report frontmatter, omit `severity` and `findings`, and include `scope` only if a tool established it.
 
 The reason is a short, non-technical sentence a non-expert understands (e.g. "an exposed database and an outdated SSH service need attention", or "nothing risky was exposed"). Examples of the full line:
 - `🔴 Not safe — an exposed database and outdated remote-access service need attention.`
 - `🟡 Some risk — a few minor issues worth cleaning up, nothing urgent.`
 - `🟢 Looks safe — no exposed services or known risks were found.`
+- `⚪ Could not check — I couldn't find the devices on your network, so I can't tell whether it's safe.`
 
-Emit this verdict line even when the scan is clean. Put it first, before any other prose or Markdown, on both surfaces.
+Emit this verdict line even when the scan is clean or could not be completed. Put it first, before any other prose or Markdown, on both surfaces.
 
 **When the operator says "generate the report" / "write the report" / "save the report":**
 
@@ -733,6 +773,7 @@ mod tests {
             "pentest-connector-web-app",
             &["foo".into()],
             &[],
+            None,
         );
 
         // Name matches the connector name.
@@ -790,6 +831,7 @@ mod tests {
                 "network_discover".into(),
             ],
             &[],
+            None,
         );
         assert!(
             msg.contains("Tools available on THIS connector"),
@@ -810,7 +852,7 @@ mod tests {
         );
         // Empty list -> bare persona (no preamble), so nothing breaks pre-registration.
         assert_eq!(
-            system_message_with_available_tools(&[], &[]),
+            system_message_with_available_tools(&[], &[], None),
             RED_TEAM_SYSTEM_PROMPT
         );
     }
@@ -821,7 +863,7 @@ mod tests {
         // agent targets them instead of guessing a home range. Guard both the
         // section header and every CIDR passed in.
         let subnets = vec!["10.0.8.0/22".to_string(), "172.16.4.0/24".to_string()];
-        let msg = system_message_with_available_tools(&["port_scan".into()], &subnets);
+        let msg = system_message_with_available_tools(&["port_scan".into()], &subnets, None);
         assert!(
             msg.contains("# Host network facts (live, this connector)"),
             "should carry the injected host-network-facts section"
@@ -836,18 +878,51 @@ mod tests {
 
     #[test]
     fn system_message_omits_host_facts_when_no_subnets() {
-        // With no subnets enumerated, no facts section is emitted (the agent falls
-        // back to target="auto"/discovery per the prompt rule) — and an empty
-        // tools+subnets input still yields the bare persona.
-        let msg = system_message_with_available_tools(&["port_scan".into()], &[]);
+        // With no subnets enumerated and no advisory, no facts section is emitted
+        // (the agent falls back to target="auto"/discovery per the prompt rule)
+        // - and an empty tools+subnets input still yields the bare persona.
+        let msg = system_message_with_available_tools(&["port_scan".into()], &[], None);
         assert!(
             !msg.contains("# Host network facts (live, this connector)"),
             "no facts section when no subnets are known"
         );
         assert_eq!(
-            system_message_with_available_tools(&[], &[]),
+            system_message_with_available_tools(&[], &[], None),
             RED_TEAM_SYSTEM_PROMPT
         );
+    }
+
+    #[test]
+    fn system_message_appends_docker_bridge_advisory_to_facts() {
+        // pick#510: when the connector runs in a container on a Docker bridge, the
+        // advisory must ride with the subnet list so the agent reports "I can
+        // only see the container's private network" instead of an empty LAN.
+        let subnets = vec!["172.18.0.0/16".to_string()];
+        let advisory = "IMPORTANT: the subnets listed above are this connector's private \
+                        container bridge network (172.18.0.0/16), not the operator's LAN.";
+        let msg =
+            system_message_with_available_tools(&["port_scan".into()], &subnets, Some(advisory));
+        assert!(
+            msg.contains("# Host network facts (live, this connector)"),
+            "facts section still present"
+        );
+        assert!(msg.contains("172.18.0.0/16"), "subnet still listed");
+        assert!(
+            msg.contains("not the operator's LAN"),
+            "advisory paragraph appended after the list"
+        );
+        // Advisory without subnets still emits its section (defensive: the
+        // classifier cannot currently produce an advisory without the subnet
+        // that produced it, since the same enumeration feeds both inputs).
+        let advisory_only =
+            system_message_with_available_tools(&["port_scan".into()], &[], Some(advisory));
+        assert!(
+            advisory_only.contains("not the operator's LAN"),
+            "advisory-only section is emitted"
+        );
+        // And the advisory alone never leaks into an otherwise bare persona.
+        let bare = system_message_with_available_tools(&[], &[], None);
+        assert!(!bare.contains("not the operator's LAN"));
     }
 
     #[test]
@@ -864,6 +939,46 @@ mod tests {
             assert!(
                 sys.to_lowercase().contains(&needle.to_lowercase()),
                 "fact-first rule should mention '{needle}'"
+            );
+        }
+    }
+
+    #[test]
+    fn system_prompt_forbids_a_bash_tool() {
+        // pick#176: the model invented a `bash` tool, which has no consent
+        // metadata and stalls the run. The persona must say there is none and
+        // name `execute_command` as the shell escape hatch.
+        let sys = RED_TEAM_SYSTEM_PROMPT;
+        for needle in [
+            "There is no `bash`, `sh` or other generic shell tool",
+            "execute_command(command=\"...\")",
+            "Prefer a first-class tool",
+        ] {
+            assert!(sys.contains(needle), "persona should say {needle:?}");
+        }
+    }
+
+    #[test]
+    fn system_prompt_forbids_fabricating_findings() {
+        // #555 / matrix#4946: an easy-mode scan with no port scan and an empty ARP
+        // table produced a "Not safe" report with an invented subnet, host, ports
+        // and 17 findings. The persona must forbid reporting anything a tool did
+        // not return, and must say "could not enumerate" instead.
+        let sys = RED_TEAM_SYSTEM_PROMPT;
+        assert!(
+            sys.contains("Anti-Fabrication (CRITICAL)"),
+            "prompt should carry the anti-fabrication block"
+        );
+        for needle in [
+            "does not appear in a `ran` tool result",
+            "from an IP address",
+            "SCAN FIRST, THEN REPORT",
+            "could not enumerate the network",
+            "remove anything you cannot point to",
+        ] {
+            assert!(
+                sys.contains(needle),
+                "anti-fabrication block should say '{needle}'"
             );
         }
     }
@@ -905,11 +1020,34 @@ mod tests {
             sys.contains("Safety verdict"),
             "system prompt should carry the safety-verdict rubric"
         );
-        // The three verdict states + their color emoji.
-        for needle in ["🔴", "🟡", "🟢", "Not safe", "Some risk", "Looks safe"] {
+        // The verdict states + their color emoji, including the no-evidence state
+        // (#555) so an empty scan never has to pick "safe" or "not safe".
+        for needle in [
+            "🔴",
+            "🟡",
+            "🟢",
+            "⚪",
+            "Not safe",
+            "Some risk",
+            "Looks safe",
+            "Could not check",
+        ] {
             assert!(
                 sys.contains(needle),
                 "verdict rubric should include '{needle}'"
+            );
+        }
+        // #555: the rubric rules themselves, not just the example lines. "Looks
+        // safe" needs real scan data, and a run with none gets the non-verdict
+        // state; otherwise an empty scan is forced to pick "safe" or "not safe".
+        for rule in [
+            "**Looks safe** — an active scan ran and returned host/service data",
+            "**Could not check** — no scan tool returned host/service data",
+            "never say \"safe\" or \"not safe\" without scan evidence",
+        ] {
+            assert!(
+                sys.contains(rule),
+                "verdict rubric should carry the rule '{rule}'"
             );
         }
         // It must apply to BOTH surfaces (chat summary + report body).

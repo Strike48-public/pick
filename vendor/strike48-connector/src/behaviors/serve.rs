@@ -426,6 +426,7 @@ impl AppBuilder {
             metadata: std::collections::HashMap::new(),
             metrics_enabled: env_config.metrics_enabled,
             metrics_interval_ms: env_config.metrics_interval_ms,
+            duplicate_slow_retry_interval_ms: 300_000,
             heartbeat_interval: None,
             heartbeat_timeout: None,
         };

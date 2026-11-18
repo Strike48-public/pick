@@ -285,6 +285,9 @@ features = ["v4"]
 [dependencies.webpki-roots]
 version = "1"
 
+[target."cfg(unix)".dependencies.libc]
+version = "0.2"
+
 [dev-dependencies.tempfile]
 version = "3"
 

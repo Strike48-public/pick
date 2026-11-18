@@ -24,6 +24,7 @@ impl SmbEnumTool {
         }
 
         let output = cmd
+            .kill_on_drop(true)
             .output()
             .await
             .map_err(|e| Error::ToolExecution(format!("smbclient not available: {}", e)))?;
@@ -92,6 +93,7 @@ impl SmbEnumTool {
             .arg("-N") // No password
             .arg("-c")
             .arg("ls") // Try to list files
+            .kill_on_drop(true)
             .output()
             .await;
 
@@ -108,6 +110,7 @@ impl SmbEnumTool {
         let output = Command::new("nmblookup")
             .arg("-A")
             .arg(host)
+            .kill_on_drop(true)
             .output()
             .await
             .map_err(|e| Error::ToolExecution(format!("nmblookup not available: {}", e)))?;

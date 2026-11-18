@@ -644,6 +644,17 @@ impl ToolResult {
         }
         self
     }
+
+    /// Whether this run counts as progress for the session stall budget.
+    ///
+    /// Only a run that completed a probe counts, and then only when it
+    /// produced evidence, data, or success. A failed or skipped run never
+    /// counts, even though it may carry diagnostic `data` (a failed probe's
+    /// exit code and stderr): an agent repeating a failing command is stalled.
+    pub fn made_progress(&self) -> bool {
+        self.outcome == ToolOutcome::Ran
+            && (self.provenance.is_some() || !self.data.is_null() || self.success)
+    }
 }
 
 /// Reclassify a completed discovery run from the platform probe outcome (#309).
@@ -738,6 +749,11 @@ pub struct ToolContext {
     /// not cross the Matrix/LLM boundary. Empty unless identities were
     /// provisioned for the engagement.
     identities: crate::identity::IdentityStore,
+
+    /// The engagement this call serves (pick#513). Tools push evidence under
+    /// it, so one Pick can run several engagements without mixing findings.
+    /// `Default` when the call carries no engagement id.
+    evidence_scope: crate::evidence::EvidenceScope,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -750,6 +766,7 @@ impl std::fmt::Debug for ToolContext {
             .field("aggression_level", &self.aggression_level)
             .field("agent_name", &self.agent_name)
             .field("identities", &self.identities)
+            .field("evidence_scope", &self.evidence_scope)
             .finish()
     }
 }
@@ -764,6 +781,7 @@ impl Default for ToolContext {
             aggression_level: crate::aggression::AggressionLevel::default(),
             agent_name: "pentest-connector".to_string(),
             identities: crate::identity::IdentityStore::new(),
+            evidence_scope: crate::evidence::EvidenceScope::Default,
         }
     }
 }
@@ -798,6 +816,17 @@ impl ToolContext {
     pub fn with_identities(mut self, identities: crate::identity::IdentityStore) -> Self {
         self.identities = identities;
         self
+    }
+
+    /// Set the engagement this call's evidence belongs to (pick#513).
+    pub fn with_evidence_scope(mut self, scope: crate::evidence::EvidenceScope) -> Self {
+        self.evidence_scope = scope;
+        self
+    }
+
+    /// The engagement this call's evidence belongs to.
+    pub fn evidence_scope(&self) -> &crate::evidence::EvidenceScope {
+        &self.evidence_scope
     }
 
     /// Get the Matrix client if available
@@ -1093,9 +1122,12 @@ impl ToolRegistry {
     /// Matrix side as a blank string in workflow node outputs and agent tool
     /// results — the model has nothing to act on ("the model diagnosed blind
     /// all night" is this exact failure), and the operator cannot tell what
-    /// went wrong. A blank failure is replaced with a message that names the
-    /// tool and points at the connector's logs. Successful results and
-    /// failures that already carry a real message are returned untouched.
+    /// went wrong. A blank failure gets a message that names the tool and
+    /// points at the connector's logs. Only the message is filled in: `data`
+    /// (a failed probe's exit code and stderr), `provenance`, `outcome` and
+    /// `duration_ms` are kept, so the cause still reaches the model and the
+    /// hop's failure line (pick#476). Successful results and failures that
+    /// already carry a real message are returned untouched.
     fn ensure_actionable_error(tool_name: &str, result: ToolResult) -> ToolResult {
         let has_message = result
             .error
@@ -1111,13 +1143,12 @@ impl ToolRegistry {
                 tool = tool_name,
                 "tool failed with an EMPTY error message — substituting actionable message"
             );
-            ToolResult::error_with_duration(
-                format!(
+            ToolResult {
+                error: Some(format!(
                     "Tool '{tool_name}' failed without returning an error message. Check the pick connector's logs for the underlying failure and retry; if the request was malformed, retry with the tool's documented parameters (a minimal `target` alone is a good starting point)."
-                ),
-                result.duration_ms,
-            )
-            .with_outcome(result.outcome)
+                )),
+                ..result
+            }
         }
     }
 
@@ -1232,6 +1263,18 @@ mod tool_outcome_tests {
     fn with_outcome_overrides() {
         let r = ToolResult::success(json!({})).with_outcome(ToolOutcome::Failed);
         assert_eq!(r.outcome, ToolOutcome::Failed);
+    }
+
+    #[test]
+    fn made_progress_counts_completed_runs_only() {
+        assert!(ToolResult::success(json!({"hosts": []})).made_progress());
+        assert!(!ToolResult::error("boom").made_progress());
+        // A failed probe keeps its exit code and stderr in data; that is
+        // diagnostics, not progress.
+        let failed = ToolResult::success(json!({"exit_code": 2, "stderr": "refused"}))
+            .with_outcome(ToolOutcome::Failed);
+        assert!(!failed.made_progress());
+        assert!(!ToolResult::skipped("not installed").made_progress());
     }
 
     #[test]

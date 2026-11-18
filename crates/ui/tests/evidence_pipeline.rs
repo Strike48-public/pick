@@ -21,6 +21,7 @@
 //! report. This test fails closed if any of those seams regress.
 
 use pentest_core::evidence::EvidenceNode;
+use pentest_core::evidence::EvidenceScope;
 use pentest_core::export::Severity;
 use pentest_core::orchestrator::{
     build_pending_evidence_manifest, gate_for_report, parse_validator_verdicts, EngagementInfo,
@@ -83,7 +84,8 @@ fn push_nmap_finding(host_ip: &str, port: u16, service: &str, version: &str) -> 
     );
     let node_id = nodes[0].id.clone();
     for node in nodes {
-        push_evidence(node).expect("tool buffer should accept the finding");
+        push_evidence(&EvidenceScope::Default, node)
+            .expect("tool buffer should accept the finding");
     }
     node_id
 }
@@ -113,7 +115,7 @@ fn tool_finding_reaches_the_report_after_validation() {
     let _guard = serial();
     // A fresh engagement starts by clearing the graph, exactly as the connector
     // does on `begin_scan`.
-    session::clear_evidence();
+    session::start_scan_evidence(&EvidenceScope::Default);
 
     // (1) A real tool produces evidence. This is the same `evidence_from_nmap`
     // builder the production nmap wrapper uses, fed synthetic scan JSON so the
@@ -144,11 +146,12 @@ fn tool_finding_reaches_the_report_after_validation() {
     );
     let node_id = nodes[0].id.clone();
     for node in nodes {
-        push_evidence(node).expect("tool buffer should accept the finding");
+        push_evidence(&EvidenceScope::Default, node)
+            .expect("tool buffer should accept the finding");
     }
 
     // (2) The connector bridge drains the tool buffer into the report graph.
-    let forwarded = session::drain_tool_evidence_into_graph();
+    let forwarded = session::drain_tool_evidence_into_graph(&EvidenceScope::Default);
     assert!(
         forwarded >= 1,
         "the finding should be forwarded to the graph"
@@ -181,7 +184,7 @@ fn tool_finding_reaches_the_report_after_validation() {
          \"confidence\": 0.9}}], \"summary\": {{\"reviewed\": 1}}}}\n```"
     );
     let verdicts = parse_validator_verdicts(&validator_reply).expect("verdict reply should parse");
-    let apply = session::apply_validator_verdicts(&verdicts);
+    let apply = session::apply_validator_verdicts(&EvidenceScope::Default, &verdicts);
     assert_eq!(apply.applied, 1);
     assert!(
         apply.is_fully_adjudicated(),
@@ -200,7 +203,7 @@ fn tool_finding_reaches_the_report_after_validation() {
     assert_eq!(manifest.findings[0].id, node_id);
 
     // Leave the shared graph clean for any other test in this binary.
-    session::clear_evidence();
+    session::start_scan_evidence(&EvidenceScope::Default);
 }
 
 /// Evidence from several tool runs must accumulate in the graph across
@@ -211,18 +214,18 @@ fn tool_finding_reaches_the_report_after_validation() {
 #[test]
 fn multiple_tools_drain_to_report_sequentially() {
     let _guard = serial();
-    session::clear_evidence();
+    session::start_scan_evidence(&EvidenceScope::Default);
 
     // (1) First tool run: nmap finds SSH. Drain immediately, as the connector
     // does after each tool completes.
     let ssh_id = push_nmap_finding("10.0.0.1", 22, "ssh", "OpenSSH 8.9");
-    let forwarded_first = session::drain_tool_evidence_into_graph();
+    let forwarded_first = session::drain_tool_evidence_into_graph(&EvidenceScope::Default);
     assert_eq!(forwarded_first, 1, "first drain forwards exactly one node");
 
     // (2) Second tool run: nmap finds HTTP on another host. Drain again — the
     // earlier SSH node must still be in the graph.
     let http_id = push_nmap_finding("10.0.0.2", 80, "http", "nginx 1.25");
-    let forwarded_second = session::drain_tool_evidence_into_graph();
+    let forwarded_second = session::drain_tool_evidence_into_graph(&EvidenceScope::Default);
     assert_eq!(
         forwarded_second, 1,
         "second drain forwards exactly one node"
@@ -238,7 +241,7 @@ fn multiple_tools_drain_to_report_sequentially() {
     // (3) Validate both findings at once, then the gate must publish both.
     let verdicts = parse_validator_verdicts(&confirm_all(&[ssh_id.clone(), http_id.clone()]))
         .expect("verdict reply should parse");
-    let apply = session::apply_validator_verdicts(&verdicts);
+    let apply = session::apply_validator_verdicts(&EvidenceScope::Default, &verdicts);
     assert_eq!(apply.applied, 2);
     assert!(
         apply.is_fully_adjudicated(),
@@ -259,7 +262,7 @@ fn multiple_tools_drain_to_report_sequentially() {
         "HTTP finding must be in the manifest"
     );
 
-    session::clear_evidence();
+    session::start_scan_evidence(&EvidenceScope::Default);
 }
 
 /// The `drain_tool_evidence_into_graph` docs claim the drain is safe under
@@ -275,7 +278,7 @@ fn drain_is_safe_under_concurrent_tool_execution() {
     use std::sync::Arc;
 
     let _guard = serial();
-    session::clear_evidence();
+    session::start_scan_evidence(&EvidenceScope::Default);
 
     const PRODUCERS: usize = 8;
     const PER_PRODUCER: usize = 25;
@@ -301,7 +304,7 @@ fn drain_is_safe_under_concurrent_tool_execution() {
     let drainer = std::thread::spawn(move || {
         let mut drained = 0usize;
         while !drainer_stop.load(Ordering::Relaxed) {
-            drained += session::drain_tool_evidence_into_graph();
+            drained += session::drain_tool_evidence_into_graph(&EvidenceScope::Default);
             std::thread::yield_now();
         }
         drained
@@ -315,7 +318,7 @@ fn drain_is_safe_under_concurrent_tool_execution() {
     let drained_during = drainer.join().expect("drainer thread should not panic");
 
     // A final drain sweeps up anything pushed after the drainer's last pass.
-    let drained_after = session::drain_tool_evidence_into_graph();
+    let drained_after = session::drain_tool_evidence_into_graph(&EvidenceScope::Default);
 
     // Every pushed node must be forwarded exactly once: nothing lost to a race,
     // nothing double-counted.
@@ -332,7 +335,7 @@ fn drain_is_safe_under_concurrent_tool_execution() {
         "the graph must contain every forwarded node with no duplicates"
     );
 
-    session::clear_evidence();
+    session::start_scan_evidence(&EvidenceScope::Default);
 }
 
 /// pick#184 fail-closed grounding, on the production path. Two guarantees, end
@@ -387,7 +390,7 @@ async fn failed_tool_is_flagged_and_ungrounded_finding_cannot_reach_report() {
     // the shared evidence graph, so take the serial guard now — after the await
     // above, so no lock is held across it.
     let _guard = serial();
-    session::clear_evidence();
+    session::start_scan_evidence(&EvidenceScope::Default);
 
     // Simulate the Red Team asserting a finding with no backing tool result: a
     // node with no provenance. It is validated to Confirmed (clearing the
@@ -404,8 +407,8 @@ async fn failed_tool_is_flagged_and_ungrounded_finding_cannot_reach_report() {
     // No `.with_provenance(...)` — this is the whole point.
     ungrounded.apply_validator_decision(Severity::High, "validator waved it through");
     assert!(ungrounded.is_publishable_finding());
-    push_evidence(ungrounded).expect("push to buffer");
-    session::drain_tool_evidence_into_graph();
+    push_evidence(&EvidenceScope::Default, ungrounded).expect("push to buffer");
+    session::drain_tool_evidence_into_graph(&EvidenceScope::Default);
 
     let snapshot = session::evidence_snapshot();
     match gate_for_report(&snapshot, engagement()) {
@@ -418,7 +421,7 @@ async fn failed_tool_is_flagged_and_ungrounded_finding_cannot_reach_report() {
         other => panic!("gate must fail closed on an ungrounded finding, got {other:?}"),
     }
 
-    session::clear_evidence();
+    session::start_scan_evidence(&EvidenceScope::Default);
 }
 
 /// pick#52 coverage promotion: the three web wrappers (`web_vuln_scan`,
@@ -430,7 +433,7 @@ async fn failed_tool_is_flagged_and_ungrounded_finding_cannot_reach_report() {
 #[test]
 fn web_wrapper_findings_reach_the_report_after_validation() {
     let _guard = serial();
-    session::clear_evidence();
+    session::start_scan_evidence(&EvidenceScope::Default);
 
     let mut node_ids = Vec::new();
 
@@ -452,7 +455,8 @@ fn web_wrapper_findings_reach_the_report_after_validation() {
     );
     for node in evidence_from_web_vuln_scan(&wvs_data, "http://10.0.0.1", wvs_prov) {
         node_ids.push(node.id.clone());
-        push_evidence(node).expect("tool buffer should accept the web_vuln_scan finding");
+        push_evidence(&EvidenceScope::Default, node)
+            .expect("tool buffer should accept the web_vuln_scan finding");
     }
 
     // default_creds: one node per successful login (the failed attempt yields none).
@@ -475,7 +479,8 @@ fn web_wrapper_findings_reach_the_report_after_validation() {
     );
     for node in evidence_from_default_creds(&dc_data, dc_prov) {
         node_ids.push(node.id.clone());
-        push_evidence(node).expect("tool buffer should accept the default_creds finding");
+        push_evidence(&EvidenceScope::Default, node)
+            .expect("tool buffer should accept the default_creds finding");
     }
 
     // http_request: one Info node per response.
@@ -497,7 +502,8 @@ fn web_wrapper_findings_reach_the_report_after_validation() {
     );
     for node in evidence_from_http_request(&hr_data, hr_prov) {
         node_ids.push(node.id.clone());
-        push_evidence(node).expect("tool buffer should accept the http_request node");
+        push_evidence(&EvidenceScope::Default, node)
+            .expect("tool buffer should accept the http_request node");
     }
 
     assert_eq!(
@@ -507,7 +513,7 @@ fn web_wrapper_findings_reach_the_report_after_validation() {
     );
 
     // Drain into the graph and confirm the gate sees every node as pending.
-    let forwarded = session::drain_tool_evidence_into_graph();
+    let forwarded = session::drain_tool_evidence_into_graph(&EvidenceScope::Default);
     assert_eq!(forwarded, 4, "all four nodes should reach the graph");
 
     let snapshot = session::evidence_snapshot();
@@ -526,7 +532,7 @@ fn web_wrapper_findings_reach_the_report_after_validation() {
     // Validator confirms all; the gate then accepts and every finding lands.
     let verdicts =
         parse_validator_verdicts(&confirm_all(&node_ids)).expect("verdict reply should parse");
-    let apply = session::apply_validator_verdicts(&verdicts);
+    let apply = session::apply_validator_verdicts(&EvidenceScope::Default, &verdicts);
     assert_eq!(apply.applied, 4);
     assert!(apply.is_fully_adjudicated());
 
@@ -539,7 +545,7 @@ fn web_wrapper_findings_reach_the_report_after_validation() {
         "every web-wrapper finding must reach the report manifest"
     );
 
-    session::clear_evidence();
+    session::start_scan_evidence(&EvidenceScope::Default);
 }
 
 /// pick#52 PR2: extends the same production-path guard to `port_scan` and
@@ -550,7 +556,7 @@ fn web_wrapper_findings_reach_the_report_after_validation() {
 #[test]
 fn port_scan_and_execute_command_findings_reach_the_report_after_validation() {
     let _guard = serial();
-    session::clear_evidence();
+    session::start_scan_evidence(&EvidenceScope::Default);
 
     let mut node_ids = Vec::new();
 
@@ -573,7 +579,8 @@ fn port_scan_and_execute_command_findings_reach_the_report_after_validation() {
     );
     for node in evidence_from_port_scan(&ps_data, ps_prov) {
         node_ids.push(node.id.clone());
-        push_evidence(node).expect("tool buffer should accept the port_scan finding");
+        push_evidence(&EvidenceScope::Default, node)
+            .expect("tool buffer should accept the port_scan finding");
     }
 
     // execute_command: one Info node per run.
@@ -592,13 +599,14 @@ fn port_scan_and_execute_command_findings_reach_the_report_after_validation() {
     );
     for node in evidence_from_execute_command(&ec_data, ec_prov) {
         node_ids.push(node.id.clone());
-        push_evidence(node).expect("tool buffer should accept the execute_command node");
+        push_evidence(&EvidenceScope::Default, node)
+            .expect("tool buffer should accept the execute_command node");
     }
 
     assert_eq!(node_ids.len(), 3, "2 open ports + 1 command_execution");
 
     // Drain into the graph and confirm the gate sees every node as pending.
-    let forwarded = session::drain_tool_evidence_into_graph();
+    let forwarded = session::drain_tool_evidence_into_graph(&EvidenceScope::Default);
     assert_eq!(forwarded, 3, "all three nodes should reach the graph");
 
     let snapshot = session::evidence_snapshot();
@@ -617,7 +625,7 @@ fn port_scan_and_execute_command_findings_reach_the_report_after_validation() {
     // Validator confirms all; the gate then accepts and every finding lands.
     let verdicts =
         parse_validator_verdicts(&confirm_all(&node_ids)).expect("verdict reply should parse");
-    let apply = session::apply_validator_verdicts(&verdicts);
+    let apply = session::apply_validator_verdicts(&EvidenceScope::Default, &verdicts);
     assert_eq!(apply.applied, 3);
     assert!(apply.is_fully_adjudicated());
 
@@ -630,5 +638,5 @@ fn port_scan_and_execute_command_findings_reach_the_report_after_validation() {
         "every port_scan + execute_command finding must reach the report manifest"
     );
 
-    session::clear_evidence();
+    session::start_scan_evidence(&EvidenceScope::Default);
 }
