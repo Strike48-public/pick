@@ -65,6 +65,20 @@ pub fn is_sandbox_enabled() -> bool {
 #[cfg(not(feature = "desktop"))]
 pub fn set_use_sandbox(_use_sandbox: bool) {}
 
+/// Name of the sandbox backend that confines tool commands to their own
+/// workspace right now, or `None` when commands can reach the host disk.
+/// See `desktop::sandbox::workspace_confining_backend`.
+#[cfg(feature = "desktop")]
+pub fn workspace_confining_sandbox() -> Option<String> {
+    desktop::sandbox::workspace_confining_backend().map(|backend| backend.to_string())
+}
+
+/// Non-desktop targets have no command sandbox, so nothing confines commands.
+#[cfg(not(feature = "desktop"))]
+pub fn workspace_confining_sandbox() -> Option<String> {
+    None
+}
+
 /// Whether a command-sandbox backend is usable. Desktop probes real backends
 /// (bwrap/proot/docker/WSL); non-desktop targets have no host command sandbox,
 /// so report unavailable. Lets cross-target UI code (e.g. `WorkspaceApp`) call
