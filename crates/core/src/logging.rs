@@ -422,7 +422,8 @@ pub fn apply_span_policy<S, N, E, W>(mut layer: fmt::Layer<S, N, E, W>) -> fmt::
     layer
 }
 
-/// Initialise a console-only tracing subscriber.
+/// Initialise a console-only tracing subscriber, plus the layer that feeds
+/// warnings and errors to the Logs pages ([`crate::ui_log`]).
 ///
 /// `default_level` is the tracing level applied to the `pentest` target
 /// (e.g. `"info"`, `"debug"`).  The `RUST_LOG` env var can still override
@@ -433,6 +434,7 @@ pub fn apply_span_policy<S, N, E, W>(mut layer: fmt::Layer<S, N, E, W>) -> fmt::
 pub fn init_logging(default_level: &str) {
     tracing_subscriber::registry()
         .with(apply_span_policy(fmt::layer()))
+        .with(crate::ui_log::layer())
         .with(env_filter(default_level))
         .init();
 }
@@ -463,6 +465,7 @@ pub fn init_logging_with_file(default_level: &str) -> Option<PathBuf> {
             tracing_subscriber::registry()
                 .with(apply_span_policy(fmt::layer()))
                 .with(file_layer)
+                .with(crate::ui_log::layer())
                 .with(env_filter(default_level))
                 .init();
             Some(log_dir)

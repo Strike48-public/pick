@@ -361,7 +361,7 @@ fn redact_line(line: &str, secrets: &[String]) -> String {
 }
 
 /// Cut `s` to at most `max` bytes on a char boundary, marking the cut.
-fn cap_bytes(s: String, max: usize) -> String {
+pub(crate) fn cap_bytes(s: String, max: usize) -> String {
     if s.len() <= max {
         return s;
     }
