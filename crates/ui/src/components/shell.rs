@@ -78,7 +78,7 @@ pub fn InteractiveShell(
                 )
         );
 
-        crate::liveview_server::push_terminal_line(TerminalLine::info(format!(
+        pentest_core::ui_log::emit(TerminalLine::info(format!(
             "[shell] initializing (mode={})",
             current_mode
         )));
