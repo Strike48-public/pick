@@ -44,7 +44,7 @@ tells you what your host can do.
 | Docker image | `ghcr.io/strike48-public/pick:0.1.13` ([package page](https://github.com/orgs/Strike48-public/packages/container/package/pick)) |
 | Install files for this version | [Pick v0.1.13 release](https://github.com/Strike48-public/pick/releases/tag/v0.1.13), assets `pick-docker-compose.yml` and `pick-docker.env.example` |
 | Preflight check and agent runbook | the same release, assets `pick-docker-preflight.sh` and `pick-docker-agent-setup.md` |
-| Newest release | [github.com/Strike48-public/pick/releases/latest](https://github.com/Strike48-public/pick/releases/latest) |
+| Newest release | the [releases page](https://github.com/Strike48-public/pick/releases): the newest release titled `Pentest Connector vX.Y.Z` that is not marked Pre-release. Do not go by the page's Latest badge, which can sit on a sandbox image release that carries no connector install files |
 
 You do not pull the image by hand; step 4 does it for you. Use the version
 number, not `latest`: the `latest` and `main` tags on the image are

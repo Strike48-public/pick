@@ -4,5 +4,7 @@
 
 # Link the MSVC C runtime statically so the shipped Windows exes do not depend
 # on VCRUNTIME140*.dll, which a clean Windows install may lack (pick#533).
-[target.x86_64-pc-windows-msvc]
+# A cfg table, so every MSVC target gets it: the x86_64-only table missed the
+# arm64 target when it was added (pick#611).
+[target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = ["-C", "target-feature=+crt-static"]
