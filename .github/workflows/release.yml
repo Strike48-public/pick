@@ -232,6 +232,11 @@ jobs:
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
+          # Install the signing module fresh on every run (#645). On
+          # v0.1.15-rc.2 the Headless x86_64 job restored TrustedSigning from
+          # the shared action cache and it did not load ("Invoke-TrustedSigning
+          # is not recognized"), twice; every fresh install passed.
+          cache-dependencies: false
 
       - name: Exe does not need the VC++ Redistributable
         shell: pwsh
@@ -661,6 +666,11 @@ jobs:
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
+          # Install the signing module fresh on every run (#645). On
+          # v0.1.15-rc.2 the Headless x86_64 job restored TrustedSigning from
+          # the shared action cache and it did not load ("Invoke-TrustedSigning
+          # is not recognized"), twice; every fresh install passed.
+          cache-dependencies: false
 
       - name: Exe does not need the VC++ Redistributable
         shell: pwsh
