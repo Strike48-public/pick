@@ -261,8 +261,12 @@ jobs:
             latest=false
           # metadata-action defaults revision to github.sha; pin it to the
           # checked-out commit so it agrees with the Dockerfile LABEL (#644).
+          # metadata-action sets no vendor or authors, so without these two the
+          # image keeps the Kali base values.
           labels: |
             org.opencontainers.image.revision=${{ steps.src.outputs.sha }}
+            org.opencontainers.image.vendor=Strike48
+            org.opencontainers.image.authors=Strike48
 
       - name: Build and push per-arch image
         id: build
