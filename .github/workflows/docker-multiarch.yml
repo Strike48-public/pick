@@ -143,6 +143,13 @@ jobs:
         with:
           ref: ${{ inputs.ref || inputs.tag }}
 
+      # The commit actually built (#644). On a dispatch backfill github.sha is
+      # main's head, not the checked-out tag, so the revision label and
+      # REVISION build-arg read this instead. Equal to github.sha on push/PR.
+      - name: Resolve checked-out commit
+        id: src
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       # docker/metadata-action's type=semver only engages on tag refs
       # (GITHUB_REF=refs/tags/...); a backfill dispatch happens at
       # refs/heads/main, so derive the version tags from inputs.tag here and
@@ -237,8 +244,9 @@ jobs:
             # sha-<short> (pick#630): an additional immutable per-build handle
             # for real pushes (branch + tag). The image's
             # org.opencontainers.image.revision label is stamped from
-            # REVISION=github.sha at build time (Dockerfile.scratch), so label
-            # == tag sha by construction. Never re-pointed by a later build:
+            # REVISION=steps.src.outputs.sha at build time (Dockerfile.scratch),
+            # which equals github.sha on a push, so label == tag sha by
+            # construction. Never re-pointed by a later build:
             # each main commit yields its own tag; a workflow re-run of the
             # SAME commit rebuilds the same tag (GHCR has no server-side
             # immutability — the convention is the same one the bare-sha line
@@ -251,6 +259,10 @@ jobs:
             type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           flavor: |
             latest=false
+          # metadata-action defaults revision to github.sha; pin it to the
+          # checked-out commit so it agrees with the Dockerfile LABEL (#644).
+          labels: |
+            org.opencontainers.image.revision=${{ steps.src.outputs.sha }}
 
       - name: Build and push per-arch image
         id: build
@@ -262,8 +274,10 @@ jobs:
           push: true
           provenance: false
           sbom: false
+          # Without this the image keeps the Kali base labels (#644).
+          labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            REVISION=${{ github.sha }}
+            REVISION=${{ steps.src.outputs.sha }}
           outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: |
             type=registry,ref=${{ env.REGISTRY_IMAGE }}:buildcache-${{ matrix.arch }}
