@@ -785,13 +785,15 @@ the image are no longer from the same release.
 ### If the release's image is not on ghcr yet
 
 Each release's image is built and pushed by the repository's `Multi-Arch
-Docker` GitHub Actions workflow, which normally runs when the release tag is
-pushed. Tags created by GitHub's `GITHUB_TOKEN` (how the release workflow
-creates its tags) do not fire that push trigger, so a release can exist whose
-image was never published (`docker pull` fails with `manifest unknown`). In
-that case a maintainer publishes the image by manually dispatching the
-`Multi-Arch Docker` workflow on `main`, passing the release tag as the
-`tag` input (the run checks the tag out internally):
+Docker` GitHub Actions workflow. A release pushed as a git tag triggers it
+directly; a release cut by dispatching the `Release` workflow runs it as a
+job before the release page is created, so the image exists by the time the
+release does. Releases cut before that change (v0.1.15-rc.1 and earlier) and
+any release whose image publish failed can still be missing their image
+(`docker pull` fails with `manifest unknown`). In that case a maintainer
+publishes the image by manually dispatching the `Multi-Arch Docker` workflow
+on `main`, passing the release tag as the `tag` input (the run checks the tag
+out internally). Prerelease tags such as `v0.1.15-rc.1` are accepted:
 
 - UI: Actions → `Multi-Arch Docker` → **Run workflow** (branch: `main`) →
   enter the release tag (e.g. `v0.1.13`) in the `tag` field →
@@ -806,9 +808,11 @@ publishes `<version>` (e.g. `0.1.13`) plus the tag's short-sha tag - and
 nothing else: it never moves the floating `<major>.<minor>` tag (e.g. `0.1`),
 `latest`, or `main`. Floating tags move only on stable tag-push events, so
 a backfill can no longer repoint them (see
-https://github.com/Strike48-public/pick/issues/563). Note that a release
+https://github.com/Strike48-public/pick/issues/563). A prerelease input
+publishes only its exact tag (e.g. `0.1.15-rc.1`). Note that a release
 whose tag was created by the release workflow (GITHUB_TOKEN) fires no push
-event, so the float keeps pointing at the last git-pushed stable release
+event, and the image the release workflow publishes for it follows the same
+rule, so the float keeps pointing at the last git-pushed stable release
 until that tag is re-pushed over git.
 
 Once that run completes, the `docker compose pull` above succeeds. Until it
