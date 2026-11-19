@@ -13,16 +13,21 @@
 //!   buffer, so a failure logged anywhere in Pick shows on the Logs page
 //!   without a second call at the call site. It skips `ui = true` events,
 //!   which are already in the buffer.
+//! * [`seed_from_log_file`] restores the previous session's UI lines and
+//!   warnings from the newest log file at start-up (pick#399). The file
+//!   holds them unredacted, so each restored line gets the same by-value
+//!   known-secrets pass and pattern redaction as the support bundle's tail.
 //!
 //! Every line gets a sequence number. A page keeps the last number it has
 //! shown and appends only newer lines, so its own Clear sticks and a full
 //! buffer keeps flowing (the old page compared line counts, which stop
 //! changing at the cap).
 
-use crate::diagnostics::cap_bytes;
+use crate::diagnostics::{cap_bytes, redact_with_secrets, MAX_LINE_BYTES};
 use crate::provenance::redact;
 use crate::terminal::{LogLevel, TerminalLine};
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use tokio::sync::watch;
 use tracing::field::{Field, Visit};
@@ -37,11 +42,16 @@ pub const UI_LOG_CAPACITY: usize = 5000;
 /// tool results, so the line cap alone does not bound the buffer's memory.
 pub const UI_LOG_DETAILS_MAX_BYTES: usize = 64 * 1024;
 
+/// Most previous-session lines restored at start-up.
+pub const SEED_MAX_LINES: usize = 500;
+
 /// Field that marks a tracing event as a UI line already in the buffer.
 const UI_FIELD: &str = "ui";
-/// Value of the `outcome` field that carries [`LogLevel::Success`], which
-/// tracing has no level for.
+/// Field that carries [`LogLevel::Success`], which tracing has no level for.
+const OUTCOME_FIELD: &str = "outcome";
 const OUTCOME_SUCCESS: &str = "success";
+/// Field that carries [`TerminalLine::source`].
+const SOURCE_FIELD: &str = "source";
 
 /// A bounded, sequence-numbered list of [`TerminalLine`]s with a change
 /// notifier.
@@ -252,6 +262,104 @@ impl Visit for EventFields {
     }
 }
 
+/// Restore the previous session from the JSON log file at `path` into `log`:
+/// the last [`SEED_MAX_LINES`] records that were UI lines (`fields.ui`) or
+/// `WARN`/`ERROR` events, with their original timestamps, after one marker
+/// line. Only the last 256 KiB of the file are read, so fewer lines can be
+/// restored when other records crowd that window. Each line's message and
+/// source are redacted against `secrets` (see
+/// [`crate::diagnostics::local_known_secrets`]) and by pattern, and the
+/// message is capped at 4096 bytes like a support-bundle line. Pushed
+/// straight to the buffer, not through tracing, so they are not
+/// written to the log file a second time. Returns how many records were
+/// restored; nothing (not even the marker) is pushed when there are none.
+///
+/// Call it before this process writes to the file, so its own records are
+/// not mistaken for the previous session's.
+pub fn seed_from_log_file(log: &UiLog, path: &Path, secrets: &[String]) -> usize {
+    let Ok(records) = crate::diagnostics::read_tail_lines(path, usize::MAX) else {
+        return 0;
+    };
+    let lines: Vec<TerminalLine> = records
+        .iter()
+        .filter_map(|record| seed_line(record, secrets))
+        .collect();
+    let skip = lines.len().saturating_sub(SEED_MAX_LINES);
+    let restored = &lines[skip..];
+    if restored.is_empty() {
+        return 0;
+    }
+    let file = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    log.push(TerminalLine::with_source(
+        LogLevel::Info,
+        format!(
+            "Restored {} lines from the previous session ({file})",
+            restored.len()
+        ),
+        "previous session",
+    ));
+    for line in restored {
+        log.push(line.clone());
+    }
+    restored.len()
+}
+
+/// One JSON log record as a Logs line, or `None` when it is not a UI line or
+/// a warning/error, or does not parse.
+fn seed_line(record: &str, secrets: &[String]) -> Option<TerminalLine> {
+    let value: serde_json::Value = serde_json::from_str(record).ok()?;
+    let fields = value.get("fields")?.as_object()?;
+    let is_ui = fields.get(UI_FIELD).and_then(|v| v.as_bool()) == Some(true);
+    let level = match value.get("level")?.as_str()? {
+        "ERROR" => LogLevel::Error,
+        "WARN" => LogLevel::Warning,
+        _ if !is_ui => return None,
+        "DEBUG" | "TRACE" => LogLevel::Debug,
+        _ if fields.get(OUTCOME_FIELD).and_then(|v| v.as_str()) == Some(OUTCOME_SUCCESS) => {
+            LogLevel::Success
+        }
+        _ => LogLevel::Info,
+    };
+    let timestamp = value
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())?
+        .with_timezone(&chrono::Utc);
+    let message = fields.get("message").map(json_text).unwrap_or_default();
+    // A warning's other fields are part of what it says; a UI line's extra
+    // fields are this module's own markers.
+    let rest = fields
+        .iter()
+        .filter(|(k, _)| !is_ui && k.as_str() != "message")
+        .map(|(k, v)| format!("{k}={}", json_text(v)));
+    let text = std::iter::once(message)
+        .chain(rest)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(TerminalLine {
+        timestamp,
+        level,
+        message: cap_bytes(redact_with_secrets(&text, secrets), MAX_LINE_BYTES),
+        source: fields
+            .get(SOURCE_FIELD)
+            .filter(|_| is_ui)
+            .and_then(|v| v.as_str())
+            .map(|s| redact_with_secrets(s, secrets)),
+        details: None,
+    })
+}
+
+fn json_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,5 +524,155 @@ mod tests {
         assert!(!out.contains("supersecretvalue2"), "{out}");
         let (lines, _) = log.since(0);
         assert_eq!(lines[0].details.as_deref(), Some("SECRET-TOOL-OUTPUT"));
+    }
+
+    fn write_log(records: &[serde_json::Value]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("connector.2026-10-19.log");
+        let text: String = records.iter().map(|r| format!("{r}\n")).collect();
+        std::fs::write(&path, format!("{text}not json\n")).expect("write log");
+        (dir, path)
+    }
+
+    #[test]
+    fn seed_restores_ui_lines_and_warnings_with_their_timestamps() {
+        let (_dir, path) = write_log(&[
+            serde_json::json!({"timestamp": "2026-10-19T08:00:00.5Z", "level": "INFO",
+                "fields": {"message": "plain info"}}),
+            serde_json::json!({"timestamp": "2026-10-19T08:00:01Z", "level": "INFO",
+                "fields": {"message": "[tool] nmap completed", "ui": true, "outcome": "success"}}),
+            serde_json::json!({"timestamp": "2026-10-19T08:00:02Z", "level": "WARN",
+                "fields": {"message": "sink unavailable", "dir": "/x"}}),
+            serde_json::json!({"timestamp": "2026-10-19T08:00:03Z", "level": "ERROR",
+                "fields": {"message": "Connection error", "ui": true, "source": "connector"}}),
+            serde_json::json!({"timestamp": "2026-10-19T08:00:04Z", "level": "DEBUG",
+                "fields": {"message": "debug ui", "ui": true}}),
+        ]);
+        let log = UiLog::new(100);
+        assert_eq!(seed_from_log_file(&log, &path, &[]), 4);
+        let (lines, _) = log.since(0);
+        assert!(
+            lines[0].message.starts_with("Restored 4 lines"),
+            "{lines:?}"
+        );
+        assert!(lines[0].message.contains("connector.2026-10-19.log"));
+        let restored = &lines[1..];
+        assert_eq!(
+            messages(restored),
+            vec![
+                "[tool] nmap completed",
+                "sink unavailable dir=/x",
+                "Connection error",
+                "debug ui"
+            ]
+        );
+        let levels: Vec<LogLevel> = restored.iter().map(|l| l.level).collect();
+        assert_eq!(
+            levels,
+            vec![
+                LogLevel::Success,
+                LogLevel::Warning,
+                LogLevel::Error,
+                LogLevel::Debug
+            ]
+        );
+        assert_eq!(
+            restored[0].timestamp.to_rfc3339(),
+            "2026-10-19T08:00:01+00:00"
+        );
+        assert_eq!(restored[2].source.as_deref(), Some("connector"));
+    }
+
+    #[test]
+    fn seed_keeps_only_the_newest_lines() {
+        let records: Vec<_> = (0..SEED_MAX_LINES + 5)
+            .map(|i| {
+                serde_json::json!({"timestamp": "2026-10-19T08:00:00Z", "level": "WARN",
+                    "fields": {"message": format!("w{i}")}})
+            })
+            .collect();
+        let (_dir, path) = write_log(&records);
+        let log = UiLog::new(UI_LOG_CAPACITY);
+        assert_eq!(seed_from_log_file(&log, &path, &[]), SEED_MAX_LINES);
+        let (lines, _) = log.since(0);
+        assert_eq!(lines[1].message, "w5");
+        assert_eq!(
+            lines.last().unwrap().message,
+            format!("w{}", SEED_MAX_LINES + 4)
+        );
+    }
+
+    #[test]
+    fn seed_redacts_restored_warnings() {
+        let (_dir, path) = write_log(&[
+            serde_json::json!({
+            "timestamp": "2026-10-19T08:00:00Z", "level": "ERROR",
+            "fields": {"message": "failed: Authorization: Bearer abcdefghijklmnop"}}),
+            serde_json::json!({
+            "timestamp": "2026-10-19T08:00:01Z", "level": "WARN",
+            "fields": {"message": "retrying", "ui": true,
+                "source": "connector token=supersecretvalue3"}}),
+        ]);
+        let log = UiLog::new(10);
+        seed_from_log_file(&log, &path, &[]);
+        let (lines, _) = log.since(0);
+        assert!(!lines[1].message.contains("abcdefghijklmnop"), "{lines:?}");
+        let source = lines[2].source.as_deref().expect("source restored");
+        assert!(source.starts_with("connector"), "{source}");
+        assert!(!source.contains("supersecretvalue3"), "{source}");
+    }
+
+    #[test]
+    fn seed_replaces_known_secrets_by_value() {
+        // A saved token mentioned in free text has no shape pattern
+        // redaction recognises; only the by-value pass removes it.
+        let secret = "fake-odd!shape-secret".to_string();
+        let (_dir, path) = write_log(&[
+            serde_json::json!({
+            "timestamp": "2026-10-19T08:00:00Z", "level": "WARN",
+            "fields": {"message": "auth with fake-odd!shape-secret failed"}}),
+            serde_json::json!({
+            "timestamp": "2026-10-19T08:00:01Z", "level": "INFO",
+            "fields": {"message": "connected", "ui": true,
+                "source": "connector fake-odd!shape-secret"}}),
+        ]);
+        let log = UiLog::new(10);
+        assert_eq!(
+            seed_from_log_file(&log, &path, std::slice::from_ref(&secret)),
+            2
+        );
+        let (lines, _) = log.since(0);
+        assert!(!lines[1].message.contains(&secret), "{lines:?}");
+        assert!(lines[1].message.starts_with("auth with"), "{lines:?}");
+        let source = lines[2].source.as_deref().expect("source restored");
+        assert!(!source.contains(&secret), "{source}");
+        assert!(source.starts_with("connector"), "{source}");
+    }
+
+    #[test]
+    fn seed_caps_a_restored_message_like_a_bundle_line() {
+        let (_dir, path) = write_log(&[serde_json::json!({
+            "timestamp": "2026-10-19T08:00:00Z", "level": "WARN",
+            "fields": {"message": "disk full ".repeat(MAX_LINE_BYTES)}})]);
+        let log = UiLog::new(10);
+        assert_eq!(seed_from_log_file(&log, &path, &[]), 1);
+        let (lines, _) = log.since(0);
+        let message = &lines[1].message;
+        assert!(message.len() <= MAX_LINE_BYTES + 20, "{}", message.len());
+        assert!(message.ends_with("...<truncated>"), "{message:.40}");
+    }
+
+    #[test]
+    fn seed_pushes_nothing_without_a_restorable_record() {
+        let (_dir, path) = write_log(&[serde_json::json!({
+            "timestamp": "2026-10-19T08:00:00Z", "level": "INFO",
+            "fields": {"message": "plain"}})]);
+        let log = UiLog::new(10);
+        assert_eq!(seed_from_log_file(&log, &path, &[]), 0);
+        assert_eq!(
+            seed_from_log_file(&log, Path::new("/nonexistent/x.log"), &[]),
+            0
+        );
+        assert!(log.since(0).0.is_empty());
     }
 }

@@ -448,6 +448,10 @@ pub fn init_logging(default_level: &str) {
 /// `default_level` is the tracing level applied to the `pentest` target
 /// (e.g. `"info"`, `"debug"`).
 ///
+/// Before installing, the Logs pages are seeded with the previous session's
+/// UI lines and warnings from the newest log file
+/// ([`crate::ui_log::seed_from_log_file`], pick#399).
+///
 /// Returns the log directory when the file sink is active. When the
 /// directory cannot be created or the file cannot be opened, a console-only
 /// subscriber is installed instead, a warning names the failure, and `None`
@@ -457,6 +461,15 @@ pub fn init_logging(default_level: &str) {
 /// Panics if the level string cannot be parsed as a valid tracing directive.
 pub fn init_logging_with_file(default_level: &str) -> Option<PathBuf> {
     let log_dir = log_dir();
+    // Found before the appender opens: it pre-creates today's (empty) file,
+    // which would otherwise hide yesterday's session.
+    if let Some(previous) = newest_log_file(&log_dir) {
+        crate::ui_log::seed_from_log_file(
+            crate::ui_log::global(),
+            &previous,
+            &crate::diagnostics::local_known_secrets(),
+        );
+    }
     match open_log_appender(&log_dir) {
         Ok(appender) => {
             let (file_layer, health) = json_file_layer(appender);
