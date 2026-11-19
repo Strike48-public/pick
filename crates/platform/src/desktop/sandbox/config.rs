@@ -71,6 +71,19 @@ impl std::fmt::Display for SandboxBackend {
     }
 }
 
+impl SandboxBackend {
+    /// Whether this backend confines a command to its own workspace, so one
+    /// engagement's commands cannot read another's files. Bwrap, proot and
+    /// Docker bind only the workspace at `/workspace`; WSL mounts the Windows
+    /// drives at `/mnt/c`, so the host disk stays visible.
+    pub fn confines_workspace(self) -> bool {
+        match self {
+            SandboxBackend::Bwrap | SandboxBackend::Proot | SandboxBackend::Docker => true,
+            SandboxBackend::Wsl => false,
+        }
+    }
+}
+
 /// Configuration for the sandbox environment
 #[derive(Debug, Clone)]
 pub struct SandboxConfig {
@@ -184,5 +197,21 @@ fn default_data_dir() -> PathBuf {
     } else {
         // Last resort
         PathBuf::from("/tmp/pentest-sandbox")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Engagement isolation (pick#513) is advertised only on a backend that
+    /// hides the host disk. Counting WSL as confining, or dropping any of the
+    /// workspace-only backends, turns this red.
+    #[test]
+    fn only_workspace_only_backends_confine_commands() {
+        assert!(SandboxBackend::Bwrap.confines_workspace());
+        assert!(SandboxBackend::Proot.confines_workspace());
+        assert!(SandboxBackend::Docker.confines_workspace());
+        assert!(!SandboxBackend::Wsl.confines_workspace());
     }
 }

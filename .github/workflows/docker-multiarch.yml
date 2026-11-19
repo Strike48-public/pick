@@ -18,6 +18,12 @@ on:
   # docker install was broken for both releases. Tags pushed by a human over
   # git/ssh DO fire the push event, which is why e.g. v0.1.11 got its image.
   #
+  # Since pick#641 a dispatched release publishes its own image: release.yml
+  # calls this workflow (workflow_call, below) before Create Release. The
+  # manual dispatch here is the recovery path, for a release whose image is
+  # missing anyway and for releases cut before that change. Prerelease tags
+  # (v0.1.15-rc.1) are accepted and publish the exact rc tag only.
+  #
   # How to (re)publish a release's image: dispatch THIS workflow on main (the
   # default branch) and pass the release tag as the `tag` input:
   #
@@ -59,7 +65,23 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to (re)publish, e.g. v0.1.13'
+        description: 'Release tag to (re)publish, e.g. v0.1.13 or v0.1.15-rc.1'
+        required: true
+        type: string
+  # Called by release.yml on a dispatched release (pick#641), so the image
+  # exists before Create Release publishes a compose file that pins it. The
+  # caller's event is workflow_dispatch, so this runs the backfill path above
+  # unchanged: exact version + commit tags, never a float or latest. The tag
+  # does not exist yet at that point (Create Release makes it), so the caller
+  # also passes `ref`, the commit it built and will tag.
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag being published, e.g. v0.1.15'
+        required: true
+        type: string
+      ref:
+        description: 'Commit to build: the commit the release will tag'
         required: true
         type: string
 
@@ -114,11 +136,12 @@ jobs:
 
     steps:
       # workflow_dispatch backfills check out the release tag being
-      # (re)published. On push/PR runs inputs.tag is empty and
-      # actions/checkout falls back to the event's own commit (unchanged).
+      # (re)published; a release.yml call checks out the commit it passed as
+      # `ref` (the tag does not exist yet). On push/PR runs both inputs are
+      # empty and actions/checkout falls back to the event's own commit.
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.ref || inputs.tag }}
 
       # docker/metadata-action's type=semver only engages on tag refs
       # (GITHUB_REF=refs/tags/...); a backfill dispatch happens at
@@ -129,24 +152,28 @@ jobs:
       - name: Derive backfill version from dispatch input
         id: vers
         if: github.event_name == 'workflow_dispatch'
+        env:
+          # Through env, not ${{ }} in the script, so the input cannot inject shell.
+          TAG: ${{ inputs.tag }}
         run: |
-          TAG="${{ inputs.tag }}"
           case "${TAG}" in
             v[0-9]*.*) ;;
             *)
-              echo "Invalid tag '${TAG}': expected a release tag like v0.1.13" >&2
+              echo "Invalid tag: expected a release tag like v0.1.13" >&2
               exit 1
               ;;
           esac
           # Strict charset guard (review SHOULD-FIX): the case glob admits ',' —
           # v0.1.13,latest passes it, and metadata-action's csv-parse would then
           # let a smuggled field overwrite value= (moving :latest from a backfill).
-          [[ "${TAG}" =~ ^v[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "Invalid tag '${TAG}': comma-free vX.Y.Z required" >&2; exit 1; }
-          # The same regex rejects prerelease inputs (vX.Y.Z-rc.N): a rc
-          # backfill hard-fails before anything is published, so an rc
-          # input can never reach the float (#563).
+          # A prerelease suffix (vX.Y.Z-rc.N) is admitted from the same comma-free
+          # charset (pick#641): it publishes only the exact rc tag, because the
+          # float and latest lines are disabled on this path, never input-gated
+          # (#563).
+          [[ "${TAG}" =~ ^v[0-9]+(\.[0-9]+){1,2}(-[0-9A-Za-z.]+)?$ ]] || { echo "Invalid tag: comma-free vX.Y.Z[-PRERELEASE] required" >&2; exit 1; }
           VERSION="${TAG#v}"
-          MAJOR_MINOR="${VERSION%.*}"
+          BASE="${VERSION%%-*}"
+          MAJOR_MINOR="${BASE%.*}"
           COMMIT="$(git rev-parse --short=7 HEAD)"
           {
             echo "version=${VERSION}"
@@ -271,24 +298,22 @@ jobs:
       - name: Derive backfill version from dispatch input
         id: vers
         if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
-          TAG="${{ inputs.tag }}"
           case "${TAG}" in
             v[0-9]*.*) ;;
             *)
-              echo "Invalid tag '${TAG}': expected a release tag like v0.1.13" >&2
+              echo "Invalid tag: expected a release tag like v0.1.13" >&2
               exit 1
               ;;
           esac
-          # Strict charset guard (review SHOULD-FIX): the case glob admits ',' —
-          # v0.1.13,latest passes it, and metadata-action's csv-parse would then
-          # let a smuggled field overwrite value= (moving :latest from a backfill).
-          [[ "${TAG}" =~ ^v[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "Invalid tag '${TAG}': comma-free vX.Y.Z required" >&2; exit 1; }
-          # The same regex rejects prerelease inputs (vX.Y.Z-rc.N): a rc
-          # backfill hard-fails before anything is published, so an rc
-          # input can never reach the float (#563).
+          # Same guard as build-image: comma-free, optional prerelease suffix
+          # (pick#641); the float stays disabled on this path (#563).
+          [[ "${TAG}" =~ ^v[0-9]+(\.[0-9]+){1,2}(-[0-9A-Za-z.]+)?$ ]] || { echo "Invalid tag: comma-free vX.Y.Z[-PRERELEASE] required" >&2; exit 1; }
           VERSION="${TAG#v}"
-          MAJOR_MINOR="${VERSION%.*}"
+          BASE="${VERSION%%-*}"
+          MAJOR_MINOR="${BASE%.*}"
           {
             echo "version=${VERSION}"
             echo "major_minor=${MAJOR_MINOR}"
