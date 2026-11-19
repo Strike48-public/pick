@@ -730,9 +730,34 @@ jobs:
   # ===========================================
   # Create Release
   # ===========================================
+  # ===========================================
+  # Docker image (pick#641)
+  # ===========================================
+  # Create Release makes the tag with GITHUB_TOKEN, which fires no push event,
+  # so docker-multiarch.yml's tag trigger never runs for a dispatched release
+  # and the shipped compose file pinned an image that did not exist. On
+  # dispatch, publish the image here, from the commit the release tags, before
+  # the release exists. A human-pushed tag already fires docker-multiarch.yml
+  # itself, so this job is skipped on push (a second publish would race it).
+  # The caller's event is workflow_dispatch, so the called workflow publishes
+  # the exact version + commit tags only, never :X.Y or latest (#563).
+  docker-image:
+    name: Docker image
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-multiarch.yml
+    with:
+      tag: v${{ inputs.version }}
+      ref: ${{ github.sha }}
+
   release:
     name: Create Release
-    needs: [build-desktop-linux, build-desktop-windows, build-desktop-macos, build-web, build-headless-linux, build-headless-windows, build-headless-macos]
+    needs: [build-desktop-linux, build-desktop-windows, build-desktop-macos, build-web, build-headless-linux, build-headless-windows, build-headless-macos, docker-image]
+    # docker-image is skipped on tag pushes; a skipped need would skip this
+    # job too, so run unless something failed or the run was cancelled.
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -865,6 +890,11 @@ jobs:
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           tag_name: v${{ steps.version.outputs.version }}
+          # Tag the commit that was built (binaries and, on dispatch, the
+          # Docker image). Unset, GitHub tags the default branch's head at
+          # publish time, which may have moved during the builds. Ignored when
+          # the tag already exists (a pushed tag).
+          target_commitish: ${{ github.sha }}
           # An unsigned manual test build must never become "latest".
           prerelease: ${{ github.event_name != 'push' && !inputs.macos_signing }}
           name: Pentest Connector v${{ steps.version.outputs.version }}
