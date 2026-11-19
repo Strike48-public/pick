@@ -12,6 +12,7 @@ pub mod ipc;
 #[cfg(feature = "connector")]
 pub mod liveview_connector;
 pub mod liveview_server;
+pub mod logs_feed;
 mod platform_helper;
 pub mod session;
 #[cfg(feature = "shell-ws")]
@@ -65,7 +66,6 @@ pub fn compute_screen(
 /// Dioxus signals used by the connector event loop.
 #[cfg(feature = "connector")]
 pub struct EventLoopSignals {
-    pub terminal_lines: dioxus::prelude::Signal<Vec<pentest_core::terminal::TerminalLine>>,
     pub status: dioxus::prelude::Signal<ConnectorStatus>,
     pub connecting_step: dioxus::prelude::Signal<Option<ConnectingStep>>,
     pub config: dioxus::prelude::Signal<pentest_core::config::ConnectorConfig>,
@@ -77,6 +77,9 @@ pub struct EventLoopSignals {
 /// Run the connector event loop, dispatching events to the appropriate Dioxus signals.
 ///
 /// This extracts the ~60-line event handler that was duplicated across all three app targets.
+///
+/// Log and tool events need nothing here: the connector's `send_event` already
+/// wrote their lines to the shared Logs buffer ([`pentest_core::ui_log`]).
 #[cfg(feature = "connector")]
 pub async fn run_event_loop(
     mut event_rx: tokio::sync::broadcast::Receiver<ConnectorEvent>,
@@ -84,7 +87,6 @@ pub async fn run_event_loop(
 ) {
     use dioxus::prelude::{ReadableExt, WritableExt};
     use pentest_core::settings::save_settings;
-    use pentest_core::terminal::TerminalLine;
 
     loop {
         match event_rx.recv().await {
@@ -95,9 +97,11 @@ pub async fn run_event_loop(
                 ConnectorEvent::StepChanged(step) => {
                     signals.connecting_step.set(Some(step));
                 }
-                ConnectorEvent::Log(line) => {
-                    signals.terminal_lines.write().push(line);
-                }
+                ConnectorEvent::Log(_)
+                | ConnectorEvent::ToolStarted { .. }
+                | ConnectorEvent::ToolCompleted { .. }
+                | ConnectorEvent::ToolFailed { .. }
+                | ConnectorEvent::ToolProgress { .. } => {}
                 ConnectorEvent::CredentialsUpdated {
                     auth_token,
                     api_url,
@@ -159,60 +163,6 @@ pub async fn run_event_loop(
                         }
                         crate::session::persist_matrix_token(&auth_token);
                     }
-                }
-                ConnectorEvent::ToolStarted { tool_name, params } => {
-                    let details = serde_json::to_string_pretty(&params)
-                        .unwrap_or_else(|_| params.to_string());
-                    signals.terminal_lines.write().push(
-                        TerminalLine::info(format!("[tool] {} started", tool_name))
-                            .with_details(format!("args: {}", details)),
-                    );
-                }
-                ConnectorEvent::ToolCompleted {
-                    tool_name,
-                    duration_ms,
-                    success,
-                    result,
-                } => {
-                    let details = serde_json::to_string_pretty(&result)
-                        .unwrap_or_else(|_| result.to_string());
-                    if success {
-                        signals.terminal_lines.write().push(
-                            TerminalLine::success(format!(
-                                "[tool] {} completed ({}ms)",
-                                tool_name, duration_ms
-                            ))
-                            .with_details(details),
-                        );
-                    } else {
-                        signals.terminal_lines.write().push(
-                            TerminalLine::error(format!(
-                                "[tool] {} returned error ({}ms)",
-                                tool_name, duration_ms
-                            ))
-                            .with_details(details),
-                        );
-                    }
-                }
-                ConnectorEvent::ToolFailed { tool_name, error } => {
-                    signals.terminal_lines.write().push(
-                        TerminalLine::error(format!("[tool] {} failed", tool_name))
-                            .with_details(error),
-                    );
-                }
-                ConnectorEvent::ToolProgress {
-                    tool_name,
-                    step,
-                    message,
-                    ..
-                } => {
-                    signals
-                        .terminal_lines
-                        .write()
-                        .push(TerminalLine::info(format!(
-                            "[tool] {} step {}: {}",
-                            tool_name, step, message
-                        )));
                 }
             },
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,

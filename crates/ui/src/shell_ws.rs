@@ -112,11 +112,9 @@ async fn handle_socket(
     if let Some(backend) = pty.effective_backend() {
         if let Some(primary) = pty.primary_backend() {
             if primary != backend {
-                crate::liveview_server::push_terminal_line(
-                    pentest_core::terminal::TerminalLine::info(format!(
-                        "Sandbox backend: {backend} (fell back from {primary})"
-                    )),
-                );
+                pentest_core::ui_log::emit(pentest_core::terminal::TerminalLine::info(format!(
+                    "Sandbox backend: {backend} (fell back from {primary})"
+                )));
             }
         }
     }
