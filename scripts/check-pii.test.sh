@@ -59,6 +59,24 @@ else
     printf 'skip - empty-list fail-loud (.pii-names.local present locally)\n'
 fi
 
+# --- Redaction: CI logs are public, so a hit must never print the name ---
+
+# assert_redaction <description> <PII_REDACT> <want: hidden|shown>
+assert_redaction() {
+    local desc="$1" redact="$2" want="$3" out
+    out="$(printf 'built for zyxcorp today\n' | PII_NAMES='zyxcorp' PII_NAMES_FILE="" PII_REDACT="$redact" "$SCANNER" 2>&1 >/dev/null)"
+    if [[ "$want" == hidden && "$out" == *'stdin:1: [PII match redacted]'* && "$out" != *zyxcorp* ]] ||
+        [[ "$want" == shown && "$out" == *'zyxcorp'* ]]; then
+        printf 'ok   - %s\n' "$desc"
+    else
+        printf 'FAIL - %s\n' "$desc"
+        fail=1
+    fi
+}
+
+assert_redaction "PII_REDACT=1 prints the location, never the name" 1 hidden
+assert_redaction "unset PII_REDACT shows the line for local fixing" 0 shown
+
 if [[ "$fail" -ne 0 ]]; then
     echo "PII scanner regression tests FAILED" >&2
     exit 1
