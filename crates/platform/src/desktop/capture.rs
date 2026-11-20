@@ -92,24 +92,24 @@ pub fn is_pcap_available() -> bool {
 
 /// Capture a screenshot
 pub async fn capture_screenshot() -> Result<Vec<u8>> {
-    #[cfg(feature = "screenshots")]
+    #[cfg(feature = "desktop-screenshots")]
     {
-        use screenshots::Screen;
+        use xcap::Monitor;
 
         // Catch panics from screenshot library (e.g., Wayland display not available)
         let result = std::panic::catch_unwind(|| {
-            let screens = Screen::all()
-                .map_err(|e| Error::Capture(format!("Failed to get screens: {}", e)))?;
+            let monitors = Monitor::all()
+                .map_err(|e| Error::Capture(format!("Failed to get monitors: {}", e)))?;
 
-            if screens.is_empty() {
-                return Err(Error::Capture("No screens found".into()));
+            if monitors.is_empty() {
+                return Err(Error::Capture("No monitors found".into()));
             }
 
-            // Capture the primary screen
-            let screen = &screens[0];
-            let image = screen
-                .capture()
-                .map_err(|e| Error::Capture(format!("Failed to capture screen: {}", e)))?;
+            // Capture the primary monitor
+            let monitor = &monitors[0];
+            let image = monitor
+                .capture_image()
+                .map_err(|e| Error::Capture(format!("Failed to capture monitor: {}", e)))?;
 
             // Encode as PNG
             let mut buffer = Vec::new();
@@ -135,10 +135,10 @@ pub async fn capture_screenshot() -> Result<Vec<u8>> {
         }
     }
 
-    #[cfg(not(feature = "screenshots"))]
+    #[cfg(not(feature = "desktop-screenshots"))]
     {
         Err(Error::PlatformNotSupported(
-            "Screenshot capture requires 'screenshots' feature".into(),
+            "Screenshot capture requires the desktop-screenshots feature".into(),
         ))
     }
 }
