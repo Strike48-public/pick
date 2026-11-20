@@ -17,6 +17,24 @@ const NETWORK_ATTACK_PLAN_PROMPT: &str = "Call the autopwn_network_plan tool to 
 
 /// Connected home screen with status, quick actions, and recent activity.
 /// Settings (shell mode) and disconnect are now in the sidebar.
+/// Seeded chat message for the dashboard's Safety Check card.
+///
+/// The agent's write-up follows the refined summary layout
+/// (project-management#490), the same five sections `safety_check`'s own
+/// report uses, so the tool output and the final answer read alike.
+pub(crate) const SAFETY_CHECK_PROMPT: &str = "Run the safety_check tool to validate whether this network is safe to use.
+
+The tool checks DNS integrity (hijacking/captive portals), discovers and maps local network devices, and identifies the gateway and DNS resolver IPs. Any check it marks PENDING means a public IP still needs a reputation lookup.
+
+After running safety_check: for each public gateway or DNS IP it reports as needing enrichment, run abuseipdb_check and virustotal on that IP, then fold the threat scores into the final verdict (a confirmed-malicious IP makes the network Not safe).
+
+Write the answer for a non-technical traveler, in exactly these sections and in this order, starting from the tool's `summary` and updating it with the reputation results:
+1. A heading with the verdict: Looks safe, Probably safe, Use with caution, or Not safe.
+2. \"Your network at a glance\": the tool's network diagram, with any flagged hop highlighted.
+3. \"The verdict: is anything malicious?\": exactly two short sentences: whether you saw signs of an attacker, then the bottom line on weaknesses. No list of findings here, and never more certain than the checks allow.
+4. \"How this could impact you\": a Scenario | Risk to you table (High direct risk / Medium risk / Low direct risk, and why it touches this person).
+5. \"What we recommend\": exactly one sentence they can act on (e.g. use a VPN, avoid sensitive logins, disconnect). End the answer there.";
+
 #[component]
 pub fn Dashboard(
     host: String,
@@ -45,7 +63,7 @@ pub fn Dashboard(
                     div { class: "action-grid",
                         div {
                             class: "action-card safety-check-card",
-                            onclick: move |_| on_open_chat.call("Run the safety_check tool to validate whether this network is safe to use.\n\nThe tool checks DNS integrity (hijacking/captive portals), discovers and maps local network devices, and identifies the gateway and DNS resolver IPs. Any check it marks PENDING means a public IP still needs a reputation lookup.\n\nAfter running safety_check: for each public gateway or DNS IP it reports as needing enrichment, run abuseipdb_check and virustotal on that IP, then fold the threat scores into the final verdict (a confirmed-malicious IP makes the network UNSAFE).\n\nFinish with a clear verdict - SAFE, MOSTLY SAFE, CAUTION, or UNSAFE - and always explain WHY in plain language a non-technical traveler can act on, plus concrete recommendations (e.g. use a VPN, avoid sensitive logins, disconnect).".to_string()),
+                            onclick: move |_| on_open_chat.call(SAFETY_CHECK_PROMPT.to_string()),
                             span { class: "action-card-icon", Shield { size: 24 } }
                             div { class: "action-card-content",
                                 span { class: "action-card-label", "Safety Check" }
@@ -224,7 +242,33 @@ pub fn Dashboard(
 
 #[cfg(test)]
 mod tests {
-    use super::NETWORK_ATTACK_PLAN_PROMPT;
+    use super::{NETWORK_ATTACK_PLAN_PROMPT, SAFETY_CHECK_PROMPT};
+
+    #[test]
+    fn safety_check_prompt_asks_for_the_summary_layout() {
+        // project-management#490: the dashboard write-up uses the same five
+        // sections as the safety_check report, in the same order.
+        let mut last = 0;
+        for section in [
+            "safety_check",
+            "Use with caution",
+            "Your network at a glance",
+            "The verdict: is anything malicious?",
+            "How this could impact you",
+            "Scenario | Risk to you",
+            "What we recommend",
+        ] {
+            let at = SAFETY_CHECK_PROMPT[last..]
+                .find(section)
+                .unwrap_or_else(|| panic!("'{section}' missing or out of order"));
+            last += at + section.len();
+        }
+        assert!(SAFETY_CHECK_PROMPT.contains("exactly one sentence"));
+        assert!(SAFETY_CHECK_PROMPT.contains("exactly two short sentences"));
+        assert!(SAFETY_CHECK_PROMPT.contains("End the answer there."));
+        // Reputation enrichment still feeds the verdict.
+        assert!(SAFETY_CHECK_PROMPT.contains("abuseipdb_check"));
+    }
 
     #[test]
     fn network_attack_plan_prompt_targets_the_planning_tool() {

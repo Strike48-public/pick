@@ -366,6 +366,55 @@ pub fn render_markdown(content: &str) -> String {
     )
 }
 
+/// Render a saved report body, with its technical appendix collapsed.
+///
+/// Easy-mode reports end their reader-facing summary at "What we recommend"
+/// and put everything technical under a `## Details` / `### Details` heading.
+/// That appendix is long, so it renders inside a `<details>` element that
+/// starts closed. Raw HTML in the markdown is still dropped by the sanitizer,
+/// so the wrapper is added here around the two separately sanitized halves.
+/// A body without a Details heading renders exactly like
+/// [`render_markdown_raw`].
+pub fn render_report_markdown(content: &str) -> String {
+    match split_details_section(content) {
+        Some((summary, details)) => format!(
+            r#"{}<details class="report-details"><summary>Details</summary>{}</details>"#,
+            render_markdown_raw(summary),
+            render_markdown_raw(details)
+        ),
+        None => render_markdown_raw(content),
+    }
+}
+
+/// Split `content` at its first `## Details` / `### Details` heading that is
+/// not inside a fenced code block. Returns `(before, after)` with the heading
+/// line itself dropped, or `None` when there is no such heading.
+fn split_details_section(content: &str) -> Option<(&str, &str)> {
+    let mut fence: Option<&str> = None;
+    let mut offset = 0;
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim();
+        match fence {
+            Some(open) => {
+                if trimmed.starts_with(open) {
+                    fence = None;
+                }
+            }
+            None => {
+                if trimmed.starts_with("```") {
+                    fence = Some("```");
+                } else if trimmed.starts_with("~~~") {
+                    fence = Some("~~~");
+                } else if matches!(trimmed, "## Details" | "### Details") {
+                    return Some((&content[..offset], &content[offset + line.len()..]));
+                }
+            }
+        }
+        offset += line.len();
+    }
+    None
+}
+
 /// Split a leading YAML frontmatter block from markdown content.
 ///
 /// Returns `(Some(yaml), body)` when `content` begins with a `---` line,
@@ -489,6 +538,46 @@ mod frontmatter_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- render_report_markdown: the Details appendix starts collapsed ---
+
+    #[test]
+    fn report_details_section_is_collapsed() {
+        let md = "## 🔴 Not safe\n\n### What we recommend\n\nPatch it.\n\n### Details\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let html = render_report_markdown(md);
+        let (summary, rest) = html
+            .split_once(r#"<details class="report-details"><summary>Details</summary>"#)
+            .expect("details wrapper present");
+        // The reader-facing summary ends at the recommendation, outside the wrapper.
+        assert!(summary.contains("What we recommend") && summary.contains("Patch it."));
+        assert!(!summary.contains("<table>"));
+        // The appendix (table) is inside it, closed by default (no `open`).
+        assert!(rest.contains("<table>") && rest.trim_end().ends_with("</details>"));
+        assert!(!html.contains("<details open"));
+        // The heading itself is replaced by the summary label, not repeated.
+        assert!(!html.contains("<h3>Details</h3>"));
+    }
+
+    #[test]
+    fn report_without_details_renders_unchanged() {
+        let md = "## 🟢 Looks safe\n\n### What we recommend\n\nCarry on.\n";
+        assert_eq!(render_report_markdown(md), render_markdown_raw(md));
+    }
+
+    #[test]
+    fn details_heading_inside_code_fence_is_not_a_split() {
+        let md = "Intro\n\n```text\n### Details\n```\n\nMore\n";
+        assert_eq!(render_report_markdown(md), render_markdown_raw(md));
+    }
+
+    #[test]
+    fn details_section_stays_sanitized() {
+        // Raw HTML inside the appendix is still dropped by the shared sanitizer.
+        let md = "Top\n\n### Details\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1))\n";
+        let html = render_report_markdown(md);
+        assert!(!html.contains("<script>"));
+        assert!(!html.contains("javascript:"));
+    }
 
     // --- is_safe_url: the default-deny scheme allowlist (unit level) ---
 

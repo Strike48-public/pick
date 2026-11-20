@@ -30,7 +30,7 @@ mod report;
 mod threat_intel;
 mod types;
 
-pub use report::format_report;
+pub use report::{format_report, summary_json};
 pub use types::{
     CheckResult, CheckStatus, Device, NetworkMap, Recommendation, SafetyCheckResult, SafetyStatus,
     Severity, ThreatLevel,
