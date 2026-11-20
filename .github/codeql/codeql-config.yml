@@ -1,0 +1,33 @@
+# CodeQL configuration for Pick (pick#154).
+#
+# How this file reaches CodeQL — two operator options (one-time, UI only):
+# - ADVANCED SETUP: switch Settings → Code security → Code scanning to
+#   "advanced setup" and let this repo's workflow
+#   .github/workflows/codeql.yml run it via config-file.
+# - DEFAULT SETUP + REPOSITORY PROPERTY: keep the default (automatic) setup
+#   and set the repository property github-codeql-config-file to
+#   .github/codeql/codeql-config.yml — the default setup then applies the
+#   queries/exclusions below without any custom workflow (docs: "Editing
+#   your configuration of default setup").
+# Until one of the two is done, this file is inert: the out-of-the-box
+# default setup does not load it on its own.
+#
+# Why the exclusions:
+# - vendor/strike48-connector/: vendored fork of Strike48's connector SDK.
+#   It is maintained (and scanned) in its own repo; its TLS config warnings
+#   are a known, intentional property of the connector transport, not of
+#   Pick. (Note: PATCHES.md carries local modifications — the exclusion
+#   covers the SDK alerts, not our patch surface.)
+# - crates/ui/src/assets/restty.js: the vendored 2.6 MB terminal bundle
+#   (minified third-party code we do not maintain and cannot meaningfully
+#   patch; the original HIGH js/incomplete-sanitization alert came from
+#   here). Deliberately a FILE, not the directory: the rest of
+#   crates/ui/src/assets/ is first-party JS we edit in-repo
+#   (chart_processor.js, shell_init.js, phoenix_shim.js, utils.js) and must
+#   stay scanned.
+name: "Pick CodeQL configuration"
+queries:
+  - uses: security-and-quality
+paths-ignore:
+  - 'vendor/strike48-connector/**'
+  - 'crates/ui/src/assets/restty.js'
