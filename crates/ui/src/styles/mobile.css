@@ -949,6 +949,10 @@ body {
 .easy-doc-viewer-body.markdown-body { line-height: 1.6; }
 .easy-doc-viewer-body h1 { font-size: 1.6rem; margin: 1.2rem 0 0.6rem; line-height: 1.25; }
 .easy-doc-viewer-body h2 { font-size: 1.3rem; margin: 1.4rem 0 0.5rem; line-height: 1.3; border-bottom: 1px solid var(--em-hairline); padding-bottom: 0.3rem; }
+/* Report appendix (rendering::render_report_markdown): collapsed by default. */
+.easy-doc-viewer-body .report-details { margin: 1.6rem 0 0.4rem; border-top: 1px solid var(--em-hairline); padding-top: 0.8rem; }
+.easy-doc-viewer-body .report-details > summary { cursor: pointer; font-weight: 600; font-size: 1.05rem; color: var(--em-text); }
+.easy-doc-viewer-body .report-details[open] > summary { margin-bottom: 0.6rem; }
 .easy-doc-viewer-body h3 { font-size: 1.1rem; margin: 1.1rem 0 0.4rem; }
 .easy-doc-viewer-body h4 { font-size: 1rem; margin: 0.9rem 0 0.3rem; }
 .easy-doc-viewer-body p { margin: 0.7rem 0; }
