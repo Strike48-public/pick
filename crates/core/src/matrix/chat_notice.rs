@@ -16,6 +16,11 @@ pub enum ChatNoticeKind {
     TokenLimit,
     /// Some other upstream failure — usually transient.
     UpstreamError,
+    /// A requested action was confirmed by the server (e.g. the Stop control's
+    /// stop request confirmed a halt).
+    Success,
+    /// Neutral informational note (e.g. Stop pressed with nothing to stop).
+    Info,
 }
 
 impl ChatNoticeKind {
@@ -27,6 +32,10 @@ impl ChatNoticeKind {
         match self {
             ChatNoticeKind::TokenLimit => ("token_limit", "token or rate limit reached"),
             ChatNoticeKind::UpstreamError => ("upstream", "agent backend error, no reply produced"),
+            // Informational kinds are never captured as agent errors; the arms
+            // exist only so the classifier stays total.
+            ChatNoticeKind::Success => ("success", "requested action confirmed by server"),
+            ChatNoticeKind::Info => ("info", "informational notice"),
         }
     }
 }
