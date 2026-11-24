@@ -81,6 +81,18 @@ unsafe fn walk_ifaddrs(ifap: *mut libc::ifaddrs) -> Vec<NetworkInterface> {
         if ifa.ifa_addr.is_null() {
             continue;
         }
+        // SAFETY: `ifa_addr` is non-null (checked above). Per POSIX,
+        // `getifaddrs` guarantees it points to a correctly-sized `sockaddr` —
+        // and, for the `sa_family` it reports, to the corresponding
+        // `sockaddr_in` / `sockaddr_in6` / `sockaddr_dl`. We read `sa_family`
+        // first and only then cast + dereference the one struct that matches
+        // that family, so each cast below targets an allocation that is sized
+        // for the type it forms a reference to. (CodeQL's
+        // rust/access-invalid-pointer flags the `sockaddr`→narrower-type cast
+        // pattern because it cannot model the runtime `sa_family`-dependent
+        // sizing; the guard above + the family dispatch make it sound. A
+        // `ptr::read_unaligned` byte-copy rewrite would silence the query and
+        // is the preferred follow-up, tracked in the pick#154 PR.)
         match (*ifa.ifa_addr).sa_family as libc::c_int {
             libc::AF_INET => {
                 let sin = &*(ifa.ifa_addr as *const libc::sockaddr_in);
