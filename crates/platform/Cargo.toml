@@ -10,7 +10,7 @@ license.workspace = true
 default = ["desktop"]
 desktop = ["sysinfo", "local-ip-address", "dns-lookup", "network-interface", "dep:lazy_static", "dep:uuid", "dep:image", "desktop-mdns", "wifi_scan", "ssdp-client", "dep:reqwest", "dep:portable-pty", "dep:libc", "dep:sha2", "dep:keyring", "dep:arboard"]
 desktop-all = ["desktop", "desktop-screenshots"]
-desktop-screenshots = ["desktop", "screenshots"]
+desktop-screenshots = ["desktop", "xcap"]
 desktop-mdns = ["desktop", "mdns-sd"]
 desktop-pcap = ["desktop", "pcap"]
 android = ["dep:jni", "dep:ndk-context", "dep:reqwest", "dep:portable-pty", "dep:libc", "dep:tar", "dep:xz2", "dep:sha2"]
@@ -46,7 +46,7 @@ image = { version = "0.25", optional = true }
 
 # Desktop-specific
 sysinfo = { workspace = true, optional = true }
-screenshots = { version = "0.8", optional = true, default-features = false }
+xcap = { version = "0.9", optional = true, default-features = false }
 local-ip-address = { version = "0.6", optional = true }
 dns-lookup = { workspace = true, optional = true }
 mdns-sd = { version = "0.11", optional = true }
