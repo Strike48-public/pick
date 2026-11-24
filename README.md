@@ -37,7 +37,31 @@ A multiplatform penetration testing connector built with [Dioxus](https://dioxus
 
 ## Install
 
-- **Docker (Linux host):** follow [docs/DOCKER_INSTALL.md](docs/DOCKER_INSTALL.md). It starts with a setup choice, runs a preflight check, and has a section for installing with an AI coding agent.
+- **Docker (Linux host):** follow [docs/DOCKER_INSTALL.md](docs/DOCKER_INSTALL.md). It starts with a setup choice, runs a preflight check, and has a section for installing with an AI coding agent. Quick start:
+
+  ```bash
+  # Pull the image for a specific release (container tags have NO `v` prefix —
+  # git tags are `v0.1.13`, image tags are `0.1.13`):
+  docker pull ghcr.io/strike48-public/pick:0.1.13
+
+  # Minimal run (your values come from your Strike48 account; the guide's
+  # Configuration reference is the full set):
+  docker run -d --name pick-connector \
+    -e STRIKE48_HOST=wss://studio.example.com \
+    -e STRIKE48_API_URL=https://studio.example.com/ \
+    -e STRIKE48_TENANT=<your tenant UUID — not the slug> \
+    -e STRIKE48_INSTANCE_ID=<generate once, keep forever> \
+    -v pick-connector-data:/data/connector \
+    ghcr.io/strike48-public/pick:0.1.13
+  ```
+
+  **Tag scheme and pinning:** each release publishes an immutable image at
+  its exact version tag (`0.1.13` — no `v` prefix, unlike the git tag
+  `v0.1.13`) plus a digest, both named on the release page. `latest` tracks
+  the newest release. **Pin the version tag (or digest) in any
+  long-lived configuration** — `latest` can change under you on the next
+  release; the compose bundle ships pinned to the release it was downloaded
+  from for exactly this reason.
 - **Native app (macOS, Windows, Linux):** download it from the [releases page](https://github.com/Strike48-public/pick/releases).
 - **From source:** see [docs/INSTALLATION.md](docs/INSTALLATION.md) and [Building](#building) below.
 
